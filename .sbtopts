@@ -1,0 +1,6 @@
+-J-Xmx6G
+-J-Xss4m
+# Silence JDK restricted-method warnings from native libraries such as JLine.
+-J--enable-native-access=ALL-UNNAMED
+# Silence the Scala LazyVals sun.misc.Unsafe deprecation warning.
+-J--sun-misc-unsafe-memory-access=allow

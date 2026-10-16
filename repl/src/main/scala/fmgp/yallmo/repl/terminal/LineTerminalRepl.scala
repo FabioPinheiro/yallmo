@@ -9,7 +9,6 @@ import org.jline.reader.{
   Completer,
   EndOfFileException,
   LineReader,
-  LineReaderBuilder,
   ParsedLine,
   Reference,
   UserInterruptException,
@@ -26,10 +25,12 @@ final class LineTerminalRepl[R] private (
     application: ReplApplication[R],
     reader: LineReader,
     recorder: AudioRecorder,
-    transcriber: Transcriber
+    transcriber: Transcriber,
+    login: SubscriptionLogin,
 ) {
+  private val loginInput = new TerminalLoginInput(reader.getTerminal, Some(reader))
   private val prompt = "yallmo> "
-  private val terminalStatus = new TerminalStatus(reader)
+  private val terminalStatus = new TerminalStatus(reader, application.activeAgent)
   private val voiceInsert = new VoiceInsert(reader, recorder, transcriber, terminalStatus)
 
   terminalStatus.install()
@@ -66,7 +67,8 @@ final class LineTerminalRepl[R] private (
       if exitsClient then ZIO.succeed(currentState -> true)
       else
         event match {
-          case ReplEvent.Help(_) =>
+          case ReplEvent.LoginRequested(method) => loginInput.login(method, login).as(currentState -> false)
+          case ReplEvent.Help(_)                =>
             (TerminalEventRenderer.render(event) *>
               Console.printLine("Voice insert: Esc, then v. Space stops recording; Esc cancels.").orDie)
               .as(currentState -> false)
@@ -75,16 +77,16 @@ final class LineTerminalRepl[R] private (
     }
 
   private def readLine: UIO[LineTerminalRepl.ReadResult] =
-    ZIO
-      .attemptBlocking(LineTerminalRepl.ReadResult.Line(reader.readLine(prompt)))
+    (loginInput.discardRemainder *> ZIO
+      .attemptBlocking(LineTerminalRepl.ReadResult.Line(reader.readLine(prompt))))
       .catchSome {
         case _: UserInterruptException => ZIO.succeed(LineTerminalRepl.ReadResult.Interrupt)
         case _: EndOfFileException     => ZIO.succeed(LineTerminalRepl.ReadResult.End)
       }
-      .catchAll(error =>
+      .catchAll(_ =>
         Console
           .printLineError(
-            s"Terminal input failed: ${Option(error.getMessage).filter(_.nonEmpty).getOrElse(error.getClass.getSimpleName)}"
+            "Terminal input failed."
           )
           .orDie
           .as(LineTerminalRepl.ReadResult.End)
@@ -131,18 +133,19 @@ object LineTerminalRepl {
       application: ReplApplication[R],
       fallbackToPlain: Boolean,
       recorder: AudioRecorder,
-      transcriber: Transcriber
+      transcriber: Transcriber,
+      login: SubscriptionLogin
   ): ZIO[R, Throwable, Unit] =
     ZIO.acquireReleaseWith(ZIO.attemptBlocking(TerminalBuilder.builder().system(true).build()))(closeTerminal) {
       terminal =>
         if terminal.getType.startsWith(Terminal.TYPE_DUMB) then
           if fallbackToPlain then
             Console.printLine("Interactive line editing is unavailable; using plain terminal mode.").orDie *>
-              new BasicTerminalRepl(application).run
+              new BasicTerminalRepl(application, login).runWithTerminal(terminal)
           else ZIO.fail(IllegalStateException("Line UI requires an interactive terminal; use --ui=plain instead."))
         else
           ZIO
-            .attemptBlocking(new LineTerminalRepl(application, buildReader(terminal), recorder, transcriber))
+            .attemptBlocking(new LineTerminalRepl(application, buildReader(terminal), recorder, transcriber, login))
             .flatMap(_.run)
     }
 
@@ -151,16 +154,14 @@ object LineTerminalRepl {
 
   private def buildReader(terminal: Terminal): LineReader = {
     Option(historyPath.getParent).foreach(parent => Files.createDirectories(parent))
-    val reader = LineReaderBuilder
-      .builder()
-      .terminal(terminal)
-      .appName("yallmo")
-      // Escape is a prefix for terminal key sequences. JLine defaults to a one-second disambiguation delay, which makes
-      // Vi command mode feel laggy on a local terminal.
-      .variable(LineReader.AMBIGUOUS_BINDING, 50L)
-      .variable(LineReader.HISTORY_FILE, historyPath)
-      .completer(new ReplCompleter)
-      .build()
+    // Equivalent to LineReaderBuilder's defaults, with a bounded status resize hook.
+    val variables = new java.util.HashMap[String, Object]()
+    // Keep Escape disambiguation responsive in Vi mode.
+    variables.put(LineReader.AMBIGUOUS_BINDING, java.lang.Long.valueOf(50L))
+    variables.put(LineReader.HISTORY_FILE, historyPath)
+    val reader = new StatusLineReader(terminal, variables)
+    reader.setHistory(new org.jline.reader.impl.history.DefaultHistory())
+    reader.setCompleter(new ReplCompleter)
 
     // Start each prompt in Vi insert mode; Esc switches to the standard JLine Vi command map.
     reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))

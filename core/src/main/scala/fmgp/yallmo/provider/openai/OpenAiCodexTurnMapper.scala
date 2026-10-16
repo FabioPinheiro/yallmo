@@ -1,6 +1,7 @@
 package fmgp.yallmo.provider.openai
 
 import fmgp.yallmo.model.*
+import fmgp.yallmo.provider.JsonSchemaEncoder
 import fmgp.yallmo.model.llm.*
 import zio.Chunk
 
@@ -16,7 +17,7 @@ private[openai] object OpenAiCodexTurnMapper {
       "type" -> "function",
       "name" -> definition.name,
       "description" -> definition.description,
-      "parameters" -> schema(definition.inputSchema),
+      "parameters" -> JsonSchemaEncoder.encode(definition.inputSchema),
       "strict" -> false
     )
 
@@ -63,16 +64,19 @@ private[openai] object OpenAiCodexTurnMapper {
         Chunk(
           ujson.Obj(
             "type" -> "message",
-            "role" -> "system",
+            "role" -> "developer",
             "content" -> ujson.Arr(ujson.Obj("type" -> "input_text", "text" -> text))
           )
         )
-      case MessagePayload.Reasoning(_, continuation) if continuation.provider == providerId =>
+      case MessagePayload.Reasoning(summary, continuation) if continuation.provider == providerId =>
         Chunk(
           ujson.Obj.from(
             Chunk(
               Some("type" -> ujson.Str("reasoning")),
               continuation.itemId.map("id" -> ujson.Str(_)),
+              Some(
+                "summary" -> ujson.Arr.from(summary.map(text => ujson.Obj("type" -> "summary_text", "text" -> text)))
+              ),
               Some("content" -> ujson.Arr()),
               Some("encrypted_content" -> ujson.Str(continuation.encryptedContent))
             ).flatten
@@ -160,37 +164,4 @@ private[openai] object OpenAiCodexTurnMapper {
   private def requiredString(item: scala.collection.Map[String, ujson.Value], field: String): Either[String, String] =
     item.get(field).flatMap(_.strOpt).filter(_.nonEmpty).toRight(s"OpenAI Codex $field is missing")
 
-  private def schema(value: JsonSchema): ujson.Obj =
-    value match
-      case JsonSchema.StringSchema(description, allowedValues) =>
-        withDescription(
-          ujson.Obj("type" -> "string"),
-          description,
-          Option.when(allowedValues.nonEmpty)("enum" -> ujson.Arr.from(allowedValues))
-        )
-      case JsonSchema.NumberSchema(description)       => withDescription(ujson.Obj("type" -> "number"), description)
-      case JsonSchema.IntegerSchema(description)      => withDescription(ujson.Obj("type" -> "integer"), description)
-      case JsonSchema.BooleanSchema(description)      => withDescription(ujson.Obj("type" -> "boolean"), description)
-      case JsonSchema.ArraySchema(items, description) =>
-        withDescription(ujson.Obj("type" -> "array", "items" -> schema(items)), description)
-      case JsonSchema.ObjectSchema(properties, required, additionalProperties, description) =>
-        val result = withDescription(
-          ujson.Obj(
-            "type" -> "object",
-            "properties" -> ujson.Obj.from(properties.view.mapValues(schema).toMap),
-            "additionalProperties" -> additionalProperties
-          ),
-          description
-        )
-        if required.nonEmpty then result("required") = ujson.Arr.from(required.toSeq.sorted)
-        result
-
-  private def withDescription(
-      value: ujson.Obj,
-      description: Option[String],
-      enumOption: Option[(String, ujson.Value)] = None
-  ): ujson.Obj =
-    description.foreach(value("description") = _)
-    enumOption.foreach { case (key, enumValue) => value(key) = enumValue }
-    value
 }

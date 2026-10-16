@@ -1,16 +1,23 @@
 package fmgp.yallmo.repl.terminal
 
 import org.jline.reader.{LineReader, Widget}
-import org.jline.utils.{AttributedString, Status}
+import org.jline.utils.Status
+import fmgp.yallmo.repl.ReplActiveAgent
 import zio.*
 
 import java.util.List
 
 /** Persistent, terminal-capability-dependent feedback for the line editor's local modes. */
-private[terminal] final class TerminalStatus(reader: LineReader) {
+private[terminal] final class TerminalStatus(reader: LineReader, activeAgent: Option[ReplActiveAgent] = None) {
   private val status = Option(Status.getStatus(reader.getTerminal))
 
+  private var currentHint = "[INSERT]  Esc: command mode · Enter: submit"
+
   def install(): Unit = {
+    reader match {
+      case line: StatusLineReader => line.onSizeChange(() => refresh())
+      case _                      => ()
+    }
     installMissingViSubstituteWidget()
     installCallback(LineReader.CALLBACK_INIT)(updateForKeyMap())
     installCallback(LineReader.CALLBACK_KEYMAP)(updateForKeyMap())
@@ -25,7 +32,13 @@ private[terminal] final class TerminalStatus(reader: LineReader) {
     else update("[INSERT]  Esc: command mode · Enter: submit")
 
   def close: UIO[Unit] =
-    ZIO.attemptBlocking(status.foreach(_.close())).ignore
+    ZIO.attemptBlocking {
+      reader match {
+        case line: StatusLineReader => line.onSizeChange(null)
+        case _                      => ()
+      }
+      status.foreach(_.close())
+    }.ignore
 
   /** JLine 4.0.14 binds `s` to vi-substitute but omits that widget. Restore the expected delete-and-insert behavior. */
   private def installMissingViSubstituteWidget(): Unit =
@@ -55,6 +68,16 @@ private[terminal] final class TerminalStatus(reader: LineReader) {
     )
   }
 
-  private def update(text: String): Unit =
-    status.foreach(_.update(List.of(new AttributedString(text))))
+  private def update(text: String): Unit = {
+    currentHint = text
+    refresh()
+  }
+
+  private def refresh(): Unit =
+    status.foreach { bar =>
+      bar.resize()
+      bar.update(
+        List.of(TerminalStatusLayout.render(currentHint, activeAgent, reader.getTerminal.getWidth, reader.getTerminal))
+      )
+    }
 }

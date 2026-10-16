@@ -9,6 +9,7 @@ import zio.*
 
 /** A semantic result for a REPL client to render or otherwise handle. */
 enum ReplEvent {
+  case LoginRequested(method: LoginMethod)
   case Help(entries: Chunk[CommandHelp])
   case DebugSnapshot(target: DebugTarget, snapshot: ReplDebugSnapshot)
   case ProviderRequest(capture: Option[Path])

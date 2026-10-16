@@ -1,6 +1,5 @@
 package fmgp.yallmo.provider.openai
 
-import fmgp.yallmo.*
 import fmgp.yallmo.model.YallmoError
 
 import zio.*
@@ -14,7 +13,9 @@ final case class OpenAiCodexCredentials(
     accessToken: String,
     refreshToken: String,
     expiresAtMillis: Long
-)
+) {
+  override def toString: String = "OpenAiCodexCredentials(<redacted>)"
+}
 
 /** Reads and atomically updates only ASAR's Codex credential entries in a local `.env` file. */
 final class OpenAiCodexSecrets private[openai] (envFile: Path, legacyEnvFile: Option[Path] = None) {
@@ -40,11 +41,17 @@ final class OpenAiCodexSecrets private[openai] (envFile: Path, legacyEnvFile: Op
           required(values, ExpiresAtMillisKey, file).toLong
         )
       }
-      .mapError(error => YallmoError.InvalidConfig(s"Unable to load OpenAI Codex credentials: ${error.getMessage}"))
+      .mapError(_ => YallmoError.InvalidConfig("Unable to load OpenAI Codex credentials; log in again"))
 
   def save(credentials: OpenAiCodexCredentials): Task[Unit] =
     ZIO
       .attemptBlocking {
+        require(
+          List(credentials.accessToken, credentials.refreshToken).forall(value =>
+            value.trim.nonEmpty && !value.exists(c => c == '\r' || c == '\n')
+          ) && credentials.expiresAtMillis > 0,
+          "Invalid credentials"
+        )
         val parent = Option(envFile.toAbsolutePath.getParent).getOrElse(Path.of(".").toAbsolutePath)
         Files.createDirectories(parent)
         val existing =
@@ -55,20 +62,26 @@ final class OpenAiCodexSecrets private[openai] (envFile: Path, legacyEnvFile: Op
           ExpiresAtMillisKey -> credentials.expiresAtMillis.toString
         )
         val retained = existing.toArray(new Array[String](existing.size())).toList.filterNot { line =>
-          replacements.keys.exists(key => line.trim.startsWith(s"$key="))
+          replacements.contains(line.trim.split("=", 2).head.trim)
         }
         val content = (retained ++ replacements.toList.sortBy(_._1).map { case (key, value) => s"$key=$value" })
           .mkString("\n") + "\n"
-        val temporary = Files.createTempFile(parent, ".asar-codex-", ".env")
-        Files.writeString(temporary, content, StandardCharsets.UTF_8)
-        setOwnerOnlyPermissions(temporary)
-        try Files.move(temporary, envFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        catch {
-          case _: AtomicMoveNotSupportedException => Files.move(temporary, envFile, StandardCopyOption.REPLACE_EXISTING)
-        }
-        setOwnerOnlyPermissions(envFile)
+        val temporary = Files.createTempFile(parent, ".asar-codex-", ".env") // FIXME remove this .asar-codex-
+        try {
+          setOwnerOnlyPermissions(temporary)
+          Files.writeString(temporary, content, StandardCharsets.UTF_8)
+          try Files.move(temporary, envFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+          catch {
+            case _: AtomicMoveNotSupportedException =>
+              Files.move(temporary, envFile, StandardCopyOption.REPLACE_EXISTING)
+          }
+          setOwnerOnlyPermissions(envFile)
+        } finally Files.deleteIfExists(temporary)
+        ()
       }
-      .mapError(error => YallmoError.InvalidConfig(s"Unable to save OpenAI Codex credentials: ${error.getMessage}"))
+      // Finish the atomic replacement before cancellation can release the caller's refresh lock.
+      .uninterruptible
+      .mapError(_ => YallmoError.InvalidConfig("Unable to save OpenAI Codex credentials"))
 
   private def required(values: Map[String, String], key: String, file: Path): String =
     values

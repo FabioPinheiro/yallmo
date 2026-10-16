@@ -13,7 +13,9 @@ import java.nio.file.Files
 private[terminal] object TerminalEventRenderer {
   def render(event: ReplEvent): UIO[Unit] =
     event match {
-      case ReplEvent.Help(entries) =>
+      // Interactive requests are handled by the terminal client, never by this output-only renderer.
+      case ReplEvent.LoginRequested(_) => ZIO.unit
+      case ReplEvent.Help(entries)     =>
         val lines = entries.map(entry => f"  ${entry.usage}%-26s ${entry.description}")
         printLines(Chunk("Commands:") ++ lines ++ Chunk("Use // to send a prompt beginning with /."))
       case ReplEvent.DebugSnapshot(DebugTarget.Display, snapshot)  => printDebugSnapshot(snapshot)

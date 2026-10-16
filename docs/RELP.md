@@ -28,11 +28,31 @@ sbt --server -no-server "repl/run --ui=auto --storage ./zzz"
 I/O. Use `--ui=plain` for pipes and simple streams; `--ui=line` fails rather than degrading on a dumb terminal.
 `--ui=tui` is reserved for the future full-screen UI.
 
+## ChatGPT subscription generation
+
+Start with `sbt --server -no-server 'repl/run --provider=chatgpt --ui=line'`, then enter `/login` in that same REPL before your first subscription turn. Startup does not need credentials. `/login browser` is the explicit browser flow; `/login device` supports headless pairing. The separate redirect prompt masks input and never submits it as an agent prompt or stores it in history, sessions, transcripts or debug captures. Plain mode has no persistent history, but terminal echo suppression cannot be guaranteed on unsupported TTYs: prefer device login there. Use empty input, `cancel`, Ctrl+C or EOF at the redirect prompt to cancel; Enter/Ctrl+C/EOF cancels polling. Wait for the ordinary prompt before entering another command. A timed-out partial login line is discarded before command input resumes. Login is bounded to 15 minutes (initial device-code requests can take up to 30 seconds before cancellation is processed).
+
+`--provider=openai-codex` aliases `--provider=chatgpt`; `--model=<id>` overrides the model. This is pi-style subscription access, not separately billed API-key access. The OAI default is unchanged, and subscription failures do not trigger a provider fallback. See [setup, privacy and limitations](OPENAI_SUBSCRIPTION.md).
+
+## Active-agent footer
+
+Capable line/auto terminals show one bottom status line: local insert/command/voice hints on the left and
+`<agent-id> (<provider> - <model> • <thinking-level>)` on the right. Provider labels are `openai-codex` for ChatGPT
+subscription generation and `oai` for compatible-endpoint generation. The model honors `--model`; the values come
+from the selected native agent configuration, not login state or the separate voice provider. Unspecified thinking
+is shown as `default` (not `off`, and not a claim about the server's effective default); explicit levels are lowercase.
+There are no new thinking or switching commands. Login and session commands do not change this selection.
+
+The footer reflows on terminal resize using display-column widths. On narrow terminals metadata takes priority over
+local hints and is truncated with an ellipsis as needed. Configured labels have ANSI/control characters removed.
+Plain/dumb/piped clients do not emit the footer or terminal controls.
+
 ## Commands
 
 | Command | Meaning |
 | --- | --- |
 | `/help` | Show commands. |
+| `/login [browser\|device]` | Log in to ChatGPT subscription access (browser default). Does not switch providers, reset the session, change transcript/log settings, or invoke an agent/tool. |
 | `/history` | Render the current agent transcript. |
 | `/tools` | Show the startup availability snapshot for agent tools. |
 | `/debug print` | Print the current transcript as Pi-style JSONL. |
@@ -102,9 +122,10 @@ sequenceDiagram
 
 At REPL startup, `ReplMain` builds these components:
 
-1. `OAILlmProvider` for ordinary LLM generation, loading `OAIConfig` from `MY_MODEL_URL` and
-   `MY_MODEL_NAME`.
-2. `OAIAgent`, which uses that provider for native conversation turns and stateless audio transcription.
+1. The selected generation provider: by default `OAILlmProvider`/`OAIAgent`, loading `OAIConfig` from `MY_MODEL_URL` and
+   `MY_MODEL_NAME`; with `--provider=chatgpt`, `OpenAiCodexClient` uses subscription OAuth for native text/tool turns.
+2. An independently OAI-backed audio path for transcription. Without valid OAI configuration it reports voice as
+   unavailable on invocation, rather than blocking subscription text chat.
 3. `AudioRecorder`, a local Java Sound implementation. It does **not** open the microphone at startup.
 4. `Transcriber`, which owns the transcription-only system prompt and makes one audio-only request per call.
 5. `LineTerminalRepl`, which invokes `AudioRecorder` and `Transcriber` for the editable `Esc v` keybinding.

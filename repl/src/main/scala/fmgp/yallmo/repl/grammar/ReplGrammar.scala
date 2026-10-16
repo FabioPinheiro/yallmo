@@ -104,6 +104,16 @@ object ReplGrammar {
     ArgumentDefinition("off", Chunk.empty, "Suppress application logs for REPL turns.", ReplCommand.Log(LogLevel.None))
   )
 
+  private val loginArguments = Chunk(
+    ArgumentDefinition(
+      "browser",
+      Chunk.empty,
+      "Browser login with a private redirect prompt.",
+      ReplCommand.Login(LoginMethod.Browser)
+    ),
+    ArgumentDefinition("device", Chunk.empty, "Headless device-code login.", ReplCommand.Login(LoginMethod.Device))
+  )
+
   private val definitions: Chunk[CommandDefinition] = Chunk(
     CommandDefinition(
       canonicalName = "/help",
@@ -111,6 +121,16 @@ object ReplGrammar {
       usage = "/help",
       description = "Show available commands.",
       parseTail = noArguments(ReplCommand.Help)
+    ),
+    CommandDefinition(
+      canonicalName = "/login",
+      aliases = Chunk.empty,
+      usage = "/login [browser|device]",
+      description = "Log in to ChatGPT subscription access; does not switch generation providers.",
+      parseTail = tail =>
+        if tail.isEmpty then Right(ReplCommand.Login(LoginMethod.Browser))
+        else loginArguments.find(_.parses(tail)).map(_.command).toRight("Expected /login [browser|device]."),
+      completions = loginCandidates("")
     ),
     CommandDefinition(
       canonicalName = "/debug",
@@ -184,6 +204,8 @@ object ReplGrammar {
       val words = trimmed.split("\\s+", -1).toList
       val hasTrailingWhitespace = prefix.lastOption.exists(_.isWhitespace)
       words match {
+        case "/login" :: Nil if hasTrailingWhitespace =>
+          CompletionResult(cursor, cursor, loginCandidates(""))
         case "/debug" :: Nil if hasTrailingWhitespace =>
           CompletionResult(cursor, cursor, debugCandidates(""))
         case "/log" :: Nil if hasTrailingWhitespace =>
@@ -193,11 +215,13 @@ object ReplGrammar {
         case command :: Nil =>
           val start = prefix.lastIndexOf(command)
           CompletionResult(start, cursor, commandCandidates(command))
-        case command :: argument :: Nil if command == "/debug" || command == "/log" || command == "/session" =>
+        case command :: argument :: Nil
+            if command == "/debug" || command == "/log" || command == "/session" || command == "/login" =>
           val start = if hasTrailingWhitespace then cursor else prefix.lastIndexOf(argument)
           val fragment = if hasTrailingWhitespace then "" else argument
           val candidates =
-            if command == "/debug" then debugCandidates(fragment)
+            if command == "/login" then loginCandidates(fragment)
+            else if command == "/debug" then debugCandidates(fragment)
             else if command == "/log" then logCandidates(fragment)
             else sessionCandidates(fragment)
           CompletionResult(start, cursor, candidates)
@@ -278,6 +302,11 @@ object ReplGrammar {
   private def logCandidates(fragment: String): Chunk[CompletionCandidate] =
     logArguments
       .flatMap(argument => argument.names.map(name => CompletionCandidate(name, argument.description)))
+      .filter(_.value.startsWith(fragment))
+
+  private def loginCandidates(fragment: String): Chunk[CompletionCandidate] =
+    loginArguments
+      .map(argument => CompletionCandidate(argument.canonicalName, argument.description))
       .filter(_.value.startsWith(fragment))
 
   private def sessionCandidates(fragment: String): Chunk[CompletionCandidate] =

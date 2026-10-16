@@ -28,6 +28,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - [Setup and running](docs/HOW_TO_RUN.md)
 - [Interactive REPL](docs/RELP.md)
+- [ChatGPT subscription provider](docs/OPENAI_SUBSCRIPTION.md)
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation-DAG visualization plan](docs/CONVERSATION_DAG_VISUALIZATION_PLAN.md)

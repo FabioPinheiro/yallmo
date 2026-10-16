@@ -17,7 +17,8 @@ final class ReplApplication[R](
     session: ReplSession[R],
     toolAvailability: ReplToolAvailability,
     replOrchestrator: ReplOrchestrator[R],
-    val initialState: ReplState = ReplState()
+    val initialState: ReplState = ReplState(),
+    val activeAgent: Option[ReplActiveAgent] = None
 ) {
   def submit(state: ReplState, line: String): ZIO[R, Nothing, ReplTransition] =
     ZIO.scoped {
@@ -44,7 +45,8 @@ final class ReplApplication[R](
 
   private def handleCommand(state: ReplState, command: ReplCommand): ZIO[R, Nothing, ReplTransition] =
     command match {
-      case ReplCommand.Help => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Help(ReplGrammar.help))))
+      case ReplCommand.Login(method) => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.LoginRequested(method))))
+      case ReplCommand.Help          => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Help(ReplGrammar.help))))
       case ReplCommand.Debug(DebugTarget.ProviderRequest) =>
         ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.ProviderRequest(state.lastProviderRequest))))
       case ReplCommand.Debug(target) =>

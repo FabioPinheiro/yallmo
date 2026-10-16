@@ -33,6 +33,16 @@ final class ReplSuite extends FunSuite {
   }
 
   test("typed grammar is the source for command parsing") {
+    assertEquals(ReplGrammar.parse("/login"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Browser))))
+    assertEquals(ReplGrammar.parse("/login browser"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Browser))))
+    assertEquals(ReplGrammar.parse("/login device"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Device))))
+    assert(ReplGrammar.parse("/login invalid").isLeft)
+    assert(ReplGrammar.parse("/login device extra").isLeft)
+    assert(
+      ReplGrammar.help.exists(entry =>
+        entry.usage == "/login [browser|device]" && entry.description.contains("does not switch")
+      )
+    )
     assertEquals(ReplGrammar.parse("/history"), Right(ReplInput.Command(ReplCommand.History)))
     assertEquals(ReplGrammar.parse("/tools"), Right(ReplInput.Command(ReplCommand.Tools)))
     assertEquals(ReplGrammar.parse("/new"), Right(ReplInput.Command(ReplCommand.NewSession(None))))
@@ -72,6 +82,12 @@ final class ReplSuite extends FunSuite {
   }
 
   test("grammar completion is derived from the command definitions") {
+    assertEquals(ReplGrammar.complete(CompletionRequest("/lo", 3)).candidates.map(_.value), Chunk("/login", "/log"))
+    assertEquals(
+      ReplGrammar.complete(CompletionRequest("/login ", 7)).candidates.map(_.value),
+      Chunk("browser", "device")
+    )
+    assertEquals(ReplGrammar.complete(CompletionRequest("/login d", 8)).candidates.map(_.value), Chunk("device"))
     assertEquals(
       ReplGrammar.complete(CompletionRequest("/deb", 4)).candidates.map(_.value),
       Chunk("/debug")
@@ -127,6 +143,27 @@ final class ReplSuite extends FunSuite {
       ReplToolAvailability(Chunk.empty, Chunk.empty),
       inMemoryReplOrchestrator(AgentId("unused"))
     )
+
+    val existing = ReplState(
+      sessionId = Some("keep-selected-session"),
+      logLevel = LogLevel.Debug,
+      runContext = RunContext(messages = Chunk(Message.User("keep transcript"))),
+      lastProviderRequest = Some(Path.of("keep-request.json"))
+    )
+    for (
+      (command, method) <- List(
+        "/login" -> LoginMethod.Browser,
+        "/login browser" -> LoginMethod.Browser,
+        "/login device" -> LoginMethod.Device
+      )
+    ) {
+      val login = runZIO(application.submit(existing, command))
+      assertEquals(login, ReplTransition(existing, Chunk(ReplEvent.LoginRequested(method))))
+      assertEquals(
+        runZIO(application.submit(existing, "/session list")).events,
+        Chunk(ReplEvent.SessionList(Chunk.empty, existing.sessionId))
+      )
+    }
 
     val session = runZIO(application.submit(ReplState(), "/session list"))
     assertEquals(session, ReplTransition(ReplState(), Chunk(ReplEvent.SessionList(Chunk.empty, None))))

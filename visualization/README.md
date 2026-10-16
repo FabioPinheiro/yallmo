@@ -7,6 +7,10 @@ This Vite application renders the actual local `../zzz` storage snapshot. It doe
 ```bash
 npm install
 npm run dev
+
+# From the root folder
+npm --prefix visualization install
+npm --prefix visualization run dev
 ```
 
 Regenerate the snapshot after the REPL writes new storage data:

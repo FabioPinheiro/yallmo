@@ -1,13 +1,21 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.model.MessagePayload
+import fmgp.yallmo.model.{AgentId, Message, MessagePayload}
 import zio.*
 
 private[terminal] object TerminalMessageRenderer {
-  def render(messages: Chunk[MessagePayload]): Chunk[String] =
-    messages.map {
-      case MessagePayload.User(text)                 => s"user> $text"
-      case MessagePayload.Assistant(text)            => s"assistant> $text"
+
+  /** Renders stored history using each message's original author. */
+  def render(messages: Chunk[Message]): Chunk[String] =
+    messages.map(message => render(message.payload, Some(message.agentId)))
+
+  /** Shared formatting for history and live output; unknown authors retain generic role labels. */
+  def render(message: MessagePayload, author: Option[AgentId] = None): String =
+    message match {
+      case MessagePayload.User(text) =>
+        s"${author.fold("user> ")(id => TerminalPrompt.user(id))}$text"
+      case MessagePayload.Assistant(text) =>
+        s"${author.fold("assistant> ")(id => TerminalPrompt.assistant(id))}$text"
       case MessagePayload.RagResult(key, documents)  => s"retriever[$key]> ${documents.size} document(s)"
       case MessagePayload.ToolResult(key, text)      => s"tool[$key]> $text"
       case MessagePayload.FunctionCallRequest(call)  => s"tool-call[${call.name}]> ${call.argumentsJson}"

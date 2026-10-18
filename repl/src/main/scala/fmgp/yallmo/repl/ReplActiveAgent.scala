@@ -3,6 +3,7 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.{Agent, AgentId}
 import fmgp.yallmo.model.llm.ThinkingLevel
 import fmgp.yallmo.orchestration.NativeFunctionAgent
+import fmgp.yallmo.orchestration.config.ProviderId
 import java.util.Locale
 
 /** Immutable feedback from the same native configuration used for outgoing turns, not server defaults. */
@@ -17,15 +18,12 @@ final case class ReplActiveAgent(
 
 object ReplActiveAgent {
   private[repl] def fromNative[R <: Agent[Any]](
-      selection: ReplProviderSelection,
+      providerId: ProviderId,
       agent: NativeFunctionAgent[R]
   ): ReplActiveAgent =
     ReplActiveAgent(
       AgentId.value(agent.id),
-      selection match {
-        case ReplProviderSelection.Oai     => "oai"
-        case ReplProviderSelection.ChatGpt => "openai-codex"
-      },
+      ProviderId.value(providerId),
       agent.model,
       agent.options.thinkingLevel
     )

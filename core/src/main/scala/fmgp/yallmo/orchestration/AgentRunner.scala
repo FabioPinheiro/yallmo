@@ -31,7 +31,7 @@ final class AgentRunner[R](
       agent: AgentInstance[R],
       task: AgentTask,
       staticContext: StaticContext[R],
-      budget: AgentBudget = AgentBudget.default
+      budget: AgentBudget = AgentBudget.default // TODO REVIEW considered for removal
   ): ZIO[R, YallmoError, AgentResult] =
     runWithContext(agent, task, staticContext, RunContext(), budget).map(_.result)
 
@@ -41,7 +41,7 @@ final class AgentRunner[R](
       task: AgentTask,
       staticContext: StaticContext[R],
       runContext: RunContext,
-      budget: AgentBudget = AgentBudget.default
+      budget: AgentBudget = AgentBudget.default // TODO REVIEW considered for removal
   ): ZIO[R, YallmoError, AgentTurnResult] =
     ZIO.logAnnotate(AgentRunner.LogAnnotationKey, runnerId.toString) {
       val execute =

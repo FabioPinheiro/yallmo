@@ -12,7 +12,8 @@ final class OrchestratorLiveSuite extends FunSuite {
 
     val result = runZIO {
       for {
-        orchestrator <- OrchestratorLive.inMemory(Chunk(agent))
+        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
         result <- orchestrator.createSession(SessionId.unsafe("main"), Chunk(known, unknown)).either
       } yield result
     }
@@ -23,7 +24,8 @@ final class OrchestratorLiveSuite extends FunSuite {
   test("persists messages through the application-facing orchestrator API") {
     val session = runZIO {
       for {
-        orchestrator <- OrchestratorLive.inMemory(Chunk(agent))
+        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
         _ <- orchestrator.createSession(SessionId.unsafe("main"), Chunk(agentId))
         appended <- orchestrator.append(SessionId.unsafe("main"), agentId, Chunk(Message.User("hello")))
       } yield appended
@@ -31,6 +33,16 @@ final class OrchestratorLiveSuite extends FunSuite {
 
     assertEquals(session.agentIds, Chunk(agentId))
     assertEquals(session.messages.map(_.payload), Chunk(Message.User("hello")))
+  }
+
+  test("explicit runtime registration rejects duplicate IDs before orchestrator creation") {
+    val result = runZIO {
+      (for {
+        instances <- RuntimeInstances.fromAgents(Chunk(agent, agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
+      } yield orchestrator).either
+    }
+    assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
   }
 
   private val agentId = AgentId("agent")

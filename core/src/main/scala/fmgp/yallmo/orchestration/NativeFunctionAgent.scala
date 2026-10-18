@@ -18,6 +18,29 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
       staticContext: StaticContext[R],
       runContext: RunContext
   ): ZIO[R, YallmoError, AgentTurn] =
+    nextWith(staticContext, runContext, request => ZIO.serviceWithZIO[Agent[Any]](_.turn(request)))
+
+  /** Binds a resolved runtime adapter explicitly rather than requiring a global Agent service.
+    *
+    * @tparam R1
+    *   environment used by the enclosing runner's tools/context, not by this already-initialized adapter
+    * @param provider
+    *   resolved agent used for every provider-native turn in this program
+    */
+  def bind[R1](provider: Agent[Any]): AgentInstance[R1] = new AgentInstance[R1] {
+    override val id: AgentId = NativeFunctionAgent.this.id
+    override def next(
+        task: AgentTask,
+        staticContext: StaticContext[R1],
+        runContext: RunContext
+    ): ZIO[R1, YallmoError, AgentTurn] = nextWith(staticContext, runContext, provider.turn)
+  }
+
+  private def nextWith[R1](
+      staticContext: StaticContext[R1],
+      runContext: RunContext,
+      send: AgentTurnRequest => ZIO[R1, YallmoError, AgentTurnResponse]
+  ): ZIO[R1, YallmoError, AgentTurn] =
     val request = AgentTurnRequest(
       model = model,
       input = NativeFunctionAgent.input(runContext, staticContext),
@@ -27,8 +50,7 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
       parallelToolCalls = parallelToolCalls,
       options = options
     )
-    ZIO
-      .serviceWithZIO[Agent[Any]](_.turn(request))
+    send(request)
       .mapError(error => YallmoError.AgentExecutionFailed(id, error.getMessage, error))
       .flatMap { response =>
         val toolCalls = response.output.collect { case MessagePayload.FunctionCallRequest(call) => call }

@@ -8,19 +8,26 @@ import zio.*
 import java.util.List
 
 /** Persistent, terminal-capability-dependent feedback for the line editor's local modes. */
-private[terminal] final class TerminalStatus(reader: LineReader, activeAgent: Option[ReplActiveAgent] = None) {
+private[terminal] final class TerminalVoiceModeStatus(
+    reader: LineReader,
+    private var activeAgent: Option[ReplActiveAgent] = None
+) extends TerminalMode {
   private val status = Option(Status.getStatus(reader.getTerminal))
 
-  private var currentHint = "[INSERT]  Esc: command mode · Enter: submit"
+  private var currentHint = TerminalMenus.hintForKeyMap(LineReader.VIINS)
 
-  def install(): Unit = {
+  override def install(): Unit = {
     reader match {
       case line: StatusLineReader => line.onSizeChange(() => refresh())
       case _                      => ()
     }
-    installMissingViSubstituteWidget()
     installCallback(LineReader.CALLBACK_INIT)(updateForKeyMap())
     installCallback(LineReader.CALLBACK_KEYMAP)(updateForKeyMap())
+  }
+
+  def selectAgent(value: Option[ReplActiveAgent]): Unit = {
+    activeAgent = value
+    refresh()
   }
 
   def recording(): Unit = update("[RECORDING]  ● Space: stop · Esc: cancel · maximum 30 seconds")
@@ -28,8 +35,7 @@ private[terminal] final class TerminalStatus(reader: LineReader, activeAgent: Op
   def transcribing(): Unit = update("[TRANSCRIBING]  Processing local voice input…")
 
   def updateForKeyMap(): Unit =
-    if reader.getKeyMap == LineReader.VICMD then update("[COMMAND]  i: edit · v: voice input · q: exit")
-    else update("[INSERT]  Esc: command mode · Enter: submit")
+    update(TerminalMenus.hintForKeyMap(reader.getKeyMap))
 
   def close: UIO[Unit] =
     ZIO.attemptBlocking {
@@ -39,20 +45,6 @@ private[terminal] final class TerminalStatus(reader: LineReader, activeAgent: Op
       }
       status.foreach(_.close())
     }.ignore
-
-  /** JLine 4.0.14 binds `s` to vi-substitute but omits that widget. Restore the expected delete-and-insert behavior. */
-  private def installMissingViSubstituteWidget(): Unit =
-    if !reader.getWidgets.containsKey(LineReader.VI_SUBSTITUTE) then
-      reader.getWidgets.put(
-        LineReader.VI_SUBSTITUTE,
-        new Widget {
-          override def apply(): Boolean = {
-            reader.getBuffer.delete()
-            reader.setKeyMap(LineReader.VIINS)
-            true
-          }
-        }
-      )
 
   private def installCallback(name: String)(onCall: => Unit): Unit = {
     val existing = Option(reader.getWidgets.get(name))

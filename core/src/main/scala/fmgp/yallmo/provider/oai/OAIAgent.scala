@@ -50,6 +50,11 @@ final class OAIAgent private[oai] (
 }
 
 object OAIAgent {
-  def live(id: AgentId): URLayer[OAILlmProvider, OAIAgent] =
-    ZLayer.fromFunction((provider: OAILlmProvider) => new OAIAgent(id, provider))
+
+  /** Constructs an agent over an already initialized, potentially shared connection. */
+  def make(id: AgentId, provider: OAILlmProvider): OAIAgent = new OAIAgent(id, provider)
+
+  // TODO REMOVE
+  // def live(id: AgentId): URLayer[OAILlmProvider, OAIAgent] =
+  //   ZLayer.fromFunction((provider: OAILlmProvider) => make(id, provider))
 }

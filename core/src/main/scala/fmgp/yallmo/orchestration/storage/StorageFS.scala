@@ -33,6 +33,15 @@ private[orchestration] final class StorageFS private (val root: Path, store: Sto
       messages <- messagesFrom(state.head)
     } yield Session(id, state.agentIds, messages)
 
+  override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
+    for {
+      state <- readState(id)
+      _ <-
+        if state.agentIds.contains(agentId) then ZIO.unit
+        else StorageFiles.write(root, id, state.agentIds :+ agentId, state.head)
+      session <- loadSession(id)
+    } yield session
+
   override def append(
       id: SessionId,
       agentId: AgentId,

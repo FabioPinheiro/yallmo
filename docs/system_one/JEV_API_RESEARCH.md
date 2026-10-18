@@ -191,7 +191,7 @@ core/src/test/.../provider/typesafe/JevSystemOneClientSuite.scala
 
 Use names that describe the new protocol rather than reuse `MY_MODEL_URL` / `MY_MODEL_NAME`:
 
-```dotenv
+```sh
 # Official Jev
 JEV_SYSTEM_ONE_URL=https://api.typesafe.ai/v1/systemone
 TYPESAFE_API_KEY=...
@@ -203,7 +203,7 @@ JEV_SYSTEM_ONE_URL=http://host.docker.internal:8000/v1/systemone
 # The model, for example `jev-latest`, belongs to every System One request.
 ```
 
-Make the API key optional at the generic client boundary: add `Authorization: Bearer ...` only when a non-blank key is configured. Official TypeSafe configuration should require it; local Laya is intentionally unauthenticated. Make that an explicit composition/configuration choice, never a production fallback. The `build.sbt` dotenv loader passes through `JEV_SYSTEM_ONE_URL` and `TYPESAFE_API_KEY` (without committing either value) for local run/test configuration.
+Make the API key optional at the generic client boundary: add `Authorization: Bearer ...` only when a non-blank key is configured. Official TypeSafe configuration should require it; local Laya is intentionally unauthenticated. Make that an explicit composition/configuration choice, never a production fallback.
 
 ## 1.4 Laya compatibility experiment
 

@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.*
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, ToolChoice}
@@ -10,9 +11,8 @@ import zio.http.*
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-/** Native client for the ChatGPT Codex subscription backend. It uses OAuth credentials held in `.env`, not an API key.
-  */
-final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodexAuth)
+/** Native client for the ChatGPT Codex subscription backend, using OAuth rather than platform API keys. */
+final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodexAuth.CredentialAccess)
     extends LlmProvider
     with Agent[Any] {
   import OpenAiCodexClient.*
@@ -211,9 +211,15 @@ object OpenAiCodexClient {
   val CodexResponsesUrl = "https://chatgpt.com/backend-api/codex/responses"
   val RequestTimeout: Duration = 2.minutes
 
-  def make(client: Client): OpenAiCodexClient = new OpenAiCodexClient(client, OpenAiCodexAuth.live(client))
-
-  val live: ZLayer[Client, Nothing, OpenAiCodexClient] = ZLayer.fromFunction(make)
+  /** Creates a new client with isolated, in-memory profile credentials, capturing the HTTP client from the ZIO
+    * environment at construction. Credentials are checked/refreshed only when a turn is submitted; refreshed values
+    * remain in memory.
+    */
+  def make(credentials: Option[OAuthCredentialsConfig]): ZIO[Client, Nothing, OpenAiCodexClient] =
+    for {
+      client <- ZIO.service[Client]
+      access <- OpenAiCodexAuth.inMemory(credentials)
+    } yield new OpenAiCodexClient(client, access)
 
   private[openai] def requestBody[R](
       history: ujson.Arr,

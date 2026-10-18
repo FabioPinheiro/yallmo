@@ -20,6 +20,15 @@ trait Orchestrator[-R] {
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
+  /** Adds a registered message author without changing the session ID or transcript. Idempotent. Fixed-membership
+    * implementations retain their previous behavior unless they override this operation.
+    */
+  def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
+    getAgent(agentId) *> loadSession(id).flatMap { session =>
+      if session.agentIds.contains(agentId) then ZIO.succeed(session)
+      else ZIO.fail(YallmoError.AgentNotInSession(id, agentId))
+    }
+
   def append(id: SessionId, agentId: AgentId, messages: Chunk[MessagePayload]): IO[YallmoError, Session]
 
   def fork(source: SessionId, target: SessionId): IO[YallmoError, Session]

@@ -6,7 +6,6 @@ import munit.FunSuite
 import zio.*
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
 import java.util.Base64
 
 final class OpenAiCodexSuite extends FunSuite:
@@ -370,27 +369,6 @@ final class OpenAiCodexSuite extends FunSuite:
     assert(body("instructions").str.trim.nonEmpty)
   }
 
-  test("stores only Codex credentials while preserving unrelated dotenv entries") {
-    val directory = Files.createTempDirectory("asar-codex-secrets")
-    val envFile = directory.resolve(".env")
-    Files.writeString(envFile, "GEMINI_API_KEY=keep-me\n# comment\n", StandardCharsets.UTF_8)
-    val secrets = OpenAiCodexSecrets(envFile)
-    val credentials = OpenAiCodexCredentials("access", "refresh", 1234L)
-
-    Unsafe.unsafe { unsafe ?=>
-      Runtime.default.unsafe.run(secrets.save(credentials)).getOrThrowFiberFailure()
-    }
-
-    val content = Files.readString(envFile, StandardCharsets.UTF_8)
-    assert(content.contains("GEMINI_API_KEY=keep-me"))
-    assert(content.contains("OPENAI_CODEX_ACCESS_TOKEN=access"))
-    assert(content.contains("OPENAI_CODEX_REFRESH_TOKEN=refresh"))
-    assertEquals(
-      Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(secrets.load).getOrThrowFiberFailure() },
-      credentials
-    )
-  }
-
   test("accepts only a browser redirect with the matching OAuth state") {
     val login = OpenAiCodexBrowserLogin("https://auth.openai.com", "expected-state", "verifier")
 
@@ -406,15 +384,7 @@ final class OpenAiCodexSuite extends FunSuite:
     )
   }
 
-  test("parses device-code and token responses") {
-    assertEquals(
-      OpenAiCodexAuth.parseDeviceCode("""{"device_auth_id":"device","user_code":"CODE","interval":5}"""),
-      Right(OpenAiCodexDeviceCode("device", "CODE", 5.seconds))
-    )
-    assertEquals(
-      OpenAiCodexAuth.parseDeviceCode("""{"device_auth_id":"device","user_code":"CODE","interval":"5"}"""),
-      Right(OpenAiCodexDeviceCode("device", "CODE", 5.seconds))
-    )
+  test("parses token responses") {
     val credentials = OpenAiCodexAuth.parseCredentials(
       """{"access_token":"access","refresh_token":"refresh","expires_in":3600}"""
     )

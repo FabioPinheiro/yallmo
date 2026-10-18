@@ -7,7 +7,7 @@ import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.*
 
 /** LLM provider for an OpenAI-compatible Chat Completions endpoint. */
-final case class OAILlmProvider private[oai] (
+final case class OAILlmProvider private[yallmo] (
     client: Client,
     config: OAIConfig,
 ) extends LlmProvider
@@ -37,7 +37,8 @@ final case class OAILlmProvider private[oai] (
           .map(YallmoError.InvalidConfig.apply)
       )
       _ <- ZIO.fromEither(OAILlmProvider.validateAudio(audio).left.map(YallmoError.InvalidConfig.apply))
-      response <- complete(OAIChatCompletionsMapper.audioRequestBody(model.getOrElse(defaultModel), prompt, audio))
+      selectedModel <- ZIO.fromEither(resolveModel(model))
+      response <- complete(OAIChatCompletionsMapper.audioRequestBody(selectedModel, prompt, audio))
       text <- ZIO.fromEither(
         response.content.toRight(YallmoError.EmptyResponse("OpenAI-compatible endpoint returned no transcription text"))
       )
@@ -57,8 +58,8 @@ final case class OAILlmProvider private[oai] (
       options: ProviderGenerateOptions,
       model: Option[String]
   ): ZIO[R, Throwable, String] = {
-    val selectedModel = model.getOrElse(defaultModel)
     for
+      selectedModel <- ZIO.fromEither(resolveModel(model))
       capture <- LlmDebugCapture.captureCallStarted(
         provider = "OpenAI-compatible endpoint",
         model = selectedModel,
@@ -84,6 +85,10 @@ final case class OAILlmProvider private[oai] (
         )
     yield result
   }
+
+  private def resolveModel(model: Option[String]): Either[YallmoError, String] =
+    val selected = model.getOrElse(defaultModel)
+    Either.cond(selected.trim.nonEmpty, selected, YallmoError.InvalidConfig("An explicit OAI model is required"))
 
   private def toolLoop[R](
       model: String,
@@ -183,7 +188,7 @@ object OAILlmProvider {
       case value => value
 }
 
-/** Connection settings loaded from `MY_MODEL_URL` and `MY_MODEL_NAME`. */
+/** Connection settings. An empty model means request-level model selection is required. */
 final case class OAIConfig(baseUrl: String, model: String) {
   def chatCompletionsUrl: String = s"$baseUrl/chat/completions"
 }
@@ -205,35 +210,45 @@ object OAIConfig {
     }
 
   private[oai] def from(url: String, model: String): Either[YallmoError.InvalidConfig, OAIConfig] =
-    val normalizedUrl = url.trim.stripSuffix("/")
     for {
-      _ <- Either.cond(
-        normalizedUrl.nonEmpty,
-        (),
-        YallmoError.InvalidConfig(s"$UrlEnvironmentVariable must not be blank")
-      )
-      uri <- scala.util
-        .Try(java.net.URI.create(normalizedUrl))
-        .toEither
-        .left
-        .map(error => YallmoError.InvalidConfig(s"Invalid $UrlEnvironmentVariable: ${error.getMessage}"))
-      _ <- Either.cond(
-        uri.getScheme == "http" || uri.getScheme == "https",
-        (),
-        YallmoError.InvalidConfig(s"$UrlEnvironmentVariable must use http or https")
-      )
-      _ <- Either.cond(
-        uri.getHost != null,
-        (),
-        YallmoError.InvalidConfig(s"$UrlEnvironmentVariable must include a host")
-      )
+      config <- fromEndpoint(url)
       trimmedModel = model.trim
       _ <- Either.cond(
         trimmedModel.nonEmpty,
         (),
         YallmoError.InvalidConfig(s"$ModelEnvironmentVariable must not be blank")
       )
-    } yield OAIConfig(normalizedUrl, trimmedModel)
+    } yield config.copy(model = trimmedModel)
+
+  private[yallmo] def fromEndpoint(url: String): Either[YallmoError.InvalidConfig, OAIConfig] =
+    val normalizedUrl = url.trim.reverse.dropWhile(_ == '/').reverse
+    for {
+      _ <- Either.cond(
+        normalizedUrl.nonEmpty,
+        (),
+        YallmoError.InvalidConfig("OAI endpoint must not be blank")
+      )
+      uri <- scala.util
+        .Try(java.net.URI.create(normalizedUrl))
+        .toEither
+        .left
+        .map(_ => YallmoError.InvalidConfig("Invalid OAI endpoint"))
+      _ <- Either.cond(
+        uri.getScheme == "http" || uri.getScheme == "https",
+        (),
+        YallmoError.InvalidConfig("OAI endpoint must use http or https")
+      )
+      _ <- Either.cond(
+        uri.getHost != null,
+        (),
+        YallmoError.InvalidConfig("OAI endpoint must include a host")
+      )
+      _ <- Either.cond(
+        uri.getRawUserInfo == null && uri.getRawQuery == null && uri.getRawFragment == null,
+        (),
+        YallmoError.InvalidConfig("OAI endpoint must not contain credentials, query parameters or a fragment")
+      )
+    } yield OAIConfig(normalizedUrl, "")
 }
 
 private[oai] final case class OAIFunctionCall(callId: String, name: String, arguments: String)

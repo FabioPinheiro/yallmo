@@ -11,7 +11,7 @@ private[terminal] final class VoiceInsert(
     reader: LineReader,
     recorder: AudioRecorder,
     transcriber: Transcriber,
-    terminalStatus: TerminalStatus
+    terminalStatus: TerminalVoiceModeStatus
 ) {
   import VoiceInsert.*
 
@@ -30,13 +30,13 @@ private[terminal] final class VoiceInsert(
     catch {
       case error: Throwable =>
         showFailure(error)
-        reader.setKeyMap(LineReader.VIINS)
+        terminalStatus.updateForKeyMap()
         true
     }
 
   private def insertVoiceSafely(): Boolean = {
-    // Vi command mode places the cursor on the preceding character. Insert after that character so Esc, v preserves
-    // the logical insertion position from text mode; command-mode movement intentionally selects a new insertion point.
+    // NORMAL (the Vi command map) places the cursor on the preceding character. Insert after that character so Esc, v preserves
+    // the logical insertion position from text mode; NORMAL movement intentionally selects a new insertion point.
     val insertionPoint = insertionCursor
     val termination = run(Promise.make[Nothing, VoiceRecordingTermination])
     // Each `run` completes before this widget waits for the stop key. Use a daemon fiber so that completion does not
@@ -63,7 +63,7 @@ private[terminal] final class VoiceInsert(
     }
 
     if !inserted then reader.getBuffer.cursor(insertionPoint)
-    reader.setKeyMap(LineReader.VIINS)
+    terminalStatus.updateForKeyMap()
     true
   }
 
@@ -116,7 +116,7 @@ private[terminal] object VoiceInsert {
   private val Space = ' '.toInt
   private val Escape = 27
 
-  /** Maps a Vi command-mode cursor to the following text insertion point. */
+  /** Maps a NORMAL cursor to the following text insertion point. */
   private[terminal] def insertionPoint(cursor: Int, currentCharacter: Int): Int =
     if currentCharacter >= 0 then cursor + 1 else cursor
 

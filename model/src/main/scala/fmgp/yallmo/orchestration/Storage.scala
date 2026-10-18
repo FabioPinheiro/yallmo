@@ -18,6 +18,9 @@ private[orchestration] trait Storage {
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
+  /** Registers another author without changing existing messages. Resolution belongs to the orchestrator. */
+  def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session]
+
   /** Appends one completed turn for an agent associated with the session. */
   def append(id: SessionId, agentId: AgentId, messages: Chunk[MessagePayload]): IO[YallmoError, Session]
 

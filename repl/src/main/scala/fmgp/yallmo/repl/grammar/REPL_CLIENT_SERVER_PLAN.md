@@ -8,7 +8,7 @@ Start with one user, one machine, and a local IPC transport. Do **not** expose t
 
 - a terminal/TUI client can reconnect without losing an active run or PTY process;
 - a server owns expensive model/provider/MCP connections and tool initialization once;
-- plain terminal, JLine, TUI, and later browser clients share the same session semantics;
+- JLine, future TUI, and later browser clients share the same session semantics;
 - server-side sessions, transcripts, budgets, cancellation, and audit events have one owner;
 - PTY processes can survive a display/client restart under an explicit detach/reap policy;
 - protocol tests no longer need a real terminal, while TTY/PTY tests are isolated at the edges.
@@ -240,11 +240,11 @@ The first milestone should therefore **not** attempt browser access, shared conc
 
 ## Delivery milestones
 
-1. **Protocol extraction:** define codec-free `SubmitTurn`, event subscription, message inspection, IDs, errors, and JSON compatibility tests. Keep line/plain REPL behavior unchanged.
+1. **Protocol extraction:** define codec-free `SubmitTurn`, event subscription, message inspection, IDs, errors, and JSON compatibility tests. Keep JLine REPL behavior unchanged.
 2. **In-process server seam:** add `SessionCoordinator` around `ReplApplication` with serialized state transitions, append-only `SessionEvent`s, and scripted replay/branch tests. Implement a client adapter in the same JVM/process before adding sockets.
 3. **Local IPC MVP:** add endpoint metadata and handshake/token validation; transport `submit`, `subscribe`, and `inspect`; and support replay after a client reconnects. Use one session and no persistence initially if necessary, but retain the event model.
 4. **Lifecycle and durability:** add cancellation contract, progress events, append-only session/event store, reconnect/replay policy, stale-server handling, graceful shutdown, and redacted diagnostics.
-5. **TTY/TUI clients:** move `BasicTerminalRepl`, `LineTerminalRepl`, and the future TUI behind the protocol client while keeping terminal acquisition/rendering local. Preserve the existing client-local voice flow.
+5. **TTY/TUI clients:** move `TerminalRepl` and the future TUI behind the protocol client while keeping terminal acquisition/rendering local. Preserve the existing client-local voice flow.
 6. **PTY service:** implement the separately planned PTY backend and policy on the server; then add attachment/output/resize/input-lease protocol support and a local TUI pane client.
 7. **Additional clients:** consider a localhost WebSocket bridge only after local server authorization, lifecycle, capability policy, and session sharing are mature. It is not an automatic consequence of local IPC.
 

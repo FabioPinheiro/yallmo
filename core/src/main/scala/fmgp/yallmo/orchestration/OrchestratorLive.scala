@@ -9,11 +9,11 @@ import zio.*
 /** Default [[Orchestrator]] implementation backed by an internal [[Storage]]. */
 final class OrchestratorLive[-R] private (
     storage: Storage,
-    agents: Map[AgentId, Agent[R]]
+    instances: RuntimeInstances[R]
 ) extends Orchestrator[R] {
 
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
-    ZIO.fromOption(agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
+    instances.getAgent(id)
 
   override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
     getAgent(id).flatMap(_.turn(request))
@@ -26,6 +26,9 @@ final class OrchestratorLive[-R] private (
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     storage.loadSession(id).mapError(YallmoError.StorageFailed.apply)
+
+  override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
+    getAgent(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
 
   override def append(
       id: SessionId,
@@ -43,11 +46,12 @@ final class OrchestratorLive[-R] private (
 
 object OrchestratorLive {
 
-  /** Creates an orchestrator backed by ephemeral, process-local storage. */
-  def inMemory[R](agents: Chunk[Agent[R]]): UIO[Orchestrator[R]] =
-    StorageInMemory.make.map(storage => new OrchestratorLive(storage, agents.map(agent => agent.id -> agent).toMap))
+  /** Creates an orchestrator using a shared registry and ephemeral, process-local storage. */
+  def inMemory[R](instances: RuntimeInstances[R]): UIO[Orchestrator[R]] =
+    StorageInMemory.make.map(storage => new OrchestratorLive(storage, instances))
 
-  /** Opens an orchestrator backed by a filesystem storage root. */
-  def filesystem[R](root: Path, agents: Chunk[Agent[R]]): IO[YallmoError, Orchestrator[R]] =
-    StorageFS.open(root).map(storage => new OrchestratorLive(storage, agents.map(agent => agent.id -> agent).toMap))
+  /** Opens filesystem storage using a shared registry. */
+  def filesystem[R](root: Path, instances: RuntimeInstances[R]): IO[YallmoError, Orchestrator[R]] =
+    StorageFS.open(root).map(storage => new OrchestratorLive(storage, instances))
+
 }

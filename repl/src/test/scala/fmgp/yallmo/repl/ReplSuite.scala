@@ -1,6 +1,7 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
 import java.nio.file.{Files, Path}
 import java.util.{Comparator, UUID}
 import java.util.concurrent.CopyOnWriteArrayList
@@ -10,7 +11,7 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.repl.debug.{ReplDebug, ReplDebugSnapshot}
 import fmgp.yallmo.repl.grammar.*
-import fmgp.yallmo.repl.terminal.{LineTerminalRepl, TerminalMode}
+import fmgp.yallmo.repl.terminal.TerminalRepl
 
 final class ReplSuite extends FunSuite {
   test("REPL startup selects only tools whose requirements pass") {
@@ -33,16 +34,6 @@ final class ReplSuite extends FunSuite {
   }
 
   test("typed grammar is the source for command parsing") {
-    assertEquals(ReplGrammar.parse("/login"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Browser))))
-    assertEquals(ReplGrammar.parse("/login browser"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Browser))))
-    assertEquals(ReplGrammar.parse("/login device"), Right(ReplInput.Command(ReplCommand.Login(LoginMethod.Device))))
-    assert(ReplGrammar.parse("/login invalid").isLeft)
-    assert(ReplGrammar.parse("/login device extra").isLeft)
-    assert(
-      ReplGrammar.help.exists(entry =>
-        entry.usage == "/login [browser|device]" && entry.description.contains("does not switch")
-      )
-    )
     assertEquals(ReplGrammar.parse("/history"), Right(ReplInput.Command(ReplCommand.History)))
     assertEquals(ReplGrammar.parse("/tools"), Right(ReplInput.Command(ReplCommand.Tools)))
     assertEquals(ReplGrammar.parse("/new"), Right(ReplInput.Command(ReplCommand.NewSession(None))))
@@ -82,12 +73,7 @@ final class ReplSuite extends FunSuite {
   }
 
   test("grammar completion is derived from the command definitions") {
-    assertEquals(ReplGrammar.complete(CompletionRequest("/lo", 3)).candidates.map(_.value), Chunk("/login", "/log"))
-    assertEquals(
-      ReplGrammar.complete(CompletionRequest("/login ", 7)).candidates.map(_.value),
-      Chunk("browser", "device")
-    )
-    assertEquals(ReplGrammar.complete(CompletionRequest("/login d", 8)).candidates.map(_.value), Chunk("device"))
+    assertEquals(ReplGrammar.complete(CompletionRequest("/lo", 3)).candidates.map(_.value), Chunk("/log"))
     assertEquals(
       ReplGrammar.complete(CompletionRequest("/deb", 4)).candidates.map(_.value),
       Chunk("/debug")
@@ -107,16 +93,25 @@ final class ReplSuite extends FunSuite {
     )
   }
 
-  test("terminal modes make fallback behavior explicit") {
-    assertEquals(TerminalMode.parse(Chunk.empty), Right(TerminalMode.Auto))
-    assertEquals(TerminalMode.parse(Chunk("--ui=line")), Right(TerminalMode.Line))
-    assertEquals(TerminalMode.parse(Chunk("--ui", "plain")), Right(TerminalMode.Plain))
-    assert(TerminalMode.parse(Chunk("--ui=unknown")).isLeft)
+  test("shared command grammar treats login as unknown and excludes it from help, completion and suggestions") {
+    for command <- List("/login", "/login ", "/login browser", "/login invalid") do {
+      val error = ReplGrammar.parse(command).swap.toOption.get
+      assertEquals(error.message, "Unknown command: /login")
+      assert(error.suggestions.isEmpty)
+      assert(ReplGrammar.complete(CompletionRequest(command, command.length)).candidates.isEmpty)
+    }
+    assert(!ReplGrammar.help().exists(_.usage.startsWith("/login")))
+    assert(!ReplGrammar.complete(CompletionRequest("/", 1)).candidates.exists(_.value == "/login"))
+    assert(!ReplGrammar.parse("/lo").swap.toOption.get.suggestions.exists(_.value == "/login"))
+    ReplGrammar.parse("//login") match {
+      case Right(ReplInput.Prompt(prompt)) => assertEquals(prompt.value, "/login")
+      case other                           => fail(s"Expected a literal prompt, got $other")
+    }
   }
 
   test("line terminal exits only after consecutive Ctrl+C interrupts") {
-    assert(!LineTerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = false))
-    assert(LineTerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = true))
+    assert(!TerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = false))
+    assert(TerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = true))
   }
 
   test("new REPL sessions default to error-level logging and have no durable session") {
@@ -128,7 +123,7 @@ final class ReplSuite extends FunSuite {
     val application = new ReplApplication[Any](
       new ReplSession[Any](
         runner = new AgentRunner[Any](Map.empty, Map.empty),
-        agent = new AgentInstance[Any] {
+        agent = Some(new AgentInstance[Any] {
           override val id: AgentId = AgentId("unused")
 
           override def next(
@@ -137,7 +132,7 @@ final class ReplSuite extends FunSuite {
               _runContext: RunContext
           ): IO[YallmoError, AgentTurn] =
             ZIO.dieMessage("This test only submits REPL commands.")
-        },
+        }),
         staticContext = StaticContext[Any]("Test")
       ),
       ReplToolAvailability(Chunk.empty, Chunk.empty),
@@ -150,20 +145,21 @@ final class ReplSuite extends FunSuite {
       runContext = RunContext(messages = Chunk(Message.User("keep transcript"))),
       lastProviderRequest = Some(Path.of("keep-request.json"))
     )
-    for (
-      (command, method) <- List(
-        "/login" -> LoginMethod.Browser,
-        "/login browser" -> LoginMethod.Browser,
-        "/login device" -> LoginMethod.Device
-      )
-    ) {
-      val login = runZIO(application.submit(existing, command))
-      assertEquals(login, ReplTransition(existing, Chunk(ReplEvent.LoginRequested(method))))
+    for command <- List("/login", "/login browser") do {
+      val rejected = runZIO(application.submit(existing, command))
+      assertEquals(rejected.state, existing)
       assertEquals(
-        runZIO(application.submit(existing, "/session list")).events,
-        Chunk(ReplEvent.SessionList(Chunk.empty, existing.sessionId))
+        rejected.events.collect { case ReplEvent.InputRejected(error) => error.message },
+        Chunk("Unknown command: /login")
       )
     }
+    assertEquals(
+      runZIO(application.submit(existing, "/session list")).events,
+      Chunk(ReplEvent.SessionList(Chunk.empty, existing.sessionId))
+    )
+
+    val help = runZIO(application.submit(existing, "/help"))
+    assertEquals(help.events, Chunk(ReplEvent.Help(ReplGrammar.help())))
 
     val session = runZIO(application.submit(ReplState(), "/session list"))
     assertEquals(session, ReplTransition(ReplState(), Chunk(ReplEvent.SessionList(Chunk.empty, None))))
@@ -196,12 +192,58 @@ final class ReplSuite extends FunSuite {
 
   }
 
+  test("history loads full stored messages without changing state or running the agent") {
+    val orchestrator = inMemoryReplOrchestrator(AgentId("bob"))
+    val application = new ReplApplication[Any](
+      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
+      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      orchestrator
+    )
+    val created = runZIO(orchestrator.newReplSession(Some("history")))
+    val id = SessionId.unsafe("history")
+    runZIO(orchestrator.append(id, AgentId("TestAgentId"), Chunk(Message.User("hello"))))
+    val stored = runZIO(orchestrator.append(id, AgentId("bob"), Chunk(Message.Assistant("answer"))))
+    val before = created.copy(logLevel = LogLevel.Debug)
+    val history = runZIO(application.submit(before, "/history"))
+    assertEquals(history.state, before)
+    assertEquals(history.events, Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value))))
+    assertEquals(stored.messages.map(_.agentId), Chunk(AgentId("TestAgentId"), AgentId("bob")))
+
+    val resumed = runZIO(application.submit(before, "/session resume history"))
+    assertEquals(runZIO(application.submit(resumed.state, "/history")).events, history.events)
+
+    val reset = runZIO(application.submit(before, "/new empty-history"))
+    assertEquals(
+      runZIO(application.submit(reset.state, "/history")),
+      ReplTransition(reset.state, Chunk(ReplEvent.Transcript(Chunk.empty, reset.state.sessionId)))
+    )
+  }
+
+  test("history is empty before a session exists and reports invalid or missing sessions without changing state") {
+    val application = new ReplApplication[Any](
+      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
+      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      inMemoryReplOrchestrator(AgentId("bob"))
+    )
+    assertEquals(
+      runZIO(application.submit(ReplState(), "/history")),
+      ReplTransition(ReplState(), Chunk(ReplEvent.Transcript(Chunk.empty, None)))
+    )
+    for id <- List("../invalid", "missing") do {
+      val before = ReplState(sessionId = Some(id), logLevel = LogLevel.Debug)
+      val history = runZIO(application.submit(before, "/history"))
+      assertEquals(history.state, before)
+      assertEquals(history.events.size, 1)
+      assert(history.events.head.isInstanceOf[ReplEvent.SessionFailed])
+    }
+  }
+
   test("selected log level applies to the next REPL turn") {
     var observed = Option.empty[LogLevel]
     val application = new ReplApplication[Any](
       new ReplSession[Any](
         runner = new AgentRunner[Any](Map.empty, Map.empty),
-        agent = new AgentInstance[Any] {
+        agent = Some(new AgentInstance[Any] {
           override val id: AgentId = AgentId("logger")
 
           override def next(
@@ -213,7 +255,7 @@ final class ReplSuite extends FunSuite {
               observed = Some(level)
               AgentTurn(Some(Message.Assistant("ok")), AgentDecision.FinalAnswer("ok"))
             }
-        },
+        }),
         staticContext = StaticContext[Any]("Test")
       ),
       ReplToolAvailability(Chunk.empty, Chunk.empty),
@@ -268,6 +310,62 @@ final class ReplSuite extends FunSuite {
     assert(agentRunnerOutput.get(1).contains("runner visible on terminal"), agentRunnerOutput)
   }
 
+  test("switching keeps conversation history but never replays a previous binding's opaque provider continuation") {
+    val oldReasoning = MessagePayload.Reasoning(
+      Some("earlier summary"),
+      ProviderContinuation(ProviderId.unsafe("openai-codex-responses"), Some("old"), "old-encrypted-state")
+    )
+    val currentReasoning = MessagePayload.Reasoning(
+      Some("current summary"),
+      ProviderContinuation(ProviderId.unsafe("openai-codex-responses"), Some("current"), "current-encrypted-state")
+    )
+    val history = Chunk(Message.User("earlier"), oldReasoning, Message.Assistant("earlier answer"))
+    val requests = scala.collection.mutable.ListBuffer.empty[Chunk[MessagePayload]]
+    val agent = new AgentInstance[Any] {
+      override val id = AgentId("new-agent")
+      override def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =
+        ZIO.succeed {
+          requests += current.messages
+          AgentTurn(Some(Message.Assistant("ok")), AgentDecision.FinalAnswer("ok"), Chunk(currentReasoning))
+        }
+    }
+    val session =
+      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test"))
+    val before = ReplState(RunContext(history), sessionId = Some("same-session"), continuationStart = history.size)
+    val first = runZIO(session.submit(before, "first"))
+    val second = runZIO(session.submit(first.state, "second"))
+    assert(requests.forall(!_.contains(oldReasoning)))
+    assert(requests.forall(_.contains(Message.User("earlier"))))
+    assert(requests(1).contains(currentReasoning))
+    assertEquals(second.state.runContext.messages.take(history.size), history)
+    assertEquals(second.state.sessionId, before.sessionId)
+    assertEquals(second.state.continuationStart, history.size)
+    assertEquals(first.newMessages, Chunk(Message.User("first"), Message.Assistant("ok"), currentReasoning))
+  }
+
+  test("application preserves existing history and clears it on a new session") {
+    val bob = AgentId("bob")
+    val agent = new AgentInstance[Any] {
+      override val id = bob
+      override def next(task: AgentTask, context: StaticContext[Any], history: RunContext): IO[YallmoError, AgentTurn] =
+        ZIO.succeed(AgentTurn(Some(Message.Assistant("new answer")), AgentDecision.FinalAnswer("new answer")))
+    }
+    val application = new ReplApplication[Any](
+      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test")),
+      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      inMemoryReplOrchestrator(bob),
+      userId = AgentId("fabio")
+    )
+    val before = ReplState(
+      RunContext(Chunk(Message.User("legacy prompt"), Message.Assistant("legacy answer")))
+    )
+    val next = runZIO(application.submit(before, "hello")).state
+    assertEquals(next.runContext.messages.take(2), before.runContext.messages)
+    assertEquals(next.runContext.messages.drop(2), Chunk(Message.User("hello"), Message.Assistant("new answer")))
+    assertEquals(runZIO(application.submit(next, "/invalid")).state, next)
+    assertEquals(runZIO(application.submit(next, "/new new-history")).state.runContext.messages, Chunk.empty)
+  }
+
   test("session retains the transcript across submitted prompts") {
     val agent = new AgentInstance[Any] {
       override val id: AgentId = AgentId("echo")
@@ -284,7 +382,7 @@ final class ReplSuite extends FunSuite {
     }
     val session = new ReplSession[Any](
       runner = new AgentRunner[Any](Map.empty, Map.empty),
-      agent = agent,
+      agent = Some(agent),
       staticContext = StaticContext[Any]("Test")
     )
 
@@ -341,8 +439,9 @@ final class ReplSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage(s"Agent '${AgentId.value(assistantId)}' must not run in this test")
     }
-    val orchestrator = runZIO(OrchestratorLive.inMemory(Chunk(user, assistant)))
-    ReplOrchestratorLive.make(orchestrator, user, assistant)
+    val instances = runZIO(RuntimeInstances.fromAgents(Chunk(user, assistant)))
+    val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
+    ReplOrchestratorLive.make(orchestrator, user, Some(assistant))
   }
 
   private def workspaceFileSystem(workspaceAccessible: Boolean): fmgp.yallmo.tool.WorkspaceFileSystem =

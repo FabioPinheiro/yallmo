@@ -3,7 +3,7 @@ package fmgp.yallmo.model
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import zio.ZIO
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, JsonFieldDecoder, JsonFieldEncoder}
 
 opaque type AgentId = String
 
@@ -20,6 +20,8 @@ object AgentId {
   def value(id: AgentId): String = id
 
   given JsonCodec[AgentId] = JsonCodec.string.transformOrFail(AgentId.from, AgentId.value)
+  given JsonFieldEncoder[AgentId] = JsonFieldEncoder.string.contramap(AgentId.value)
+  given JsonFieldDecoder[AgentId] = JsonFieldDecoder.string.mapOrFail(AgentId.from)
 }
 
 /** Provider-neutral agent capable of executing one requested turn.

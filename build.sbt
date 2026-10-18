@@ -1,5 +1,3 @@
-import scala.io.Source
-
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "app.fmgp"
 ThisBuild / version := "2.0.0-SNAPSHOT"
@@ -27,39 +25,6 @@ ThisBuild / Test / javaOptions ++= Seq(
   "--enable-native-access=ALL-UNNAMED",
   "--sun-misc-unsafe-memory-access=allow",
 )
-
-lazy val dotenvEnvironment = taskKey[Map[String, String]]("Load the local dotenv file")
-
-/** Loads non-empty `KEY=VALUE` entries from a local dotenv file. */
-def loadDotEnv(path: File): Map[String, String] =
-  if !path.exists() then Map.empty
-  else
-    val source = Source.fromFile(path)
-    try
-      source
-        .getLines()
-        .map(_.trim)
-        .filter(line => line.nonEmpty && !line.startsWith("#"))
-        .flatMap { line =>
-          line.split("=", 2).toList match
-            case key :: value :: Nil
-                if Set("MY_MODEL_URL", "MY_MODEL_NAME", "JEV_SYSTEM_ONE_URL", "TYPESAFE_API_KEY").contains(key) =>
-              val cleaned = value
-                .stripPrefix("\"")
-                .stripSuffix("\"")
-                .stripPrefix("'")
-                .stripSuffix("'")
-                .trim
-              if cleaned.nonEmpty then Some(key.trim -> cleaned) else None
-            case key :: value :: Nil => None
-            case _ => None
-        }
-        .toMap
-    finally source.close()
-
-ThisBuild / dotenvEnvironment := Def.uncached {
-  loadDotEnv((LocalRootProject / baseDirectory).value / ".env")
-}
 
 lazy val root = project
   .in(file("."))
@@ -99,7 +64,6 @@ lazy val core = project
     ),
     Compile / run / fork := true,
     Test / fork := true,
-    Test / envVars := sys.env ++ dotenvEnvironment.value,
   )
 
 lazy val repl = project
@@ -110,7 +74,6 @@ lazy val repl = project
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
     Compile / run / fork := true,
-    Compile / run / envVars := sys.env ++ dotenvEnvironment.value,
     libraryDependencies ++= Seq(
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       // Keep third-party SLF4J users silent without emitting the missing-provider warning.

@@ -14,15 +14,19 @@ private[terminal] object TerminalEventRenderer {
   def render(event: ReplEvent): UIO[Unit] =
     event match {
       // Interactive requests are handled by the terminal client, never by this output-only renderer.
-      case ReplEvent.LoginRequested(_) => ZIO.unit
-      case ReplEvent.Help(entries)     =>
+      case ReplEvent.Help(entries) =>
         val lines = entries.map(entry => f"  ${entry.usage}%-26s ${entry.description}")
         printLines(Chunk("Commands:") ++ lines ++ Chunk("Use // to send a prompt beginning with /."))
       case ReplEvent.DebugSnapshot(DebugTarget.Display, snapshot)  => printDebugSnapshot(snapshot)
       case ReplEvent.DebugSnapshot(DebugTarget.Export, snapshot)   => writeDebugLog(snapshot)
       case ReplEvent.DebugSnapshot(DebugTarget.ProviderRequest, _) => printProviderRequest(None)
       case ReplEvent.ProviderRequest(capture)                      => printProviderRequest(capture)
-      case ReplEvent.Transcript(messages)    => printLines(TerminalMessageRenderer.render(messages))
+      case ReplEvent.Transcript(messages, sessionId)               =>
+        val name = TerminalStatusLayout.sanitize(sessionId.getOrElse("no session"))
+        printLines(
+          Chunk(s"### Session history '$name'") ++
+            TerminalMessageRenderer.render(messages) ++ Chunk("### END OF SESSION")
+        )
       case ReplEvent.ToolAvailability(value) =>
         printLines(
           value.available.map(key => s"available[$key]") ++
@@ -37,11 +41,13 @@ private[terminal] object TerminalEventRenderer {
       case ReplEvent.SessionFailed(message)         => Console.printLineError(s"Session command failed: $message").orDie
       case ReplEvent.AgentTurn(result, newMessages) =>
         for {
-          _ <- printLines(TerminalMessageRenderer.render(newMessages.collect {
-            case message @ MessagePayload.RagResult(_, _)  => message
-            case message @ MessagePayload.ToolResult(_, _) => message
-          }))
-          _ <- Console.printLine(s"assistant> ${result.text}").orDie
+          _ <- printLines(newMessages.collect {
+            case message @ MessagePayload.RagResult(_, _)  => TerminalMessageRenderer.render(message)
+            case message @ MessagePayload.ToolResult(_, _) => TerminalMessageRenderer.render(message)
+          })
+          _ <- Console
+            .printLine(TerminalMessageRenderer.render(MessagePayload.Assistant(result.text), Some(result.agentId)))
+            .orDie
         } yield ()
       case ReplEvent.InputRejected(error) => {
         val suggestions =

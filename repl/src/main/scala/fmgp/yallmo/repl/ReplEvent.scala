@@ -1,7 +1,7 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.model.MessagePayload
+import fmgp.yallmo.model.{Message, MessagePayload}
 import fmgp.yallmo.repl.debug.ReplDebugSnapshot
 import fmgp.yallmo.repl.grammar.*
 import java.nio.file.Path
@@ -9,11 +9,12 @@ import zio.*
 
 /** A semantic result for a REPL client to render or otherwise handle. */
 enum ReplEvent {
-  case LoginRequested(method: LoginMethod)
   case Help(entries: Chunk[CommandHelp])
   case DebugSnapshot(target: DebugTarget, snapshot: ReplDebugSnapshot)
   case ProviderRequest(capture: Option[Path])
-  case Transcript(messages: Chunk[MessagePayload])
+
+  /** Stored conversation messages, including their original authors and optional session name. */
+  case Transcript(messages: Chunk[Message], sessionId: Option[String])
   case ToolAvailability(value: ReplToolAvailability)
   case LogLevelChanged(level: LogLevel)
   case SessionReset

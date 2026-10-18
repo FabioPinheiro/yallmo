@@ -1,6 +1,9 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.repl.grammar.*
+import fmgp.yallmo.model.{AgentId, YallmoError}
+import fmgp.yallmo.orchestration.SessionId
+import fmgp.yallmo.provider.Transcriber
 import zio.*
 
 /** The next immutable session state and the events produced while reaching it. */
@@ -8,18 +11,40 @@ final case class ReplTransition(state: ReplState, events: Chunk[ReplEvent]) {
   def exitsClient: Boolean = events.contains(ReplEvent.ExitRequested)
 }
 
+/** Display-only metadata from the startup configuration; selecting an entry validates and resolves its runtime lazily.
+  */
+final case class ReplAgentChoice(id: AgentId, agentType: String, providers: Vector[String], model: String)
+
 /** Client-independent REPL application service.
   *
   * It owns command semantics and delegates agent work to [[ReplSession]]. Clients own input, presentation, local
   * history, and any filesystem export destination.
+  *
+  * @param userId
+  *   configured human identity used for input labels
   */
 final class ReplApplication[R](
     session: ReplSession[R],
     toolAvailability: ReplToolAvailability,
     replOrchestrator: ReplOrchestrator[R],
     val initialState: ReplState = ReplState(),
-    val activeAgent: Option[ReplActiveAgent] = None
+    val activeAgent: Option[ReplActiveAgent] = None,
+    val providerCatalog: Option[ReplProviderCatalog] = None,
+    val providerLogin: Option[ProviderLoginService] = None,
+    val agentChoices: Vector[ReplAgentChoice] = Vector.empty,
+    agentSelector: Option[AgentId => IO[YallmoError, ReplApplication[R]]] = None,
+    val transcriber: Option[Transcriber] = None,
+    val userId: AgentId = AgentId("user")
 ) {
+
+  /** Resolves a new application sharing storage and runtime caches. The current session and conversation carry on
+    * unchanged; failures leave the current application untouched.
+    */
+  def selectAgent(id: AgentId): IO[YallmoError, ReplApplication[R]] =
+    agentSelector.fold[IO[YallmoError, ReplApplication[R]]](
+      ZIO.fail(YallmoError.InvalidConfig("Agent selection is unavailable in this application"))
+    )(_(id))
+
   def submit(state: ReplState, line: String): ZIO[R, Nothing, ReplTransition] =
     ZIO.scoped {
       ZIO.logLevelScoped(state.logLevel) *>
@@ -45,14 +70,24 @@ final class ReplApplication[R](
 
   private def handleCommand(state: ReplState, command: ReplCommand): ZIO[R, Nothing, ReplTransition] =
     command match {
-      case ReplCommand.Login(method) => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.LoginRequested(method))))
-      case ReplCommand.Help          => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Help(ReplGrammar.help))))
+      case ReplCommand.Help =>
+        ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Help(ReplGrammar.help()))))
       case ReplCommand.Debug(DebugTarget.ProviderRequest) =>
         ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.ProviderRequest(state.lastProviderRequest))))
       case ReplCommand.Debug(target) =>
         ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.DebugSnapshot(target, session.debugSnapshot(state)))))
       case ReplCommand.History =>
-        ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Transcript(state.runContext.messages))))
+        state.sessionId match {
+          case None     => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.Transcript(Chunk.empty, None))))
+          case Some(id) =>
+            ZIO
+              .fromEither(SessionId.from(id).left.map(YallmoError.InvalidSessionId(id, _)))
+              .flatMap(replOrchestrator.loadSession)
+              .fold(
+                error => ReplTransition(state, Chunk(ReplEvent.SessionFailed(error.toString))),
+                stored => ReplTransition(state, Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value))))
+              )
+        }
       case ReplCommand.Tools => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.ToolAvailability(toolAvailability))))
       case ReplCommand.Log(level) =>
         ZIO.succeed(ReplTransition(state.copy(logLevel = level), Chunk(ReplEvent.LogLevelChanged(level))))

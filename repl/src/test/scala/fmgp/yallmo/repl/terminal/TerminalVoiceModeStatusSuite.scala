@@ -10,12 +10,20 @@ import org.jline.terminal.impl.DumbTerminal
 import org.jline.utils.{AttributedString, Status}
 import zio.*
 
-final class TerminalStatusSuite extends FunSuite {
+final class TerminalVoiceModeStatusSuite extends FunSuite {
   private val active = ReplActiveAgent("openai-codex", "openai-codex", "configured-model", None)
   private val metadata = "openai-codex (openai-codex - configured-model • default)"
 
   test("wide line preserves each local hint and right-aligns configured metadata") {
-    for hint <- List("[INSERT] edit", "[COMMAND] i: edit", "[RECORDING] stop", "[TRANSCRIBING] wait") do {
+    for hint <- List(
+        "[INSERT] edit",
+        "[NORMAL] i: edit",
+        "[PROVIDER] login",
+        "[AGENTS] back",
+        "[RECORDING] stop",
+        "[TRANSCRIBING] wait"
+      )
+    do {
       val result = TerminalStatusLayout.render(hint, Some(active), 120)
       assert(result.toString.startsWith(hint))
       assert(result.toString.endsWith(metadata))
@@ -75,7 +83,7 @@ final class TerminalStatusSuite extends FunSuite {
       }
     )
     val originalHandler = terminal.handle(Terminal.Signal.WINCH, Terminal.SignalHandler.SIG_IGN)
-    val status = new TerminalStatus(reader, Some(active))
+    val status = new TerminalVoiceModeStatus(reader, Some(active))
     try {
       status.install()
       assertEquals(reader.readLine("test> "), "")
@@ -91,9 +99,15 @@ final class TerminalStatusSuite extends FunSuite {
       assert(statusLine(terminal).toString.startsWith("[TRANSCRIBING]"))
       reader.setKeyMap(LineReader.VICMD)
       status.updateForKeyMap()
-      assert(statusLine(terminal).toString.startsWith("[COMMAND]"))
+      assert(statusLine(terminal).toString.startsWith("[NORMAL]"))
       assert(statusLine(terminal).toString.endsWith(metadata))
-      assert(reader.getWidgets.containsKey(LineReader.VI_SUBSTITUTE))
+      for keyMap <- List(TerminalMenus.ProviderKeyMap, TerminalMenus.AgentsKeyMap) do {
+        reader.getKeyMaps.put(keyMap, new org.jline.keymap.KeyMap[org.jline.reader.Binding]())
+        reader.setKeyMap(keyMap)
+        status.updateForKeyMap()
+        assert(statusLine(terminal).toString.startsWith(s"[${keyMap.toUpperCase}]"))
+        assert(statusLine(terminal).toString.endsWith(metadata))
+      }
       assertEquals(terminal.handle(Terminal.Signal.WINCH, originalHandler), Terminal.SignalHandler.SIG_IGN)
       run(status.close)
       var refreshed = false
@@ -115,7 +129,7 @@ final class TerminalStatusSuite extends FunSuite {
     )
     terminal.setSize(new Size(120, 24))
     val reader = new StatusLineReader(terminal, new java.util.HashMap[String, Object]())
-    val status = new TerminalStatus(reader, Some(active))
+    val status = new TerminalVoiceModeStatus(reader, Some(active))
     var resizedLine: Option[AttributedString] = None
     reader.getWidgets.put(
       "test-resize",
@@ -143,7 +157,7 @@ final class TerminalStatusSuite extends FunSuite {
     val output = new ByteArrayOutputStream()
     val terminal = new DumbTerminal(new ByteArrayInputStream(Array.emptyByteArray), output)
     val reader = new StatusLineReader(terminal, new java.util.HashMap[String, Object]())
-    val status = new TerminalStatus(reader, Some(active))
+    val status = new TerminalVoiceModeStatus(reader, Some(active))
     try {
       status.install()
       status.recording()

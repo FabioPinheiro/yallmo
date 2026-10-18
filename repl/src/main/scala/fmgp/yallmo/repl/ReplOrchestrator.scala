@@ -22,7 +22,7 @@ trait ReplOrchestrator[-R] extends Orchestrator[R] {
 final class ReplOrchestratorLive[-R] private (
     orchestrator: Orchestrator[R],
     userAgent: Agent[R],
-    assistantAgent: Agent[R]
+    assistantAgent: Option[Agent[R]]
 ) extends ReplOrchestrator[R] { // TODO rename/merge with ReplOrchestrator
 
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] = orchestrator.getAgent(id)
@@ -36,6 +36,9 @@ final class ReplOrchestratorLive[-R] private (
     orchestrator.createSession(id, agentIds)
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] = orchestrator.loadSession(id)
+
+  override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
+    orchestrator.addSessionAgent(id, agentId)
 
   override def append(
       id: SessionId,
@@ -55,13 +58,20 @@ final class ReplOrchestratorLive[-R] private (
 
   override def persistTurn(previous: ReplState, turn: ReplTurn): IO[YallmoError, ReplTurn] =
     if turn.newMessages.isEmpty then ZIO.succeed(turn)
+    else if assistantAgent.isEmpty && turn.newMessages.exists {
+        case _: MessagePayload.User => false
+        case _                      => true
+      }
+    then ZIO.fail(YallmoError.InvalidConfig("Cannot persist assistant messages without a selected agent"))
     else
       for {
         id <- previous.sessionId match
           case Some(value) => sessionId(Some(value))
           case None        => sessionId(None).tap(createSession(_, agentIds))
-        _ <- ZIO.foreachDiscard(turn.newMessages) { message =>
-          append(id, agentIdFor(message), Chunk(message))
+        authors <- ZIO.foreach(turn.newMessages)(agentIdFor)
+        _ <- ZIO.foreachDiscard(authors.distinct)(addSessionAgent(id, _))
+        _ <- ZIO.foreachDiscard(authors.zip(turn.newMessages)) { case (author, message) =>
+          append(id, author, Chunk(message))
         }
       } yield turn.copy(state = turn.state.copy(sessionId = Some(id.value)))
 
@@ -69,17 +79,23 @@ final class ReplOrchestratorLive[-R] private (
     for {
       sessionId <- sessionId(Some(id))
       session <- loadSession(sessionId)
-      _ <- ZIO
-        .fail(YallmoError.AgentNotInSession(sessionId, assistantAgent.id))
-        .unless(session.agentIds.contains(assistantAgent.id))
-    } yield ReplState(RunContext(session.messages.map(_.payload)), sessionId = Some(session.id.value))
+    } yield ReplState(
+      RunContext(session.messages.map(_.payload)),
+      sessionId = Some(session.id.value),
+      continuationStart = session.messages.size
+    )
 
-  private val agentIds = Chunk(userAgent.id, assistantAgent.id)
+  private val agentIds = Chunk(userAgent.id) ++ Chunk.fromIterable(assistantAgent.map(_.id))
 
-  private def agentIdFor(message: MessagePayload): AgentId =
+  private def agentIdFor(message: MessagePayload): IO[YallmoError, AgentId] =
     message match
-      case _: MessagePayload.User => userAgent.id
-      case _                      => assistantAgent.id
+      case _: MessagePayload.User => ZIO.succeed(userAgent.id)
+      case _                      =>
+        ZIO
+          .fromOption(assistantAgent.map(_.id))
+          .orElseFail(
+            YallmoError.InvalidConfig("Cannot persist assistant messages without a selected agent")
+          )
 
   private def sessionId(name: Option[String]): IO[YallmoError, SessionId] =
     name match
@@ -102,10 +118,16 @@ object ReplOrchestratorLive {
   private[repl] val SessionNameFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("'main-'uuuuMMdd-HHmmss").withZone(ZoneOffset.UTC)
 
+  /** Adapts storage/session conventions for one selection; switching constructs another adapter over shared storage.
+    *
+    * @param assistantAgent
+    *   optional selected assistant; unselected sessions contain only the human participant and cannot persist assistant
+    *   messages. Resuming is independent of selection; authors join an existing session when their messages are saved
+    */
   def make[R](
       orchestrator: Orchestrator[R],
       userAgent: Agent[R],
-      assistantAgent: Agent[R]
+      assistantAgent: Option[Agent[R]]
   ): ReplOrchestrator[R] =
     new ReplOrchestratorLive(orchestrator, userAgent, assistantAgent)
 }

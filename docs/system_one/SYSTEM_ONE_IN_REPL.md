@@ -18,7 +18,7 @@ Add an optional interactive builder behind:
 /so request
 ```
 
-The builder is a **line-UI-only** feature for `--ui=line` (and `--ui=auto` only when it actually selected the line UI). It is a local modal REPL for composing the same JSON request; its `run` action delegates to the exact same `/so run <body>` path. It is not a chat-agent conversation. The builder obtains its required model from System One REPL configuration, so it has no user-facing `model` command; it prints the resolved model when the builder starts.
+The builder is a local feature of the JLine terminal client. It is a local modal REPL for composing the same JSON request; its `run` action delegates to the exact same `/so run <body>` path. It is not a chat-agent conversation. The builder obtains its required model from System One REPL configuration, so it has no user-facing `model` command; it prints the resolved model when the builder starts.
 
 No implementation is covered by this document.
 
@@ -136,12 +136,11 @@ The configured builder model is inserted when the draft is created, printed in t
 
 ### Line-UI scope
 
-The nested input loop, its `so> ` prompt, its history behavior, and its completion are client concerns. Initially implement them only in `LineTerminalRepl`:
+The nested input loop, its `so> ` prompt, its history behavior, and its completion are client concerns. Initially implement them only in `TerminalRepl`:
 
 - `/so request` causes an application event expressing “start System One request builder”; it does not block or read from `ReplApplication`.
-- `LineTerminalRepl` handles that event with the modal builder loop using its JLine reader.
+- `TerminalRepl` handles that event with the modal builder loop using its JLine reader.
 - The builder has a dedicated parser and JLine completer; help, parsing, and completion derive from its one command-definition list.
-- `BasicTerminalRepl` must state that `/so request` requires `--ui=line` and must not attempt a partial or degraded builder.
 - Ctrl-C cancels the current builder line. Leaving the builder requires `cancel` or EOF; neither sends a request. The normal double-Ctrl-C exit behavior remains owned by the outer REPL.
 
 The direct `/so run <body>` operation can remain application-level and renderer-neutral. Initial product support may be exposed only from the line UI, but its semantics must not be embedded in JLine so a future TUI/client can use the same operation.

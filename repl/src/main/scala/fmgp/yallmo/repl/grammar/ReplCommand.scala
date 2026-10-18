@@ -24,15 +24,9 @@ enum SessionCommand {
   case Resume(id: String)
 }
 
-/** ChatGPT subscription login method; independent of the selected generation provider. */
-enum LoginMethod {
-  case Browser, Device
-}
-
 /** A typed command accepted by a REPL client. */
 enum ReplCommand {
   case Help
-  case Login(method: LoginMethod)
   case Debug(target: DebugTarget)
   case History
   case Tools

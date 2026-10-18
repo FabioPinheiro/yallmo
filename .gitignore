@@ -13,6 +13,7 @@ project/metals.sbt
 
 # Runtime files
 .env
+/yallmo.json
 debug/
 *.log
 .DS_Store

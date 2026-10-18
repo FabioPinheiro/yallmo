@@ -10,3 +10,7 @@ It can still have submode to search the files in the FS and search the Internet
 When exiting this mode a summary will be written back into the context of the other.
 
 The idea is to have a conversation, discuss ideas and understanding the options.
+
+## Agent Comands
+
+Each agent should bring their own comments to the REPL.

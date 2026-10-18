@@ -30,6 +30,19 @@ private[orchestration] final class StorageInMemory private (sessions: Ref[Map[Se
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     sessions.get.flatMap(values => ZIO.fromOption(values.get(id)).orElseFail(YallmoError.SessionNotFound(id)))
 
+  override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
+    sessions
+      .modify { current =>
+        current.get(id) match {
+          case None          => (Left(YallmoError.SessionNotFound(id)), current)
+          case Some(session) =>
+            val updated = if session.agentIds.contains(agentId) then session
+            else session.copy(agentIds = session.agentIds :+ agentId)
+            (Right(updated), current.updated(id, updated))
+        }
+      }
+      .flatMap(ZIO.fromEither)
+
   override def append(
       id: SessionId,
       agentId: AgentId,

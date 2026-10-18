@@ -20,21 +20,20 @@ Provide a full-screen, local terminal client for the existing typed `fmgp.yallmo
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-`--ui=tui` must require an interactive local TTY. It must fail clearly on a dumb terminal or redirected input/output; `--ui=auto` may continue to select the existing line or plain clients and must not silently select TUI.
+The current REPL has one JLine client and no UI-selection flags. Any future full-screen interface must require an interactive local TTY and fail clearly on a dumb terminal or redirected input/output. Its integration must not reintroduce parallel terminal modes or fallback clients.
 
 ## Scope and boundaries
 
-The TUI is a presentation adapter alongside `BasicTerminalRepl` and `LineTerminalRepl`:
+The future TUI remains a presentation adapter over the same application boundary as the sole current client, `TerminalRepl`:
 
 ```text
-                     ┌─ BasicTerminalRepl
-ReplApplication ─────┼─ LineTerminalRepl
-                     └─ TerminalTuiRepl  (planned)
+ReplApplication ─────── TerminalRepl
+                       (future full-screen evolution planned)
 ```
 
 It owns terminal setup, screen state, key handling, and rendering. `ReplApplication` remains the single owner of command parsing, session transitions, transcript state, and tool availability.
 
-The initial conversation pane is not itself a shell, but the planned **PTY workspace** is an explicit terminal-emulation and process-management feature. It is local-only at first; it is not a web client or remote-control protocol and it does not replace the existing plain and line modes.
+The initial conversation pane is not itself a shell, but the planned **PTY workspace** is an explicit terminal-emulation and process-management feature. It is local-only at first; it is not a web client or remote-control protocol and it does not change the current terminal client until explicitly implemented.
 
 The existing `bash` agent tool remains a bounded, non-interactive command execution capability. A PTY-backed process has a distinct capability, session model, and security boundary; it must be created through `PtyMultiplexer`, never by changing `bash` or by allowing arbitrary model text to reach a terminal.
 
@@ -204,7 +203,7 @@ A PTY pane can be attached to a worker for **observation** (logs, an interactive
 
 ## Rendering and implementation direction
 
-The project already uses JLine 4 for terminal creation and line mode. Investigate its terminal/display APIs first so TUI mode can share terminal capability detection and native-access requirements. Select a widget/layout library only if JLine cannot meet the required resize, redraw, input, and cleanup behavior.
+The project already uses JLine 4 for terminal creation and line editing. Investigate its terminal/display APIs first so the future interface can reuse terminal capability detection and native-access requirements. Select a widget/layout library only if JLine cannot meet the required resize, redraw, input, and cleanup behavior.
 
 Keep these responsibilities separate:
 
@@ -256,9 +255,9 @@ A PTY backend requires native/JVM platform investigation before implementation: 
 
 ## Delivery milestones
 
-1. **Foundations:** document and test TTY detection, terminal acquisition/release, resize handling, key decoding, and a pure screen/layout model. Keep `--ui=tui` unavailable or fail with an explicit "not implemented" error until this exists.
+1. **Foundations:** document and test TTY detection, terminal acquisition/release, resize handling, key decoding, and a pure screen/layout model. Do not expose a separate terminal mode or startup flag for this plan.
 2. **Read-only shell:** render a fixture transcript, status bar, help overlay, wrapping, scrolling, resize, and minimal-terminal fallback. Add screenshot/golden tests for the pure renderer.
-3. **Interactive REPL:** add composer editing, submit flow, grammar-backed command completion, semantic event rendering, `/new`, `/exit`, and error recovery. Wire `ReplMain`'s `TerminalMode.Tui` branch.
+3. **Interactive REPL:** add composer editing, submit flow, grammar-backed command completion, semantic event rendering, `/new`, `/exit`, and error recovery. Integrate through the single terminal-client startup path.
 4. **PTY spike and policy:** choose/test a cross-platform PTY backend and a constrained VT emulator; specify Level-2 process policy, process-tree cleanup, output/control-sequence handling, audit events, and fake-backend tests. No agent PTY input.
 5. **Local multiplexer:** implement allowlisted pane creation, splits/tabs/focus, resize and signal forwarding, bounded scrollback, input leases, and robust cleanup. Start Level 3 only after explicit confirmation UX and tests.
 6. **Orchestration core:** define task graph, worker lifecycle/progress events, typed artifact hand-offs, budgets, scheduler, cancellation, approval gates, and workspace/worktree isolation. Keep it independent of PTY display.
@@ -268,7 +267,7 @@ A PTY backend requires native/JVM platform investigation before implementation: 
 ## Test strategy
 
 - Unit-test key-to-action mapping, focus changes, completion selection, viewport scrolling, wrapping, and every `ReplEvent` rendering decision as pure data transformations.
-- Test `TerminalMode` parsing and startup policy: explicit TUI rejects a dumb/non-interactive terminal; auto never selects it implicitly.
+- Test startup policy: reject dumb/non-interactive terminals without selecting an alternate client.
 - Use a fake terminal/input abstraction to test redraw ordering, resize preservation, terminal restoration, and error paths without a human TTY.
 - Test the PTY service behind a fake backend for lifecycle, input lease, resize, signal, output bounds, escape-sequence filtering, audit, and process-tree cleanup. Run a platform integration matrix against Unix PTYs and Windows ConPTY if supported.
 - Test the orchestrator with deterministic fake agents/tools: dependencies, concurrency limit, budget exhaustion, retry evidence, cancellation propagation, approval blocks, artifact handoff, write-owner conflicts, and coordinator synthesis inputs.
@@ -277,7 +276,7 @@ A PTY backend requires native/JVM platform investigation before implementation: 
 
 ## Acceptance criteria
 
-- `--ui=tui` is an explicit, local, interactive TTY mode; plain and line modes retain their current behavior.
+- The terminal client requires a local interactive TTY, with no alternate modes or fallback clients.
 - A user can submit prompts, use REPL commands, inspect prior messages, scroll, complete commands, reset, and exit without losing application semantics.
 - PTY panes are explicitly created, locally supervised, bounded, auditable, resizable, and reliably reaped; no model has implicit PTY input access.
 - Multi-agent work has a typed task graph, isolated worker contexts/workspaces, bounded scheduling, artifact-based handoff, approvals, cancellation, and an operator-visible audit trail.

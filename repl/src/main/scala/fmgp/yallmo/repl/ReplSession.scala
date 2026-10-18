@@ -10,13 +10,15 @@ import fmgp.yallmo.orchestration.{AgentResult, AgentTask, RunContext, StaticCont
 
 /** The immutable state retained by one interactive REPL session.
   *
+  * @param logLevel
+  *   terminal log threshold only; durable file logging has its own independent INFO default
   * @param continuationStart
   *   messages before this offset remain in the transcript but their opaque provider state is excluded from requests
   *   after an agent change or session resume; later continuations belong to the current runtime binding
   */
 final case class ReplState(
     runContext: RunContext = RunContext(),
-    logLevel: LogLevel = LogLevel.Error,
+    logLevel: LogLevel = LogLevel.Warning,
     sessionId: Option[String] = None,
     lastProviderRequest: Option[Path] = None,
     continuationStart: Int = 0 // TODO REVIEW considered for removal

@@ -17,6 +17,12 @@ private[terminal] final class StatusLineReader(terminal: Terminal, variables: Ma
   private var eraseOnYield = false
   private var postCursorHidden = false
 
+  /** Bounded control reads preserve JLine's macro/pushback buffer as well as terminal input. */
+  def readControl(timeoutMillis: Long): Int = {
+    val next = bindingReader.peekCharacter(timeoutMillis)
+    if next >= 0 then readCharacter() else next
+  }
+
   /** JLine owns wrapping, cursor movement and removal on readLine cleanup. Terminal-thread only. */
   def showPost(content: Supplier[AttributedString]): Unit = {
     post = content

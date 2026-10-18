@@ -27,7 +27,8 @@ The project aims to keep the important boundaries small and explicit: transcript
 ## Documentation
 
 - [Setup and running](docs/HOW_TO_RUN.md)
-- [Interactive REPL](docs/REPL.md)
+- [Interactive REPL](docs/REPL.md) — NORMAL `v`: JVM voice; `m`: browser microphone; `t`: explicitly speak the current assistant reply.
+- [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
 - [ChatGPT subscription provider](docs/OPENAI_SUBSCRIPTION.md)
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
@@ -38,4 +39,5 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - `model/` — provider-neutral models and orchestration state.
 - `core/` — providers, orchestration, tools, and RAG.
-- `repl/` — the interactive terminal client.
+- `repl/` — the interactive terminal client and lazy scoped browser audio bridge.
+- `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.

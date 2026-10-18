@@ -4,7 +4,7 @@
 
 ## Current implementation boundary
 
-- `core/.../orchestration/config/Config.scala` is data only: `userName`, `defaultAgentId`, ID-keyed **maps** of agents and providers. JSON catalogs are objects, not arrays.
+- `core/.../orchestration/config/Config.scala` is data only: `userName`, `defaultAgentId`, ID-keyed **maps** of agents and providers, and `browserAudioPort` (default 5180, valid 1–65535). Newly initialized config files serialize the port; older files missing it retain the default without being rewritten. JSON catalogs are objects, not arrays.
 - `AgentConfig.agentType` currently supports `OAIAgent` and `ChatGPTAgent`. Each requires exactly one matching provider. REPL startup decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback.
 - `RuntimeInstances.make(config)` captures a shared HTTP client, but initializes connections and agents only on lookup. Caches and the initialization semaphore belong to this runtime registry, not to `Config`.
 - `RuntimeInstances.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.

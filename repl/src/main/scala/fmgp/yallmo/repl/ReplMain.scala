@@ -60,7 +60,9 @@ object ReplMain extends ZIOAppDefault {
             if startup.selected.isEmpty then "No agent selected. Press Esc, a to choose a configured agent."
             else "Configured agent selected."
           )
-          _ <- ZIO.serviceWithZIO[AudioRecorder](recorder => TerminalRepl.runSystem(application, recorder, transcriber))
+          _ <- ZIO.serviceWithZIO[AudioRecorder](recorder =>
+            TerminalRepl.runSystem(application, recorder, transcriber, config.browserAudioPort)
+          )
         } yield ()).provideSomeLayer[Scope](replLayer)
       }
     } yield ()

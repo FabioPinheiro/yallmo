@@ -75,33 +75,38 @@ object ReplGrammar {
   )
 
   private val logArguments = Chunk(
-    ArgumentDefinition("trace", Chunk.empty, "Show all application logs.", ReplCommand.Log(LogLevel.Trace)),
+    ArgumentDefinition("trace", Chunk.empty, "Show all terminal logs.", ReplCommand.Log(LogLevel.Trace)),
     ArgumentDefinition(
       "debug",
       Chunk.empty,
-      "Show debug and higher application logs.",
+      "Show debug and higher terminal logs.",
       ReplCommand.Log(LogLevel.Debug)
     ),
     ArgumentDefinition(
       "info",
       Chunk.empty,
-      "Show informational and higher application logs.",
+      "Show informational and higher terminal logs.",
       ReplCommand.Log(LogLevel.Info)
     ),
     ArgumentDefinition(
       "warning",
       Chunk.empty,
-      "Show warnings and higher application logs.",
+      "Show warnings and higher terminal logs.",
       ReplCommand.Log(LogLevel.Warning)
     ),
     ArgumentDefinition(
       "error",
       Chunk.empty,
-      "Show errors and fatal application logs.",
+      "Show errors and fatal terminal logs.",
       ReplCommand.Log(LogLevel.Error)
     ),
-    ArgumentDefinition("fatal", Chunk.empty, "Show fatal application logs only.", ReplCommand.Log(LogLevel.Fatal)),
-    ArgumentDefinition("off", Chunk.empty, "Suppress application logs for REPL turns.", ReplCommand.Log(LogLevel.None))
+    ArgumentDefinition("fatal", Chunk.empty, "Show fatal terminal logs only.", ReplCommand.Log(LogLevel.Fatal)),
+    ArgumentDefinition(
+      "off",
+      Chunk.empty,
+      "Suppress terminal logs for REPL turns; file logging is unchanged.",
+      ReplCommand.Log(LogLevel.None)
+    )
   )
 
   private val definitions: Chunk[CommandDefinition] = Chunk(
@@ -138,7 +143,7 @@ object ReplGrammar {
       canonicalName = "/log",
       aliases = Chunk.empty,
       usage = "/log <trace|debug|info|warning|error|fatal|off>",
-      description = "Set the minimum log level for subsequent REPL turns.",
+      description = "Set the terminal log level for subsequent REPL turns; file logging is unchanged.",
       parseTail = parseLog,
       completions = logCandidates("")
     ),

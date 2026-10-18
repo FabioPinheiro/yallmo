@@ -68,7 +68,7 @@ NORMAL is an explicit command/navigation map rather than the full Vi editor.
 | Mode | Keys |
 | --- | --- |
 | `[INSERT]` | Type a draft, `Enter` to submit, `Esc` for NORMAL. `p` and `a` are ordinary text. |
-| `[NORMAL]` | `p`: PROVIDER, `a`: AGENTS, `i`: edit, `v`: voice input, `q`: exit. Only `i` enters INSERT. `Esc` and unrecognized keys do nothing. Non-editing Vi movement and arrow keys remain available. |
+| `[NORMAL]` | `p`: PROVIDER, `a`: AGENTS, `i`: edit, `v`: JVM voice input, `m`: browser microphone, `t`: speak latest assistant reply, `q`: exit. Only `i` enters INSERT. `Esc` and unrecognized keys do nothing. Non-editing Vi movement and arrow keys remain available. |
 | `[PROVIDER]` | `Up`/`Down` (or `j`/`k`): select; `Enter`: inspect/New/confirm; `r`: refresh list; ChatGPT details only: `Enter` or `l` for browser login; `Esc`: back, then NORMAL; `Ctrl+C`: cancel form. |
 | `[AGENTS]` | Lists configured agents, types, provider IDs and models; marks the active agent. `Up`/`Down` or `j`/`k`: highlight, `Enter`: activate, `Esc`/`Ctrl+C`: cancel to NORMAL, `i`: edit. |
 
@@ -148,7 +148,7 @@ another process racing between read and replace can lose updates. Do not edit co
 | `/debug print` | Print the current transcript as Pi-style JSONL. |
 | `/debug export` | Replace `~/.yallmo/yallmo-debug.log` with the current snapshot. |
 | `/debug request` | Print the latest raw request payload sent by the current session to the LLM provider. |
-| `/log <trace\|debug\|info\|warning\|error\|fatal\|off>` | Set the minimum application log level for subsequent REPL turns. The default is `error`; use `off` to suppress them. |
+| `/log <trace\|debug\|info\|warning\|error\|fatal\|off>` | Set only the terminal log level for subsequent REPL turns (default `warning`). `info`/`debug`/`trace` can lower it, and `off` suppresses terminal logs. File logging independently remains INFO and above. |
 | `/new [name]` | Start a fresh session. With `--storage`, persist it immediately; provide `name` to choose its ID. |
 | `/session list` | List sessions held by the configured storage; the active session is marked with `*`. |
 | `/session resume <id>` | Restore a stored session by ID. Use `--storage <directory>` to retain it across REPL processes. |
@@ -165,6 +165,17 @@ prompt and tool-result content; `/debug request` displays only the most recent c
 are not automatically cleaned up. Use `/debug request` only in an appropriate local terminal. Provider continuations are
 redacted before capture.
 
+## Log files and terminal filtering
+
+With `--storage <directory>`, general lifecycle events are appended to `<directory>/logs/repl.log`; agent-runner events use
+`<directory>/logs/agent-runners/`. Terminal output starts at WARNING; `/log` can select any supported terminal level, including
+INFO/DEBUG/TRACE or OFF. File output independently defaults to INFO and above: `/log` never changes its threshold, including
+`/log off`. DEBUG/TRACE events are excluded from files by default. Without `--storage`, durable log files are not enabled.
+
+Browser audio logs record service start/stop and port, startup failure, browser connect/reconnect, and disconnect reasons
+(`explicit`, `heartbeat_timeout`, `service_shutdown`). Ordinary heartbeat polls are not logged. Setup URL tokens, client IDs,
+recording bytes and spoken assistant text are not included in these lifecycle messages.
+
 ## Voice input lifecycle
 
 Voice input is a local input feature, not an agent tool. It is not advertised in `StaticContext`, cannot be requested by
@@ -177,15 +188,18 @@ to a different provider/account. The chosen OAI endpoint/model must actually sup
 ### Editable voice insertion
 
 In the terminal client, INSERT uses JLine's Vi insert map and NORMAL uses explicit command/navigation bindings. While editing a draft, press `Esc`, then
-`v` to enter local recording mode. Speak, press `Space` to stop, or `Esc` to cancel. The client transcribes the audio
+`v` for the JVM microphone or `m` for the browser microphone (setup below) to enter recording mode. Speak, press `Space` to stop, or `Esc` to cancel. The client transcribes the audio
 and inserts the text at the original cursor position; it does **not** submit the draft. Press `Enter` only after making
 any desired edits (`i` enters INSERT). A 30-second capture limit remains in effect. On capable terminals, a persistent bottom status bar
-shows `[INSERT]`, `[NORMAL]`, `[PROVIDER]`, `[AGENTS]`, `[RECORDING]`, or `[TRANSCRIBING]` together with the relevant keys; it is hidden when
+shows `[INSERT]`, `[NORMAL]`, `[PROVIDER]`, `[AGENTS]`, `[VOICE]` (waiting for actual microphone start), `[RECORDING]`, or `[TRANSCRIBING]` together with the relevant keys; it is hidden when
 the terminal cannot support a JLine status bar.
 
-`Esc` first switches from INSERT to NORMAL; pressing it again in NORMAL does nothing. `v` is a terminal-client keybinding, not a
-REPL command, so no `ReplApplication` state or agent transcript changes until the draft is later submitted. In NORMAL,
-`q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL; press `i` to edit.
+`Esc` first switches from INSERT to NORMAL; pressing it again in NORMAL does nothing. `v` and `m` are terminal-client keybindings, not
+REPL commands, so no `ReplApplication` state or agent transcript changes until the draft is later submitted. Both use the current
+selected agent's transcription provider/model, including after agent switches; unavailable audio never falls back to the previous provider.
+In NORMAL, `q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL;
+press `i` to edit. Cancellation, failure and empty transcripts preserve the exact draft and NORMAL cursor. Capture completion/error/deadline
+returns without requiring another key.
 
 ```mermaid
 sequenceDiagram
@@ -212,6 +226,43 @@ sequenceDiagram
     Line->>User: assistant> response
 ```
 
+### Browser microphone and explicit speech
+
+1. In NORMAL, press `m` (or `t`) to start the browser bridge lazily. Its setup URL is printed only while the webpage is disconnected,
+   not during connected recording or speech. With no enabled page, the action fails
+   locally without submitting anything; text and JVM `v` remain available. Open the **exact** `http://127.0.0.1:5180/#token=…` URL.
+2. In a focused desktop browser with AudioWorklet, Web Audio and `speechSynthesis`, click **Enable audio** and grant microphone
+   permission. The click requests an “Audio enabled.” speech test. Keep the tab open; the microphone stream remains open/indicated
+   while enabled, although recording buffers exist only for an explicit `m` operation. **Disable audio** releases it.
+3. Return to the REPL and press `m`. `[VOICE]` waits for actual capture acknowledgement; `[RECORDING]` is not shown merely because
+   the page is connected. Speak, then `Space` stops and inserts the transcript at the saved insertion point; `Esc` discards it without
+   transcription. Capture is capped at 30 seconds. This does not submit the draft; review/edit it and press Enter yourself.
+4. NORMAL `t` explicitly speaks the latest nonblank **assistant text in the current conversation**, including resumed sessions.
+   New/changed sessions use their own transcript, never cached user/tool text. Missing replies or a disconnected page produce local
+   errors. Speech waits asynchronously so editing stays responsive; a new `t` replaces previous speech. There is no automatic TTS
+   on assistant replies, no history submission, and no agent tool. Browser start/end events, not enqueueing, determine completion;
+   events still cannot prove audible output.
+
+The server binds `0.0.0.0` on the config file’s top-level `browserAudioPort` (default `5180`) for Docker compatibility and closes,
+cancelling pending operations, when the REPL exits. Newly created files include `"browserAudioPort": 5180`; older files without it
+use 5180 without being rewritten. Valid ports are 1–65535. Edit the file and restart to change it. No bind-address environment variable
+is used. If the configured port is occupied, startup fails locally without switching ports; text and JVM voice remain usable. The listener accepts connections on all IPv4 interfaces; use firewall rules and publish Docker only with
+`-p 127.0.0.1:5180:5180`. The browser URL and Host/Origin checks use `127.0.0.1` with the configured port (5180 in these examples); keep the Docker host/container ports identical.
+See [Docker setup](../browser-STT-TTS/README.md#docker). Assets are
+packaged classpath resources, not served from the working directory. Only one enabled page may connect. A random fragment token is
+kept in page memory and used in authenticated API headers; exact Host/Origin checks, no CORS, deadlines and bounded WAV uploads protect
+the boundary. **Keep the printed setup URL private.** The page removes its fragment from the address bar/history entry; after reload,
+reopen the original URL. Never share it or expose/forward the listener publicly.
+
+Browser WAV is canonical in-memory 16 kHz mono PCM16, at most **960,044 bytes** (30 seconds plus 44-byte header). Only stopped,
+valid audio goes through the same selected transcription provider; cancelled/failed audio is discarded. Speech text is sent only by
+`t` and lives in memory, but browser/OS speech engines may use **network services**: local synthesis is not guaranteed.
+
+Permission revocation, autoplay rules, suspended audio contexts, device loss and background/frozen tabs may interrupt audio even after
+setup. Focus the page and explicitly Enable again; permissions and background execution are not permanent guarantees. Failed operations
+are not replayed. If a disconnect was uncertain, wait five seconds before reconnecting. Setup is not a browser extension and requires no
+frontend installation or external encoder. See [browser audio details and manual acceptance checklist](../browser-STT-TTS/README.md).
+
 ### Initialization
 
 At REPL startup, `ReplMain` builds these components:
@@ -222,9 +273,10 @@ At REPL startup, `ReplMain` builds these components:
    locally on invocation rather than choosing an unrelated provider.
 3. `AudioRecorder`, a local Java Sound implementation. It does **not** open the microphone at startup.
 4. `Transcriber`, which owns the transcription-only system prompt and makes one audio-only request per call.
-5. `TerminalRepl`, which invokes `AudioRecorder` and `Transcriber` for the editable `Esc v` keybinding.
+5. `TerminalRepl`, which invokes `AudioRecorder` and `Transcriber` for editable `Esc v` / `Esc m` keybindings; its browser server
+   starts only on the first `m`/`t` and lives in the REPL scope.
 
-The microphone is opened only by `AudioRecorder.record` or `AudioRecorder.recordUntil`. The recorder prefers 16 kHz,
+The JVM microphone is opened only by `AudioRecorder.record` or `AudioRecorder.recordUntil`. Its recorder prefers 16 kHz,
 16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo device formats and converts them to 16 kHz mono
 before encoding the WAV entirely in memory. `Transcriber` submits that audio in a single tool-free, history-free model
 request. The resulting transcript is written into the existing local JLine buffer.
@@ -236,9 +288,9 @@ A voice request proceeds only when all of the following hold:
 | Boundary | Required condition | Failure behavior |
 | --- | --- | --- |
 | Client | It runs in the local interactive terminal client. | No recording or agent turn. |
-| Invocation | Editable voice is started with `Esc v`. | The draft is unchanged. |
-| Local audio | The JVM has microphone permission and Java Sound supports a convertible 16/24/44.1/48 kHz mono or stereo `TargetDataLine`. | `Voice input failed`; state or draft remains unchanged. |
-| Payload | The recorded WAV is non-empty and at most 1 MiB. A maximum 30-second capture is approximately 960 KiB plus header. | `OAIAgent` rejects it before HTTP. |
+| Invocation | Editable voice is started with NORMAL `v` or `m`. | The draft is unchanged. |
+| Microphone | `v`: JVM microphone permission and a convertible Java Sound `TargetDataLine`; `m`: the connected setup page has enabled browser audio. | Local setup/audio error; state, draft and cursor remain unchanged. |
+| Payload | The recorded WAV is non-empty and at most 1 MiB. A canonical 30-second 16 kHz PCM16 capture is 960,044 bytes including its header. | `OAIAgent` rejects it before HTTP. |
 | Model Runner | The selected OAI endpoint is reachable, its agent model is audio-capable, and it accepts the `input_audio`/WAV chat-completions dialect used by `gdict`. | A bounded HTTP/protocol error is displayed; no text is submitted. |
 | Response | `OAIAgent` receives non-blank `choices[0].message.content`. | A protocol error is displayed; no text is submitted. |
 
@@ -252,8 +304,16 @@ in REPL history, or emitted through the provider payload debug facility. The ret
 user input. Editable voice text remains only in the local draft until the user explicitly submits it.
 
 Microphone access belongs to the machine running the REPL process. If `yallmo` is launched on a remote SSH host,
-`Esc v` attempts to use that remote host’s microphone—not the local SSH client’s microphone. Local capture with a
-remote Model Runner needs a future client/server transport boundary.
+`Esc v` attempts to use that remote host’s microphone—not the local SSH client’s microphone. Browser `m` instead uses the device
+running the setup page. Same-machine loopback is the supported default; an optional SSH loopback tunnel must preserve the exact same
+port and canonical host on both ends, for example:
+
+```sh
+ssh -N -L 127.0.0.1:5180:127.0.0.1:5180 user@host
+```
+
+Open the original setup URL unchanged locally. `localhost`, a different forwarded port, or an occupied local port will fail the
+Host/Origin boundary. This does not expose a remote listener or guarantee browser/SSH audio support.
 
 ## Agent tools
 

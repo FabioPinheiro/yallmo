@@ -73,6 +73,17 @@ lazy val repl = project
   .settings(
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
+    Compile / resourceGenerators += Def.task {
+      val assets = (LocalRootProject / baseDirectory).value / "browser-STT-TTS"
+      val output = (Compile / resourceManaged).value / "browser-STT-TTS"
+      (assets ** "*").get().filter(_.isFile).flatMap { file =>
+        IO.relativize(assets, file).map { relative =>
+          val target = output / relative
+          IO.copyFile(file, target)
+          target
+        }
+      }
+    }.taskValue,
     Compile / run / fork := true,
     libraryDependencies ++= Seq(
       "org.scalameta" %% "munit" % "1.2.4" % Test,

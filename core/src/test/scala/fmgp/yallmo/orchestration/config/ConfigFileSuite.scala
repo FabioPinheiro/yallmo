@@ -28,12 +28,44 @@ final class ConfigFileSuite extends FunSuite {
       val path = root.resolve("nested/yallmo.json")
       val initial = run(ConfigFile.loadOrInitialize(path, "operator"))
       assertEquals(initial, Config("operator"))
+      assertEquals(initial.browserAudioPort, 5180)
+      assert("\"browserAudioPort\"\\s*:\\s*5180".r.findFirstIn(Files.readString(path)).nonEmpty)
       assertEquals(Files.readString(path).fromJson[Config], Right(initial))
       if Files.getFileStore(path).supportsFileAttributeView("posix") then
         assertEquals(Files.getPosixFilePermissions(path), PosixFilePermissions.fromString("rw-------"))
       val before = Files.readString(path)
       assertEquals(run(ConfigFile.loadOrInitialize(path, "another operator")), initial)
       assertEquals(Files.readString(path), before)
+    }
+  }
+
+  test("older configs without browserAudioPort default to 5180 without rewriting") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      val json = """{"userName":"operator","agents":{},"providers":{}}"""
+      Files.writeString(path, json)
+      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).browserAudioPort, 5180)
+      assertEquals(Files.readString(path), json)
+    }
+  }
+
+  test("configured browser audio ports round-trip and invalid ports fail without rewriting") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      for port <- List(1, 6190, 65535) do {
+        val config = Config("operator", browserAudioPort = port)
+        val json = config.toJson
+        Files.writeString(path, json)
+        assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+        assertEquals(Files.readString(path), json)
+      }
+      for value <- List("-1", "0", "65536", "1.5", "\"not-a-port\"") do {
+        val json = s"""{"userName":"operator","browserAudioPort":$value}"""
+        Files.writeString(path, json)
+        val result = run(ConfigFile.loadOrInitialize(path, "ignored").either)
+        assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]), value)
+        assertEquals(Files.readString(path), json)
+      }
     }
   }
 

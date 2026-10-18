@@ -30,6 +30,8 @@ private[terminal] final class TerminalVoiceModeStatus(
     refresh()
   }
 
+  def waitingForRecording(): Unit = update("[VOICE]  Waiting for microphone start · Space: stop · Esc: cancel")
+
   def recording(): Unit = update("[RECORDING]  ● Space: stop · Esc: cancel · maximum 30 seconds")
 
   def transcribing(): Unit = update("[TRANSCRIBING]  Processing local voice input…")

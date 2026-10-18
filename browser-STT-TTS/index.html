@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Yallmo browser audio</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Yallmo browser audio</h1>
+    <p>Keep this tab open while using the REPL. Enable audio grants microphone access and plays “Audio enabled.” as a speech test.</p>
+    <div class="controls">
+      <button id="enable" type="button">Enable audio</button>
+      <button id="disable" type="button" disabled>Disable audio</button>
+      <strong id="readiness">Not ready</strong>
+    </div>
+    <p id="status" role="status" aria-live="polite">Loading audio setup…</p>
+    <noscript>JavaScript is required for browser audio.</noscript>
+    <h2>Control from the REPL</h2>
+    <ul>
+      <li><kbd>m</kbd>: record browser microphone. <kbd>Space</kbd> stops and transcribes; <kbd>Esc</kbd> discards. Maximum 30 seconds.</li>
+      <li><kbd>t</kbd>: speak the latest assistant text once. A new speech command replaces previous speech.</li>
+      <li><kbd>v</kbd>: existing JVM microphone, unchanged.</li>
+    </ul>
+    <h2>Privacy and browser limits</h2>
+    <p>The microphone remains enabled until you Disable audio, leave this page, or lose the connection. Samples are captured only on a REPL recording command, held in memory, and sent to the REPL on stop. Cancelled recordings are discarded. The REPL uses your selected transcription provider; no recording is saved by this page.</p>
+    <p>Only explicitly requested assistant text is sent for browser speech. The browser/OS speech engine may use network services: local-only speech is not guaranteed. “Speaking” means the browser reported a start, not verified audible output.</p>
+    <p>Permission, audio activation, background execution and speech support vary by browser/OS. Sleep, background throttling, revoked permission or a stalled speech engine may disconnect audio. Focus this tab and click Enable audio again; failed commands are never retried automatically. Only one setup tab can be connected.</p>
+    <p>Use the exact loopback URL from the REPL. The setup token is kept only in memory and removed from the address bar; reopen the original URL after reload. Do not share it.</p>
+  </main>
+</body>
+</html>

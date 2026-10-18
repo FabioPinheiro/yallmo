@@ -116,7 +116,16 @@ final class TerminalMenusSuite extends FunSuite {
   test("hints advertise scoped ChatGPT login without legacy list actions") {
     val normal = TerminalMenus.hintForKeyMap(LineReader.VICMD)
     assert(normal.startsWith("[NORMAL]"))
-    for key <- List("p: provider", "a: agents", "i: edit", "v: voice input", "q: exit") do assert(normal.contains(key))
+    for key <- List(
+        "p: provider",
+        "a: agents",
+        "i: edit",
+        "v: voice input",
+        "m: browser mic",
+        "t: speak reply",
+        "q: exit"
+      )
+    do assert(normal.contains(key))
     val provider = TerminalMenus.hintForKeyMap(TerminalMenus.ProviderKeyMap)
     assert(provider.startsWith("[PROVIDER]"))
     assert(provider.contains("Catalog unavailable"))

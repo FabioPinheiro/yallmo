@@ -117,7 +117,8 @@ final class ReplProviderCatalog private (path: Path, lock: Semaphore) {
           }
           config <- text.fromJson[Config].left.map(_ => Error.InvalidConfig)
           _ <- Either.cond(
-            config.userName.trim.nonEmpty && config.defaultAgentId.forall(config.agents.contains) &&
+            config.userName.trim.nonEmpty && config.browserAudioPort >= 1 && config.browserAudioPort <= 65535 &&
+              config.defaultAgentId.forall(config.agents.contains) &&
               config.agents.values.forall(_.providerIds.forall(config.providers.contains)),
             (),
             Error.InvalidConfig

@@ -65,6 +65,11 @@ object ConfigFile {
     for {
       _ <- Either.cond(config.userName.trim.nonEmpty, (), YallmoError.InvalidConfig("userName must not be blank"))
       _ <- Either.cond(
+        config.browserAudioPort >= 1 && config.browserAudioPort <= 65535,
+        (),
+        YallmoError.InvalidConfig("browserAudioPort must be between 1 and 65535")
+      )
+      _ <- Either.cond(
         config.defaultAgentId.forall(config.agents.contains),
         (),
         YallmoError.InvalidConfig("defaultAgentId must reference a configured agent")

@@ -24,6 +24,10 @@ session, conversation and typed draft, and updates the footer and voice model. S
 Selection does not change the configured default. Edit the file and restart to load new definitions; live config reload
 is not implemented.
 
+The browser microphone/TTS server port is the top-level `"browserAudioPort": 5180` setting. New config files include 5180;
+older files without the setting also use 5180. Valid values are 1–65535. Change the file and restart to apply a new port. The server
+still binds `0.0.0.0`; for Docker, publish the configured port only on host loopback and keep both sides of the mapping identical.
+
 The repository-root `yallmo.json` is gitignored. Keep other config paths private and excluded from version control too.
 The file may contain OAuth secrets: do not print or share it. Credential values are literal; `${NAME}` references are not resolved.
 

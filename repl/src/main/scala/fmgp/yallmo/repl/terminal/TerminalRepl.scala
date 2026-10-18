@@ -4,6 +4,7 @@ import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.grammar.{CompletionRequest, ReplGrammar}
 import fmgp.yallmo.provider.Transcriber
 import fmgp.yallmo.repl.voice.AudioRecorder
+import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
 import org.jline.reader.{
   Candidate,
   Completer,
@@ -26,6 +27,7 @@ final class TerminalRepl[R] private[terminal] (
     reader: StatusLineReader,
     recorder: AudioRecorder,
     transcriber: Transcriber,
+    createBrowser: ZIO[Scope, BrowserAudioError, BrowserAudioBridge] = BrowserAudioBridge.make
 ) {
   private val loginInput = new TerminalProviderLoginInput(reader.getTerminal, Some(reader))
   private val terminalStatus = new TerminalVoiceModeStatus(reader, application.activeAgent)
@@ -38,25 +40,48 @@ final class TerminalRepl[R] private[terminal] (
     Some(() => providerMenu.open()),
     Some(() => agentMenu.open(application.agentChoices, application.activeAgent))
   )
-  private val voiceInsert =
-    new VoiceInsert(reader, recorder, application.transcriber.getOrElse(transcriber), terminalStatus)
-
+  private var selectedTranscriber = application.transcriber.getOrElse(transcriber)
   terminalStatus.install()
   menus.install()
   installStartupMode()
-  voiceInsert.install()
   providerMenu.install()
   agentMenu.install()
   installQuitBinding()
 
   def run: ZIO[R, Nothing, Unit] =
-    (for
-      state <- Ref.make(application.initialState)
-      previousReadWasInterrupt <- Ref.make(false)
-      _ <- loop(state, previousReadWasInterrupt)
-    yield ()).ensuring(ZIO.attemptBlocking {
-      agentMenu.close(); providerMenu.close()
-    }.ignore *> saveHistory *> terminalStatus.close)
+    ZIO
+      .scoped {
+        for {
+          state <- Ref.make(application.initialState)
+          // Widgets must retain the configured file/console loggers across their unsafe runtime boundary.
+          runtime <- ZIO.runtime[Any]
+          scope <- ZIO.service[Scope]
+          browser <- TerminalBrowserAudio.make(
+            // A recording widget holds JLine's lock: never make capture wait for printAbove on another thread.
+            url => ZIO.attemptBlocking(reader.printAbove(s"Browser audio setup: $url")).ignore.forkIn(scope).unit,
+            createBrowser
+          )
+          _ <- ZIO.succeed {
+            new VoiceInsert(reader, recorder, () => selectedTranscriber, terminalStatus, runtime = runtime).install()
+            new VoiceInsert(
+              reader,
+              browser.recorder,
+              () => selectedTranscriber,
+              terminalStatus,
+              "m",
+              browser.recordingStarted,
+              runtime
+            )
+              .install()
+            installSpeechBinding(state, browser, scope, runtime)
+          }
+          previousReadWasInterrupt <- Ref.make(false)
+          _ <- loop(state, previousReadWasInterrupt)
+        } yield ()
+      }
+      .ensuring(ZIO.attemptBlocking {
+        agentMenu.close(); providerMenu.close()
+      }.ignore *> saveHistory *> terminalStatus.close)
 
   private def loop(state: Ref[ReplState], previousReadWasInterrupt: Ref[Boolean]): ZIO[R, Nothing, Unit] = {
     def submit(action: ReplState => ZIO[R, Nothing, ReplTransition]): ZIO[R, Nothing, Unit] =
@@ -94,7 +119,7 @@ final class TerminalRepl[R] private[terminal] (
             ZIO.succeed {
               application = next
               terminalStatus.selectAgent(next.activeAgent)
-              next.transcriber.foreach(audio => new VoiceInsert(reader, recorder, audio, terminalStatus).install())
+              selectedTranscriber = next.transcriber.getOrElse(ReplStartup.unavailableTranscriber)
               agentMenu.complete(Right(()))
             } *> state.set(previous.copy(continuationStart = previous.runContext.messages.size))
           }
@@ -135,7 +160,7 @@ final class TerminalRepl[R] private[terminal] (
             (TerminalEventRenderer.render(event) *>
               Console
                 .printLine(
-                  "NORMAL: Esc. p: PROVIDER (Up/Down, Enter: inspect/create; ChatGPT details: login); a: AGENTS; i: edit; v: voice input; q: exit. Space stops recording; Esc cancels."
+                  "NORMAL: Esc. p: PROVIDER (Up/Down, Enter: inspect/create; ChatGPT details: login); a: AGENTS; i: edit; v: JVM voice input; m: browser microphone; t: speak latest assistant; q: exit. Space stops recording; Esc cancels."
                 )
                 .orDie)
               .as(currentState -> false)
@@ -195,6 +220,32 @@ final class TerminalRepl[R] private[terminal] (
     )
   }
 
+  /** Speech waits off the input thread; scope exit interrupts pending startup/speech. */
+  private def installSpeechBinding(
+      state: Ref[ReplState],
+      browser: TerminalBrowserAudio,
+      scope: Scope,
+      runtime: Runtime[Any]
+  ): Unit = {
+    val name = "browser-speak"
+    reader.getWidgets.put(
+      name,
+      new Widget {
+        override def apply(): Boolean = {
+          Unsafe.unsafe { unsafe ?=>
+            val current = runtime.unsafe.run(state.get).getOrThrowFiberFailure()
+            val speak = browser
+              .speak(current)
+              .catchAll(error => ZIO.attempt(reader.printAbove(s"Browser speech failed: ${error.getMessage}")).ignore)
+            runtime.unsafe.run(speak.forkIn(scope)).getOrThrowFiberFailure()
+          }
+          true
+        }
+      }
+    )
+    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(name), "t")
+  }
+
   /** Binds NORMAL `q` to the existing typed `/exit` command rather than exiting the JVM from the widget. */
   private def installQuitBinding(): Unit = {
     val widgetName = "quit-repl"
@@ -233,23 +284,33 @@ object TerminalRepl {
   def runSystem[R](
       application: ReplApplication[R],
       recorder: AudioRecorder,
-      transcriber: Transcriber
+      transcriber: Transcriber,
+      browserAudioPort: Int = 5180
   ): ZIO[R, Throwable, Unit] =
     ZIO.acquireReleaseWith(ZIO.attemptBlocking(TerminalBuilder.builder().system(true).build()))(closeTerminal) {
-      terminal => runWithTerminal(application, terminal, recorder, transcriber)
+      terminal => runWithTerminal(application, terminal, recorder, transcriber, browserAudioPort)
     }
 
   private[terminal] def runWithTerminal[R](
       application: ReplApplication[R],
       terminal: Terminal,
       recorder: AudioRecorder,
-      transcriber: Transcriber
+      transcriber: Transcriber,
+      browserAudioPort: Int = 5180
   ): ZIO[R, Throwable, Unit] =
     if terminal.getType.startsWith(Terminal.TYPE_DUMB) then
       ZIO.fail(IllegalStateException("The REPL requires an interactive terminal with line-editing support."))
     else
       ZIO
-        .attemptBlocking(new TerminalRepl(application, buildReader(terminal), recorder, transcriber))
+        .attemptBlocking(
+          new TerminalRepl(
+            application,
+            buildReader(terminal),
+            recorder,
+            transcriber,
+            BrowserAudioBridge.make(browserAudioPort)
+          )
+        )
         .flatMap(_.run)
 
   private def closeTerminal(terminal: Terminal): UIO[Unit] =

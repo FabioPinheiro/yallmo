@@ -114,8 +114,8 @@ final class ReplSuite extends FunSuite {
     assert(TerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = true))
   }
 
-  test("new REPL sessions default to error-level logging and have no durable session") {
-    assertEquals(ReplState().logLevel, LogLevel.Error)
+  test("new REPL sessions default to warning-level terminal logging and have no durable session") {
+    assertEquals(ReplState().logLevel, LogLevel.Warning)
     assertEquals(ReplState().sessionId, None)
   }
 
@@ -308,6 +308,57 @@ final class ReplSuite extends FunSuite {
     assertEquals(agentRunnerOutput.size, 2)
     assert(agentRunnerOutput.get(0).contains("runner hidden from terminal"), agentRunnerOutput)
     assert(agentRunnerOutput.get(1).contains("runner visible on terminal"), agentRunnerOutput)
+  }
+
+  test("terminal defaults to WARNING, /log can lower it, and files stay independently at INFO") {
+    for (selected, consoleCount) <- List(
+        None -> 2,
+        Some(LogLevel.Trace) -> 4,
+        Some(LogLevel.Debug) -> 4,
+        Some(LogLevel.Info) -> 3,
+        Some(LogLevel.Warning) -> 2,
+        Some(LogLevel.Error) -> 1,
+        Some(LogLevel.None) -> 0
+      )
+    do {
+      val terminalOutput = new CopyOnWriteArrayList[String]()
+      val fileOutput = new CopyOnWriteArrayList[String]()
+      val consoleLogger = ReplLoggers.console(line => { terminalOutput.add(line); () })
+      val fileLogger = ReplLoggers.files(line => { fileOutput.add(line); () }, (_, _) => ())
+      runZIO {
+        ZIO.scoped {
+          for {
+            _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(consoleLogger) >>> Runtime.addLogger(
+              fileLogger
+            )).build
+            _ <- ZIO.foreachDiscard(selected)(ZIO.logLevelScoped(_))
+            _ <- ZIO.logDebug("debug event")
+            _ <- ZIO.logInfo("info event")
+            _ <- ZIO.logWarning("warning event")
+            _ <- ZIO.logError("error event")
+          } yield ()
+        }
+      }
+      assertEquals(terminalOutput.size, consoleCount, selected.toString)
+      assertEquals(fileOutput.size, 3, selected.toString)
+      assert(fileOutput.get(0).contains("info event"), selected.toString)
+      assert(fileOutput.get(1).contains("warning event"), selected.toString)
+      assert(fileOutput.get(2).contains("error event"), selected.toString)
+    }
+  }
+
+  test("file log threshold can be configured independently of the terminal") {
+    val fileOutput = new CopyOnWriteArrayList[String]()
+    val fileLogger = ReplLoggers.files(line => { fileOutput.add(line); () }, (_, _) => (), LogLevel.Debug)
+    runZIO {
+      ZIO.scoped {
+        (Runtime.removeDefaultLoggers >>> Runtime.addLogger(fileLogger)).build *>
+          ZIO.logLevelScoped(LogLevel.None) *>
+          ZIO.logDebug("debug retained at explicit file level") *>
+          ZIO.logInfo("info retained with terminal off")
+      }
+    }
+    assertEquals(fileOutput.size, 2)
   }
 
   test("switching keeps conversation history but never replays a previous binding's opaque provider continuation") {

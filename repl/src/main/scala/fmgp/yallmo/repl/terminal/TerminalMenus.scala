@@ -93,7 +93,8 @@ private[terminal] object TerminalMenus {
   val AgentsKeyMap = "agents"
 
   def hintForKeyMap(keyMap: String): String = keyMap match {
-    case LineReader.VICMD                => "[NORMAL]  p: provider · a: agents · i: edit · v: voice input · q: exit"
+    case LineReader.VICMD =>
+      "[NORMAL]  p: provider · a: agents · i: edit · v: voice input · m: browser mic · t: speak reply · q: exit"
     case TerminalProviderMode.KeyMapName =>
       "[PROVIDER]  Up/Down: select · Enter: open/save · Esc: back/NORMAL · ChatGPT details: login"
     case ProviderKeyMap => "[PROVIDER]  Catalog unavailable · Esc: NORMAL · i: edit"

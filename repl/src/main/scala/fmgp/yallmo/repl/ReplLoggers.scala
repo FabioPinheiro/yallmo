@@ -7,26 +7,32 @@ import java.util.UUID
 import scala.util.Try
 import zio.*
 
-/** Terminal output obeys `/log`; durable output is enabled only for a storage root and is routed by AgentRunner. */
+/** Terminal logs default to WARNING and obey `/log`; storage-root files independently default to INFO, routed by
+  * AgentRunner.
+  */
 private[repl] object ReplLoggers {
   def console(write: String => Unit): ZLogger[String, Unit] =
-    logger(line => _ => write(line))((level, context, _) => level >= context.getOrDefault(FiberRef.currentLogLevel))
+    logger(line => _ => write(line))((level, context, _) =>
+      level >= context.get(FiberRef.currentLogLevel).getOrElse(LogLevel.Warning)
+    )
 
   def files(
       writeRepl: String => Unit,
-      writeAgentRunner: (UUID, String) => Unit
+      writeAgentRunner: (UUID, String) => Unit,
+      minimumLevel: LogLevel = LogLevel.Info
   ): ZLogger[String, Unit] =
     logger { line => annotations =>
       annotations
         .get(AgentRunner.LogAnnotationKey)
         .flatMap(parseRunnerId)
         .fold(writeRepl(line))(writeAgentRunner(_, line))
-    }((_, _, _) => true)
+    }((level, _, _) => level >= minimumLevel)
 
-  def filesAt(universeRoot: Path): ZLogger[String, Unit] =
+  def filesAt(universeRoot: Path, minimumLevel: LogLevel = LogLevel.Info): ZLogger[String, Unit] =
     files(
       append(replFilePath(universeRoot), _),
-      (runnerId, line) => append(agentRunnerFilePath(universeRoot, runnerId), line)
+      (runnerId, line) => append(agentRunnerFilePath(universeRoot, runnerId), line),
+      minimumLevel
     )
 
   def initialize(universeRoot: Path): UIO[Unit] =

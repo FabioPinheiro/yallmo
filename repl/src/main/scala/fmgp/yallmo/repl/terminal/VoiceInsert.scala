@@ -2,59 +2,72 @@ package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.provider.Transcriber
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
-import org.jline.reader.impl.LineReaderImpl
 import org.jline.reader.{LineReader, Reference, Widget}
 import zio.*
 
 /** Owns the line-editor-only voice workflow. It never submits text to [[fmgp.yallmo.repl.ReplApplication]]. */
 private[terminal] final class VoiceInsert(
-    reader: LineReader,
+    reader: StatusLineReader,
     recorder: AudioRecorder,
-    transcriber: Transcriber,
-    terminalStatus: TerminalVoiceModeStatus
+    transcriber: () => Transcriber,
+    terminalStatus: TerminalVoiceModeStatus,
+    command: String = VoiceInsert.VoiceCommand,
+    recordingStarted: UIO[Boolean] = ZIO.succeed(true),
+    runtime: Runtime[Any] = Runtime.default
 ) {
   import VoiceInsert.*
 
   def install(): Unit = {
     reader.getWidgets.put(
-      WidgetName,
+      widgetName,
       new Widget {
         override def apply(): Boolean = insertVoice()
       }
     )
-    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(WidgetName), VoiceCommand)
+    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(widgetName), command)
   }
 
-  private def insertVoice(): Boolean =
-    try insertVoiceSafely()
-    catch {
+  private val widgetName = s"voice-insert-$command"
+
+  private def insertVoice(): Boolean = {
+    val originalCursor = reader.getBuffer.cursor()
+    try {
+      if !insertVoiceSafely() then reader.getBuffer.cursor(originalCursor)
+      true
+    } catch {
       case error: Throwable =>
+        reader.getBuffer.cursor(originalCursor)
         showFailure(error)
-        terminalStatus.updateForKeyMap()
         true
+    } finally {
+      reader.setKeyMap(LineReader.VICMD)
+      terminalStatus.updateForKeyMap()
     }
+  }
 
   private def insertVoiceSafely(): Boolean = {
     // NORMAL (the Vi command map) places the cursor on the preceding character. Insert after that character so Esc, v preserves
     // the logical insertion position from text mode; NORMAL movement intentionally selects a new insertion point.
     val insertionPoint = insertionCursor
+    val selectedTranscriber = transcriber()
     val termination = run(Promise.make[Nothing, VoiceRecordingTermination])
     // Each `run` completes before this widget waits for the stop key. Use a daemon fiber so that completion does not
     // immediately interrupt the microphone capture as it would with a child `fork`.
     val recording = run(recorder.recordUntil(termination.await).forkDaemon)
 
-    terminalStatus.recording()
-    val end = awaitTermination()
-    run(termination.succeed(end))
+    val result = try {
+      awaitTermination(recording, termination)
+      run(recording.join.either)
+    } finally run(recording.interrupt)
 
-    val inserted = run(recording.join.either) match {
+    val inserted = result match {
       case Left(error) =>
         showFailure(error)
         false
       case Right(None)        => false
       case Right(Some(audio)) =>
         terminalStatus.transcribing()
-        run(transcriber.transcribe(audio).either) match {
+        run(selectedTranscriber.transcribe(audio).either) match {
           case Left(error) =>
             showFailure(error)
             false
@@ -62,25 +75,33 @@ private[terminal] final class VoiceInsert(
         }
     }
 
-    if !inserted then reader.getBuffer.cursor(insertionPoint)
-    terminalStatus.updateForKeyMap()
-    true
+    inserted
   }
 
-  /** Reads only the transient recording controls through JLine's own input reader. All other keys are ignored. */
-  private def awaitTermination(): VoiceRecordingTermination = {
-    val input = reader.asInstanceOf[LineReaderImpl]
-
-    @annotation.tailrec
-    def loop(): VoiceRecordingTermination =
-      input.readCharacter() match {
-        case Space  => VoiceRecordingTermination.Stop
-        case Escape => VoiceRecordingTermination.Cancel
-        case -1     => VoiceRecordingTermination.Cancel
-        case _      => loop()
+  /** Recording completion/errors must release the widget even when no further key arrives. */
+  private def awaitTermination(
+      recording: Fiber[Throwable, Option[fmgp.yallmo.model.llm.AudioInput]],
+      termination: Promise[Nothing, VoiceRecordingTermination]
+  ): Unit = {
+    var waiting = true
+    var started = false
+    terminalStatus.waitingForRecording()
+    while waiting && run(recording.poll).isEmpty do {
+      if !started && run(recordingStarted) then {
+        started = true
+        terminalStatus.recording()
       }
-
-    loop()
+      val end = reader.readControl(100L) match {
+        case Space  => Some(VoiceRecordingTermination.Stop)
+        case Escape => Some(VoiceRecordingTermination.Cancel)
+        case -1     => Some(VoiceRecordingTermination.Cancel)
+        case _      => None
+      }
+      end.foreach { value =>
+        run(termination.succeed(value))
+        waiting = false
+      }
+    }
   }
 
   private def insertionCursor: Int = {
@@ -107,12 +128,11 @@ private[terminal] final class VoiceInsert(
     )
 
   private def run[A](effect: UIO[A]): A =
-    Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
+    Unsafe.unsafe { unsafe ?=> runtime.unsafe.run(effect).getOrThrowFiberFailure() }
 }
 
 private[terminal] object VoiceInsert {
   val VoiceCommand = "v"
-  private val WidgetName = "voice-insert"
   private val Space = ' '.toInt
   private val Escape = 27
 

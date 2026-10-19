@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.voice
 
-import fmgp.yallmo.model.llm.{AudioFormat, AudioInput}
+import fmgp.yallmo.model.{AudioFormat, AudioInput}
 import zio.*
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -42,6 +42,30 @@ object AudioRecorder {
   )
 
   val live: ULayer[AudioRecorder] = ZLayer.succeed(Live)
+
+  private[voice] def toWav(pcm: Array[Byte], length: Int, captureFormat: JavaAudioFormat): AudioInput = {
+    val wav = ByteArrayOutputStream()
+    val captured = AudioInputStream(
+      ByteArrayInputStream(pcm, 0, length),
+      captureFormat,
+      length / captureFormat.getFrameSize
+    )
+    val normalized =
+      if captureFormat.matches(OutputFormat) then captured
+      else AudioSystem.getAudioInputStream(OutputFormat, captured)
+    try AudioSystem.write(normalized, AudioFileFormat.Type.WAVE, wav)
+    finally {
+      if normalized ne captured then normalized.close()
+      captured.close()
+    }
+    val bytes = Chunk.fromArray(wav.toByteArray)
+    AudioInput(
+      bytes,
+      AudioFormat.Wav,
+      bytes.length.toLong,
+      Some(length.toDouble / captureFormat.getFrameSize / captureFormat.getFrameRate)
+    )
+  }
 
   private object Live extends AudioRecorder {
     override def record(seconds: Int): Task[AudioInput] =
@@ -128,23 +152,6 @@ object AudioRecorder {
         }
         .filter(format => format.getSampleRate > 0 && format.getChannels > 0)
 
-    private def toWav(pcm: Array[Byte], length: Int, captureFormat: JavaAudioFormat): AudioInput = {
-      val wav = ByteArrayOutputStream()
-      val captured = AudioInputStream(
-        ByteArrayInputStream(pcm, 0, length),
-        captureFormat,
-        length / captureFormat.getFrameSize
-      )
-      val normalized =
-        if captureFormat.matches(OutputFormat) then captured
-        else AudioSystem.getAudioInputStream(OutputFormat, captured)
-      try AudioSystem.write(normalized, AudioFileFormat.Type.WAVE, wav)
-      finally {
-        if normalized ne captured then normalized.close()
-        captured.close()
-      }
-      AudioInput(Chunk.fromArray(wav.toByteArray), AudioFormat.Wav)
-    }
   }
 
   private[voice] def validateDuration(seconds: Int): Either[String, Unit] =

@@ -1,12 +1,16 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.orchestration.config.AgentCapabilities
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import zio.*
 import fmgp.yallmo.orchestration.{AgentDecision, AgentTask, AgentTurn, RunContext, StaticContext}
 
-/** The two text values sent to a text-generation provider for one agent turn. */
+/** The two text values sent to a text-generation provider for one agent turn.
+  *
+  * TODO rename to ModelTextPromt
+  */
 final case class AgentPrompt(
     systemInstruction: String,
     prompt: String
@@ -19,6 +23,12 @@ final case class AgentPrompt(
   */
 trait AgentInstance[R] {
   def id: AgentId
+
+  def capabilities: AgentCapabilities = AgentCapabilities()
+
+  /** Called before any extension or action; native programs also resolve their bound adapter's policy here. */
+  def configuredContext(staticContext: StaticContext[R]): ZIO[R, YallmoError, StaticContext[R]] =
+    ZIO.fromEither(capabilities.resolve(id, staticContext))
 
   def next(
       task: AgentTask,
@@ -52,19 +62,21 @@ final case class LlmDecisionAgent(
       staticContext: StaticContext[LlmProvider],
       runContext: RunContext
   ): ZIO[LlmProvider, YallmoError, AgentTurn] =
-    val agentPrompt = LlmDecisionAgent.renderPrompt(task, staticContext, runContext, decisionCodec)
-    ZIO
-      .serviceWithZIO[LlmProvider](
-        _.inferenceWithText(
-          agentPrompt.prompt,
-          options.copy(systemInstruction = Some(agentPrompt.systemInstruction)),
-          model
+    for {
+      agentPrompt <- LlmDecisionAgent.renderPrompt(task, staticContext, runContext, decisionCodec)
+      turn <- ZIO
+        .serviceWithZIO[LlmProvider](
+          _.inferenceWithText(
+            agentPrompt.prompt,
+            options.copy(systemInstruction = Some(agentPrompt.systemInstruction)),
+            model
+          )
         )
-      )
-      .mapError(error => YallmoError.AgentExecutionFailed(id, error.getMessage, error))
-      .flatMap(response =>
-        decisionCodec.decode(response, staticContext).map(AgentTurn(Some(MessagePayload.Assistant(response)), _))
-      )
+        .mapError(error => YallmoError.AgentExecutionFailed(id, error.getMessage, error))
+        .flatMap(response =>
+          decisionCodec.decode(response, staticContext).map(AgentTurn(Some(MessagePayload.Assistant(response)), _))
+        )
+    } yield turn
 }
 
 object LlmDecisionAgent {
@@ -73,10 +85,9 @@ object LlmDecisionAgent {
       staticContext: StaticContext[?],
       runContext: RunContext,
       decisionCodec: AgentDecisionCodec
-  ): AgentPrompt =
-    AgentPrompt(
-      systemInstruction(staticContext, decisionCodec),
-      renderTask(task, staticContext, runContext)
+  ): UIO[AgentPrompt] =
+    renderTask(task, staticContext, runContext).map(prompt =>
+      AgentPrompt(systemInstruction(staticContext, decisionCodec), prompt)
     )
 
   private[orchestration] def systemInstruction(
@@ -93,32 +104,40 @@ object LlmDecisionAgent {
       task: AgentTask,
       staticContext: StaticContext[?],
       runContext: RunContext
-  ): String =
-    val history = runContext.messages.flatMap {
-      case MessagePayload.User(text)                         => Chunk(s"User: $text")
-      case MessagePayload.Assistant(text)                    => Chunk(s"Assistant: $text")
-      case MessagePayload.RagResult(retrieverKey, documents) =>
-        val renderedDocuments = documents
-          .map { document =>
-            val score = document.score.fold("")(value => s", score=$value")
-            s"id=${document.id}, source=${document.source}$score\n${document.text}"
+  ): UIO[String] =
+    for {
+      history <- ZIO.foreach(runContext.messages) {
+        case _: AudioInput =>
+          val message = "SYSTEM ERROR: decision agents do not support audio input"
+          ZIO.logError(message).as(message)
+        case MessagePayload.User(text)                         => ZIO.succeed(s"User: $text")
+        case MessagePayload.Assistant(text)                    => ZIO.succeed(s"Assistant: $text")
+        case MessagePayload.RagResult(retrieverKey, documents) =>
+          ZIO.succeed {
+            val renderedDocuments = documents
+              .map { document =>
+                val score = document.score.fold("")(value => s", score=$value")
+                s"id=${document.id}, source=${document.source}$score\n${document.text}"
+              }
+              .mkString("\n\n")
+            s"RAG result from $retrieverKey:\n$renderedDocuments"
           }
-          .mkString("\n\n")
-        Chunk(s"RAG result from $retrieverKey:\n$renderedDocuments")
-      case MessagePayload.ToolResult(toolKey, text)  => Chunk(s"Tool result from $toolKey:\n$text")
-      case MessagePayload.FunctionCallRequest(call)  => Chunk(s"Function call ${call.name}: ${call.argumentsJson}")
-      case MessagePayload.FunctionCallOutput(output) => Chunk(s"Function output from ${output.name}:\n${output.output}")
-      case MessagePayload.Reasoning(summary, _) => Chunk(s"Reasoning: ${summary.getOrElse("<provider continuation>")}")
-      case MessagePayload.Context(label, text)  => Chunk(s"$label:\n$text")
-      case MessagePayload.Instructions(text)    => Chunk(s"Instructions: $text")
-    }
-    val capabilities = Chunk(
-      staticContext.tools.map(tool => s"Tool: ${tool.key} — ${tool.description}").mkString("\n"),
-      staticContext.retrievers
-        .map(retriever => s"Retriever: ${retriever.key} — ${retriever.description}")
-        .mkString("\n"),
-      staticContext.skills.map(skill => s"Skill: ${skill.key} — ${skill.description}").mkString("\n")
-    ).filter(_.nonEmpty)
-
-    (capabilities ++ history :+ s"Task: ${task.prompt}").mkString("\n\n")
+        case MessagePayload.ToolResult(toolKey, text) => ZIO.succeed(s"Tool result from $toolKey:\n$text")
+        case MessagePayload.FunctionCallRequest(call) =>
+          ZIO.succeed(s"Function call ${call.name}: ${call.argumentsJson}")
+        case MessagePayload.FunctionCallOutput(output) =>
+          ZIO.succeed(s"Function output from ${output.name}:\n${output.output}")
+        case MessagePayload.Reasoning(summary, _) =>
+          ZIO.succeed(s"Reasoning: ${summary.getOrElse("<provider continuation>")}")
+        case MessagePayload.Context(label, text) => ZIO.succeed(s"$label:\n$text")
+        case MessagePayload.Instructions(text)   => ZIO.succeed(s"Instructions: $text")
+      }
+      capabilities = Chunk(
+        staticContext.tools.map(tool => s"Tool: ${tool.key} — ${tool.description}").mkString("\n"),
+        staticContext.retrievers
+          .map(retriever => s"Retriever: ${retriever.key} — ${retriever.description}")
+          .mkString("\n"),
+        staticContext.skills.map(skill => s"Skill: ${skill.key} — ${skill.description}").mkString("\n")
+      ).filter(_.nonEmpty)
+    } yield (capabilities ++ history :+ s"Task: ${task.prompt}").mkString("\n\n")
 }

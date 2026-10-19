@@ -52,7 +52,7 @@ Capable terminals show one bottom status line: local INSERT/NORMAL/PROVIDER/AGEN
 such as `local` or `chatgpt-2`, not just adapter types. All values come from the selected native agent's configuration;
 unselected startup has no invented agent/model footer. Unspecified thinking
 is shown as `default` (not `off`, and not a claim about the server's effective default); explicit levels are lowercase.
-Agent selection in AGENTS updates this footer together with the actual runtime, system prompt and voice provider/model.
+Agent selection in AGENTS updates this footer together with the chat runtime and system prompt. It does not change voice configuration.
 Login and session commands do not change the selected agent.
 
 The footer reflows on terminal resize using display-column widths. On narrow terminals metadata takes priority over
@@ -181,9 +181,16 @@ recording bytes and spoken assistant text are not included in these lifecycle me
 Voice input is a local input feature, not an agent tool. It is not advertised in `StaticContext`, cannot be requested by
 the model, and does not appear in `/tools`.
 
-It uses only the selected audio-capable connection and that agent's configured model. In the current adapters this
-means OAI; ChatGPT-selected and unselected REPLs report voice as unavailable. There is no fallback
-to a different provider/account. The chosen OAI endpoint/model must actually support the audio dialect below.
+Voice requires an explicit top-level `transcriberAgent` reference to a configured audio-capable agent (currently
+`OAIAgent` with an OAI provider). Its `config.model` and `config.systemPrompt` must be explicit and nonblank.
+Its effective tools/retrievers/skills/extensions must all be empty; set all four `capabilities` allowlists to `[]`.
+Missing references disable voice with a local message before recording; invalid explicit settings fail startup locally.
+There is no selected-chat/provider fallback. Voice works with text-only or no selected chat agent, and switching chat
+agents never rebinds it. The transcriber remains selectable in the normal AGENTS menu.
+
+See the secret-free [configuration example](examples/repl-config.json). Replace its placeholder models with models
+supported by your endpoint. Startup validates local adapter/configuration only, not authentication, endpoint health or
+remote model audio compatibility; those remain unverified until a successful invocation.
 
 ### Editable voice insertion
 
@@ -195,8 +202,12 @@ shows `[INSERT]`, `[NORMAL]`, `[PROVIDER]`, `[AGENTS]`, `[VOICE]` (waiting for a
 the terminal cannot support a JLine status bar.
 
 `Esc` first switches from INSERT to NORMAL; pressing it again in NORMAL does nothing. `v` and `m` are terminal-client keybindings, not
-REPL commands, so no `ReplApplication` state or agent transcript changes until the draft is later submitted. Both use the current
-selected agent's transcription provider/model, including after agent switches; unavailable audio never falls back to the previous provider.
+REPL commands. They do not change the active chat session, head, context or continuation. Every successful exchange
+is retained separately before draft insertion, even if the draft is later discarded: a generated `transcription-<uuid>`
+session contains human-authored metadata-only audio as root and the transcriber-authored assistant transcript as its child.
+No user-supplied session name is needed. These sessions appear in normal listings, but are never implicitly resumed or
+imported into ordinary chat or later voice requests. Without `--storage` retention is process-local; with it retention
+survives restart. A storage failure is reported explicitly and leaves the draft unchanged.
 In NORMAL, `q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL;
 press `i` to edit. Cancellation, failure and empty transcripts preserve the exact draft and NORMAL cursor. Capture completion/error/deadline
 returns without requiring another key.
@@ -206,8 +217,8 @@ sequenceDiagram
     actor User
     participant Line as Local line client
     participant Recorder as AudioRecorder
-    participant Transcriber
-    participant Model as Selected OAI endpoint/model
+    participant Voice as Configured voice agent
+    participant Model as Configured voice endpoint/model
     participant Agent as normal REPL / AgentRunner
 
     User->>Line: Esc, v
@@ -215,10 +226,11 @@ sequenceDiagram
     Line->>Recorder: record until Space or Esc (maximum 30 seconds)
     Recorder->>Recorder: microphone → in-memory 16 kHz mono WAV
     Recorder-->>Line: AudioInput(WAV bytes)
-    Line->>Transcriber: transcribe(audio)
-    Transcriber->>Model: validate audio size, then send prompt and base64 WAV
-    Model-->>Transcriber: text result
-    Transcriber-->>Line: Transcript(text)
+    Line->>Voice: transcribe(audio)
+    Voice->>Model: validate audio size, then send prompt and base64 WAV
+    Model-->>Voice: text result
+    Voice->>Voice: retain audio metadata + assistant in separate session
+    Voice-->>Line: transcript text
     Line->>Line: insert transcript at the saved cursor
     Note over User,Line: User reviews and edits the draft, then presses Enter.
     User->>Agent: submitted draft
@@ -255,7 +267,7 @@ the boundary. **Keep the printed setup URL private.** The page removes its fragm
 reopen the original URL. Never share it or expose/forward the listener publicly.
 
 Browser WAV is canonical in-memory 16 kHz mono PCM16, at most **960,044 bytes** (30 seconds plus 44-byte header). Only stopped,
-valid audio goes through the same selected transcription provider; cancelled/failed audio is discarded. Speech text is sent only by
+valid audio goes through the configured transcription agent; cancelled/failed audio is discarded. Speech text is sent only by
 `t` and lives in memory, but browser/OS speech engines may use **network services**: local synthesis is not guaranteed.
 
 Permission revocation, autoplay rules, suspended audio contexts, device loss and background/frozen tabs may interrupt audio even after
@@ -268,18 +280,21 @@ frontend installation or external encoder. See [browser audio details and manual
 At REPL startup, `ReplMain` builds these components:
 
 1. `ConfigFile` loads/initializes the required config; `RuntimeInstances` owns lazy connections and named agents.
-   Only the explicit/default selected agent is resolved; unselected startup creates no provider instance.
-2. An audio path using that same selected connection/model if it supports `LlmProviderAudio`. Otherwise voice fails
-   locally on invocation rather than choosing an unrelated provider.
-3. `AudioRecorder`, a local Java Sound implementation. It does **not** open the microphone at startup.
-4. `Transcriber`, which owns the transcription-only system prompt and makes one audio-only request per call.
-5. `TerminalRepl`, which invokes `AudioRecorder` and `Transcriber` for editable `Esc v` / `Esc m` keybindings; its browser server
-   starts only on the first `m`/`t` and lives in the REPL scope.
+   The explicit/default chat selection and the independently referenced `transcriberAgent` are resolved locally.
+2. `ReplStartup.application` validates all capability IDs against the available catalogs and checks that the
+   transcriber's effective capabilities are empty. Core `ConfiguredAgentSettings` provides shared model/prompt decoding.
+3. `AudioRecorder`, a local Java Sound implementation, does **not** open the microphone at startup.
+4. `Transcriber` makes exactly one shared `AgentTurnRequest` per invocation: only the current direct `AudioInput`
+   followed by configured `Instructions`, no history/continuation/context features/tool definitions, `ToolChoice.None`,
+   `parallelToolCalls = false`. It does not use the conversational runner or execute tools. Calls, unsupported results,
+   blank text or incomplete/non-stop responses fail without follow-up turns.
+5. `TerminalRepl` invokes the same configured voice service for editable `Esc v` / `Esc m`; its browser server starts
+   only on the first enabled `m` or `t` and lives in the REPL scope. Disabled voice does not start capture or the server.
 
-The JVM microphone is opened only by `AudioRecorder.record` or `AudioRecorder.recordUntil`. Its recorder prefers 16 kHz,
-16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo device formats and converts them to 16 kHz mono
-before encoding the WAV entirely in memory. `Transcriber` submits that audio in a single tool-free, history-free model
-request. The resulting transcript is written into the existing local JLine buffer.
+The JVM recorder prefers 16 kHz, 16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo formats and
+converts them to 16 kHz mono before encoding WAV entirely in memory. Original encoded size and captured-frame duration
+are retained locally. Browser duration comes from the validated canonical WAV sample count. Neither path adds an
+external decoder. Size/duration/description are persistence/debug metadata, never model input.
 
 ### Preconditions
 
@@ -291,8 +306,8 @@ A voice request proceeds only when all of the following hold:
 | Invocation | Editable voice is started with NORMAL `v` or `m`. | The draft is unchanged. |
 | Microphone | `v`: JVM microphone permission and a convertible Java Sound `TargetDataLine`; `m`: the connected setup page has enabled browser audio. | Local setup/audio error; state, draft and cursor remain unchanged. |
 | Payload | The recorded WAV is non-empty and at most 1 MiB. A canonical 30-second 16 kHz PCM16 capture is 960,044 bytes including its header. | `OAIAgent` rejects it before HTTP. |
-| Model Runner | The selected OAI endpoint is reachable, its agent model is audio-capable, and it accepts the `input_audio`/WAV chat-completions dialect used by `gdict`. | A bounded HTTP/protocol error is displayed; no text is submitted. |
-| Response | `OAIAgent` receives non-blank `choices[0].message.content`. | A protocol error is displayed; no text is submitted. |
+| Model Runner | The configured transcription OAI endpoint is reachable, its agent model is audio-capable, and it accepts the `input_audio`/WAV chat-completions dialect used by `gdict`. | A bounded HTTP/protocol error is displayed; no text is submitted. |
+| Response | A completed text-only assistant result with nonblank content. | A protocol error is displayed; no text is submitted. |
 
 `OPENAI_API_KEY`, `ffmpeg`, and a recording file are not required by Yallmo’s implementation. The independent
 `gdict` script uses `ffmpeg` for its macOS capture path; Yallmo uses Java Sound instead.
@@ -300,8 +315,11 @@ A voice request proceeds only when all of the following hold:
 ### Privacy and SSH boundary
 
 The raw WAV and base64 representation exist only in memory for the audio transcription request. They are not written to disk, placed
-in REPL history, or emitted through the provider payload debug facility. The returned transcript is normal untrusted
-user input. Editable voice text remains only in the local draft until the user explicitly submits it.
+in REPL history, or emitted through the provider payload debug facility. Storage receives the live identity but retains
+only empty audio bytes and original metadata. Restored audio cannot be replayed. Assistant transcripts are retained
+normally in their separate sessions independently of draft discard; transcripts and descriptions may contain sensitive
+text. The editable transcript is untrusted user input and is never automatically submitted to chat. Existing debug paths
+remain audio-safe; no transcription debug section or hash lookup command is added.
 
 Microphone access belongs to the machine running the REPL process. If `yallmo` is launched on a remote SSH host,
 `Esc v` attempts to use that remote host’s microphone—not the local SSH client’s microphone. Browser `m` instead uses the device

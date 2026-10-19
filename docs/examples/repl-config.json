@@ -1,0 +1,40 @@
+{
+  "userName": "operator",
+  "defaultAgentId": "bob",
+  "transcriberAgent": "Transcriber",
+  "browserAudioPort": 5180,
+  "agents": {
+    "bob": {
+      "agentType": "OAIAgent",
+      "providerIds": [
+        "local"
+      ],
+      "config": {
+        "model": "chat-model",
+        "systemPrompt": "You are a concise assistant."
+      }
+    },
+    "Transcriber": {
+      "agentType": "OAIAgent",
+      "providerIds": [
+        "local"
+      ],
+      "capabilities": {
+        "tools": [],
+        "retrievers": [],
+        "skills": [],
+        "extensions": []
+      },
+      "config": {
+        "model": "audio-capable-model",
+        "systemPrompt": "Transcribe the supplied audio exactly. Preserve the spoken language. Do not translate, summarize, answer, or call tools. Return only the transcript."
+      }
+    }
+  },
+  "providers": {
+    "local": {
+      "providerType": "OAI",
+      "endpoint": "http://127.0.0.1:12434/v1"
+    }
+  }
+}

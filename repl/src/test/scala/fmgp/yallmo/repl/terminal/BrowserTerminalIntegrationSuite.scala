@@ -1,9 +1,10 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.model.llm.{AudioFormat, AudioInput, LlmProviderAudio}
+import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.provider.Transcriber
+import fmgp.yallmo.orchestration.config.ConfiguredAgentSettings
+import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
@@ -41,13 +42,18 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       }
   }
 
-  private final class Fixture(initial: ReplState = ReplState()) {
+  private final class Fixture(initial: ReplState = ReplState(), voiceEnabled: Boolean = true) {
     val transcriptions = new LinkedBlockingQueue[String]()
     val prompts = new LinkedBlockingQueue[String]()
-    def audio(name: String): Transcriber = new Transcriber(new LlmProviderAudio {
-      def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
-        ZIO.succeed { transcriptions.add(name); name }
-    })
+    val voiceRequests = new LinkedBlockingQueue[AgentTurnRequest]()
+    private val voiceAgent = new AudioAgent[Any] {
+      val id = AgentId("Transcriber")
+      def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = ZIO.succeed {
+        voiceRequests.add(request)
+        transcriptions.add("configured-voice")
+        AgentTurnResponse(Chunk(MessagePayload.Assistant("configured-voice")), LlmStopReason.Stop)
+      }
+    }
     private val agent = new Agent[Any] {
       val id = AgentId("alpha")
       def turn(
@@ -62,8 +68,15 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage("The user must not call a provider")
     }
-    val storage = run(OrchestratorLive.inMemory(run(RuntimeInstances.fromAgents(Chunk(agent, user)))))
+    val storage = run(OrchestratorLive.inMemory(run(RuntimeInstances.fromAgents(Chunk(agent, user, voiceAgent)))))
     val orchestrator = ReplOrchestratorLive.make(storage, user, Some(agent))
+    private val voice = Transcriber.make(
+      voiceAgent,
+      ConfiguredAgentSettings("voice-model", "transcribe", None, false),
+      storage,
+      user.id
+    )
+
     val choices =
       Vector("alpha", "beta", "unavailable").map(id => ReplAgentChoice(AgentId(id), "synthetic", Vector(id), id))
     def application(name: String = "alpha"): ReplApplication[Any] = new ReplApplication[Any](
@@ -85,7 +98,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       activeAgent = Some(ReplActiveAgent(name, name, name, None)),
       agentChoices = choices,
       agentSelector = Some(id => ZIO.succeed(application(AgentId.value(id)))),
-      transcriber = if name == "unavailable" then None else Some(audio(name))
+      transcriber = Option.when(voiceEnabled)(voice)
     )
   }
 
@@ -114,7 +127,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
         ZIO.addFinalizer(ZIO.succeed(closes.incrementAndGet()).unit) *>
           makeBridge.tap(bridge => ZIO.succeed(setup.complete(bridge.setupUrl)))
     )
-    private val client = new TerminalRepl(fixture.application(), reader, jvmRecorder, fixture.audio("fallback"), create)
+    private val client = new TerminalRepl(fixture.application(), reader, jvmRecorder, create)
     private val ready = new CountDownLatch(1)
     private val originalInit = reader.getWidgets.get(LineReader.CALLBACK_INIT)
     reader.getWidgets.put(
@@ -215,17 +228,42 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
     }
   }
 
+  test("disabled m and v report configuration before capture or lazy browser startup") {
+    val fixture = new Fixture(voiceEnabled = false)
+    val terminal = new TerminalHarness(fixture)
+    try {
+      terminal.send("idraft" + esc + "hh")
+      for command <- List("m", "v") do {
+        terminal.send(command)
+        terminal.waitFor(command)
+        assertEquals(terminal.starts.get(), 0)
+        assertEquals(terminal.reader.getBuffer.toString, "draft")
+        assertEquals(terminal.reader.getBuffer.cursor(), 2)
+        assertEquals(fixture.transcriptions.size(), 0)
+        assertEquals(fixture.prompts.size(), 0)
+        assert(terminal.text.contains("configure transcriberAgent"))
+      }
+      terminal.quit()
+    } finally terminal.close()
+  }
+
   test("ordinary text and JVM v never start browser audio") {
     val fixture = new Fixture()
     val terminal = new TerminalHarness(fixture)
     try {
       terminal.send("idraft" + esc + "v ")
       terminal.waitFor("v")
-      assertEquals(terminal.reader.getBuffer.toString, "draft alpha")
+      assertEquals(terminal.reader.getBuffer.toString, "draft configured-voice")
       assertEquals(terminal.starts.get(), 0)
       assertEquals(fixture.prompts.size(), 0)
       terminal.quit()
       assertEquals(terminal.closes.get(), 0)
+      val retained = run(fixture.storage.listSessions)
+      assertEquals(retained.size, 1, "discarding the draft by quitting must retain the exchange")
+      assertEquals(
+        run(fixture.storage.loadSession(retained.head.id)).messages.last.payload,
+        MessagePayload.Assistant("configured-voice")
+      )
     } finally terminal.close()
   }
 
@@ -241,7 +279,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       terminal.waitFor("v")
       terminal.send("i!\n")
       eventually(fixture.prompts.size() == 1)
-      assertEquals(fixture.prompts.poll(), "draft alpha!")
+      assertEquals(fixture.prompts.poll(), "draft configured-voice!")
       terminal.quit()
       assertEquals(terminal.starts.get(), 1)
     } finally terminal.close()
@@ -267,7 +305,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
     } finally terminal.close()
   }
 
-  test("m and v use changed providers and never retain one after switching to unavailable audio") {
+  test("m and v retain the configured voice across all chat agent switches") {
     for command <- List("v", "m") do {
       val fixture = new Fixture()
       val terminal = new TerminalHarness(fixture)
@@ -299,12 +337,23 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
             client.upload(id)
           }
           terminal.waitFor(command)
-          if name == "unavailable" then {
-            assertEquals(terminal.reader.getBuffer.toString, before)
-            assertEquals(fixture.transcriptions.size(), 0)
-          } else assertEquals(fixture.transcriptions.poll(1, TimeUnit.SECONDS), name)
+          assert(terminal.reader.getBuffer.toString != before, name)
+          assertEquals(fixture.transcriptions.poll(1, TimeUnit.SECONDS), "configured-voice")
           assertEquals(terminal.reader.getKeyMap, LineReader.VICMD)
           assertEquals(fixture.prompts.size(), 0)
+        }
+        assertEquals(run(fixture.storage.listSessions).size, 3)
+        val requests = List.fill(3)(fixture.voiceRequests.poll(1, TimeUnit.SECONDS))
+        requests.foreach { request =>
+          assertEquals(request.input.size, 2)
+          assertEquals(request.input.last, MessagePayload.Instructions("transcribe"))
+          assertEquals(request.model, "voice-model")
+          assertEquals(request.tools, Chunk.empty)
+          assertEquals(request.toolChoice, ToolChoice.None)
+          assertEquals(request.parallelToolCalls, false)
+          val audio = request.input.head.asInstanceOf[AudioInput]
+          assertEquals(audio.sizeBytes, audio.bytes.size.toLong)
+          if command == "m" then assert(audio.durationSeconds.exists(_ > 0))
         }
         terminal.quit()
       } finally terminal.close()
@@ -345,6 +394,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
         assertEquals(browser.get("/api/poll").body(), "{\"heartbeatMs\":1000}")
       }
       assert(terminal.text.contains("did not start"))
+      assertEquals(run(fixture.storage.listSessions).size, 0)
       terminal.quit()
     } finally terminal.close()
   }

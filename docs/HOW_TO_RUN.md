@@ -20,7 +20,7 @@ sbt --server -no-server 'repl/run --config ./yallmo.json'
 
 An unselected REPL accepts commands but rejects prompts without sending anything to a provider. Press `Esc`, `a` to
 open AGENTS, highlight a configured agent with Up/Down and press Enter to activate it. Switching keeps the current
-session, conversation and typed draft, and updates the footer and voice model. Session commands are independent of agent selection.
+session, conversation and typed draft, and updates the chat footer. The independent `transcriberAgent` voice settings do not change. Session commands are independent of agent selection.
 Selection does not change the configured default. Edit the file and restart to load new definitions; live config reload
 is not implemented.
 

@@ -7,8 +7,48 @@ import zio.*
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import scala.compiletime.testing.typeCheckErrors
 
 final class OpenAiCodexSuite extends FunSuite:
+  test("provider connections are not agents and expose no turn method") {
+    val noTurn = typeCheckErrors("""
+      def call(
+          provider: fmgp.yallmo.provider.openai.OpenAiCodexClient,
+          request: fmgp.yallmo.model.llm.AgentTurnRequest
+      ) = provider.turn(request)
+    """)
+    assertEquals(noTurn.size, 1)
+    assert(noTurn.head.message.contains("turn"))
+    val notAnAgent = typeCheckErrors("""
+      def agent(provider: fmgp.yallmo.provider.openai.OpenAiCodexClient): fmgp.yallmo.model.Agent[Any] = provider
+    """)
+    assertEquals(notAnAgent.size, 1)
+  }
+
+  test("native request validation rejects audio before authentication or wire submission") {
+    val request = AgentTurnRequest(
+      "gpt-5.4",
+      Chunk(
+        AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav),
+        MessagePayload.Instructions("Describe")
+      )
+    )
+    assertEquals(OpenAiCodexTurnMapper.requestBody(request), Left("OpenAI Codex does not support audio input"))
+  }
+
+  test("direct input mapping returns an error for audio instead of throwing or returning partial input") {
+    val audio = AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav, 3L, Some(1.0), Some("private description"))
+    Seq(audio, audio.redacted).foreach { input =>
+      Seq(
+        Chunk[MessagePayload](input),
+        Chunk(MessagePayload.User("before"), input, MessagePayload.Assistant("after"))
+      ).foreach { items =>
+        assertEquals(OpenAiCodexTurnMapper.input(items), Left("OpenAI Codex does not support audio input"))
+      }
+    }
+    assertEquals(OpenAiCodexTurnMapper.input(Chunk.empty), Right(ujson.Arr()))
+  }
+
   test("parses a Codex response with text and a function call") {
     val response = OpenAiCodexClient.parseResponse(
       """{
@@ -57,12 +97,15 @@ final class OpenAiCodexSuite extends FunSuite:
       )
     )
 
-    val input = OpenAiCodexTurnMapper.input(
-      Chunk(
-        MessagePayload.FunctionCallRequest(call),
-        MessagePayload.FunctionCallOutput(FunctionCallOutput(call.id, call.name, "contents"))
+    val input = OpenAiCodexTurnMapper
+      .input(
+        Chunk(
+          MessagePayload.FunctionCallRequest(call),
+          MessagePayload.FunctionCallOutput(FunctionCallOutput(call.id, call.name, "contents"))
+        )
       )
-    )
+      .toOption
+      .get
     assertEquals(
       input.value.map(value => ujson.write(value)).toVector,
       Vector(
@@ -124,7 +167,7 @@ final class OpenAiCodexSuite extends FunSuite:
       options = ProviderGenerateOptions(systemInstruction = Some("must not replace canonical instructions"))
     )
     assert(request.validate.isRight)
-    val body = OpenAiCodexClient.turnRequestBody(request).toOption.get
+    val body = OpenAiCodexTurnMapper.requestBody(request).toOption.get
     assertEquals(body("model").str, "selected-model")
     assertEquals(body("instructions").str, "current instructions")
     assertSubscriptionBody(body)
@@ -133,10 +176,10 @@ final class OpenAiCodexSuite extends FunSuite:
     assertEquals(body("parallel_tool_calls").bool, false)
     assertEquals(body("tool_choice").str, "auto")
     assert(
-      OpenAiCodexClient.turnRequestBody(request.copy(input = Chunk(MessagePayload.User("no instructions")))).isLeft
+      OpenAiCodexTurnMapper.requestBody(request.copy(input = Chunk(MessagePayload.User("no instructions")))).isLeft
     )
-    assert(OpenAiCodexClient.turnRequestBody(request.copy(input = Chunk(MessagePayload.Instructions(" ")))).isLeft)
-    assert(OpenAiCodexClient.turnRequestBody(request.copy(model = " ")).isLeft)
+    assert(OpenAiCodexTurnMapper.requestBody(request.copy(input = Chunk(MessagePayload.Instructions(" ")))).isLeft)
+    assert(OpenAiCodexTurnMapper.requestBody(request.copy(model = " ")).isLeft)
   }
 
   test("native request preserves tool calls, results and only same-provider encrypted reasoning") {
@@ -161,14 +204,14 @@ final class OpenAiCodexSuite extends FunSuite:
       toolChoice = ToolChoice.Function("read"),
       parallelToolCalls = true
     )
-    val body = OpenAiCodexClient.turnRequestBody(request).toOption.get
+    val body = OpenAiCodexTurnMapper.requestBody(request).toOption.get
     val input = body("input").arr.toVector
     assertEquals(input.size, 4)
     assertEquals(input(1)("type").str, "reasoning")
     assertEquals(input(1)("id").str, "rs-1")
     assertEquals(input(1)("encrypted_content").str, "encrypted")
     assertEquals(input(1)("summary"), ujson.Arr(ujson.Obj("type" -> "summary_text", "text" -> "summary")))
-    val withoutSummary = OpenAiCodexTurnMapper.input(Chunk(MessagePayload.Reasoning(None, continuation)))
+    val withoutSummary = OpenAiCodexTurnMapper.input(Chunk(MessagePayload.Reasoning(None, continuation))).toOption.get
     assertEquals(withoutSummary(0)("summary"), ujson.Arr())
     assertEquals(input(2)("call_id").str, "call-1")
     assertEquals(input(2)("id").str, "fc-1")
@@ -182,7 +225,7 @@ final class OpenAiCodexSuite extends FunSuite:
     Seq(ToolChoice.Auto -> "auto", ToolChoice.None -> "none", ToolChoice.Required -> "required").foreach {
       case (choice, expected) =>
         assertEquals(
-          OpenAiCodexClient.turnRequestBody(request.copy(toolChoice = choice)).map(_("tool_choice").str),
+          OpenAiCodexTurnMapper.requestBody(request.copy(toolChoice = choice)).map(_("tool_choice").str),
           Right(expected)
         )
     }
@@ -216,8 +259,8 @@ final class OpenAiCodexSuite extends FunSuite:
       ThinkingLevel.High -> "high"
     ).foreach { case (level, expected) =>
       val options = ProviderGenerateOptions(thinkingLevel = Some(level))
-      val native = OpenAiCodexClient
-        .turnRequestBody(
+      val native = OpenAiCodexTurnMapper
+        .requestBody(
           AgentTurnRequest("model", Chunk(MessagePayload.Instructions("instructions")), options = options)
         )
         .toOption

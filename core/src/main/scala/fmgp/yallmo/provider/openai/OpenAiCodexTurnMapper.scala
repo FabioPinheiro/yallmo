@@ -9,8 +9,58 @@ import zio.Chunk
 private[openai] object OpenAiCodexTurnMapper {
   val providerId: ProviderId = ProviderId.unsafe("openai-codex-responses")
 
-  def input(items: Chunk[MessagePayload]): ujson.Arr =
-    ujson.Arr.from(items.flatMap(toInputItem))
+  private[openai] def validateRequest(request: AgentTurnRequest): Either[String, AgentTurnRequest] =
+    request.validate.flatMap(validated =>
+      Either.cond(
+        !validated.input.exists(_.isInstanceOf[AudioInput]),
+        validated,
+        "OpenAI Codex does not support audio input"
+      )
+    )
+
+  private[openai] def requestBody(turnRequest: AgentTurnRequest): Either[String, ujson.Obj] =
+    validateRequest(turnRequest).flatMap { validated =>
+      validated.input.lastOption match {
+        // AgentTurnRequest requires the current instructions last, not at the start of history.
+        case Some(MessagePayload.Instructions(instructions)) =>
+          OpenAiCodexTurnMapper.input(validated.input.dropRight(1)).map { input =>
+            val body = ujson.Obj(
+              "model" -> validated.model,
+              "store" -> false,
+              "stream" -> true,
+              "include" -> ujson.Arr("reasoning.encrypted_content"),
+              "instructions" -> instructions,
+              "input" -> input,
+              "tool_choice" -> toolChoiceJson(validated.toolChoice),
+              "parallel_tool_calls" -> validated.parallelToolCalls
+            )
+            validated.options.thinkingLevel
+              .foreach(level => body("reasoning") = ujson.Obj("effort" -> OpenAiCodexClient.thinkingEffort(level)))
+            if validated.tools.nonEmpty then
+              body("tools") = ujson.Arr.from(validated.tools.map(OpenAiCodexTurnMapper.tool))
+            body
+          }
+        case _ => Left("the final input item must be instructions")
+      }
+    }
+
+  private def toolChoiceJson(choice: ToolChoice): ujson.Value =
+    choice match
+      case ToolChoice.Auto           => ujson.Str("auto")
+      case ToolChoice.None           => ujson.Str("none")
+      case ToolChoice.Required       => ujson.Str("required")
+      case ToolChoice.Function(name) => ujson.Obj("type" -> "function", "name" -> name)
+
+  /** Unsupported modalities are mapping errors, not thrown exceptions or omitted input. */
+  def input(items: Chunk[MessagePayload]): Either[String, ujson.Arr] =
+    items
+      .foldLeft[Either[String, Chunk[ujson.Value]]](Right(Chunk.empty)) { (result, item) =>
+        for {
+          mapped <- result
+          next <- toInputItem(item)
+        } yield mapped ++ next
+      }
+      .map(ujson.Arr.from(_))
 
   def tool(definition: FunctionToolDefinition): ujson.Obj =
     ujson.Obj(
@@ -45,62 +95,73 @@ private[openai] object OpenAiCodexTurnMapper {
       case None if hasCalls              => LlmStopReason.ToolUse
       case None                          => LlmStopReason.Stop
 
-  private def toInputItem(item: MessagePayload): Chunk[ujson.Value] =
+  private def toInputItem(item: MessagePayload): Either[String, Chunk[ujson.Value]] =
     item match
-      case MessagePayload.User(text)      => Chunk(userMessage(text))
+      case _: AudioInput                  => Left("OpenAI Codex does not support audio input")
+      case MessagePayload.User(text)      => Right(Chunk(userMessage(text)))
       case MessagePayload.Assistant(text) =>
-        Chunk(
-          ujson.Obj(
-            "type" -> "message",
-            "role" -> "assistant",
-            "content" -> ujson.Arr(ujson.Obj("type" -> "output_text", "text" -> text, "annotations" -> ujson.Arr())),
-            "status" -> "completed"
+        Right(
+          Chunk(
+            ujson.Obj(
+              "type" -> "message",
+              "role" -> "assistant",
+              "content" -> ujson.Arr(ujson.Obj("type" -> "output_text", "text" -> text, "annotations" -> ujson.Arr())),
+              "status" -> "completed"
+            )
           )
         )
-      case MessagePayload.Context(label, text) => Chunk(userMessage(s"Context [$label]:\n$text"))
-      case item: MessagePayload.RagResult      => Chunk(userMessage(s"Context:\n${item.contentStr}"))
-      case item: MessagePayload.ToolResult     => Chunk(userMessage(s"Context:\n${item.contentStr}"))
+      case MessagePayload.Context(label, text) => Right(Chunk(userMessage(s"Context [$label]:\n$text")))
+      case item: MessagePayload.RagResult      => Right(Chunk(userMessage(s"Context:\n${item.contentStr}")))
+      case item: MessagePayload.ToolResult     => Right(Chunk(userMessage(s"Context:\n${item.contentStr}")))
       case MessagePayload.Instructions(text)   =>
-        Chunk(
-          ujson.Obj(
-            "type" -> "message",
-            "role" -> "developer",
-            "content" -> ujson.Arr(ujson.Obj("type" -> "input_text", "text" -> text))
+        Right(
+          Chunk(
+            ujson.Obj(
+              "type" -> "message",
+              "role" -> "developer",
+              "content" -> ujson.Arr(ujson.Obj("type" -> "input_text", "text" -> text))
+            )
           )
         )
       case MessagePayload.Reasoning(summary, continuation) if continuation.provider == providerId =>
-        Chunk(
-          ujson.Obj.from(
-            Chunk(
-              Some("type" -> ujson.Str("reasoning")),
-              continuation.itemId.map("id" -> ujson.Str(_)),
-              Some(
-                "summary" -> ujson.Arr.from(summary.map(text => ujson.Obj("type" -> "summary_text", "text" -> text)))
-              ),
-              Some("content" -> ujson.Arr()),
-              Some("encrypted_content" -> ujson.Str(continuation.encryptedContent))
-            ).flatten
+        Right(
+          Chunk(
+            ujson.Obj.from(
+              Chunk(
+                Some("type" -> ujson.Str("reasoning")),
+                continuation.itemId.map("id" -> ujson.Str(_)),
+                Some(
+                  "summary" -> ujson.Arr.from(summary.map(text => ujson.Obj("type" -> "summary_text", "text" -> text)))
+                ),
+                Some("content" -> ujson.Arr()),
+                Some("encrypted_content" -> ujson.Str(continuation.encryptedContent))
+              ).flatten
+            )
           )
         )
-      case MessagePayload.Reasoning(_, _)           => Chunk.empty
+      case MessagePayload.Reasoning(_, _)           => Right(Chunk.empty)
       case MessagePayload.FunctionCallRequest(call) =>
-        Chunk(
-          ujson.Obj.from(
-            Chunk(
-              Some("type" -> ujson.Str("function_call")),
-              Some("call_id" -> ujson.Str(call.id.value)),
-              Some("name" -> ujson.Str(call.name)),
-              Some("arguments" -> ujson.Str(call.argumentsJson)),
-              call.providerItemId.map("id" -> ujson.Str(_))
-            ).flatten
+        Right(
+          Chunk(
+            ujson.Obj.from(
+              Chunk(
+                Some("type" -> ujson.Str("function_call")),
+                Some("call_id" -> ujson.Str(call.id.value)),
+                Some("name" -> ujson.Str(call.name)),
+                Some("arguments" -> ujson.Str(call.argumentsJson)),
+                call.providerItemId.map("id" -> ujson.Str(_))
+              ).flatten
+            )
           )
         )
       case MessagePayload.FunctionCallOutput(output) =>
-        Chunk(
-          ujson.Obj(
-            "type" -> "function_call_output",
-            "call_id" -> output.callId.value,
-            "output" -> output.output
+        Right(
+          Chunk(
+            ujson.Obj(
+              "type" -> "function_call_output",
+              "call_id" -> output.callId.value,
+              "output" -> output.output
+            )
           )
         )
 

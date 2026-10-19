@@ -2,7 +2,6 @@ package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.grammar.{CompletionRequest, ReplGrammar}
-import fmgp.yallmo.provider.Transcriber
 import fmgp.yallmo.repl.voice.AudioRecorder
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
 import org.jline.reader.{
@@ -26,7 +25,6 @@ final class TerminalRepl[R] private[terminal] (
     private var application: ReplApplication[R],
     reader: StatusLineReader,
     recorder: AudioRecorder,
-    transcriber: Transcriber,
     createBrowser: ZIO[Scope, BrowserAudioError, BrowserAudioBridge] = BrowserAudioBridge.make
 ) {
   private val loginInput = new TerminalProviderLoginInput(reader.getTerminal, Some(reader))
@@ -40,7 +38,7 @@ final class TerminalRepl[R] private[terminal] (
     Some(() => providerMenu.open()),
     Some(() => agentMenu.open(application.agentChoices, application.activeAgent))
   )
-  private var selectedTranscriber = application.transcriber.getOrElse(transcriber)
+  private val transcriber = application.transcriber
   terminalStatus.install()
   menus.install()
   installStartupMode()
@@ -62,11 +60,11 @@ final class TerminalRepl[R] private[terminal] (
             createBrowser
           )
           _ <- ZIO.succeed {
-            new VoiceInsert(reader, recorder, () => selectedTranscriber, terminalStatus, runtime = runtime).install()
+            new VoiceInsert(reader, recorder, transcriber, terminalStatus, runtime = runtime).install()
             new VoiceInsert(
               reader,
               browser.recorder,
-              () => selectedTranscriber,
+              transcriber,
               terminalStatus,
               "m",
               browser.recordingStarted,
@@ -119,7 +117,6 @@ final class TerminalRepl[R] private[terminal] (
             ZIO.succeed {
               application = next
               terminalStatus.selectAgent(next.activeAgent)
-              selectedTranscriber = next.transcriber.getOrElse(ReplStartup.unavailableTranscriber)
               agentMenu.complete(Right(()))
             } *> state.set(previous.copy(continuationStart = previous.runContext.messages.size))
           }
@@ -284,18 +281,16 @@ object TerminalRepl {
   def runSystem[R](
       application: ReplApplication[R],
       recorder: AudioRecorder,
-      transcriber: Transcriber,
       browserAudioPort: Int = 5180
   ): ZIO[R, Throwable, Unit] =
     ZIO.acquireReleaseWith(ZIO.attemptBlocking(TerminalBuilder.builder().system(true).build()))(closeTerminal) {
-      terminal => runWithTerminal(application, terminal, recorder, transcriber, browserAudioPort)
+      terminal => runWithTerminal(application, terminal, recorder, browserAudioPort)
     }
 
   private[terminal] def runWithTerminal[R](
       application: ReplApplication[R],
       terminal: Terminal,
       recorder: AudioRecorder,
-      transcriber: Transcriber,
       browserAudioPort: Int = 5180
   ): ZIO[R, Throwable, Unit] =
     if terminal.getType.startsWith(Terminal.TYPE_DUMB) then
@@ -307,7 +302,6 @@ object TerminalRepl {
             application,
             buildReader(terminal),
             recorder,
-            transcriber,
             BrowserAudioBridge.make(browserAudioPort)
           )
         )

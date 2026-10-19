@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, AudioInput, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.oai.{OAIAgent, OAILlmProvider}
@@ -127,6 +127,91 @@ final class RuntimeInstancesSuite extends FunSuite {
         assertEquals(chatAgent.id, eve)
       }
     }
+  }
+
+  test("checked audio lookup is local, cached, typed, and rejects unsupported and unknown agents") {
+    val current = runtime()
+    run {
+      for {
+        audio <- current.getAudioAgent(bob)
+        cached <- current.getAudioAgent(bob)
+        ordinary <- current.getAgent(bob)
+        unsupported <- current.getAudioAgent(eve).either
+        unknown <- current.getAudioAgent(AgentId("missing")).either
+        custom = new AudioAgent[String] {
+          val id = AgentId("custom-audio")
+          def turn(request: AgentTurnRequest): ZIO[String, YallmoError, AgentTurnResponse] =
+            ZIO
+              .service[String]
+              .map(text => AgentTurnResponse(Chunk(MessagePayload.Assistant(text)), LlmStopReason.Stop))
+        }
+        registered <- RuntimeInstances.fromAgents(Chunk(custom))
+        resolved <- registered.getAudioAgent(custom.id)
+        result <- resolved.turn(request).provideEnvironment(ZEnvironment("from environment"))
+      } yield {
+        assert(audio eq cached)
+        assert(audio eq ordinary)
+        assert(
+          unsupported.swap.toOption.exists(error =>
+            error.isInstanceOf[YallmoError.InvalidConfig] && error.getMessage.contains("eve")
+          )
+        )
+        assertEquals(unknown, Left(YallmoError.UnknownAgent(AgentId("missing"))))
+        assert(resolved eq custom)
+        assertEquals(result.output, Chunk(MessagePayload.Assistant("from environment")))
+      }
+    }
+  }
+
+  test("unsupported audio fails as a typed modality error before authentication or network access") {
+    val current = runtime(config.copy(providers = Map(chatId -> ProviderConfig.ChatGPT())))
+    val audioRequest = request.copy(input =
+      Chunk(
+        AudioInput(Chunk[Byte](1), fmgp.yallmo.model.AudioFormat.Wav),
+        MessagePayload.Instructions("Describe")
+      )
+    )
+    val failure = run(current.getAgent(eve).flatMap(_.turn(audioRequest)).either)
+    assert(
+      failure.swap.toOption.exists(error =>
+        error.isInstanceOf[YallmoError.InvalidConfig] && error.getMessage.contains("audio")
+      )
+    )
+  }
+
+  test("text decision agents pass an audio error marker to inference and still decode the response") {
+    val codec = new AgentDecisionCodec {
+      val instructions = "Decide"
+      def decode(response: String, staticContext: StaticContext[?]): IO[YallmoError, AgentDecision] =
+        ZIO.succeed(AgentDecision.FinalAnswer(response))
+    }
+    val client = fakeClient(incoming =>
+      incoming.body.asString.flatMap(body =>
+        ZIO.attempt {
+          val wire = ujson.read(body)
+          assertEquals(wire("messages")(0)("content").str, "System\n\nDecide")
+          assertEquals(
+            wire("messages")(1)("content").str,
+            "SYSTEM ERROR: decision agents do not support audio input\n\nTask: Describe"
+          )
+          Response.text("""{"choices":[{"message":{"content":"Decision"},"finish_reason":"stop"}]}""")
+        }
+      )
+    )
+    val current = runtime(client = client)
+    val turn = run(current.getProvider(oaiId).flatMap {
+      case connection: OAILlmProvider =>
+        LlmDecisionAgent(bob, codec, model = Some("decision-model"))
+          .next(
+            AgentTask("Describe"),
+            StaticContext("System"),
+            RunContext(Chunk(AudioInput(Chunk[Byte](1), fmgp.yallmo.model.AudioFormat.Wav)))
+          )
+          .provideEnvironment(ZEnvironment[fmgp.yallmo.model.llm.LlmProvider](connection))
+      case _ => ZIO.dieMessage("Expected OAI provider")
+    })
+    assertEquals(turn.assistant, Some(MessagePayload.Assistant("Decision")))
+    assertEquals(turn.decision, AgentDecision.FinalAnswer("Decision"))
   }
 
   test("concurrent mixed lookups return one instance per ID without deadlocking") {
@@ -442,4 +527,34 @@ final class RuntimeInstancesSuite extends FunSuite {
       }
     }
   }
+
+  test("runtime request boundary strips caller-supplied tools and rejects forbidden provider calls") {
+    import fmgp.yallmo.orchestration.config.AgentCapabilities
+    val client = fakeClient(incoming =>
+      incoming.body.asString.map { body =>
+        val json = ujson.read(body)
+        assert(json.obj.get("tools").forall(_.arr.isEmpty))
+        assertEquals(json("tool_choice").str, "none")
+        assertEquals(json("parallel_tool_calls").bool, false)
+        Response.text(
+          """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call","type":"function","function":{"name":"shell","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"""
+        )
+      }
+    )
+    val c = config.copy(agents =
+      Map(bob -> AgentConfig("OAIAgent", Seq(oaiId), capabilities = AgentCapabilities(tools = Some(Set.empty))))
+    )
+    val r = request.copy(
+      tools = Chunk(
+        fmgp.yallmo.model
+          .FunctionToolDefinition("shell", "commands", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))
+      ),
+      toolChoice = fmgp.yallmo.model.ToolChoice.Required,
+      parallelToolCalls = true
+    )
+    val outcome = run(runtime(c, client).getAgent(bob).flatMap(_.turn(r)).either)
+    assert(outcome.isLeft)
+    assert(outcome.swap.toOption.get.getMessage.contains("capability policy"))
+  }
+
 }

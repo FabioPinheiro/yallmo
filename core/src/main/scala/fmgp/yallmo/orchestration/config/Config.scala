@@ -11,6 +11,8 @@ import zio.json.JsonCodec
   *
   * @param defaultAgentId
   *   optional startup preference, not the currently selected agent
+  * @param transcriberAgent
+  *   explicit voice agent reference; absent disables voice without falling back to conversational settings
   * @param browserAudioPort
   *   browser microphone/TTS HTTP port (1–65535); missing fields in older files default to 5180
   */
@@ -20,4 +22,5 @@ final case class Config(
     agents: Map[AgentId, AgentConfig] = Map.empty,
     providers: Map[ProviderId, ProviderConfig] = Map.empty,
     browserAudioPort: Int = 5180,
+    transcriberAgent: Option[AgentId] = None,
 ) derives JsonCodec

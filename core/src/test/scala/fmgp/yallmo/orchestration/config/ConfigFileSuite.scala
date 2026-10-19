@@ -156,4 +156,36 @@ final class ConfigFileSuite extends FunSuite {
       assert(!Files.exists(path))
     }
   }
+
+  test("transcriberAgent is optional, round-trips and rejects unknown references without rewriting") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      val legacy = """{"userName":"operator"}"""
+      Files.writeString(path, legacy)
+      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).transcriberAgent, None)
+      val id = AgentId("Transcriber")
+      val config = Config("operator", agents = Map(id -> AgentConfig("OAIAgent")), transcriberAgent = Some(id))
+      Files.writeString(path, config.toJson)
+      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+      val unknown = config.copy(agents = Map.empty).toJson
+      Files.writeString(path, unknown)
+      val error = run(ConfigFile.loadOrInitialize(path, "ignored").either).swap.toOption.get
+      assert(error.getMessage.contains("transcriberAgent") && error.getMessage.contains("Transcriber"))
+      assertEquals(Files.readString(path), unknown)
+    }
+  }
+
+  test("malformed capability settings fail without echoing arbitrary decoder values") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      val json =
+        """{"userName":"operator","agents":{"agent":{"agentType":"OAIAgent","capabilities":{"tools":"SECRET_INVALID_TYPE"}}}}"""
+      Files.writeString(path, json)
+      val error = run(ConfigFile.loadOrInitialize(path, "ignored").either).swap.toOption.get
+      assert(error.isInstanceOf[YallmoError.InvalidConfig])
+      assert(!error.getMessage.contains("SECRET_INVALID_TYPE"))
+      assertEquals(Files.readString(path), json)
+    }
+  }
+
 }

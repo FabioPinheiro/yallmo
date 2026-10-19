@@ -3,7 +3,7 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.repl.grammar.*
 import fmgp.yallmo.model.{AgentId, YallmoError}
 import fmgp.yallmo.orchestration.SessionId
-import fmgp.yallmo.provider.Transcriber
+import fmgp.yallmo.repl.voice.Transcriber
 import zio.*
 
 /** The next immutable session state and the events produced while reaching it. */

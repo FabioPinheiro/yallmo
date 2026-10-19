@@ -1,8 +1,8 @@
 package fmgp.yallmo.provider.openai
 
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
-import fmgp.yallmo.model.{FunctionCallOutput, MessagePayload}
-import fmgp.yallmo.model.llm.{AgentTurnRequest, LlmStopReason}
+import fmgp.yallmo.model.{AgentId, FunctionCallOutput, MessagePayload}
+import fmgp.yallmo.model.llm.{AgentTurnRequest, LlmStopReason, ProviderGenerateOptions}
 import munit.FunSuite
 import zio.*
 import zio.http.*
@@ -271,6 +271,82 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
     assertEquals(result.swap.toOption.map(_.getMessage), Some("OpenAI Codex authentication request timed out"))
   }
 
+  private val inferenceCredentials = {
+    val payload = java.util.Base64.getUrlEncoder
+      .withoutPadding()
+      .encodeToString(
+        """{"https://api.openai.com/auth":{"chatgpt_account_id":"test-account"}}"""
+          .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+      )
+    OAuthCredentialsConfig(s"header.$payload.signature", "test-refresh", Long.MaxValue)
+  }
+
+  test("provider text inference retains OAuth headers and native HTTP/SSE completion without an agent") {
+    val client = fakeClient(incoming =>
+      incoming.body.asString.flatMap(body =>
+        ZIO.attempt {
+          assertEquals(incoming.url.toString, OpenAiCodexClient.CodexResponsesUrl)
+          assertEquals(incoming.headers.get("Authorization"), Some(s"Bearer ${inferenceCredentials.accessToken}"))
+          assertEquals(incoming.headers.get("chatgpt-account-id"), Some("test-account"))
+          val wire = ujson.read(body)
+          assertEquals(wire("model").str, "legacy-model")
+          assertEquals(wire("instructions").str, "Provider instructions")
+          assertEquals(wire("input")(0)("content")(0)("text").str, "Hello")
+          Response.text(
+            """data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Provider reply"}]}]}}""" + "\n\n"
+          )
+        }
+      )
+    )
+    val result = run {
+      for {
+        provider <- OpenAiCodexClient.make(Some(inferenceCredentials)).provideEnvironment(ZEnvironment(client))
+        text <- provider.inferenceWithText(
+          "Hello",
+          ProviderGenerateOptions(systemInstruction = Some("Provider instructions")),
+          Some("legacy-model")
+        )
+      } yield text
+    }
+    assertEquals(result, "Provider reply")
+  }
+
+  test("agent and provider inference retain the HTTP response-body timeout") {
+    List(true, false).foreach { useAgent =>
+      run {
+        for {
+          started <- Promise.make[Nothing, Unit]
+          clock = new LoginClock(duration =>
+            ZIO.succeed(assertEquals(duration, OpenAiCodexClient.RequestTimeout)) *> started.await
+          )
+          client = fakeClient(_ =>
+            ZIO.succeed(
+              Response(body =
+                Body.fromStreamChunked(
+                  zio.stream.ZStream.fromZIO(started.succeed(()).unit *> ZIO.never.as(0.toByte))
+                )
+              )
+            )
+          )
+          provider <- OpenAiCodexClient.make(Some(inferenceCredentials)).provideEnvironment(ZEnvironment(client))
+          agent = new ChatGPTAgent(AgentId("subscription-agent"), provider)
+          invocation =
+            if useAgent then
+              agent
+                .turn(
+                  AgentTurnRequest(
+                    "model",
+                    Chunk(MessagePayload.User("Hello"), MessagePayload.Instructions("Be helpful"))
+                  )
+                )
+                .unit
+            else provider.inferenceWithText("Hello", ProviderGenerateOptions(), Some("model")).unit
+          result <- invocation.withClock(clock).either
+        } yield assert(result.swap.toOption.exists(_.getMessage == "OpenAI Codex request timed out"))
+      }
+    }
+  }
+
   test("subscription native HTTP turns use OAuth headers and replay tool/continuation items without executing tools") {
     val payload = java.util.Base64.getUrlEncoder
       .withoutPadding()
@@ -328,7 +404,8 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
         provider <- OpenAiCodexClient
           .make(Some(OAuthCredentialsConfig(token, "test-refresh", Long.MaxValue)))
           .provideEnvironment(ZEnvironment(client))
-        first <- provider.turn(
+        agent = new ChatGPTAgent(AgentId("subscription-agent"), provider)
+        first <- agent.turn(
           AgentTurnRequest(
             "account-model",
             Chunk(MessagePayload.User("Read README"), MessagePayload.Instructions("Stay concise"))
@@ -337,7 +414,7 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
         call <- ZIO
           .fromOption(first.output.collectFirst { case MessagePayload.FunctionCallRequest(value) => value })
           .orElseFail(new IllegalStateException("Missing tool proposal"))
-        second <- provider.turn(
+        second <- agent.turn(
           AgentTurnRequest(
             "account-model",
             Chunk(MessagePayload.User("Read README")) ++ first.output ++ Chunk(

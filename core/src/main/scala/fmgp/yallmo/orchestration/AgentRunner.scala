@@ -49,12 +49,13 @@ final class AgentRunner[R](
           .fromEither(budget.validate)
           .flatMap { _ =>
             for
+              effectiveContext <- agent.configuredContext(staticContext)
               turnCount <- Ref.make(0)
               actionCount <- Ref.make(0)
               agentRun <- runLoop(
                 agent,
                 task,
-                staticContext,
+                effectiveContext,
                 runContext.append(MessagePayload.User(task.prompt)),
                 budget,
                 turnCount,

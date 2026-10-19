@@ -1,10 +1,8 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.model.llm.{AudioInput, LlmProviderAudio}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
-import fmgp.yallmo.provider.Transcriber
 import fmgp.yallmo.provider.openai.*
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
@@ -45,10 +43,6 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
       ZIO.dieMessage("Menus must not record")
   }
-  private val transcriber = new Transcriber(new LlmProviderAudio {
-    def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
-      ZIO.dieMessage("Menus must not transcribe")
-  })
 
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
@@ -141,7 +135,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     variables.put(LineReader.HISTORY_FILE, historyFile)
     val reader = new StatusLineReader(terminal, variables)
     reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
-    val client = new TerminalRepl(app, reader, recorder, transcriber)
+    val client = new TerminalRepl(app, reader, recorder)
     val restored = scala.collection.mutable.ListBuffer.empty[(String, Int)]
     val displays = scala.collection.mutable.ListBuffer.empty[String]
     def displayed: String = reader.getDisplayedBufferWithPrompts(new java.util.ArrayList[AttributedString]()).toString

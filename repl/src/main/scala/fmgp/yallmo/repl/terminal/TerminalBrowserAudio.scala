@@ -1,7 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.model.MessagePayload
-import fmgp.yallmo.model.llm.AudioInput
+import fmgp.yallmo.model.{MessagePayload, AudioInput}
 import fmgp.yallmo.repl.ReplState
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}

@@ -1,8 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.llm.{AudioFormat, AudioInput, LlmProviderAudio}
-import fmgp.yallmo.provider.Transcriber
+import fmgp.yallmo.model.{AudioFormat, AudioInput, YallmoError}
+import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, PipedInputStream, PipedOutputStream}
 import java.util.concurrent.{CompletableFuture, CountDownLatch, TimeUnit}
@@ -14,6 +13,34 @@ import org.jline.terminal.impl.DumbTerminal
 import zio.*
 
 final class VoiceInsertSuite extends FunSuite {
+  test("disabled voice reports configuration before either recorder starts and preserves draft and cursor") {
+    for command <- List("v", "m") do {
+      val output = new ByteArrayOutputStream()
+      val terminal = new DumbTerminal(
+        "test",
+        "xterm",
+        new ByteArrayInputStream(s"draft\u001bhh${command}iX\n".getBytes(UTF_8)),
+        output,
+        UTF_8
+      )
+      terminal.setSize(new Size(120, 24))
+      val reader = new StatusLineReader(terminal, new java.util.HashMap[String, Object]())
+      reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
+      val status = new TerminalVoiceModeStatus(reader)
+      val recorder = new AudioRecorder {
+        def record(seconds: Int): Task[AudioInput] = ZIO.dieMessage("Disabled voice must not record")
+        def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+          ZIO.dieMessage("Disabled voice must not record")
+      }
+      new TerminalMenus(reader, None).install()
+      new VoiceInsert(reader, recorder, None, status, command).install()
+      try {
+        assertEquals(reader.readLine("test> "), "drXaft")
+        assert(output.toString(UTF_8).contains("configure transcriberAgent"))
+      } finally terminal.close()
+    }
+  }
+
   test("voice completion, cancellation and failure stay NORMAL until i is pressed") {
     for
       command <- List("v", "m")
@@ -42,16 +69,16 @@ final class VoiceInsertSuite extends FunSuite {
               else ZIO.some(audio)
           }
       }
-      val transcriber = new Transcriber(new LlmProviderAudio {
-        def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
+      val transcriber = new Transcriber {
+        def transcribe(audio: AudioInput): IO[YallmoError, String] =
           if scenario == "transcription-error" then
             ZIO.fail(YallmoError.Unexpected(new IllegalStateException("Offline")))
           else ZIO.succeed(if scenario == "empty" then " " else "hello")
-      })
+      }
       var observedMode: Option[String] = None
       status.install()
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, () => transcriber, status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
       reader.getWidgets.put(
         "test-after-voice",
         new Widget {
@@ -83,10 +110,10 @@ final class VoiceInsertSuite extends FunSuite {
       val status = new TerminalVoiceModeStatus(reader)
       val audio = AudioInput(Chunk(1.toByte), AudioFormat.Wav)
       var transcriptions = 0
-      val transcriber = new Transcriber(new LlmProviderAudio {
-        def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
+      val transcriber = new Transcriber {
+        def transcribe(audio: AudioInput): IO[YallmoError, String] =
           ZIO.succeed { transcriptions += 1; "hello" }
-      })
+      }
       val recorder = new AudioRecorder {
         def record(seconds: Int): Task[AudioInput] = ZIO.succeed(audio)
         def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
@@ -94,7 +121,7 @@ final class VoiceInsertSuite extends FunSuite {
                                     else ZIO.fail(new IllegalStateException(result)))
       }
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, () => transcriber, status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
       val completed = new CountDownLatch(1)
       val original = reader.getWidgets.get(s"voice-insert-$command")
       reader.getWidgets.put(
@@ -149,14 +176,14 @@ final class VoiceInsertSuite extends FunSuite {
               else ZIO.some(audio)
           }
       }
-      val transcriber = new Transcriber(new LlmProviderAudio {
-        def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
+      val transcriber = new Transcriber {
+        def transcribe(audio: AudioInput): IO[YallmoError, String] =
           if scenario == "transcription-error" then
             ZIO.fail(YallmoError.Unexpected(new IllegalStateException("Offline")))
           else ZIO.succeed(" ")
-      })
+      }
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, () => transcriber, status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
       var snapshots = List.empty[(String, Int, String)]
       reader.getWidgets.put(
         "test-preservation",

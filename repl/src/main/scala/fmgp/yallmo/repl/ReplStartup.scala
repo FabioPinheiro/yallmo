@@ -1,59 +1,14 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.model.{Agent, AgentId, YallmoError}
-import fmgp.yallmo.model.llm.{AudioInput, LlmProviderAudio, ProviderGenerateOptions, ThinkingLevel}
+import fmgp.yallmo.model.llm.ProviderGenerateOptions
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ProviderId}
-import fmgp.yallmo.provider.Transcriber
+import fmgp.yallmo.orchestration.config.{Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
+import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import zio.*
 import zio.http.Client
-import zio.json.*
 import zio.json.ast.Json
-
-/** Per-agent model settings. The same values drive native requests, the system context and footer metadata. */
-private[repl] final case class ReplAgentSettings(
-    model: String,
-    systemPrompt: String,
-    thinkingLevel: Option[ThinkingLevel],
-    parallelToolCalls: Boolean
-)
-
-private[repl] object ReplAgentSettings {
-  val DefaultSystemPrompt =
-    "You are Yallmo, a concise terminal assistant. Answer the user's request concisely. Use an advertised tool only when it is needed."
-
-  private final case class Fields(
-      model: String,
-      systemPrompt: String = DefaultSystemPrompt,
-      thinkingLevel: Option[String] = None,
-      parallelToolCalls: Boolean = false
-  ) derives JsonCodec
-
-  def decode(definition: AgentConfig): Either[YallmoError, ReplAgentSettings] =
-    for {
-      fields <- definition.config.toJson
-        .fromJson[Fields]
-        .left
-        .map(_ =>
-          YallmoError.InvalidConfig("Selected agent settings require a model and valid optional prompt/thinking fields")
-        )
-      _ <- Either.cond(
-        fields.model.trim.nonEmpty && fields.systemPrompt.trim.nonEmpty,
-        (),
-        YallmoError.InvalidConfig("Selected agent model and systemPrompt must not be blank")
-      )
-      thinking <- fields.thinkingLevel match {
-        case None        => Right(None)
-        case Some(value) =>
-          ThinkingLevel
-            .parse(value)
-            .map(Some(_))
-            .left
-            .map(_ => YallmoError.InvalidConfig("thinkingLevel must be minimal, low, medium or high"))
-      }
-    } yield ReplAgentSettings(fields.model.trim, fields.systemPrompt, thinking, fields.parallelToolCalls)
-}
 
 private[repl] final case class ReplSelectedAgent(
     adapter: Agent[Any],
@@ -75,39 +30,22 @@ private[repl] final class ReplStartup private (
     config: Config
 ) {
 
-  /** Uses the selected connection for audio only if its adapter supports it, with the selected agent's explicit model.
-    * There is no fallback to another provider or account.
-    */
-  def transcriber: IO[YallmoError, Transcriber] = transcriberFor(selected)
-
-  private def transcriberFor(selection: Option[ReplSelectedAgent]): IO[YallmoError, Transcriber] =
-    selection match {
-      case None        => ZIO.succeed(ReplStartup.unavailableTranscriber)
-      case Some(value) =>
-        instances.getProvider(value.providerId).map {
-          case audio: LlmProviderAudio =>
-            new Transcriber(new LlmProviderAudio {
-              override def inferenceWithAudio(
-                  prompt: String,
-                  input: AudioInput,
-                  model: Option[String]
-              ): IO[YallmoError, String] =
-                audio.inferenceWithAudio(prompt, input, Some(model.getOrElse(value.program.model)))
-            })
-          case _ => ReplStartup.unavailableTranscriber
-        }
-    }
-
   /** Builds storage and a session. Unselected sessions expose commands but reject prompts without running tools. */
   def application(
       availableTools: Chunk[AgentTool[ReplTools.Environment]],
       availability: ReplToolAvailability
   ): IO[YallmoError, ReplApplication[ReplTools.Environment]] =
     for {
+      context = StaticContext[ReplTools.Environment](
+        ReplStartup.DefaultSystemPrompt,
+        tools = availableTools.map(_.definition)
+      )
+      _ <- ZIO.fromEither(ConfigFile.validateCapabilities(config, context))
       orchestrator <- options.storageRoot match {
         case None       => OrchestratorLive.inMemory(instances)
         case Some(root) => OrchestratorLive.filesystem(root, instances)
       }
+      voice <- ReplStartup.voice(config, instances, context, orchestrator, userAgent.id)
       application <- {
         val runner = new AgentRunner[ReplTools.Environment](
           availableTools.map(tool => tool.definition.key -> tool).toMap,
@@ -126,10 +64,10 @@ private[repl] final class ReplStartup private (
             )
           }
         def build(selection: Option[ReplSelectedAgent]): IO[YallmoError, ReplApplication[ReplTools.Environment]] =
-          transcriberFor(selection).map { audio =>
+          ZIO.succeed {
             val replOrchestrator = ReplOrchestratorLive.make(orchestrator, userAgent, selection.map(_.adapter))
             val context = StaticContext[ReplTools.Environment](
-              selection.fold(ReplAgentSettings.DefaultSystemPrompt)(_.systemPrompt),
+              selection.fold(ReplStartup.DefaultSystemPrompt)(_.systemPrompt),
               tools = availableTools.map(_.definition)
             )
             new ReplApplication[ReplTools.Environment](
@@ -147,7 +85,7 @@ private[repl] final class ReplStartup private (
               agentChoices = choices,
               agentSelector =
                 Some(id => ReplStartup.resolve(config, instances, id).flatMap(value => build(Some(value)))),
-              transcriber = Some(audio),
+              transcriber = voice,
               userId = userAgent.id
             )
           }
@@ -157,6 +95,40 @@ private[repl] final class ReplStartup private (
 }
 
 private[repl] object ReplStartup {
+
+  val DefaultSystemPrompt =
+    "You are Yallmo, a concise terminal assistant. Answer the user's request concisely. Use an advertised tool only when it is needed."
+
+  /** Resolves the ordinary configured audio agent and applies REPL voice policy without inference or auth probes. */
+  private[repl] def voice[R](
+      config: Config,
+      instances: RuntimeInstances[Any],
+      available: StaticContext[R],
+      orchestrator: Orchestrator[Any],
+      humanId: AgentId
+  ): IO[YallmoError, Option[Transcriber]] =
+    ZIO.foreach(config.transcriberAgent) { id =>
+      val checked = for {
+        definition <- ZIO
+          .fromOption(config.agents.get(id))
+          .orElseFail(YallmoError.InvalidConfig("transcriberAgent must reference a configured agent"))
+        settings <- ZIO.fromEither(ConfiguredAgentSettings.decode(definition))
+        context <- ZIO.fromEither(definition.capabilities.resolve(id, available))
+        _ <- ZIO
+          .fail(
+            YallmoError.InvalidConfig(
+              "Transcription requires effectively empty capabilities.tools/retrievers/skills/extensions; explicitly set each allowlist to [] to disable inherited capabilities"
+            )
+          )
+          .unless(
+            context.tools.isEmpty && context.retrievers.isEmpty && context.skills.isEmpty && context.extensions.isEmpty
+          )
+        agent <- instances.getAudioAgent(id)
+      } yield Transcriber.make(agent, settings, orchestrator, humanId)
+      checked.mapError(error =>
+        YallmoError.InvalidConfig(s"transcriberAgent '${AgentId.value(id)}': ${error.getMessage}")
+      )
+    }
 
   /** Registers the configured human identity and resolves only the CLI/default agent, without inference or auth.
     *
@@ -186,7 +158,9 @@ private[repl] object ReplStartup {
   ): IO[YallmoError, ReplSelectedAgent] =
     for {
       definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
-      settings <- ZIO.fromEither(ReplAgentSettings.decode(definition))
+      settings <- ZIO
+        .fromEither(ConfiguredAgentSettings.decode(definition, defaultSystemPrompt = Some(DefaultSystemPrompt)))
+        .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}"))
       adapter <- instances.getAgent(id)
       providerId <- ZIO
         .fromOption(definition.providerIds.headOption)
@@ -203,12 +177,4 @@ private[repl] object ReplStartup {
       settings.systemPrompt
     )
 
-  private[repl] val unavailableTranscriber: Transcriber = new Transcriber(new LlmProviderAudio {
-    override def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
-      ZIO.fail(
-        YallmoError.InvalidConfig(
-          "Voice transcription requires a selected audio-capable provider; no fallback is configured"
-        )
-      )
-  })
 }

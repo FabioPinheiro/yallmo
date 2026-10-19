@@ -9,7 +9,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.UUID
 
-/** Best-effort native-turn diagnostics. Provider continuations are recursively redacted. */
+/** Best-effort native-turn diagnostics. Provider continuations and wire audio bytes are recursively redacted. */
 object LlmProviderPayloadDebug {
   private val LocalDirectory = Path.of("debug")
   private val Redacted = "<redacted>"
@@ -83,8 +83,17 @@ object LlmProviderPayloadDebug {
   private[yallmo] def redact(value: ujson.Value): ujson.Value = value match
     case obj: ujson.Obj =>
       ujson.Obj.from(obj.value.iterator.map { case (key, child) =>
-        key -> (if SensitiveKeys.contains(key) then ujson.Str(Redacted) else redact(child))
+        key -> (if SensitiveKeys.contains(key) then ujson.Str(Redacted)
+                else if key == "input_audio" then redactAudio(child)
+                else redact(child))
       })
     case array: ujson.Arr => ujson.Arr.from(array.value.map(redact))
     case other            => other
+
+  private def redactAudio(value: ujson.Value): ujson.Value = value match
+    case obj: ujson.Obj =>
+      ujson.Obj.from(obj.value.iterator.map { case (key, child) =>
+        key -> (if key == "data" then ujson.Str("") else redact(child))
+      })
+    case other => redact(other)
 }

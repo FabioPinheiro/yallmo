@@ -42,3 +42,6 @@ trait Agent[-Environment] {
     */
   def turn(request: AgentTurnRequest): ZIO[Environment, YallmoError, AgentTurnResponse]
 }
+
+/** Explicit audio capability using the same turn contract; endpoint/model support is checked by the provider. */
+trait AudioAgent[-Environment] extends Agent[Environment]

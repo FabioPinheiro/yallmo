@@ -1,15 +1,16 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.provider.Transcriber
-import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
-import org.jline.reader.{LineReader, Reference, Widget}
 import zio.*
+import org.jline.reader.{LineReader, Reference, Widget}
+import fmgp.yallmo.model.AudioInput
+import fmgp.yallmo.repl.voice.Transcriber
+import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 
 /** Owns the line-editor-only voice workflow. It never submits text to [[fmgp.yallmo.repl.ReplApplication]]. */
 private[terminal] final class VoiceInsert(
     reader: StatusLineReader,
     recorder: AudioRecorder,
-    transcriber: () => Transcriber,
+    transcriber: Option[Transcriber],
     terminalStatus: TerminalVoiceModeStatus,
     command: String = VoiceInsert.VoiceCommand,
     recordingStarted: UIO[Boolean] = ZIO.succeed(true),
@@ -49,7 +50,12 @@ private[terminal] final class VoiceInsert(
     // NORMAL (the Vi command map) places the cursor on the preceding character. Insert after that character so Esc, v preserves
     // the logical insertion position from text mode; NORMAL movement intentionally selects a new insertion point.
     val insertionPoint = insertionCursor
-    val selectedTranscriber = transcriber()
+    val voice = transcriber match {
+      case Some(value) => value
+      case None        =>
+        reader.printAbove(Transcriber.DisabledMessage)
+        return false
+    }
     val termination = run(Promise.make[Nothing, VoiceRecordingTermination])
     // Each `run` completes before this widget waits for the stop key. Use a daemon fiber so that completion does not
     // immediately interrupt the microphone capture as it would with a child `fork`.
@@ -67,7 +73,7 @@ private[terminal] final class VoiceInsert(
       case Right(None)        => false
       case Right(Some(audio)) =>
         terminalStatus.transcribing()
-        run(selectedTranscriber.transcribe(audio).either) match {
+        run(voice.transcribe(audio).either) match {
           case Left(error) =>
             showFailure(error)
             false
@@ -80,7 +86,7 @@ private[terminal] final class VoiceInsert(
 
   /** Recording completion/errors must release the widget even when no further key arrives. */
   private def awaitTermination(
-      recording: Fiber[Throwable, Option[fmgp.yallmo.model.llm.AudioInput]],
+      recording: Fiber[Throwable, Option[AudioInput]],
       termination: Promise[Nothing, VoiceRecordingTermination]
   ): Unit = {
     var waiting = true

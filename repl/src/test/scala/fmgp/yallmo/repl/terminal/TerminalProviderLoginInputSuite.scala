@@ -4,8 +4,6 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.config.ProviderId
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.provider.openai.*
-import fmgp.yallmo.provider.Transcriber
-import fmgp.yallmo.model.llm.{AudioInput, LlmProviderAudio}
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 import fmgp.yallmo.repl.*
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, PipedInputStream, PipedOutputStream}
@@ -387,10 +385,6 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
       ZIO.dieMessage("Command input must not record audio")
   }
-  private val unusedTranscriber = new Transcriber(new LlmProviderAudio {
-    def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
-      ZIO.dieMessage("Command input must not transcribe audio")
-  })
 
   test("the first prompt starts in NORMAL; Esc does nothing and a single i begins editing") {
     val observed = scala.collection.mutable.ListBuffer.empty[String]
@@ -408,7 +402,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val reader = new StatusLineReader(terminal, variables)
     reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
     val client =
-      new TerminalRepl(application((text, _) => observed += text), reader, unusedRecorder, unusedTranscriber)
+      new TerminalRepl(application((text, _) => observed += text), reader, unusedRecorder)
     val modes = scala.collection.mutable.ListBuffer.empty[String]
     val original = reader.getWidgets.get(LineReader.CALLBACK_INIT)
     reader.getWidgets.put(
@@ -443,7 +437,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val reader = new StatusLineReader(terminal, new java.util.HashMap[String, Object]())
     try {
       runZIO(
-        new TerminalRepl(application, reader, unusedRecorder, unusedTranscriber).run
+        new TerminalRepl(application, reader, unusedRecorder).run
           .timeoutFail(new Exception("test timeout"))(3.seconds)
       )
       assertEquals(reader.getHistory.size(), 1)
@@ -464,7 +458,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val reader = new StatusLineReader(terminal, new java.util.HashMap[String, Object]())
     try {
       runZIO(
-        new TerminalRepl(application, reader, unusedRecorder, unusedTranscriber).run
+        new TerminalRepl(application, reader, unusedRecorder).run
           .timeoutFail(new Exception("test timeout"))(3.seconds)
       )
       val history = reader.getHistory.iterator()
@@ -488,7 +482,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       val attributes = terminal.getAttributes.toString
       try {
         val result = runZIO(
-          TerminalRepl.runWithTerminal(application, terminal, unusedRecorder, unusedTranscriber).either
+          TerminalRepl.runWithTerminal(application, terminal, unusedRecorder).either
         )
         assertEquals(
           result.left.toOption.map(_.getMessage),
@@ -515,13 +509,10 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
         ZIO.dieMessage("Menu navigation must not record audio")
     }
-    val transcriber = new Transcriber(new LlmProviderAudio {
-      def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
-        ZIO.dieMessage("Menu navigation must not transcribe audio")
-    })
+
     try {
       runZIO(
-        new TerminalRepl(app, reader, recorder, transcriber).run
+        new TerminalRepl(app, reader, recorder).run
           .timeoutFail(new Exception("test timeout"))(3.seconds)
       )
       assertEquals(observed.toList, List("draXft"))

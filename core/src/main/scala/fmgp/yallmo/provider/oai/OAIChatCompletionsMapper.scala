@@ -50,6 +50,19 @@ private[oai] object OAIChatCompletionsMapper {
 
   private def append(messages: Vector[ujson.Value], item: MessagePayload): Vector[ujson.Value] =
     item match
+      case audio: AudioInput =>
+        messages :+ ujson.Obj(
+          "role" -> "user",
+          "content" -> ujson.Arr(
+            ujson.Obj(
+              "type" -> "input_audio",
+              "input_audio" -> ujson.Obj(
+                "data" -> Base64.getEncoder.encodeToString(audio.bytes.toArray),
+                "format" -> audio.format.wireName
+              )
+            )
+          )
+        )
       case MessagePayload.User(text)           => messages :+ ujson.Obj("role" -> "user", "content" -> text)
       case MessagePayload.Context(label, text) =>
         messages :+ ujson.Obj("role" -> "user", "content" -> s"Context [$label]:\n$text")
@@ -85,6 +98,17 @@ private[oai] object OAIChatCompletionsMapper {
     ujson.Arr.from(messages.result())
   }
 
+  /** Wire request for prompt-based audio inference, independent of the agent turn contract. */
+  private[oai] def audioRequestBody(model: String, prompt: String, audio: AudioInput): ujson.Obj =
+    ujson.Obj(
+      "model" -> model,
+      "messages" -> messages(Chunk(audio, MessagePayload.Instructions(prompt))),
+      "stream" -> false,
+      "temperature" -> 0,
+      "tool_choice" -> "none",
+      "parallel_tool_calls" -> false
+    )
+
   private[oai] def turnRequestBody(model: String, request: AgentTurnRequest): ujson.Obj = {
     val body = ujson.Obj(
       "model" -> model,
@@ -97,7 +121,7 @@ private[oai] object OAIChatCompletionsMapper {
     request.options.seed.foreach(value => body("seed") = value)
     if request.options.stopSequences.nonEmpty then body("stop") = ujson.Arr.from(request.options.stopSequences)
     if request.tools.nonEmpty then body("tools") = ujson.Arr.from(request.tools.map(turnTool))
-    if request.tools.nonEmpty then body("tool_choice") = toolChoiceJson(request.toolChoice)
+    body("tool_choice") = toolChoiceJson(request.toolChoice)
     body("parallel_tool_calls") = request.parallelToolCalls
     body
   }
@@ -158,7 +182,7 @@ private[oai] object OAIChatCompletionsMapper {
       }
       .toEither
       .left
-      .map(error => Option(error.getMessage).getOrElse("Invalid OpenAI-compatible endpoint response"))
+      .map(_ => "Invalid OpenAI-compatible endpoint response")
 
   private def toolJson(definition: LlmToolDefinition): ujson.Obj = {
     val properties = definition.parameters.map { parameter =>
@@ -200,24 +224,4 @@ private[oai] object OAIChatCompletionsMapper {
 
   private def schemaType(value: ToolSchemaType): String = value.toString.toLowerCase
 
-  def audioRequestBody(model: String, systemPrompt: String, audio: AudioInput): ujson.Obj =
-    ujson.Obj(
-      "model" -> model,
-      "messages" -> ujson.Arr(
-        ujson.Obj("role" -> "system", "content" -> systemPrompt),
-        ujson.Obj(
-          "role" -> "user",
-          "content" -> ujson.Arr(
-            ujson.Obj(
-              "type" -> "input_audio",
-              "input_audio" -> ujson.Obj(
-                "data" -> Base64.getEncoder.encodeToString(audio.bytes.toArray),
-                "format" -> audio.format.wireName
-              )
-            )
-          )
-        )
-      ),
-      "temperature" -> 0
-    )
 }

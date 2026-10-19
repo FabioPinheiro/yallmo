@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.browser
 
-import fmgp.yallmo.model.llm.{AudioFormat, AudioInput}
+import fmgp.yallmo.model.{AudioFormat, AudioInput}
 import zio.Chunk
 
 /** Accept only the page's canonical 44-byte PCM header; MIME labels are not format validation. */
@@ -15,6 +15,10 @@ private[browser] object WavAudio {
       tag(12, "fmt ") && u32(16) == 16 && u16(20) == 1 && u16(22) == 1 &&
       u32(24) == 16000 && u32(28) == 32000 && u16(32) == 2 && u16(34) == 16 &&
       tag(36, "data") && u32(40) == bytes.length - 44
-    Either.cond(valid, AudioInput(bytes, AudioFormat.Wav), BrowserProtocol.failure("invalid_wav"))
+    Either.cond(
+      valid,
+      AudioInput(bytes, AudioFormat.Wav, bytes.length.toLong, Some((bytes.length - 44).toDouble / 32000)),
+      BrowserProtocol.failure("invalid_wav")
+    )
   }
 }

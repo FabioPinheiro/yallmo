@@ -3,7 +3,6 @@ package fmgp.yallmo.provider.openai
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.*
-import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, ToolChoice}
 import fmgp.yallmo.model.llm.*
 import zio.*
 import zio.http.*
@@ -11,13 +10,10 @@ import zio.http.*
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-/** Native client for the ChatGPT Codex subscription backend, using OAuth rather than platform API keys. */
+/** Provider connection for the ChatGPT Codex backend. Owns OAuth and HTTP inference, not agent identity or turns. */
 final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodexAuth.CredentialAccess)
-    extends LlmProvider
-    with Agent[Any] {
+    extends LlmProvider {
   import OpenAiCodexClient.*
-
-  override val id: AgentId = AgentId("openai-codex")
 
   override val defaultModel: String = OpenAiCodexConfig.Model
 
@@ -28,6 +24,8 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
   ): IO[YallmoError, String] =
     generate(prompt, Chunk.empty, options, model).mapError(YallmoError.fromThrowable)
 
+  /** Legacy provider-owned tool execution retained for compatibility; prefer the configured agent/runner path. */
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   override def generateWithTools[R](
       prompt: String,
       tools: Chunk[LlmTool[R]],
@@ -36,30 +34,8 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
   ): ZIO[R, YallmoError, String] =
     generate(prompt, tools, options, model).mapError(YallmoError.fromThrowable)
 
-  /** Performs one Responses API turn; tool execution and looping belong to AgentRunner. */
-  override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-    (for {
-      _ <- ZIO.fromEither(request.validate.left.map(YallmoError.InvalidConfig.apply))
-      _ <- ZIO.fromEither(validateModel(request.model).left.map(YallmoError.InvalidConfig.apply))
-      credentials <- auth.validCredentials
-      account <- ZIO.fromEither(accountId(credentials.accessToken).left.map(YallmoError.AuthenticationFailure.apply))
-      turnId = LlmProviderPayloadDebug.newTurnId()
-      response <- callTurn(credentials.accessToken, account, request, turnId)
-      turn <- ZIO.fromEither(OpenAiCodexTurnMapper.response(response).left.map(YallmoError.ProtocolFailure.apply))
-      _ <- LlmProviderPayloadDebug.captureResponse(turnId, "OpenAI Codex", request.model, turn)
-    } yield turn)
-      .tapBoth(
-        error =>
-          ZIO.logError(
-            s"OpenAI Codex turn failed model=${request.model}: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}"
-          ),
-        turn =>
-          ZIO.logInfo(
-            s"OpenAI Codex turn completed model=${request.model} stopReason=${turn.stopReason} toolCalls=${turn.output.count(_.isInstanceOf[MessagePayload.FunctionCallRequest])}"
-          )
-      )
-      .mapError(YallmoError.fromThrowable)
-
+  // Compatibility bridge: prompt-only inference supplies no tools; only this bridge may call the deprecated loop.
+  @scala.annotation.nowarn("cat=deprecation")
   private def generate[R](
       prompt: String,
       tools: Chunk[LlmTool[R]],
@@ -100,6 +76,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
       )
     yield result
 
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   private def toolLoop[R](
       accessToken: String,
       accountId: String,
@@ -120,6 +97,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
         }
     }
 
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   private def executeTool[R](
       call: OpenAiCodexFunctionCall,
       tools: Chunk[LlmTool[R]]
@@ -142,9 +120,26 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
       tools: Chunk[LlmTool[R]],
       options: ProviderGenerateOptions,
       model: String
+  ): Task[OpenAiCodexResponse] =
+    ZIO.logInfo(
+      s"Calling OpenAI Codex model=$model historyItems=${history.value.size} tools=${tools.map(_.definition.name).mkString("[", ",", "]")}"
+    ) *> completeAuthenticated(accessToken, accountId, requestBody(history, tools, options, model))
+
+  /** Completes a provider-native wire request without accepting or returning agent turn types. */
+  private[openai] def complete(body: ujson.Obj): IO[YallmoError, OpenAiCodexResponse] =
+    (for {
+      credentials <- auth.validCredentials
+      account <- ZIO.fromEither(accountId(credentials.accessToken).left.map(YallmoError.AuthenticationFailure.apply))
+      response <- completeAuthenticated(credentials.accessToken, account, body)
+    } yield response).mapError(YallmoError.fromThrowable)
+
+  private def completeAuthenticated(
+      accessToken: String,
+      accountId: String,
+      body: ujson.Obj
   ): Task[OpenAiCodexResponse] = {
     val request = Request
-      .post(CodexResponsesUrl, Body.fromString(ujson.write(requestBody(history, tools, options, model))))
+      .post(CodexResponsesUrl, Body.fromString(ujson.write(body)))
       .addHeader("Authorization", s"Bearer $accessToken")
       .addHeader("chatgpt-account-id", accountId)
       .addHeader("OpenAI-Beta", "responses=experimental")
@@ -153,55 +148,18 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
       .addHeader("Content-Type", "application/json")
       .addHeader("Accept", "text/event-stream")
 
-    ZIO.logInfo(
-      s"Calling OpenAI Codex model=$model historyItems=${history.value.size} tools=${tools.map(_.definition.name).mkString("[", ",", "]")}"
-    ) *>
-      Client
-        .batched(request)
-        .provideEnvironment(ZEnvironment(client))
-        .flatMap { response =>
-          response.body.asString.flatMap { body =>
-            if response.status.isSuccess then
-              ZIO.fromEither(parseSseResponse(body)).mapError(YallmoError.ProtocolFailure.apply)
-            else ZIO.fail(YallmoError.HttpFailure(s"OpenAI Codex returned HTTP ${response.status.code}"))
-          }
+    Client
+      .batched(request)
+      .provideEnvironment(ZEnvironment(client))
+      .flatMap { response =>
+        response.body.asString.flatMap { body =>
+          if response.status.isSuccess then
+            ZIO.fromEither(parseSseResponse(body)).mapError(YallmoError.ProtocolFailure.apply)
+          else ZIO.fail(YallmoError.HttpFailure(s"OpenAI Codex returned HTTP ${response.status.code}"))
         }
-        .timeoutFail(YallmoError.HttpFailure("OpenAI Codex request timed out"))(RequestTimeout)
+      }
+      .timeoutFail(YallmoError.HttpFailure("OpenAI Codex request timed out"))(RequestTimeout)
   }
-
-  private def callTurn(
-      accessToken: String,
-      accountId: String,
-      turnRequest: AgentTurnRequest,
-      turnId: String
-  ): Task[OpenAiCodexResponse] =
-    ZIO.fromEither(turnRequestBody(turnRequest).left.map(YallmoError.InvalidConfig.apply)).flatMap { body =>
-      val request = Request
-        .post(CodexResponsesUrl, Body.fromString(ujson.write(body)))
-        .addHeader("Authorization", s"Bearer $accessToken")
-        .addHeader("chatgpt-account-id", accountId)
-        .addHeader("OpenAI-Beta", "responses=experimental")
-        .addHeader("originator", "yallmo")
-        .addHeader("User-Agent", "Yallmo")
-        .addHeader("Content-Type", "application/json")
-        .addHeader("Accept", "text/event-stream")
-
-      LlmProviderPayloadDebug.captureRequest(turnId, "OpenAI Codex", turnRequest.model, body) *>
-        ZIO.logInfo(
-          s"Calling OpenAI Codex model=${turnRequest.model} turnId=$turnId inputItems=${turnRequest.input.size} tools=${turnRequest.tools.map(_.name).mkString("[", ",", "]")}"
-        ) *>
-        Client
-          .batched(request)
-          .provideEnvironment(ZEnvironment(client))
-          .flatMap { response =>
-            response.body.asString.flatMap { body =>
-              if response.status.isSuccess then
-                ZIO.fromEither(parseSseResponse(body)).mapError(YallmoError.ProtocolFailure.apply)
-              else ZIO.fail(YallmoError.HttpFailure(s"OpenAI Codex returned HTTP ${response.status.code}"))
-            }
-          }
-          .timeoutFail(YallmoError.HttpFailure("OpenAI Codex request timed out"))(RequestTimeout)
-    }
 
   private def userInput(prompt: String): ujson.Arr =
     ujson.Arr(ujson.Obj("role" -> "user", "content" -> ujson.Arr(ujson.Obj("type" -> "input_text", "text" -> prompt))))
@@ -212,7 +170,7 @@ object OpenAiCodexClient {
   val RequestTimeout: Duration = 2.minutes
 
   /** Creates a new client with isolated, in-memory profile credentials, capturing the HTTP client from the ZIO
-    * environment at construction. Credentials are checked/refreshed only when a turn is submitted; refreshed values
+    * environment at construction. Credentials are checked/refreshed only when inference is requested; refreshed values
     * remain in memory.
     */
   def make(credentials: Option[OAuthCredentialsConfig]): ZIO[Client, Nothing, OpenAiCodexClient] =
@@ -241,38 +199,6 @@ object OpenAiCodexClient {
     if tools.nonEmpty then body("tools") = ujson.Arr.from(tools.map(tool => toolJson(tool.definition)))
     body
   }
-
-  private[openai] def turnRequestBody(turnRequest: AgentTurnRequest): Either[String, ujson.Obj] =
-    turnRequest.validate.flatMap { validated =>
-      validated.input.lastOption match {
-        // AgentTurnRequest requires the current instructions last, not at the start of history.
-        case Some(MessagePayload.Instructions(instructions)) =>
-          val body = ujson.Obj(
-            "model" -> validated.model,
-            "store" -> false,
-            "stream" -> true,
-            "include" -> ujson.Arr("reasoning.encrypted_content"),
-            "instructions" -> instructions,
-            "input" -> OpenAiCodexTurnMapper.input(validated.input.dropRight(1)),
-            "tool_choice" -> toolChoiceJson(validated.toolChoice),
-            "parallel_tool_calls" -> validated.parallelToolCalls
-          )
-          validated.options.thinkingLevel.foreach(level =>
-            body("reasoning") = ujson.Obj("effort" -> thinkingEffort(level))
-          )
-          if validated.tools.nonEmpty then
-            body("tools") = ujson.Arr.from(validated.tools.map(OpenAiCodexTurnMapper.tool))
-          Right(body)
-        case _ => Left("the final input item must be instructions")
-      }
-    }
-
-  private def toolChoiceJson(choice: ToolChoice): ujson.Value =
-    choice match
-      case ToolChoice.Auto           => ujson.Str("auto")
-      case ToolChoice.None           => ujson.Str("none")
-      case ToolChoice.Required       => ujson.Str("required")
-      case ToolChoice.Function(name) => ujson.Obj("type" -> "function", "name" -> name)
 
   private def toolJson(definition: LlmToolDefinition): ujson.Obj = {
     val properties = definition.parameters.map { parameter =>
@@ -459,7 +385,7 @@ object OpenAiCodexClient {
 
   private def schemaType(value: ToolSchemaType): String = value.toString.toLowerCase
 
-  private def thinkingEffort(value: ThinkingLevel): String =
+  private[openai] def thinkingEffort(value: ThinkingLevel): String =
     value match {
       case ThinkingLevel.Minimal => "low"
       case other                 => other.toString.toLowerCase(java.util.Locale.ROOT)

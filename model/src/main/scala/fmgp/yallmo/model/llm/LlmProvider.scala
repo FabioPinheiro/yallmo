@@ -1,11 +1,12 @@
 package fmgp.yallmo.model.llm
 
 import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.model.AudioInput
 import zio.*
 
-/** Provider-neutral audio-completion interface. */
+/** Prompt-based audio inference capability. Structured turns belong to audio-capable agents. */
 trait LlmProviderAudio:
-  /** Performs LLM inference using a text prompt and audio input to generate a response. */
+  /** Performs inference using a text prompt and audio input. */
   def inferenceWithAudio(
       prompt: String,
       audio: AudioInput,
@@ -29,6 +30,7 @@ trait LlmProviderText:
       model: Option[String]
   ): IO[YallmoError, String]
 
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   def inferenceWithTextAndTools[R](
       prompt: String,
       tools: Chunk[LlmTool[R]], // TODO use Seq

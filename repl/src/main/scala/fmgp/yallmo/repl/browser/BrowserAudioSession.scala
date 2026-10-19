@@ -1,10 +1,9 @@
 package fmgp.yallmo.repl.browser
 
-import fmgp.yallmo.model.llm.AudioInput
-import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 import zio.*
-
 import java.util.UUID
+import fmgp.yallmo.model.AudioInput
+import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 
 private[browser] final class BrowserAudioSession private (state: Ref.Synchronized[BrowserAudioSession.State]) {
   import BrowserAudioSession.*

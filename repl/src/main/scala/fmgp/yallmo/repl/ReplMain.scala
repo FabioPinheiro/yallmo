@@ -51,7 +51,6 @@ object ReplMain extends ZIOAppDefault {
           startupTools <- ReplTools.evaluate
           availableTools: Chunk[AgentTool[ReplEnvironment]] = startupTools.available
           application <- startup.application(availableTools, startupTools.availability)
-          transcriber <- startup.transcriber
           _ <- ZIO.foreachDiscard(options.storageRoot) { root =>
             ReplLoggers.initialize(root) *> Runtime.addLogger(ReplLoggers.filesAt(root)).build.unit
           }
@@ -60,8 +59,9 @@ object ReplMain extends ZIOAppDefault {
             if startup.selected.isEmpty then "No agent selected. Press Esc, a to choose a configured agent."
             else "Configured agent selected."
           )
+          _ <- ZIO.when(application.transcriber.isEmpty)(Console.printLine(voice.Transcriber.DisabledMessage))
           _ <- ZIO.serviceWithZIO[AudioRecorder](recorder =>
-            TerminalRepl.runSystem(application, recorder, transcriber, config.browserAudioPort)
+            TerminalRepl.runSystem(application, recorder, config.browserAudioPort)
           )
         } yield ()).provideSomeLayer[Scope](replLayer)
       }

@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{Agent, AgentId, YallmoError}
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
 import fmgp.yallmo.model.llm.LlmProvider
 import fmgp.yallmo.model.som.SOMProvider
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ProviderConfig, ProviderId}
@@ -64,11 +64,25 @@ final class RuntimeInstances[-R] private (
           case None        =>
             for {
               definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
-              agent <- initializeAgent(id, definition)
+              underlying <- initializeAgent(id, definition)
+              agent = ConfiguredAgent(underlying, definition.capabilities)
               _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, agent) }
             } yield agent
         }
       }
+    }
+
+  /** Checks local adapter capability only; endpoint/model audio support is verified only at invocation time. */
+  def getAudioAgent(id: AgentId): IO[YallmoError, AudioAgent[R]] =
+    getAgent(id).flatMap {
+      // getAgent already preserves R; only the erased audio-capability marker needs checking here.
+      case audio: AudioAgent[?] => ZIO.succeed(audio.asInstanceOf[AudioAgent[R]])
+      case _                    =>
+        ZIO.fail(
+          YallmoError.InvalidConfig(
+            s"Agent '${AgentId.value(id)}' does not support audio turns (requires an audio-capable agent and provider)"
+          )
+        )
     }
 
   // Called with the initialization permit already held, including from agent initialization (no recursive locking).

@@ -57,6 +57,8 @@ final class BrowserAudioSessionSuite extends FunSuite {
         assert(ready.recordingStarted)
         assertEquals(code(duplicateStart), "stale_operation")
         assertEquals(result.map(_.bytes), Some(wav(320)))
+        assertEquals(result.map(_.sizeBytes), Some(wav(320).size.toLong))
+        assertEquals(result.flatMap(_.durationSeconds), Some(320.0 / 32000))
         assertEquals(code(duplicate), "stale_operation")
         assert(idle.operation.isEmpty)
       }
@@ -240,13 +242,15 @@ final class BrowserAudioSessionSuite extends FunSuite {
     })
   }
 
-  test("heartbeat loss fails pending waits and allows a fresh page without replaying an old start") {
+  test("heartbeat loss fails pending waits and allows a fresh page without replaying an old operation") {
     run(ZIO.scoped {
       for {
         session <- BrowserAudioSession.make
         _ <- session.connect(Client)
-        fiber <- session.recorder.record(1).either.fork
+        fiber <- session.recorder.record(30).either.fork
         old <- operation(session)
+        // Acknowledge capture so the start deadline cannot race the heartbeat timeout under suite load.
+        _ <- session.event(Client, Event(old.id, "started"))
         _ <- ZIO.sleep(5250.millis)
         result <- fiber.join
         _ <- session.connect(OtherClient)

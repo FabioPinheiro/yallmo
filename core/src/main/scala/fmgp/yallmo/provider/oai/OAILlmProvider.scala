@@ -3,7 +3,7 @@ package fmgp.yallmo.provider.oai
 import zio.*
 import zio.http.*
 import fmgp.yallmo.*
-import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 
 /** LLM provider for an OpenAI-compatible Chat Completions endpoint. */
@@ -23,27 +23,34 @@ final case class OAILlmProvider private[yallmo] (
   ): IO[YallmoError, String] =
     generate(prompt, Chunk.empty, options, model).mapError(YallmoError.fromThrowable)
 
-  /** Sends one audio-only Chat Completions request with no transcript, tools, or retained state. */
   override def inferenceWithAudio(
       prompt: String,
       audio: AudioInput,
       model: Option[String] = None
   ): IO[YallmoError, String] =
     for {
+      selectedModel <- ZIO.fromEither(resolveModel(model))
       _ <- ZIO.fromEither(
         Either
-          .cond(prompt.trim.nonEmpty, (), "Transcription system prompt must not be blank.")
+          .cond(prompt.trim.nonEmpty, (), "Audio inference prompt must not be blank.")
           .left
           .map(YallmoError.InvalidConfig.apply)
       )
-      _ <- ZIO.fromEither(OAILlmProvider.validateAudio(audio).left.map(YallmoError.InvalidConfig.apply))
-      selectedModel <- ZIO.fromEither(resolveModel(model))
-      response <- complete(OAIChatCompletionsMapper.audioRequestBody(selectedModel, prompt, audio))
-      text <- ZIO.fromEither(
-        response.content.toRight(YallmoError.EmptyResponse("OpenAI-compatible endpoint returned no transcription text"))
-      )
+      _ <- ZIO.fromEither(validateAudio(audio).left.map(YallmoError.InvalidConfig.apply))
+      captureId = LlmProviderPayloadDebug.newTurnId()
+      body = OAIChatCompletionsMapper.audioRequestBody(selectedModel, prompt, audio)
+      _ <- LlmProviderPayloadDebug.captureRequest(captureId, "OpenAI-compatible endpoint", selectedModel, body)
+      response <- complete(body)
+      _ <- ZIO
+        .fail(YallmoError.ProtocolFailure("Audio completion returned unexpected tool calls"))
+        .when(response.functionCalls.nonEmpty)
+      text <- ZIO
+        .fromOption(response.content)
+        .orElseFail(YallmoError.EmptyResponse("OpenAI-compatible endpoint returned no audio completion text"))
     } yield text
 
+  /** Legacy provider-owned tool execution retained for compatibility; prefer the configured agent/runner path. */
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   override def generateWithTools[R](
       prompt: String,
       tools: Chunk[LlmTool[R]],
@@ -52,6 +59,7 @@ final case class OAILlmProvider private[yallmo] (
   ): ZIO[R, YallmoError, String] =
     generate(prompt, tools, options, model).mapError(YallmoError.fromThrowable)
 
+  // Compatibility bridge: prompt-only inference supplies no tools; only this bridge may call the deprecated loop.
   private def generate[R](
       prompt: String,
       tools: Chunk[LlmTool[R]],
@@ -90,6 +98,7 @@ final case class OAILlmProvider private[yallmo] (
     val selected = model.getOrElse(defaultModel)
     Either.cond(selected.trim.nonEmpty, selected, YallmoError.InvalidConfig("An explicit OAI model is required"))
 
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   private def toolLoop[R](
       model: String,
       messages: ujson.Arr,
@@ -110,6 +119,7 @@ final case class OAILlmProvider private[yallmo] (
         }
     }
 
+  @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   private def executeTool[R](
       call: OAIFunctionCall,
       tools: Chunk[LlmTool[R]]
@@ -136,6 +146,17 @@ final case class OAILlmProvider private[yallmo] (
   }
 
   private[oai] def complete(body: ujson.Obj): IO[YallmoError, OAIResponse] =
+    val containsAudio = body("messages").arr.exists(message =>
+      message.obj
+        .get("content")
+        .flatMap(_.arrOpt)
+        .exists(_.value.exists(part => part.objOpt.exists(_.get("type").flatMap(_.strOpt).contains("input_audio"))))
+    )
+    // Transport exceptions may include the submitted request, including the recording. Drop their causes too.
+    def transportFailure(error: Throwable): YallmoError =
+      if containsAudio then YallmoError.HttpFailure("OpenAI-compatible audio request failed (details omitted)")
+      else YallmoError.fromThrowable(error)
+
     val request = Request
       .post(config.chatCompletionsUrl, Body.fromString(ujson.write(body)))
       .addHeader("Content-Type", "application/json")
@@ -144,20 +165,22 @@ final case class OAILlmProvider private[yallmo] (
     Client
       .batched(request)
       .provideEnvironment(ZEnvironment(client))
+      .mapError(transportFailure)
       .flatMap { response =>
-        response.body.asString.flatMap { body =>
+        response.body.asString.mapError(transportFailure).flatMap { body =>
           if response.status.isSuccess then
             ZIO.fromEither(OAIChatCompletionsMapper.parseResponse(body)).mapError(YallmoError.ProtocolFailure.apply)
           else
             ZIO.fail(
               YallmoError.HttpFailure(
-                s"OpenAI-compatible endpoint returned HTTP ${response.status.code}: ${safeErrorBody(body)}"
+                s"OpenAI-compatible endpoint returned HTTP ${response.status.code}: ${
+                    if containsAudio then "<response body omitted for audio privacy>" else safeErrorBody(body)
+                  }"
               )
             )
         }
       }
       .timeoutFail(YallmoError.HttpFailure("OpenAI-compatible endpoint request timed out"))(RequestTimeout)
-      .mapError(YallmoError.fromThrowable)
 }
 
 object OAILlmProvider {
@@ -166,7 +189,7 @@ object OAILlmProvider {
 
   private[oai] def validateAudio(audio: AudioInput): Either[String, AudioInput] =
     for {
-      _ <- audio.validate
+      _ <- Either.cond(audio.bytes.nonEmpty, (), "Audio bytes must not be empty (metadata-only audio cannot be sent).")
       _ <- Either.cond(
         audio.bytes.size <= MaxAudioBytes,
         (),

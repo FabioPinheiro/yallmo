@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration.config
 
-import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.model.{AgentId, YallmoError}
 import zio.{Config as _, *}
 import zio.json.*
 
@@ -54,14 +54,22 @@ object ConfigFile {
         json
           .fromJson[Config]
           .left
-          .map(error =>
-            YallmoError.InvalidConfig(s"Invalid configuration JSON; check its structure and field types. Error: $error")
-          )
+          .map(_ => YallmoError.InvalidConfig("Invalid configuration JSON; check its structure and field types"))
       )
       _ <- ZIO.fromEither(validate(config))
     } yield config
 
-  private def validate(config: Config): Either[YallmoError, Unit] =
+  /** Validate capability IDs once the application's complete, unfiltered local catalogs are available. */
+  def validateCapabilities[R](
+      config: Config,
+      available: fmgp.yallmo.orchestration.StaticContext[R]
+  ): Either[YallmoError, Unit] =
+    config.agents.toList.sortBy(pair => AgentId.value(pair._1)).foldLeft[Either[YallmoError, Unit]](Right(())) {
+      case (result, (id, definition)) =>
+        result.flatMap(_ => definition.capabilities.resolve(id, available).map(_ => ()))
+    }
+
+  def validate(config: Config): Either[YallmoError, Unit] =
     for {
       _ <- Either.cond(config.userName.trim.nonEmpty, (), YallmoError.InvalidConfig("userName must not be blank"))
       _ <- Either.cond(
@@ -73,6 +81,13 @@ object ConfigFile {
         config.defaultAgentId.forall(config.agents.contains),
         (),
         YallmoError.InvalidConfig("defaultAgentId must reference a configured agent")
+      )
+      _ <- Either.cond(
+        config.transcriberAgent.forall(config.agents.contains),
+        (),
+        YallmoError.InvalidConfig(
+          s"transcriberAgent '${config.transcriberAgent.map(AgentId.value).getOrElse("")}' must reference a configured agent"
+        )
       )
       _ <- Either.cond(
         config.agents.values.forall(_.providerIds.forall(config.providers.contains)),

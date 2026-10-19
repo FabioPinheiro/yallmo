@@ -57,7 +57,7 @@ private[orchestration] final class StorageInMemory private (sessions: Ref[Map[Se
             else {
               val appended = messages.foldLeft(session.messages) { (stored, payload) =>
                 val parentId = stored.lastOption.map(_.id)
-                stored :+ Message(MessageData(agentId, parentId, Instant.now(), payload))
+                stored :+ Message(MessageData(agentId, parentId, Instant.now(), payload)).redacted
               }
               val updated = session.copy(messages = appended)
               Right(updated)

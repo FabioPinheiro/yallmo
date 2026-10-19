@@ -103,15 +103,28 @@ final class OAISuite extends FunSuite:
     assertEquals(body("tools")(0)("function")("parameters")("required")(0).str, "timezone")
   }
 
-  test("builds a gdict-compatible audio transcription request") {
-    val audio = AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav)
-    val body = OAIChatCompletionsMapper.audioRequestBody("ai/gemma4:E4B", "Transcribe exactly.", audio)
+  test("maps audio in ordered shared turns without sending local metadata") {
+    val audio = AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav, 999L, Some(12.5), Some("LOCAL_ONLY"))
+    val request = AgentTurnRequest(
+      "audio-model",
+      Chunk(
+        MessagePayload.User("Identify the sound"),
+        audio,
+        MessagePayload.Instructions("Describe it.")
+      ),
+      toolChoice = ToolChoice.None
+    )
+    val body = OAIChatCompletionsMapper.turnRequestBody(request.model, request)
     val content = body("messages")(1)("content").arr
 
-    assertEquals(body("model").str, "ai/gemma4:E4B")
-    assertEquals(body("temperature").num, 0.0)
-    assertEquals(body("messages")(0)("role").str, "system")
-    assertEquals(body("messages")(0)("content").str, "Transcribe exactly.")
+    assertEquals(body("model").str, "audio-model")
+    assertEquals(body("messages")(0)("content").str, "Identify the sound")
+    assertEquals(body("messages")(2)("content").str, "Describe it.")
+    assertEquals(body("tool_choice").str, "none")
+    val serialized = ujson.write(body)
+    Seq("LOCAL_ONLY", "999", "12.5", "sizeBytes", "durationSeconds", "description").foreach(value =>
+      assert(!serialized.contains(value))
+    )
     assertEquals(content(0)("type").str, "input_audio")
     assertEquals(content(0)("input_audio")("format").str, "wav")
     assertEquals(content(0)("input_audio")("data").str, "AQID")

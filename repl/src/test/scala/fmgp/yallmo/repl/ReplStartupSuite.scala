@@ -1,10 +1,11 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
-import fmgp.yallmo.model.llm.{AudioFormat, AudioInput, ThinkingLevel}
+import fmgp.yallmo.model.{AgentId, AudioFormat, AudioInput, MessageId, MessagePayload, YallmoError}
+import fmgp.yallmo.model.llm.ThinkingLevel
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{
   AgentConfig,
+  AgentCapabilities,
   Config,
   ConfigFile,
   OAuthCredentialsConfig,
@@ -13,6 +14,7 @@ import fmgp.yallmo.orchestration.config.{
 }
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import fmgp.yallmo.tool.{BashExecutor, GitClient, WorkspaceFileSystem}
+import fmgp.yallmo.repl.voice.Transcriber
 import munit.FunSuite
 import zio.*
 import zio.http.*
@@ -118,7 +120,7 @@ final class ReplStartupSuite extends FunSuite {
     val overridden = startup(config, options.copy(agentId = Some(eve)))
     assertEquals(overridden.selected.map(_.adapter.id), Some(eve))
     assertEquals(overridden.selected.map(_.feedback.provider), Some("chatgpt-2"))
-    assertEquals(overridden.selected.map(_.systemPrompt), Some(ReplAgentSettings.DefaultSystemPrompt))
+    assertEquals(overridden.selected.map(_.systemPrompt), Some(ReplStartup.DefaultSystemPrompt))
     assertEquals(startup(config.copy(defaultAgentId = None)).selected, None)
     val missing = run(
       ReplStartup
@@ -266,23 +268,195 @@ final class ReplStartupSuite extends FunSuite {
     }
   }
 
-  test("voice uses only the selected audio-capable connection/model") {
-    val client = fakeClient(incoming =>
-      incoming.body.asString.flatMap { body =>
-        ZIO.attempt {
-          assertEquals(incoming.url.toString, "http://localhost:12434/v1/chat/completions")
-          assertEquals(ujson.read(body)("model").str, "local-model")
-          Response.text("""{"choices":[{"message":{"content":"transcript"}}]}""")
+  private val voiceId = AgentId("Transcriber")
+  private val voiceDefinition = AgentConfig(
+    "OAIAgent",
+    Seq(local),
+    Json.Obj("model" -> Json.Str("audio-model"), "systemPrompt" -> Json.Str("Transcribe exactly")),
+    capabilities = AgentCapabilities(Some(Set.empty), Some(Set.empty), Some(Set.empty), Some(Set.empty))
+  )
+  private val voiceConfig =
+    config.copy(transcriberAgent = Some(voiceId), agents = config.agents.updated(voiceId, voiceDefinition))
+
+  private def configuredVoice(
+      definition: Config,
+      available: StaticContext[Any]
+  ): IO[YallmoError, Option[Transcriber]] =
+    for {
+      instances <- RuntimeInstances.make(definition).provideEnvironment(ZEnvironment(noNetwork))
+      orchestrator <- OrchestratorLive.inMemory(instances)
+      voice <- ReplStartup.voice(definition, instances, available, orchestrator, AgentId("operator"))
+    } yield voice
+
+  test("REPL voice rejects invalid settings and unsupported agent/provider pairs without network or auth") {
+    val invalid = List(
+      voiceDefinition.copy(config = Json.Obj()),
+      voiceDefinition.copy(config = Json.Obj("model" -> Json.Str("audio"))),
+      voiceDefinition.copy(config = Json.Obj("model" -> Json.Str(" "), "systemPrompt" -> Json.Str("voice"))),
+      voiceDefinition.copy(config = Json.Obj("model" -> Json.Str("audio"), "systemPrompt" -> Json.Str(" "))),
+      voiceDefinition.copy(agentType = "ChatGPTAgent", providerIds = Seq(account)),
+      voiceDefinition.copy(providerIds = Seq(account))
+    )
+    invalid.foreach { definition =>
+      val c = voiceConfig.copy(agents = voiceConfig.agents.updated(voiceId, definition))
+      val error = run(configuredVoice(c, StaticContext[Any]("chat")).either).swap.toOption.get
+      assert(error.getMessage.contains("transcriberAgent"))
+      assert(error.getMessage.contains("Transcriber"))
+      assert(!error.getMessage.contains("refresh-"))
+    }
+    val missing = run(
+      configuredVoice(voiceConfig.copy(transcriberAgent = Some(AgentId("missing"))), StaticContext[Any]("chat")).either
+    ).swap.toOption.get
+    assert(missing.getMessage.contains("missing"))
+    assertEquals(run(configuredVoice(config, StaticContext[Any]("chat"))), None)
+    assert(run(configuredVoice(voiceConfig, StaticContext[Any]("chat"))).nonEmpty)
+  }
+
+  test("REPL voice checks effective empty capabilities and inherited fields in partial policies") {
+    val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition("shell", "commands")))
+    val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
+    val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
+    val ext = StaticContext[Any](
+      "chat",
+      extensions = Chunk(new ContextExtension[Any] {
+        val key = "memory"
+        def apply(c: StaticContext[Any], r: RunContext): IO[YallmoError, RunContext] = {
+          val _ = (c, r)
+          ZIO.dieMessage("Voice validation must not apply extensions")
         }
+      })
+    )
+    def check(policy: AgentCapabilities, context: StaticContext[Any]) = {
+      val c = voiceConfig.copy(
+        agents = voiceConfig.agents.updated(voiceId, voiceDefinition.copy(capabilities = policy))
+      )
+      run(configuredVoice(c, context).either)
+    }
+    for context <- List(tool, rag, skill, ext) do assert(check(AgentCapabilities(), context).isLeft)
+    assert(check(AgentCapabilities(tools = Some(Set.empty)), skill).isLeft)
+    assert(check(AgentCapabilities(tools = Some(Set("shell"))), tool).isLeft)
+    assert(
+      check(AgentCapabilities(tools = Some(Set("unknown"))), tool).swap.toOption.get.getMessage.contains("unknown")
+    )
+    assert(check(AgentCapabilities(tools = Some(Set.empty)), tool).isRight)
+    assert(check(AgentCapabilities(), StaticContext[Any]("chat")).isRight)
+  }
+
+  test("tracked secret-free example loads and resolves its explicit transcriber locally") {
+    val example = run(ConfigFile.loadOrInitialize(Paths.get("docs/examples/repl-config.json"), "unused"))
+    val app = run(startup(example).application(Chunk.empty, availability))
+    assert(app.transcriber.nonEmpty)
+    assertEquals(example.transcriberAgent, Some(voiceId))
+    assert(app.agentChoices.exists(_.id == voiceId))
+  }
+
+  test("voice is opt-in and invalid explicit transcribers fail locally during application startup") {
+    assertEquals(run(startup().application(Chunk.empty, availability)).transcriber, None)
+    assertEquals(run(startup(Config("operator")).application(Chunk.empty, availability)).transcriber, None)
+    val invalid = List(
+      voiceConfig.copy(transcriberAgent = Some(AgentId("missing"))),
+      voiceConfig.copy(transcriberAgent = Some(eve)),
+      voiceConfig.copy(agents =
+        voiceConfig.agents.updated(voiceId, voiceDefinition.copy(config = Json.Obj("model" -> Json.Str("audio"))))
+      )
+    )
+    invalid.foreach { definition =>
+      val result = run(startup(definition).application(Chunk.empty, availability).either)
+      assert(result.left.toOption.exists(_.getMessage.contains("transcriberAgent")))
+    }
+    val invalidSelected = voiceConfig.copy(
+      defaultAgentId = Some(voiceId),
+      agents = voiceConfig.agents.updated(
+        voiceId,
+        voiceDefinition.copy(config = Json.Obj("model" -> Json.Str(" "), "systemPrompt" -> Json.Str("transcribe")))
+      )
+    )
+    val selectedFailure =
+      run(ReplStartup.make(invalidSelected, options).provideEnvironment(ZEnvironment(noNetwork)).either)
+    assert(
+      selectedFailure.left.toOption.exists(error =>
+        error.getMessage.contains("Transcriber") && error.getMessage.contains("model")
+      )
+    )
+    val available = run(ReplTools.evaluate.provideLayer(tools))
+    val inherited = voiceConfig.copy(agents =
+      voiceConfig.agents.updated(voiceId, voiceDefinition.copy(capabilities = AgentCapabilities()))
+    )
+    val rejected = run(startup(inherited).application(available.available, available.availability).either)
+    assert(rejected.left.toOption.exists(_.getMessage.contains("capabilities")))
+    val typo = config.copy(agents =
+      config.agents
+        .updated(eve, config.agents(eve).copy(capabilities = AgentCapabilities(tools = Some(Set("unknown-tool")))))
+    )
+    assert(run(startup(typo).application(Chunk.empty, availability).either).isLeft)
+  }
+
+  test(
+    "configured voice is independent of text-only or absent chat and survives switches with isolated retained sessions"
+  ) {
+    val root = Files.createTempDirectory("voice-startup-")
+    val requests = scala.collection.mutable.ListBuffer.empty[ujson.Value]
+    val client = fakeClient(incoming =>
+      incoming.body.asString.map { body =>
+        requests += ujson.read(body)
+        Response.text("""{"choices":[{"message":{"content":"transcript"},"finish_reason":"stop"}]}""")
       }
     )
-    val current = run(ReplStartup.make(config, options).provideEnvironment(ZEnvironment(client)))
-    val audio = AudioInput(Chunk[Byte](1, 2), AudioFormat.Wav)
-    assertEquals(run(current.transcriber.flatMap(_.transcribe(audio))), "transcript")
-    val subscription = startup(config, options.copy(agentId = Some(eve)))
-    assert(run(subscription.transcriber.flatMap(_.transcribe(audio)).either).isLeft)
-    val unselected = startup(Config("operator"))
-    assert(run(unselected.transcriber.flatMap(_.transcribe(audio)).either).isLeft)
+    try {
+      val current = run(
+        ReplStartup
+          .make(voiceConfig.copy(defaultAgentId = None), options.copy(storageRoot = Some(root)))
+          .provideEnvironment(ZEnvironment(client))
+      )
+      val first = run(current.application(Chunk.empty, availability))
+      assert(first.agentChoices.exists(_.id == voiceId))
+      val chat = submit(first, first.initialState, "/new ordinary-chat").state
+      val second = run(first.selectAgent(eve))
+      val third = run(second.selectAgent(bob))
+      assert(first.transcriber.get eq second.transcriber.get)
+      assert(second.transcriber.get eq third.transcriber.get)
+      val chatTurn = submit(third, chat, "ordinary prompt").state
+      val storeBefore = run(OrchestratorLive.filesystem(root, current.instances))
+      val storedChatBefore = run(storeBefore.loadSession(SessionId.unsafe("ordinary-chat")))
+      val chatRequestCount = requests.size
+      val audio = AudioInput(Chunk[Byte](1, 2), AudioFormat.Wav, 2L, Some(0.5))
+      for app <- List(first, second, third) do assertEquals(run(app.transcriber.get.transcribe(audio)), "transcript")
+      assertEquals(requests.size, chatRequestCount + 3)
+      requests.drop(chatRequestCount).foreach { request =>
+        assertEquals(request("model").str, "audio-model")
+        assertEquals(request("messages").arr.size, 2)
+        assert(!request.obj.contains("tools"))
+        assertEquals(request("tool_choice").str, "none")
+        assertEquals(request("parallel_tool_calls").bool, false)
+      }
+      val store = run(OrchestratorLive.filesystem(root, current.instances))
+      val sessions = run(store.listSessions)
+      val retained = sessions.filter(_.id.value.startsWith("transcription-"))
+      assertEquals(retained.size, 3)
+      assertEquals(retained.map(_.id).distinct.size, 3)
+      retained.foreach { summary =>
+        val exchange = run(store.loadSession(summary.id))
+        assertEquals(exchange.messages.map(_.agentId), Chunk(AgentId("operator"), voiceId))
+        assertEquals(exchange.messages.head.payload, audio.redacted)
+        assertEquals(exchange.messages.head.id, MessageId.from(exchange.messages.head.data.copy(payload = audio)))
+        assertEquals(exchange.messages.head.parentId, None)
+        assertEquals(exchange.messages.last.parentId, Some(exchange.messages.head.id))
+        assertEquals(exchange.messages.last.payload, MessagePayload.Assistant("transcript"))
+      }
+      val resumed = submit(third, chatTurn, "/session resume ordinary-chat").state
+      assertEquals(resumed.sessionId, chatTurn.sessionId)
+      assertEquals(resumed.runContext.messages, chatTurn.runContext.messages)
+      assertEquals(resumed.continuationStart, chatTurn.runContext.messages.size)
+      assertEquals(run(store.loadSession(SessionId.unsafe("ordinary-chat"))), storedChatBefore)
+      assertEquals(
+        chatTurn.runContext.messages,
+        Chunk(MessagePayload.User("ordinary prompt"), MessagePayload.Assistant("transcript"))
+      )
+    } finally {
+      val paths = Files.walk(root)
+      try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+      finally paths.close()
+    }
   }
 
   test("agent choices are sorted and lazy; selection works from unselected startup without changing config") {
@@ -350,8 +524,7 @@ final class ReplStartupSuite extends FunSuite {
       assertEquals(after.agentIds, Chunk(AgentId("operator"), bob, eve))
       assertEquals(after.messages.map(_.agentId), Chunk(AgentId("operator"), bob, AgentId("operator"), eve))
       assertEquals(run(store.listSessions).map(_.id.value), Chunk("before-switch"))
-      assertEquals(run(second.transcriber.get.transcribe(AudioInput(Chunk[Byte](1, 2), AudioFormat.Wav))), "answer")
-      assertEquals(requests.last("model").str, "eve-model")
+      assertEquals(second.transcriber, None)
       val returned = run(second.selectAgent(bob))
       val restored = submit(returned, returned.initialState, "/session resume before-switch")
       assert(restored.events.exists(_.isInstanceOf[ReplEvent.SessionResumed]))

@@ -1,6 +1,6 @@
 # Yallmo
 
-**Yallmo**—*Yet Another Large Language Module Orchestrator*—is an experimental Scala 3 and ZIO project for exploring the building blocks of LLM-agent applications.
+**Yallmo** - *Yet Another Large Language Module Orchestrator* is an experimental Scala 3 and ZIO project for exploring the building blocks of LLM-agent applications.
 
 ## What is Yallmo?
 
@@ -42,3 +42,14 @@ The project aims to keep the important boundaries small and explicit: transcript
 - `core/` — providers, orchestration, tools, and RAG.
 - `repl/` — the interactive terminal client and lazy scoped browser audio bridge.
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
+
+
+## WIP & TODO
+
+### Newest Inference Engines
+
+Docker Model Runner is no longer sufficient for the experiments I want to run. I want direct access to the latest **vLLM** and **llama.cpp** engines and APIs, without waiting for Docker Model Runner to expose their capabilities.
+
+- **Incremental input and output:** stream text and audio chunks into supported backends and process them while more input is arriving; receive text and audio chunks incrementally. Streaming output alone is not enough. Actual support depends on the engine, model, and endpoint.
+- **Realtime voice experiments:** try [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) through [vLLM's Realtime API](https://docs.vllm.ai/en/latest/serving/online_serving/speech_to_text/#realtime-api) for incremental speech-to-text. Conversation and speech synthesis remain separate capabilities, composed as needed.
+- **System One models:** experiment with constrained decision models alongside conversational models, keeping their contracts separate. Run **Laya in a custom Docker container** and integrate it through the [System One / Jev boundary](docs/system_one/System_One_Overview.md), rather than treating it as a chat-completion model.

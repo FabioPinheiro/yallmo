@@ -13,7 +13,37 @@ trait ReplOrchestrator[-R] extends Orchestrator[R] {
 
   def newReplSession(name: Option[String]): IO[YallmoError, ReplState]
 
-  def persistTurn(previous: ReplState, turn: ReplTurn): IO[YallmoError, ReplTurn]
+  /** Submits a REPL prompt, adapting session setup and client state around [[Orchestrator.submit]].
+    *
+    * The flow is:
+    *   1. Reject execution unless its agent matches the selected assistant, before creating or writing a session.
+    *   2. Validate the session ID in `previous`, or create a timestamp-named session if no ID is present.
+    *   3. Delegate to `submit` with the configured human author and `AgentTask(prompt)`. The core saves the prompt,
+    *      runs execution against the stored transcript, then saves newly generated messages. Callers must not append
+    *      the prompt themselves; `previous.runContext` is not the source of execution history.
+    *   4. Return a [[ReplTurn]] with the saved session's ID and transcript, preserving the other REPL state fields.
+    *
+    * Selection and session-setup failures have no accepted session. Core failures after prompt acceptance expose it
+    * through [[SessionSubmitFailure.acceptedSession]], allowing the caller to refresh its state even when execution
+    * fails. Accepted prompts are not rolled back on failure or interruption; a newly created session may also remain if
+    * submission fails before prompt acceptance.
+    *
+    * @tparam R1
+    *   environment required by the configured execution
+    * @param previous
+    *   current REPL state, supplying the optional session ID and client preferences to retain
+    * @param prompt
+    *   user text to persist exactly once before execution
+    * @param execution
+    *   configured agent loop for the selected assistant
+    * @return
+    *   updated REPL state, agent result and new messages (prompt plus generated responses), or a submission failure
+    */
+  private[repl] def submitPrompt[R1](
+      previous: ReplState,
+      prompt: String,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, SessionSubmitFailure, ReplTurn]
 
   def resumeReplSession(id: String): IO[YallmoError, ReplState]
 }
@@ -25,26 +55,10 @@ final class ReplOrchestratorLive[-R] private (
     assistantAgent: Option[Agent[R]]
 ) extends ReplOrchestrator[R] { // TODO rename/merge with ReplOrchestrator
 
-  override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] = orchestrator.getAgent(id)
-
-  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
-    orchestrator.turn(id, request)
-
-  override def listSessions: IO[YallmoError, Chunk[SessionSummary]] = orchestrator.listSessions
-
-  override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
-    orchestrator.createSession(id, agentIds)
-
-  override def loadSession(id: SessionId): IO[YallmoError, Session] = orchestrator.loadSession(id)
+  export orchestrator.{getAgent, submit, listSessions, createSession, loadSession, append, fork}
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     orchestrator.addSessionAgent(id, agentId)
-
-  override def append(
-      id: SessionId,
-      agentId: AgentId,
-      messages: Chunk[MessagePayload]
-  ): IO[YallmoError, Session] = orchestrator.append(id, agentId, messages)
 
   override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = orchestrator.readBlob(blobId)
 
@@ -56,7 +70,9 @@ final class ReplOrchestratorLive[-R] private (
   ): ZIO[R1, YallmoError, Session] =
     orchestrator.appendWithBlobWriter(id, agentId, message, produce)
 
-  override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] = orchestrator.fork(source, target)
+  @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
+  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
+    orchestrator.turn(id, request)
 
   override def listReplSessionIds: IO[YallmoError, Chunk[String]] =
     listSessions.map(_.map(_.id.value))
@@ -66,24 +82,21 @@ final class ReplOrchestratorLive[-R] private (
       createSession(id, agentIds).as(ReplState(sessionId = Some(id.value)))
     }
 
-  override def persistTurn(previous: ReplState, turn: ReplTurn): IO[YallmoError, ReplTurn] =
-    if turn.newMessages.isEmpty then ZIO.succeed(turn)
-    else if assistantAgent.isEmpty && turn.newMessages.exists {
-        case _: MessagePayload.User => false
-        case _                      => true
-      }
-    then ZIO.fail(YallmoError.InvalidConfig("Cannot persist assistant messages without a selected agent"))
-    else
-      for {
-        id <- previous.sessionId match
-          case Some(value) => sessionId(Some(value))
-          case None        => sessionId(None).tap(createSession(_, agentIds))
-        authors <- ZIO.foreach(turn.newMessages)(agentIdFor)
-        _ <- ZIO.foreachDiscard(authors.distinct)(addSessionAgent(id, _))
-        _ <- ZIO.foreachDiscard(authors.zip(turn.newMessages)) { case (author, message) =>
-          append(id, author, Chunk(message))
-        }
-      } yield turn.copy(state = turn.state.copy(sessionId = Some(id.value)))
+  override private[repl] def submitPrompt[R1](
+      previous: ReplState,
+      prompt: String,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, SessionSubmitFailure, ReplTurn] =
+    for {
+      _ <- ZIO
+        .fail(SessionSubmitFailure(YallmoError.InvalidConfig("No matching assistant selected"), None))
+        .unless(assistantAgent.exists(_.id == execution.agentId))
+      id <- (previous.sessionId match {
+        case Some(value) => sessionId(Some(value))
+        case None        => sessionId(None).tap(createSession(_, agentIds))
+      }).mapError(SessionSubmitFailure(_, None))
+      turn <- submit(id, userAgent.id, AgentTask(prompt), execution)
+    } yield ReplTurn(previous.withSession(turn.session), turn.result, turn.newMessages)
 
   override def resumeReplSession(id: String): IO[YallmoError, ReplState] =
     for {
@@ -96,16 +109,6 @@ final class ReplOrchestratorLive[-R] private (
     )
 
   private val agentIds = Chunk(userAgent.id) ++ Chunk.fromIterable(assistantAgent.map(_.id))
-
-  private def agentIdFor(message: MessagePayload): IO[YallmoError, AgentId] =
-    message match
-      case _: MessagePayload.User => ZIO.succeed(userAgent.id)
-      case _                      =>
-        ZIO
-          .fromOption(assistantAgent.map(_.id))
-          .orElseFail(
-            YallmoError.InvalidConfig("Cannot persist assistant messages without a selected agent")
-          )
 
   private def sessionId(name: Option[String]): IO[YallmoError, SessionId] =
     name match

@@ -60,8 +60,10 @@ final class ReplApplication[R](
     input match {
       case ReplInput.Empty          => ZIO.succeed(ReplTransition(state, Chunk.empty))
       case ReplInput.Prompt(prompt) =>
-        session.submit(state, prompt.value).either.map {
-          case Left(error) => ReplTransition(state, Chunk(ReplEvent.AgentFailed(error.getMessage)))
+        session.submit(state, prompt.value, replOrchestrator).either.map {
+          case Left(failure) =>
+            val accepted = failure.acceptedSession.fold(state)(state.withSession)
+            ReplTransition(accepted, Chunk(ReplEvent.AgentFailed(failure.error.getMessage)))
           case Right(turn) =>
             ReplTransition(turn.state, Chunk(ReplEvent.AgentTurn(turn.result, turn.newMessages)))
         }

@@ -76,7 +76,14 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
           request: fmgp.yallmo.model.llm.AgentTurnRequest
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] = ZIO.dieMessage("Unexpected provider call")
     }
-    val instances = run(RuntimeInstances.fromAgents(Chunk(agent)))
+    val user = new Agent[Any] {
+      val id: AgentId = userId
+      def turn(
+          request: fmgp.yallmo.model.llm.AgentTurnRequest
+      ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
+        ZIO.dieMessage("The user must not invoke a provider")
+    }
+    val instances = run(RuntimeInstances.fromAgents(Chunk(user, agent)))
     val orchestrator = run(OrchestratorLive.inMemory(instances))
     new ReplApplication[Any](
       new ReplSession[Any](
@@ -92,7 +99,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
         StaticContext[Any]("synthetic")
       ),
       availability,
-      ReplOrchestratorLive.make(orchestrator, agent, Some(agent)),
+      ReplOrchestratorLive.make(orchestrator, user, Some(agent)),
       activeAgent = Some(active),
       providerCatalog = Some(catalog),
       providerLogin = login,

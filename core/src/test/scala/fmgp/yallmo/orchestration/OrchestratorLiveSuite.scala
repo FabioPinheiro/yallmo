@@ -65,10 +65,11 @@ final class OrchestratorLiveSuite extends FunSuite {
       _ <- orchestrator.createSession(id, Chunk(readerAgent.id))
       rejected <- orchestrator.appendWithBlobBytes(id, AgentId("unknown"), input, bytes).either
       _ <- orchestrator.appendWithBlobBytes(id, readerAgent.id, input, bytes)
-      response <- orchestrator.turn(
+      // Keep compatibility coverage for the deprecated blob-reader binding.
+      response <- (orchestrator.turn(
         readerAgent.id,
         AgentTurnRequest("model", Chunk(input, MessagePayload.Instructions("Read")))
-      )
+      ): @scala.annotation.nowarn("cat=deprecation"))
       blob <- orchestrator.readBlob(input.blobId)
     } yield (rejected, response, blob))
     assertEquals(result._1, Left(YallmoError.UnknownAgent(AgentId("unknown"))))

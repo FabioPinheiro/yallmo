@@ -13,7 +13,47 @@ import zio.stream.ZStream
 trait Orchestrator[-R] {
   def getAgent(id: AgentId): IO[YallmoError, Agent[R]]
 
+  /** Invokes one provider turn without saving a prompt or response and without running the agent/tool loop.
+    *
+    * @deprecated
+    *   Use [[submit]] for session-aware execution with prompt and response persistence. This method is retained for
+    *   low-level compatibility; submit is not a drop-in rename because it requires a session and configured execution.
+    */
+  @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
   def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse]
+
+  /** Submits one user task to an existing session, owning the complete persist-run-persist lifecycle.
+    *
+    * Validates the registered authors and saves the user prompt before invoking execution. Storage write before
+    * execution starts. The execution receives history from the stored session, including the accepted prompt exactly
+    * once; callers must not append it themselves. After successful execution, only newly generated assistant/tool
+    * messages are saved, attributed to execution.agentId, before this effect succeeds.
+    *
+    * A failed prompt save prevents execution. Failures after acceptance retain the saved prompt and expose its session
+    * through [[SessionSubmitFailure.acceptedSession]]. Timeout and interruption do not roll back an accepted prompt.
+    * Appends are not a rollback transaction.
+    *
+    * @tparam R1
+    *   environment required by the configured execution, including its model/tool services
+    * @param id
+    *   existing session whose stored transcript is the source of conversation history
+    * @param authorId
+    *   registered author of the prompt; added to the session's participants if needed
+    * @param task
+    *   user task whose prompt is accepted and saved before execution
+    * @param execution
+    *   configured agent loop, typically created by AgentRunner.execution; its agent must be registered and it must
+    *   preserve the accepted transcript prefix and response author
+    * @return
+    *   the saved session, final agent result and new messages (prompt plus generated responses), or a
+    *   [[SessionSubmitFailure]] containing the underlying error and the accepted session when available
+    */
+  def submit[R1](
+      id: SessionId,
+      authorId: AgentId,
+      task: AgentTask,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, SessionSubmitFailure, SessionTurn]
 
   def listSessions: IO[YallmoError, Chunk[SessionSummary]]
 

@@ -83,11 +83,14 @@ final class TerminalRepl[R] private[terminal] (
 
   private def loop(state: Ref[ReplState], previousReadWasInterrupt: Ref[Boolean]): ZIO[R, Nothing, Unit] = {
     def submit(action: ReplState => ZIO[R, Nothing, ReplTransition]): ZIO[R, Nothing, Unit] =
-      previousReadWasInterrupt.set(false) *>
-        state.get.flatMap(action).flatMap(handleTransition).flatMap { case (nextState, exitsClient) =>
-          state.set(nextState) *>
-            (if exitsClient then ZIO.unit else loop(state, previousReadWasInterrupt))
-        }
+      previousReadWasInterrupt.set(false) *> // REVIEW why previousReadWasInterrupt is needed?
+        state.get
+          .flatMap(action)
+          .flatMap(handleTransition)
+          .flatMap { case (nextState, exitsClient) =>
+            state.set(nextState) *>
+              (if exitsClient then ZIO.unit else loop(state, previousReadWasInterrupt))
+          }
 
     readLine.flatMap {
       case TerminalRepl.ReadResult.End       => Console.printLine("Bye.").orDie

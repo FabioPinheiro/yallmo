@@ -15,18 +15,34 @@ import fmgp.yallmo.orchestration.{
   StaticContext
 }
 
-/** Interprets model-proposed actions in a bounded, trusted loop.
+/** AgentRunner is the trusted executor around an agent
   *
-  * The runner owns all side effects. Agents can request retrieval or an allowlisted tool, but only this interpreter
-  * resolves and executes those capabilities. One turn/action budget applies to the whole run.
+  *   - The agent decides: answer, call tools, or retrieve knowledge.
+  *   - The runner executes those requests, checks permissions, and enforces limits.
+  *   - The orchestrator persists session messages; the runner itself does not.
   */
 final class AgentRunner[R](
     tools: Map[String, AgentTool[R]],
     retrievers: Map[String, KnowledgeRetriever[R]],
-    val runnerId: UUID = UUID.randomUUID()
+    val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
 
-  /** Starts a new run with an empty transcript. */
+  /** Binds a program and its capabilities for session-aware orchestration; constructing it performs no effects. */
+  def execution(
+      agent: AgentInstance[R],
+      staticContext: StaticContext[R],
+      budget: AgentBudget = AgentBudget.default
+  ): AgentExecution[R] =
+    new AgentExecution[R] {
+      override val agentId: AgentId = agent.id
+      override def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult] =
+        runAccepted(agent, task, staticContext, acceptedContext, budget)
+    }
+
+  /** Starts a new run with an empty transcript.
+    *
+    * Its a standalone execution. Use when you need the answer, but not conversation history.
+    */
   def run(
       agent: AgentInstance[R],
       task: AgentTask,
@@ -35,13 +51,34 @@ final class AgentRunner[R](
   ): ZIO[R, YallmoError, AgentResult] =
     runWithContext(agent, task, staticContext, RunContext(), budget).map(_.result)
 
-  /** Runs one user task from an existing transcript and returns the transcript for the next task. */
+  /** Runs one user task from an existing transcript and returns the transcript for the next task.
+    *
+    * {{{
+    *    for
+    *     first <- runner.runWithContext(
+    *       agent, AgentTask("Explain Scala"), context, RunContext()
+    *     )
+    *     second <- runner.runWithContext(
+    *       agent, AgentTask("Show an example"), context, first.runContext
+    *     )
+    *   yield second.result.text
+    * }}}
+    */
   def runWithContext(
       agent: AgentInstance[R],
       task: AgentTask,
       staticContext: StaticContext[R],
       runContext: RunContext,
       budget: AgentBudget = AgentBudget.default // TODO REVIEW considered for removal
+  ): ZIO[R, YallmoError, AgentTurnResult] =
+    runAccepted(agent, task, staticContext, runContext.append(MessagePayload.User(task.prompt)), budget)
+
+  private def runAccepted(
+      agent: AgentInstance[R],
+      task: AgentTask,
+      staticContext: StaticContext[R],
+      runContext: RunContext,
+      budget: AgentBudget
   ): ZIO[R, YallmoError, AgentTurnResult] =
     ZIO.logAnnotate(AgentRunner.LogAnnotationKey, runnerId.toString) {
       val execute =
@@ -56,7 +93,7 @@ final class AgentRunner[R](
                 agent,
                 task,
                 effectiveContext,
-                runContext.append(MessagePayload.User(task.prompt)),
+                runContext,
                 budget,
                 turnCount,
                 actionCount

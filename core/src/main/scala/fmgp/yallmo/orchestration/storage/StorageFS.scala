@@ -31,7 +31,7 @@ import zio.*
   * just appends, and test overlapping writes. Multiple processes additionally require filesystem locking or a
   * transactional storage backend.
   */
-private[orchestration] final class StorageFS private (val root: Path, store: StorageStore) extends Storage {
+private[orchestration] final class StorageFS(val root: Path, store: StorageStore) extends Storage {
 
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     StorageFiles.list(root).flatMap { ids =>
@@ -72,10 +72,14 @@ private[orchestration] final class StorageFS private (val root: Path, store: Sto
       for {
         state <- readState(id)
         _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(state.agentIds.contains(agentId))
-        head <- ZIO.foldLeft(messages)(state.head) { (parent, message) =>
-          store.put(MessageData(agentId, parent, Instant.now(), message)).map(stored => Some(stored.id))
-        }
-        _ <- StorageFiles.write(root, id, state.agentIds, head)
+        // Once object writes start, finish the batch and publish its head before honoring cancellation.
+        // Keep the final history read outside this region; masking is not locking or rollback/crash recovery.
+        _ <- (for {
+          head <- ZIO.foldLeft(messages)(state.head) { (parent, message) =>
+            store.put(MessageData(agentId, parent, Instant.now(), message)).map(stored => Some(stored.id))
+          }
+          _ <- StorageFiles.write(root, id, state.agentIds, head)
+        } yield ()).uninterruptible
         session <- loadSession(id)
       } yield session
 

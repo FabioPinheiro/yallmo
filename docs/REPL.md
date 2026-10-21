@@ -2,9 +2,10 @@
 
 > The source package is `fmgp.yallmo.repl`. This file is named `REPL.md` to retain the project’s historical spelling.
 
-The interactive client preserves one in-memory `RunContext` across submitted prompts while keeping its
-`StaticContext` fixed for the session. It is a composition layer over `ReplApplication`, `ReplSession`, and
-`AgentRunner`; it does not create a second agent execution path.
+The interactive client keeps an in-memory snapshot of the conversation and a fixed `StaticContext` for the selected
+agent. `Orchestrator.submit` owns prompt acceptance, execution and response persistence, using the stored session as
+conversation history. `ReplApplication` and `ReplSession` adapt input, diagnostics and presentation; `AgentRunner` remains
+the only model/tool execution loop.
 
 ## Start the terminal client
 
@@ -159,6 +160,15 @@ A REPL starts with no selected session. Without `--storage`, sessions use proces
 creates an empty session named `main-YYYYMMDD-HHMMSS` (UTC), or `/new <name>` creates the requested safe name. If a
 prompt is submitted before `/new`, the REPL creates the same timestamped session automatically. Session IDs are shown
 by `/session list`; use `/session resume <id>` to restore one.
+
+For a selected agent, each submitted user prompt is saved before the agent runner starts. With `--storage`, the
+`objects.jsonl` write is flushed to disk before any model request or tool execution; a failed save prevents inference.
+The prompt remains in session history after an agent error, timeout or cancellation. Generated assistant/tool messages
+are still saved only after a successful run. Prompts rejected because no agent is selected are not saved.
+
+This ordering is enforced by the core `Orchestrator.submit` API, not by REPL persistence callbacks. Other clients can
+use the same operation with an execution configured by `runner.execution(agent, staticContext)`. `Orchestrator.turn`
+remains a low-level provider call without session persistence.
 
 Press Ctrl+C twice consecutively to exit. Prefix a prompt with `//` to send a literal prompt beginning
 with `/`. Provider request captures are written under `debug/` relative to the REPL's startup directory and can contain

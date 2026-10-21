@@ -16,9 +16,10 @@ final class ReplOrchestratorSuite extends FunSuite {
         for {
           replOrchestrator <- replOrchestratorAt(root)
           created <- replOrchestrator.newReplSession(Some("research"))
-          persisted <- replOrchestrator.persistTurn(
+          persisted <- replOrchestrator.submitPrompt(
             created,
-            turn(created, Chunk(Message.User("first"), Message.Assistant("answer")))
+            "first",
+            execution(gammaId, Chunk(Message.Assistant("answer")))
           )
           listed <- replOrchestrator.listReplSessionIds
           loaded <- replOrchestrator.loadSession(SessionId.unsafe("research"))
@@ -53,9 +54,10 @@ final class ReplOrchestratorSuite extends FunSuite {
           replOrchestrator = ReplOrchestratorLive.make(orchestrator, bob, Some(gamma))
           resumed <- replOrchestrator.resumeReplSession("research")
           before <- orchestrator.loadSession(SessionId.unsafe("research"))
-          persisted <- replOrchestrator.persistTurn(
+          persisted <- replOrchestrator.submitPrompt(
             resumed,
-            turn(resumed, Chunk(Message.User("next"), Message.Assistant("answer")))
+            "next",
+            execution(gammaId, Chunk(Message.Assistant("answer")))
           )
           after <- orchestrator.loadSession(SessionId.unsafe("research"))
         } yield (resumed, before, persisted, after)
@@ -79,15 +81,9 @@ final class ReplOrchestratorSuite extends FunSuite {
         orchestrator <- OrchestratorLive.inMemory(instances)
         original = ReplOrchestratorLive.make(orchestrator, human, Some(first))
         created <- original.newReplSession(Some("shared"))
-        firstTurn <- original.persistTurn(
-          created,
-          turn(created, Chunk(Message.User("first"), Message.Assistant("answer")))
-        )
+        firstTurn <- original.submitPrompt(created, "first", execution(gammaId, Chunk(Message.Assistant("answer"))))
         switched = ReplOrchestratorLive.make(orchestrator, human, Some(next))
-        _ <- switched.persistTurn(
-          firstTurn.state,
-          turn(firstTurn.state, Chunk(Message.User("next"), Message.Assistant("reply")))
-        )
+        _ <- switched.submitPrompt(firstTurn.state, "next", execution(otherAgent, Chunk(Message.Assistant("reply"))))
         _ <- orchestrator.addSessionAgent(SessionId.unsafe("shared"), otherAgent)
         rejected <- orchestrator.addSessionAgent(SessionId.unsafe("shared"), AgentId("unknown")).either
         loaded <- orchestrator.loadSession(SessionId.unsafe("shared"))
@@ -107,7 +103,7 @@ final class ReplOrchestratorSuite extends FunSuite {
       val result = runZIO {
         for {
           replOrchestrator <- replOrchestratorAt(root)
-          persisted <- replOrchestrator.persistTurn(ReplState(), turn(ReplState(), Chunk(Message.User("first"))))
+          persisted <- replOrchestrator.submitPrompt(ReplState(), "first", execution(gammaId, Chunk.empty))
           id <- ZIO.fromOption(persisted.state.sessionId).orElseFail(new AssertionError("missing session ID"))
           resumed <- replOrchestrator.resumeReplSession(id)
         } yield (id, resumed)
@@ -118,7 +114,7 @@ final class ReplOrchestratorSuite extends FunSuite {
     } finally deleteRecursively(root)
   }
 
-  test("unselected persistence rejects assistant messages before creating or partially writing a session") {
+  test("unselected submission rejects execution before creating or partially writing a session") {
     val result = runZIO {
       for {
         human = agent(bobId)
@@ -126,15 +122,13 @@ final class ReplOrchestratorSuite extends FunSuite {
         orchestrator <- OrchestratorLive.inMemory(instances)
         repl = ReplOrchestratorLive.make(orchestrator, human, None)
         rejected <- repl
-          .persistTurn(
-            ReplState(),
-            turn(ReplState(), Chunk(Message.User("hello"), Message.Assistant("not selected")))
-          )
+          .submitPrompt(ReplState(), "hello", execution(gammaId, Chunk(Message.Assistant("not selected"))))
           .either
         sessions <- repl.listSessions
       } yield (rejected, sessions)
     }
-    assert(result._1.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
+    assert(result._1.swap.toOption.exists(_.error.isInstanceOf[YallmoError.InvalidConfig]))
+    assertEquals(result._1.swap.toOption.flatMap(_.acceptedSession), None)
     assertEquals(result._2, Chunk.empty)
   }
 
@@ -147,12 +141,12 @@ final class ReplOrchestratorSuite extends FunSuite {
     } yield ReplOrchestratorLive.make(orchestrator, bob, Some(gamma))
   }
 
-  private def turn(state: ReplState, messages: Chunk[MessagePayload]): ReplTurn =
-    ReplTurn(
-      state.copy(runContext = RunContext(messages)),
-      AgentResult(gammaId, "result"),
-      messages
-    )
+  private def execution(id: AgentId, response: Chunk[MessagePayload]): AgentExecution[Any] =
+    new AgentExecution[Any] {
+      override val agentId: AgentId = id
+      override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
+        ZIO.succeed(AgentTurnResult(AgentResult(id, "result"), acceptedContext.appendAll(response)))
+    }
 
   private val bobId = AgentId("bob")
   private val gammaId = AgentId("Gamma")

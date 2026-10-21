@@ -382,9 +382,10 @@ final class ReplSuite extends FunSuite {
     }
     val session =
       new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test"))
-    val before = ReplState(RunContext(history), sessionId = Some("same-session"), continuationStart = history.size)
-    val first = runZIO(session.submit(before, "first"))
-    val second = runZIO(session.submit(first.state, "second"))
+    val orchestrator = inMemoryReplOrchestrator(agent.id)
+    val before = seedSession(orchestrator, agent.id, "same-session", history)
+    val first = runZIO(session.submit(before, "first", orchestrator))
+    val second = runZIO(session.submit(first.state, "second", orchestrator))
     assert(requests.forall(!_.contains(oldReasoning)))
     assert(requests.forall(_.contains(Message.User("earlier"))))
     assert(requests(1).contains(currentReasoning))
@@ -401,14 +402,18 @@ final class ReplSuite extends FunSuite {
       override def next(task: AgentTask, context: StaticContext[Any], history: RunContext): IO[YallmoError, AgentTurn] =
         ZIO.succeed(AgentTurn(Some(Message.Assistant("new answer")), AgentDecision.FinalAnswer("new answer")))
     }
+    val orchestrator = inMemoryReplOrchestrator(bob)
     val application = new ReplApplication[Any](
       new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test")),
       ReplToolAvailability(Chunk.empty, Chunk.empty),
-      inMemoryReplOrchestrator(bob),
+      orchestrator,
       userId = AgentId("fabio")
     )
-    val before = ReplState(
-      RunContext(Chunk(Message.User("legacy prompt"), Message.Assistant("legacy answer")))
+    val before = seedSession(
+      orchestrator,
+      bob,
+      "existing-history",
+      Chunk(Message.User("legacy prompt"), Message.Assistant("legacy answer"))
     )
     val next = runZIO(application.submit(before, "hello")).state
     assertEquals(next.runContext.messages.take(2), before.runContext.messages)
@@ -439,10 +444,11 @@ final class ReplSuite extends FunSuite {
 
     assertEquals(session.debugSnapshot(ReplState()), ReplDebugSnapshot(Chunk.empty))
 
+    val orchestrator = inMemoryReplOrchestrator(agent.id)
     val secondTurn = runZIO {
       for
-        first <- session.submit(ReplState(), "first")
-        second <- session.submit(first.state, "second")
+        first <- session.submit(ReplState(), "first", orchestrator)
+        second <- session.submit(first.state, "second", orchestrator)
       yield second
     }
 
@@ -471,6 +477,25 @@ final class ReplSuite extends FunSuite {
       """{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":42}
         |{"role":"toolResult","toolName":"clock","content":[{"type":"text","text":"12:00"}],"timestamp":42}""".stripMargin
     )
+  }
+
+  private def seedSession(
+      orchestrator: ReplOrchestrator[Any],
+      assistantId: AgentId,
+      name: String,
+      messages: Chunk[MessagePayload]
+  ): ReplState = runZIO {
+    for {
+      _ <- orchestrator.newReplSession(Some(name))
+      _ <- ZIO.foreachDiscard(messages) { message =>
+        val author = message match {
+          case _: MessagePayload.User => AgentId("TestAgentId")
+          case _                      => assistantId
+        }
+        orchestrator.append(SessionId.unsafe(name), author, Chunk(message))
+      }
+      restored <- orchestrator.resumeReplSession(name)
+    } yield restored
   }
 
   private def inMemoryReplOrchestrator(assistantId: AgentId): ReplOrchestrator[Any] = {

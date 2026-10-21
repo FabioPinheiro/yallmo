@@ -74,8 +74,7 @@ private[repl] final class ReplStartup private (
               new ReplSession[ReplTools.Environment](
                 runner,
                 selection.map(value => value.program.bind[ReplTools.Environment](value.adapter, orchestrator.readBlob)),
-                context,
-                afterSubmit = replOrchestrator.persistTurn
+                context
               ),
               availability,
               replOrchestrator,

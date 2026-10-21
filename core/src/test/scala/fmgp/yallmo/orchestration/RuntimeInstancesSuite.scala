@@ -517,7 +517,8 @@ final class RuntimeInstancesSuite extends FunSuite {
         assistant <- first.getAgent(eve)
         sameAssistant <- second.getAgent(eve)
         resolvedHuman <- first.getAgent(human.id)
-        humanTurn <- second.turn(human.id, request)
+        // Keep compatibility coverage for the deprecated single-turn API.
+        humanTurn <- (second.turn(human.id, request): @scala.annotation.nowarn("cat=deprecation"))
         session <- first.createSession(SessionId.unsafe("mixed"), Chunk(human.id, eve))
         persisted <- first.append(session.id, eve, Chunk(MessagePayload.Assistant("saved")))
       } yield {

@@ -593,7 +593,14 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage("Agent must not run for login commands")
     }
-    val instances = runZIO(RuntimeInstances.fromAgents(Chunk(agent)))
+    val user = new Agent[Any] {
+      val id = AgentId("user")
+      def turn(
+          request: fmgp.yallmo.model.llm.AgentTurnRequest
+      ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
+        ZIO.dieMessage("The user must not invoke a provider")
+    }
+    val instances = runZIO(RuntimeInstances.fromAgents(Chunk(user, agent)))
     val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
     new ReplApplication(
       new ReplSession[Any](
@@ -606,11 +613,10 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
               AgentTurn(Some(Message.Assistant("ok")), AgentDecision.FinalAnswer("ok"))
             }
         }),
-        StaticContext[Any]("test"),
-        afterSubmit = (_, turn) => ZIO.succeed(turn)
+        StaticContext[Any]("test")
       ),
       ReplToolAvailability(Chunk.empty, Chunk.empty),
-      ReplOrchestratorLive.make(orchestrator, agent, Some(agent))
+      ReplOrchestratorLive.make(orchestrator, user, Some(agent))
     )
   }
 

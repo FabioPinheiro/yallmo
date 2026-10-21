@@ -570,7 +570,10 @@ final class ReplStartupSuite extends FunSuite {
     assertEquals(application.activeAgent.map(_.agentId), Some("eve"))
     val before = ReplState()
     val failed = submit(application, before, "Hello")
-    assertEquals(failed.state, before)
+    assert(failed.state.sessionId.nonEmpty)
+    assertEquals(failed.state.runContext.messages, Chunk(MessagePayload.User("Hello")))
+    val resumed = submit(application, before, s"/session resume ${failed.state.sessionId.get}")
+    assertEquals(resumed.state.runContext.messages, failed.state.runContext.messages)
     assert(failed.events.collect { case ReplEvent.AgentFailed(message) => message }.exists(_.contains("logged out")))
     assert(submit(application, before, "/login browser").events.exists(_.isInstanceOf[ReplEvent.InputRejected]))
   }

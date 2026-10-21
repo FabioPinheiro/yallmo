@@ -6,7 +6,7 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.repl.debug.ReplDebugSnapshot
-import fmgp.yallmo.orchestration.{AgentResult, AgentTask, RunContext, StaticContext}
+import fmgp.yallmo.orchestration.{AgentResult, RunContext, StaticContext}
 
 /** The immutable state retained by one interactive REPL session.
   *
@@ -22,7 +22,12 @@ final case class ReplState(
     sessionId: Option[String] = None,
     lastProviderRequest: Option[Path] = None,
     continuationStart: Int = 0 // TODO REVIEW considered for removal
-)
+) {
+
+  /** Refreshes durable conversation state without changing client preferences or provider continuation boundaries. */
+  def withSession(session: Session): ReplState =
+    copy(sessionId = Some(session.id.value), runContext = RunContext(session.messages.map(_.payload)))
+}
 
 /** The result of accepting one user prompt in a REPL session. */
 final case class ReplTurn(
@@ -31,10 +36,7 @@ final case class ReplTurn(
     newMessages: Chunk[MessagePayload]
 )
 
-/** Adapts the bounded agent runner to a multi-prompt interactive session.
-  *
-  * Each submitted prompt starts from the previous [[RunContext]], while the [[StaticContext]] remains fixed for the
-  * lifetime of this session.
+/** Adapts REPL diagnostics and provider continuations to session-aware orchestration.
   *
   * @param agent
   *   selected runner program; None represents an unselected startup and rejects prompts before running tools, changing
@@ -44,45 +46,35 @@ final class ReplSession[R](
     runner: AgentRunner[R],
     agent: Option[AgentInstance[R]],
     staticContext: StaticContext[R],
-    afterSubmit: (ReplState, ReplTurn) => IO[YallmoError, ReplTurn] = (_, turn) => ZIO.succeed(turn)
 ) {
 
   /** Captures the current transcript without executing the agent. */
   def debugSnapshot(state: ReplState): ReplDebugSnapshot =
     ReplDebugSnapshot(state.runContext.messages)
 
-  def submit(state: ReplState, prompt: String): ZIO[R, YallmoError, ReplTurn] =
+  /** Preserves core submission failures so the client can recover the accepted session after an agent error. */
+  def submit(
+      state: ReplState,
+      prompt: String,
+      orchestrator: ReplOrchestrator[R]
+  ): ZIO[R, SessionSubmitFailure, ReplTurn] =
     agent match {
       case None =>
         ZIO.fail(
-          YallmoError.InvalidConfig(
-            "No agent selected. Press Esc, a to select an agent, or configure defaultAgentId / --agent <id>."
+          SessionSubmitFailure(
+            YallmoError.InvalidConfig(
+              "No agent selected. Press Esc, a to select an agent, or configure defaultAgentId / --agent <id>."
+            ),
+            None
           )
         )
       case Some(selected) =>
+        val execution = runner.execution(withCurrentContinuations(selected, state.continuationStart), staticContext)
         LlmProviderPayloadDebug
-          .withRequestCapture(
-            runner.runWithContext(
-              withCurrentContinuations(selected, state.continuationStart),
-              AgentTask(prompt),
-              staticContext,
-              state.runContext
-            )
-          )
-          .map { case (agentRun, requestCapture) =>
-            // A run may append several messages (user prompt, assistant turns, tool calls/results, RAG results).
-            // Keep only this run's append-only transcript delta; the preceding messages already belong to `state`.
-            val newMessages = agentRun.runContext.messages.drop(state.runContext.messages.size)
-            ReplTurn(
-              state.copy(
-                runContext = agentRun.runContext,
-                lastProviderRequest = requestCapture.orElse(state.lastProviderRequest)
-              ),
-              agentRun.result,
-              newMessages
-            )
+          .withRequestCapture(orchestrator.submitPrompt(state, prompt, execution))
+          .map { case (turn, requestCapture) =>
+            turn.copy(state = turn.state.copy(lastProviderRequest = requestCapture.orElse(state.lastProviderRequest)))
           }
-          .flatMap(afterSubmit(state, _))
     }
 
   /** Filter only the request view: the runner's append-only transcript and durable history remain unchanged. */

@@ -15,8 +15,42 @@ final class OrchestratorLive[-R] private (
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
     instances.getAgent(id)
 
-  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
-    getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
+  @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
+  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] = ???
+  // getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
+
+  override def submit[R1](
+      id: SessionId,
+      userId: AgentId,
+      task: AgentTask,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, SessionSubmitFailure, SessionTurn] =
+    for {
+      // Await prompt persistence before execution; Storage owns interruption safety for its critical writes.
+      accepted <- (for {
+        _ <- getAgent(execution.agentId)
+        _ <- addSessionAgent(id, userId)
+        session <- append(id, userId, Chunk(MessagePayload.User(task.prompt)))
+      } yield session).mapError(SessionSubmitFailure(_, None))
+      context = RunContext(accepted.messages.map(_.payload))
+      // Execution inherits the caller's interruptibility; its failure/cancellation cannot undo the saved prompt.
+      turn <- execution.run(task, context).mapError(SessionSubmitFailure(_, Some(accepted)))
+      _ <- ZIO
+        .fail(
+          SessionSubmitFailure(
+            YallmoError.InvalidAgentDecision("Agent execution must preserve the accepted transcript and agent ID"),
+            Some(accepted)
+          )
+        )
+        .unless(
+          turn.result.agentId == execution.agentId &&
+            turn.runContext.messages.take(context.messages.size) == context.messages
+        )
+      response = turn.runContext.messages.drop(context.messages.size)
+      saved <- (if response.isEmpty then ZIO.succeed(accepted)
+                else addSessionAgent(id, execution.agentId) *> append(id, execution.agentId, response))
+        .mapError(SessionSubmitFailure(_, Some(accepted)))
+    } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
 
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     storage.listSessions.mapError(YallmoError.StorageFailed.apply)

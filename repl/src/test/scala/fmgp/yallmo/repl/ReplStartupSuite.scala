@@ -1,6 +1,7 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.model.{AgentId, AudioFormat, AudioInput, MessageId, MessagePayload, YallmoError}
+import fmgp.yallmo.repl.voice.CapturedAudio
+import fmgp.yallmo.model.{AgentId, AudioFormat, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.ThinkingLevel
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{
@@ -419,8 +420,18 @@ final class ReplStartupSuite extends FunSuite {
       val storeBefore = run(OrchestratorLive.filesystem(root, current.instances))
       val storedChatBefore = run(storeBefore.loadSession(SessionId.unsafe("ordinary-chat")))
       val chatRequestCount = requests.size
-      val audio = AudioInput(Chunk[Byte](1, 2), AudioFormat.Wav, 2L, Some(0.5))
-      for app <- List(first, second, third) do assertEquals(run(app.transcriber.get.transcribe(audio)), "transcript")
+      val audio = CapturedAudio(
+        fmgp.yallmo.model.MessagePayload.AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav),
+        Chunk[Byte](1, 2)
+      )
+      for app <- List(first, second, third) do
+        assertEquals(
+          run(
+            app.transcriber.get
+              .transcribe(audio.copy(input = audio.input.copy(blobId = fmgp.yallmo.model.BlobId.fresh())))
+          ),
+          "transcript"
+        )
       assertEquals(requests.size, chatRequestCount + 3)
       requests.drop(chatRequestCount).foreach { request =>
         assertEquals(request("model").str, "audio-model")
@@ -437,8 +448,8 @@ final class ReplStartupSuite extends FunSuite {
       retained.foreach { summary =>
         val exchange = run(store.loadSession(summary.id))
         assertEquals(exchange.messages.map(_.agentId), Chunk(AgentId("operator"), voiceId))
-        assertEquals(exchange.messages.head.payload, audio.redacted)
-        assertEquals(exchange.messages.head.id, MessageId.from(exchange.messages.head.data.copy(payload = audio)))
+        assertEquals(run(store.readBlob(exchange.messages.head.payload.blobIds.head)).bytes, audio.bytes)
+        assertEquals(exchange.messages.head.id, MessageId.from(exchange.messages.head.data))
         assertEquals(exchange.messages.head.parentId, None)
         assertEquals(exchange.messages.last.parentId, Some(exchange.messages.head.id))
         assertEquals(exchange.messages.last.payload, MessagePayload.Assistant("transcript"))

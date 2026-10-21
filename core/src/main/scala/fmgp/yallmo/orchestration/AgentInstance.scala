@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.config.AgentCapabilities
 import fmgp.yallmo.model.*
@@ -107,7 +108,7 @@ object LlmDecisionAgent {
   ): UIO[String] =
     for {
       history <- ZIO.foreach(runContext.messages) {
-        case _: AudioInput =>
+        case _: AudioAttachment =>
           val message = "SYSTEM ERROR: decision agents do not support audio input"
           ZIO.logError(message).as(message)
         case MessagePayload.User(text)                         => ZIO.succeed(s"User: $text")

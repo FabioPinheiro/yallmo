@@ -16,7 +16,7 @@ object ReplDebug {
 
   private def toJson(message: MessagePayload, timestamp: Long): ujson.Obj =
     message match
-      case audio: fmgp.yallmo.model.AudioInput               => textMessage("user", audio.contentStr, timestamp)
+      case audio: MessagePayload.AudioAttachment             => textMessage("user", audio.contentStr, timestamp)
       case MessagePayload.User(text)                         => textMessage("user", text, timestamp)
       case MessagePayload.Assistant(text)                    => textMessage("assistant", text, timestamp)
       case MessagePayload.RagResult(retrieverKey, documents) =>

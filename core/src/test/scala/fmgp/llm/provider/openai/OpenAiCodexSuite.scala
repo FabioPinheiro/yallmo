@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import munit.FunSuite
@@ -29,7 +30,7 @@ final class OpenAiCodexSuite extends FunSuite:
     val request = AgentTurnRequest(
       "gpt-5.4",
       Chunk(
-        AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav),
+        AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav),
         MessagePayload.Instructions("Describe")
       )
     )
@@ -37,8 +38,8 @@ final class OpenAiCodexSuite extends FunSuite:
   }
 
   test("direct input mapping returns an error for audio instead of throwing or returning partial input") {
-    val audio = AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav, 3L, Some(1.0), Some("private description"))
-    Seq(audio, audio.redacted).foreach { input =>
+    val audio = AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav, Some("private description"))
+    Seq(audio, audio.copy(blobId = fmgp.yallmo.model.BlobId.fresh())).foreach { input =>
       Seq(
         Chunk[MessagePayload](input),
         Chunk(MessagePayload.User("before"), input, MessagePayload.Assistant("after"))

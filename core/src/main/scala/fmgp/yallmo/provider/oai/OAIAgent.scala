@@ -1,7 +1,7 @@
 package fmgp.yallmo.provider.oai
 
 import fmgp.yallmo.LlmProviderPayloadDebug
-import fmgp.yallmo.model.{AgentId, AudioAgent, AudioInput, YallmoError}
+import fmgp.yallmo.model.{AgentId, AudioAgent, YallmoError, MessagePayload}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import zio.*
 
@@ -13,12 +13,14 @@ final class OAIAgent private[oai] (
   override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
     for {
       _ <- ZIO.fromEither(request.validate.left.map(YallmoError.InvalidConfig.apply))
-      _ <- ZIO.foreachDiscard(request.input.collect { case audio: AudioInput => audio })(audio =>
-        ZIO.fromEither(OAILlmProvider.validateAudio(audio).left.map(YallmoError.InvalidConfig.apply))
-      )
+      resolved <- ZIO.foreach(request.input.collect { case audio: MessagePayload.AudioAttachment => audio }.distinct) {
+        audio =>
+          OAILlmProvider.resolveAudio(audio, request.readBlob).map(audio.blobId -> _)
+      }
       turnId = LlmProviderPayloadDebug.newTurnId()
-      body = OAIChatCompletionsMapper.turnRequestBody(request.model, request)
-      _ <- LlmProviderPayloadDebug.captureRequest(turnId, "OpenAI-compatible endpoint", request.model, body)
+      diagnostic = OAIChatCompletionsMapper.turnRequestBody(request.model, request)
+      _ <- LlmProviderPayloadDebug.captureRequest(turnId, "OpenAI-compatible endpoint", request.model, diagnostic)
+      body = OAIChatCompletionsMapper.turnRequestBody(request.model, request, resolved.toMap)
       response <- provider.complete(body)
       turn <- ZIO.fromEither(
         OAIChatCompletionsMapper.agentTurnResponse(response).left.map(YallmoError.ProtocolFailure.apply)

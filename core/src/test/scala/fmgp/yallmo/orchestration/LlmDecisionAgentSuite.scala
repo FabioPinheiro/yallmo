@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import munit.FunSuite
 import zio.*
@@ -15,11 +16,11 @@ final class LlmDecisionAgentSuite extends FunSuite {
     val logs = new CopyOnWriteArrayList[String]()
     val logger = ZLogger.default.map(line => { logs.add(line); () })
     val marker = "SYSTEM ERROR: decision agents do not support audio input"
-    val audio = AudioInput(Chunk[Byte](12, 34, 56, 78), AudioFormat.Wav, 4L, Some(1.0), Some("PRIVATE_DESCRIPTION"))
+    val audio = AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav, Some("PRIVATE_DESCRIPTION"))
     val rendering = LlmDecisionAgent.renderTask(
       AgentTask("Continue"),
       StaticContext[Any]("System"),
-      RunContext(Chunk(MessagePayload.User("Before"), audio, MessagePayload.Assistant("After"), audio.redacted))
+      RunContext(Chunk(MessagePayload.User("Before"), audio, MessagePayload.Assistant("After"), audio))
     )
     assert(logs.isEmpty)
     val prompt = run {

@@ -12,7 +12,7 @@ private[terminal] object TerminalMessageRenderer {
   /** Shared formatting for history and live output; unknown authors retain generic role labels. */
   def render(message: MessagePayload, author: Option[AgentId] = None): String =
     message match {
-      case audio: fmgp.yallmo.model.AudioInput =>
+      case audio: MessagePayload.AudioAttachment =>
         s"${author.fold("user> ")(id => TerminalPrompt.user(id))}${audio.contentStr}"
       case MessagePayload.User(text) =>
         s"${author.fold("user> ")(id => TerminalPrompt.user(id))}$text"

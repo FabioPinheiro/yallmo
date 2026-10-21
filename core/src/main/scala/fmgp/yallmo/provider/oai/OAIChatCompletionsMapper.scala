@@ -1,16 +1,15 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.provider.JsonSchemaEncoder
 import fmgp.yallmo.model.llm.*
 import zio.Chunk
 
-import java.util.Base64
-
 /** Encodes and decodes the OpenAI-compatible Chat Completions wire dialect. */
 private[oai] object OAIChatCompletionsMapper {
-  def messages(items: Chunk[MessagePayload]): ujson.Arr =
-    ujson.Arr.from(items.foldLeft(Vector.empty[ujson.Value])(append))
+  def messages(items: Chunk[MessagePayload], audioData: Map[BlobId, String] = Map.empty): ujson.Arr =
+    ujson.Arr.from(items.foldLeft(Vector.empty[ujson.Value])((history, item) => append(history, item, audioData)))
 
   def agentTurnResponse(response: OAIResponse): Either[String, AgentTurnResponse] =
     val text = response.content
@@ -48,18 +47,23 @@ private[oai] object OAIChatCompletionsMapper {
       )
     )
 
-  private def append(messages: Vector[ujson.Value], item: MessagePayload): Vector[ujson.Value] =
+  private def append(
+      messages: Vector[ujson.Value],
+      item: MessagePayload,
+      audioData: Map[BlobId, String]
+  ): Vector[ujson.Value] =
     item match
-      case audio: AudioInput =>
+      case audio: AudioAttachment =>
         messages :+ ujson.Obj(
           "role" -> "user",
           "content" -> ujson.Arr(
             ujson.Obj(
               "type" -> "input_audio",
-              "input_audio" -> ujson.Obj(
-                "data" -> Base64.getEncoder.encodeToString(audio.bytes.toArray),
-                "format" -> audio.format.wireName
-              )
+              "input_audio" -> audioData
+                .get(audio.blobId)
+                .fold(
+                  ujson.Obj("blobId" -> audio.blobId.value, "format" -> audio.format.wireName)
+                )(data => ujson.Obj("data" -> data, "format" -> audio.format.wireName))
             )
           )
         )
@@ -99,20 +103,29 @@ private[oai] object OAIChatCompletionsMapper {
   }
 
   /** Wire request for prompt-based audio inference, independent of the agent turn contract. */
-  private[oai] def audioRequestBody(model: String, prompt: String, audio: AudioInput): ujson.Obj =
+  private[oai] def audioRequestBody(
+      model: String,
+      prompt: String,
+      audio: AudioAttachment,
+      audioData: Map[BlobId, String] = Map.empty
+  ): ujson.Obj =
     ujson.Obj(
       "model" -> model,
-      "messages" -> messages(Chunk(audio, MessagePayload.Instructions(prompt))),
+      "messages" -> messages(Chunk(audio, MessagePayload.Instructions(prompt)), audioData),
       "stream" -> false,
       "temperature" -> 0,
       "tool_choice" -> "none",
       "parallel_tool_calls" -> false
     )
 
-  private[oai] def turnRequestBody(model: String, request: AgentTurnRequest): ujson.Obj = {
+  private[oai] def turnRequestBody(
+      model: String,
+      request: AgentTurnRequest,
+      audioData: Map[BlobId, String] = Map.empty
+  ): ujson.Obj = {
     val body = ujson.Obj(
       "model" -> model,
-      "messages" -> messages(request.input),
+      "messages" -> messages(request.input, audioData),
       "stream" -> false
     )
     request.options.temperature.foreach(value => body("temperature") = value)

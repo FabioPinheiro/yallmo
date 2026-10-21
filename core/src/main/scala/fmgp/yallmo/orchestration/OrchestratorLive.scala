@@ -16,7 +16,7 @@ final class OrchestratorLive[-R] private (
     instances.getAgent(id)
 
   override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
-    getAgent(id).flatMap(_.turn(request))
+    getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
 
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     storage.listSessions.mapError(YallmoError.StorageFailed.apply)
@@ -36,6 +36,41 @@ final class OrchestratorLive[-R] private (
       messages: Chunk[MessagePayload]
   ): IO[YallmoError, Session] =
     getAgent(agentId) *> storage.append(id, agentId, messages).mapError(YallmoError.StorageFailed.apply)
+
+  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = storage.readBlob(blobId)
+
+  override def appendWithBlobWriter[R1](
+      id: SessionId,
+      agentId: AgentId,
+      message: MessagePayload,
+      produce: (Chunk[Byte] => IO[YallmoError, Unit]) => ZIO[R1, YallmoError, Unit]
+  ): ZIO[R1, YallmoError, Session] =
+    for {
+      _ <- getAgent(agentId)
+      session <- loadSession(id)
+      _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(session.agentIds.contains(agentId))
+      blobId <- message.blobIds.toList match {
+        case blobId :: Nil => ZIO.succeed(blobId)
+        case _             => ZIO.fail(YallmoError.InvalidConfig("Blob append requires exactly one blob ID"))
+      }
+      result <- ZIO.uninterruptibleMask { restore =>
+        for {
+          // A closed buffer also closes the scoped writer. Each write and close is atomic.
+          buffer <- Ref.make[Option[Chunk[Byte]]](Some(Chunk.empty))
+          write = (bytes: Chunk[Byte]) =>
+            buffer
+              .modify {
+                case Some(current) => (Right(()), Some(current ++ bytes))
+                case None          => (Left(YallmoError.BlobWriterClosed(blobId)), None)
+              }
+              .flatMap(ZIO.fromEither)
+          exit <- (append(id, agentId, Chunk(message)) <* restore(ZIO.suspendSucceed(produce(write)))).exit
+          bytes <- buffer.getAndSet(None).map(_.getOrElse(Chunk.empty))
+          _ <- storage.append(Blob(blobId, bytes))
+          appended <- exit
+        } yield appended
+      }
+    } yield result
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
     storage.fork(source, target).mapError(YallmoError.StorageFailed.apply)

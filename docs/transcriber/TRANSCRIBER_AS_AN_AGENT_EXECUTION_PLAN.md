@@ -1,5 +1,13 @@
 # Transcriber-as-agent execution plan
 
+> Audio storage update: the discard/redaction and audio-wide hash-exception decisions below describe the historical implementation.
+> They are superseded by [Attachments and blob storage](../orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+> Audio now uses blob references, separate content storage, and append-before-inference; historical results below are unchanged.
+> The current Scala payload is `MessagePayload.AudioAttachment`; older `AudioInput` names below are historical.
+> Size/duration persistence, empty-byte projections, inference-before-retention ordering, and non-replayable restored audio
+> are also historical. Current references resolve stored bytes; there are no legacy decoders or audio hash exceptions.
+> Current validation and the open failure-path finding belong to the blob-storage plan, not the historical gates below.
+
 ## Status
 
 **Implementation, automated validation, independent review, and parent code acceptance complete. Manual hardware/endpoint checks remain outstanding.**

@@ -2,7 +2,7 @@ package fmgp.yallmo.repl.terminal
 
 import zio.*
 import org.jline.reader.{LineReader, Reference, Widget}
-import fmgp.yallmo.model.AudioInput
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 
@@ -86,7 +86,7 @@ private[terminal] final class VoiceInsert(
 
   /** Recording completion/errors must release the widget even when no further key arrives. */
   private def awaitTermination(
-      recording: Fiber[Throwable, Option[AudioInput]],
+      recording: Fiber[Throwable, Option[CapturedAudio]],
       termination: Promise[Nothing, VoiceRecordingTermination]
   ): Unit = {
     var waiting = true

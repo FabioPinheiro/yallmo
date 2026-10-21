@@ -45,6 +45,37 @@ final class OrchestratorLiveSuite extends FunSuite {
     assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
   }
 
+  test("blob append validates registered authors and turns resolve stored attachments") {
+    val input = MessagePayload.AudioAttachment(BlobId.fresh(), AudioFormat.Wav)
+    val bytes = Chunk.fromArray("hello".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    val readerAgent = new Agent[Any] {
+      val id = AgentId("reader")
+      def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+        request.readBlob(request.input.head.blobIds.head).map { blob =>
+          AgentTurnResponse(
+            Chunk(MessagePayload.Assistant(new String(blob.bytes.toArray, java.nio.charset.StandardCharsets.UTF_8))),
+            fmgp.yallmo.model.llm.LlmStopReason.Stop
+          )
+        }
+    }
+    val result = runZIO(for {
+      instances <- RuntimeInstances.fromAgents(Chunk(readerAgent))
+      orchestrator <- OrchestratorLive.inMemory(instances)
+      id = SessionId.unsafe("blobs")
+      _ <- orchestrator.createSession(id, Chunk(readerAgent.id))
+      rejected <- orchestrator.appendWithBlobBytes(id, AgentId("unknown"), input, bytes).either
+      _ <- orchestrator.appendWithBlobBytes(id, readerAgent.id, input, bytes)
+      response <- orchestrator.turn(
+        readerAgent.id,
+        AgentTurnRequest("model", Chunk(input, MessagePayload.Instructions("Read")))
+      )
+      blob <- orchestrator.readBlob(input.blobId)
+    } yield (rejected, response, blob))
+    assertEquals(result._1, Left(YallmoError.UnknownAgent(AgentId("unknown"))))
+    assertEquals(result._2.output, Chunk(MessagePayload.Assistant("hello")))
+    assertEquals(result._3.bytes, bytes)
+  }
+
   private val agentId = AgentId("agent")
   private val agent = new Agent[Any] {
     override val id: AgentId = agentId

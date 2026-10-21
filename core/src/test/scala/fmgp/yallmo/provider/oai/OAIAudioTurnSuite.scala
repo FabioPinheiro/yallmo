@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
@@ -12,15 +13,18 @@ import java.util.Base64
 import scala.compiletime.testing.typeCheckErrors
 
 final class OAIAudioTurnSuite extends FunSuite {
-  private val audio = AudioInput(Chunk[Byte](12, 34, 56, 78), AudioFormat.Wav, 4L, Some(1.25), Some("LOCAL_ONLY"))
-  private val encoded = Base64.getEncoder.encodeToString(audio.bytes.toArray)
+  private val audio = AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav, Some("LOCAL_ONLY"))
+  private val bytes = Chunk[Byte](12, 34, 56, 78)
+  private val reader: BlobId => IO[YallmoError, Blob] = blobId => ZIO.succeed(Blob(blobId, bytes))
+  private val encoded = Base64.getEncoder.encodeToString(bytes.toArray)
   private val request = AgentTurnRequest(
     "explicit-audio-model",
     Chunk(MessagePayload.User("Describe the sound"), audio, MessagePayload.Instructions("Be helpful")),
     tools = Chunk(FunctionToolDefinition("inspect", "Inspect", JsonSchema.ObjectSchema(Map.empty))),
     toolChoice = ToolChoice.Required,
     parallelToolCalls = true,
-    options = ProviderGenerateOptions(temperature = Some(0.3), maxOutputTokens = Some(50))
+    options = ProviderGenerateOptions(temperature = Some(0.3), maxOutputTokens = Some(50)),
+    readBlob = reader
   )
 
   private def run[E, A](effect: ZIO[Any, E, A]): A =
@@ -54,7 +58,9 @@ final class OAIAudioTurnSuite extends FunSuite {
   private def provider(client: Client): OAILlmProvider =
     OAILlmProvider(client, OAIConfig("http://offline.invalid/v1", "default-model"))
 
-  test("audio agent sends original bytes, retains general turn semantics, and captures only redacted wire JSON") {
+  test(
+    "audio agent sends original bytes, retains general turn semantics, and captures blob references instead of wire bytes"
+  ) {
     val client = fakeClient(incoming =>
       incoming.body.asString.flatMap(body =>
         ZIO.attempt {
@@ -85,8 +91,11 @@ final class OAIAudioTurnSuite extends FunSuite {
       assert(response.output(1).isInstanceOf[MessagePayload.FunctionCallRequest])
       val captured = Files.readString(path.get)
       assert(!captured.contains(encoded))
-      assertEquals(ujson.read(captured)("payload")("messages")(1)("content")(0)("input_audio")("data").str, "")
-      assert(audio.bytes.nonEmpty)
+      assertEquals(
+        ujson.read(captured)("payload")("messages")(1)("content")(0)("input_audio")("blobId").str,
+        audio.blobId.value
+      )
+      assert(bytes.nonEmpty)
     } finally
       path.foreach { requestPath =>
         Files.deleteIfExists(requestPath)
@@ -113,15 +122,18 @@ final class OAIAudioTurnSuite extends FunSuite {
     )
     val (transcript, capture) = run(
       LlmProviderPayloadDebug.withRequestCapture(
-        provider(client).inferenceWithAudio("Describe", audio, Some("chosen-model"))
+        provider(client).inferenceWithAudio("Describe", audio, Some("chosen-model"), reader)
       )
     )
     try {
       assertEquals(transcript, "A bell")
       val captured = Files.readString(capture.get)
       assert(!captured.contains(encoded))
-      assertEquals(ujson.read(captured)("payload")("messages")(0)("content")(0)("input_audio")("data").str, "")
-      assert(audio.bytes.nonEmpty)
+      assertEquals(
+        ujson.read(captured)("payload")("messages")(0)("content")(0)("input_audio")("blobId").str,
+        audio.blobId.value
+      )
+      assert(bytes.nonEmpty)
     } finally capture.foreach(Files.deleteIfExists)
     val offline = provider(fakeClient(_ => ZIO.dieMessage("Invalid requests must not be sent")))
     assert(run(offline.inferenceWithAudio(" ", audio).either).isLeft)
@@ -135,24 +147,23 @@ final class OAIAudioTurnSuite extends FunSuite {
     )
     responses.foreach { response =>
       val connection = provider(fakeClient(_ => ZIO.succeed(Response.text(response))))
-      assert(run(connection.inferenceWithAudio("Describe", audio).either).isLeft)
+      assert(run(connection.inferenceWithAudio("Describe", audio, readBlob = reader).either).isLeft)
     }
   }
 
-  test("agent and prompt-based audio inference reject restored/empty and oversized recordings before HTTP") {
+  test("agent and prompt-based audio inference reject missing, mismatched, empty and oversized blobs before HTTP") {
     val connection = provider(fakeClient(_ => ZIO.dieMessage("Invalid audio must not be sent")))
     val agent = OAIAgent.make(AgentId("audio"), connection)
-    val invalid = Seq(audio.redacted, audio.copy(bytes = Chunk.fill(OAILlmProvider.MaxAudioBytes + 1)(1.toByte)))
-    invalid.foreach { input =>
-      val turn = request.copy(input = Chunk(input, MessagePayload.Instructions("Describe")))
-      val result = run(agent.turn(turn).either)
-      assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
-      assert(run(connection.inferenceWithAudio("Describe", input).either).isLeft)
+    val invalidReaders =
+      List(Blob.unavailable) ++ List(Chunk.empty, Chunk.fill(OAILlmProvider.MaxAudioBytes + 1)(1.toByte)).map {
+        content => (blobId: BlobId) =>
+          ZIO.succeed(Blob(blobId, content))
+      } :+ ((_: BlobId) => ZIO.succeed(Blob(BlobId.fresh(), bytes)))
+    invalidReaders.foreach { invalidReader =>
+      assert(run(agent.turn(request.copy(readBlob = invalidReader)).either).isLeft)
+      assert(run(connection.inferenceWithAudio("Describe", audio, readBlob = invalidReader).either).isLeft)
     }
-    assertEquals(
-      OAILlmProvider.validateAudio(audio.copy(bytes = Chunk.fill(OAILlmProvider.MaxAudioBytes)(1.toByte))).isRight,
-      true
-    )
+    assert(OAILlmProvider.validateAudio(Chunk.fill(OAILlmProvider.MaxAudioBytes)(1.toByte)).isRight)
   }
 
   test("audio HTTP, malformed response and transport errors never echo a recording") {
@@ -166,7 +177,7 @@ final class OAIAudioTurnSuite extends FunSuite {
       val connection = provider(client)
       Seq(
         OAIAgent.make(AgentId("audio"), connection).turn(request),
-        connection.inferenceWithAudio("Describe", audio)
+        connection.inferenceWithAudio("Describe", audio, readBlob = reader)
       ).foreach { effect =>
         val failure = run(effect.either).swap.toOption.get
         assert(!failure.toString.contains(encoded))
@@ -186,7 +197,7 @@ final class OAIAudioTurnSuite extends FunSuite {
         }
         connection = provider(fakeClient(_ => started.succeed(()).unit *> ZIO.never))
         named <- OAIAgent.make(AgentId("audio"), connection).turn(request).withClock(clock).either
-        legacy <- connection.inferenceWithAudio("Describe", audio).withClock(clock).either
+        legacy <- connection.inferenceWithAudio("Describe", audio, readBlob = reader).withClock(clock).either
       } yield Seq(named, legacy).foreach(result =>
         assert(result.swap.toOption.exists(_.getMessage.contains("timed out")))
       )
@@ -219,10 +230,15 @@ final class OAIAudioTurnSuite extends FunSuite {
     assertEquals(concreteTurnErrors.size, 1)
     assert(concreteTurnErrors.head.message.contains("turn"))
     val provider = new LlmProviderAudio {
-      def inferenceWithAudio(prompt: String, audio: AudioInput, model: Option[String]): IO[YallmoError, String] =
+      def inferenceWithAudio(
+          prompt: String,
+          audio: AudioAttachment,
+          model: Option[String],
+          readBlob: BlobId => IO[YallmoError, Blob]
+      ): IO[YallmoError, String] =
         ZIO.succeed(prompt)
     }
-    assertEquals(run(provider.inferenceWithAudio("Describe", audio)), "Describe")
+    assertEquals(run(provider.inferenceWithAudio("Describe", audio, readBlob = reader)), "Describe")
   }
 
   test("shared audio response mapping preserves all stop reasons") {

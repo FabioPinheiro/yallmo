@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.voice
 
-import fmgp.yallmo.model.{AgentId, AudioAgent, AudioInput, MessagePayload, ToolChoice, YallmoError}
+import fmgp.yallmo.model.{AgentId, AudioAgent, MessagePayload, ToolChoice, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.{Orchestrator, SessionId}
 import fmgp.yallmo.orchestration.config.ConfiguredAgentSettings
@@ -8,7 +8,7 @@ import zio.*
 
 /** REPL service invoking the configured audio agent and retaining its transcript before editable draft insertion. */
 trait Transcriber {
-  def transcribe(audio: AudioInput): IO[YallmoError, String]
+  def transcribe(audio: CapturedAudio): IO[YallmoError, String]
 }
 
 object Transcriber {
@@ -20,12 +20,20 @@ object Transcriber {
       orchestrator: Orchestrator[Any],
       humanId: AgentId
   ): Transcriber = new Transcriber {
-    def transcribe(audio: AudioInput): IO[YallmoError, String] =
+    def transcribe(audio: CapturedAudio): IO[YallmoError, String] =
       for {
-        response <- agent.turn(
+        uuid <- Random.nextUUID
+        id = SessionId.unsafe(s"transcription-$uuid")
+        _ <- (orchestrator.createSession(id, Chunk(humanId, agent.id)) *>
+          orchestrator.appendWithBlobBytes(id, humanId, audio.input, audio.bytes))
+          .mapError(_ =>
+            YallmoError.InvalidConfig("Voice audio could not be stored; draft was not changed. Check session storage.")
+          )
+        response <- orchestrator.turn(
+          agent.id,
           AgentTurnRequest(
             model = settings.model,
-            input = Chunk(audio, MessagePayload.Instructions(settings.systemPrompt)),
+            input = Chunk(audio.input, MessagePayload.Instructions(settings.systemPrompt)),
             tools = Chunk.empty,
             toolChoice = ToolChoice.None,
             parallelToolCalls = false,
@@ -33,19 +41,13 @@ object Transcriber {
           )
         )
         transcript <- ZIO.fromEither(extract(response))
-        // No draft can receive a successful result before durable retention; never attach this thread to chat state.
-        _ <- (for {
-          uuid <- Random.nextUUID
-          id = SessionId.unsafe(s"transcription-$uuid")
-          _ <- orchestrator.createSession(id, Chunk(humanId, agent.id))
-          // Storage must hash the live input before retaining its metadata-only projection.
-          _ <- orchestrator.append(id, humanId, Chunk(audio))
-          _ <- orchestrator.append(id, agent.id, Chunk(MessagePayload.Assistant(transcript)))
-        } yield ()).uninterruptible.mapError(_ =>
-          YallmoError.InvalidConfig(
-            "Voice transcript could not be retained; draft was not changed. Check session storage."
+        _ <- orchestrator
+          .append(id, agent.id, Chunk(MessagePayload.Assistant(transcript)))
+          .mapError(_ =>
+            YallmoError.InvalidConfig(
+              "Voice transcript could not be stored; draft was not changed. Check session storage."
+            )
           )
-        )
       } yield transcript
   }
 

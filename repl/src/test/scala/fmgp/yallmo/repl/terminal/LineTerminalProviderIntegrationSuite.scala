@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
@@ -39,8 +40,8 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
   private val availability = ReplToolAvailability(Chunk.empty, Chunk.empty)
   private val tools = ZLayer.make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live)
   private val recorder = new AudioRecorder {
-    def record(seconds: Int): Task[AudioInput] = ZIO.dieMessage("Menus must not record")
-    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    def record(seconds: Int): Task[CapturedAudio] = ZIO.dieMessage("Menus must not record")
+    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       ZIO.dieMessage("Menus must not record")
   }
 

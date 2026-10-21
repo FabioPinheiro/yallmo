@@ -1,5 +1,12 @@
 # Browser STT/TTS execution plan
 
+> Audio storage update: the discard/redaction and audio-wide hash-exception decisions below describe the historical implementation.
+> They are superseded by [Attachments and blob storage](../orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+> Audio now uses `MessagePayload.AudioAttachment` references, separate content storage, and append-before-inference;
+> historical results below are unchanged. Voice uses the explicit `transcriberAgent`, not the selected chat provider.
+> Memory-only/discard statements below apply to browser capture before ingestion, not backend recordings retained with
+> `--storage`. Current validation and the open failure-path finding are recorded in the blob-storage plan.
+
 Design: [BROWSER_STT_TTS_PLAN.md](BROWSER_STT_TTS_PLAN.md).
 
 ## Lane board

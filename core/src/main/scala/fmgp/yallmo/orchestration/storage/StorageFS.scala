@@ -1,18 +1,38 @@
 package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.{AgentId, Message, MessageData, MessageId, MessagePayload}
+import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
-import java.nio.file.Path
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.file.{FileAlreadyExistsException, Files, NoSuchFileException, Path, StandardOpenOption}
 import java.time.Instant
 import zio.*
 
 /** Filesystem-backed [[Storage]] implementation.
   *
   * It persists agent identifiers as session metadata but has no agent definitions, runtime bindings, or execution
-  * knowledge. [[Orchestrator]] is responsible for resolving those identifiers.
+  * knowledge. [[Orchestrator]] is responsible for resolving those identifiers. Each blob is one raw-byte file at
+  * `blobs/<BlobId>`, with no metadata or framing. Files are written directly; overlapping reads or failed writes can
+  * expose partial bytes. Callers requiring all supplied bytes must wait for the blob append to finish successfully.
+  * Blob files and their directory use filesystem-default permissions; root permissions are initialized by the object
+  * store.
+  *
+  * Concurrency assumption: exactly one Storage service owns a storage root, with no other process writing to it.
+  * Callers must serialize message appends and session-metadata mutations across that root, including different
+  * sessions. A single service instance can still receive concurrent calls from multiple fibers; this class provides no
+  * internal writer lock.
+  *
+  * Violating that contract can lose session-head or agent-membership updates and overwrite/interleave `objects.jsonl`
+  * records. Atomic session-file replacement prevents torn files, not lost updates. Appends are not rollback
+  * transactions.
+  *
+  * If concurrent writers are needed, introduce storage-level coordination covering all message/session mutations, not
+  * just appends, and test overlapping writes. Multiple processes additionally require filesystem locking or a
+  * transactional storage backend.
   */
 private[orchestration] final class StorageFS private (val root: Path, store: StorageStore) extends Storage {
+
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     StorageFiles.list(root).flatMap { ids =>
       ZIO.foreach(ids) { id =>
@@ -58,6 +78,34 @@ private[orchestration] final class StorageFS private (val root: Path, store: Sto
         _ <- StorageFiles.write(root, id, state.agentIds, head)
         session <- loadSession(id)
       } yield session
+
+  private def blobPath(blobId: BlobId): Path = root.resolve("blobs").resolve(blobId.value)
+
+  override def append(blob: Blob): IO[YallmoError, Unit] =
+    ZIO
+      .attemptBlocking {
+        val path = blobPath(blob.id)
+        Files.createFile(path)
+        val channel = FileChannel.open(path, StandardOpenOption.WRITE)
+        try {
+          val buffer = ByteBuffer.wrap(blob.bytes.toArray)
+          while buffer.hasRemaining do channel.write(buffer)
+          channel.force(true)
+        } finally channel.close()
+      }
+      .mapError {
+        case _: FileAlreadyExistsException => YallmoError.BlobAlreadyExists(blob.id)
+        case error                         => YallmoError.StorageFailure("append blob", error)
+      }
+      .uninterruptible
+
+  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] =
+    ZIO
+      .attemptBlocking(Blob(blobId, Chunk.fromArray(Files.readAllBytes(blobPath(blobId)))))
+      .mapError {
+        case _: NoSuchFileException => YallmoError.BlobMissing(blobId)
+        case error                  => YallmoError.StorageFailure("read blob", error)
+      }
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
     StorageFiles.exists(root, target).flatMap {
@@ -106,5 +154,8 @@ private[orchestration] object StorageFS {
     for {
       store <- StorageStore.open(root)
       _ <- StorageFiles.ensureDirectories(root)
+      _ <- ZIO
+        .attemptBlocking(Files.createDirectories(root.resolve("blobs")))
+        .mapError(error => YallmoError.StorageFailure("create blob directory", error))
     } yield StorageFS(root, store)
 }

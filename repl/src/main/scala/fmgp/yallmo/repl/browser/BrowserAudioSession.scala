@@ -2,7 +2,7 @@ package fmgp.yallmo.repl.browser
 
 import zio.*
 import java.util.UUID
-import fmgp.yallmo.model.AudioInput
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
 
 private[browser] final class BrowserAudioSession private (state: Ref.Synchronized[BrowserAudioSession.State]) {
@@ -10,18 +10,18 @@ private[browser] final class BrowserAudioSession private (state: Ref.Synchronize
   import BrowserProtocol.*
 
   val recorder: AudioRecorder = new AudioRecorder {
-    def record(seconds: Int): Task[AudioInput] =
+    def record(seconds: Int): Task[CapturedAudio] =
       if seconds < 1 || seconds > 30 then ZIO.fail(failure("duration"))
       else recording(seconds, ZIO.never).flatMap(value => ZIO.fromOption(value).orElseFail(failure("cancelled")))
 
-    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       recording(30, termination)
   }
 
   private def recording(
       seconds: Int,
       termination: UIO[VoiceRecordingTermination]
-  ): IO[BrowserAudioError, Option[AudioInput]] =
+  ): IO[BrowserAudioError, Option[CapturedAudio]] =
     ZIO.acquireReleaseWith(begin("record", seconds, None))(op => cancel(op.id)) { op =>
       op.result.await.raceFirst(termination.flatMap {
         case VoiceRecordingTermination.Cancel => cancel(op.id).as(None)
@@ -102,7 +102,7 @@ private[browser] final class BrowserAudioSession private (state: Ref.Synchronize
 
   private def begin(kind: String, seconds: Int, text: Option[String]): IO[BrowserAudioError, Pending] =
     for {
-      result <- Promise.make[BrowserAudioError, Option[AudioInput]]
+      result <- Promise.make[BrowserAudioError, Option[CapturedAudio]]
       id <- ZIO.succeed(UUID.randomUUID().toString)
       op <- modify { (s, now) =>
         if s.closed then ZIO.fail(failure("closed"))
@@ -198,7 +198,7 @@ private[browser] object BrowserAudioSession {
       text: Option[String],
       started: Boolean,
       deadline: Long,
-      result: Promise[BrowserAudioError, Option[AudioInput]]
+      result: Promise[BrowserAudioError, Option[CapturedAudio]]
   ) {
     def view: BrowserProtocol.Operation = BrowserProtocol.Operation(id, kind, phase, seconds * 1000, text)
   }

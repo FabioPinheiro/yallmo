@@ -31,15 +31,21 @@ Test page access from the host with `curl -i http://127.0.0.1:5180/`. A URL frag
 
 ## Behavior and limits
 
-- Native sample rate is read from AudioWorklet's `sampleRate`; channel samples are averaged, windowed-sinc low-pass filtered and statefully resampled to 16 kHz. Fractional phase/history survive arbitrary render-block boundaries. No MediaRecorder/WebM, base64, external encoder or filesystem storage.
+- Native sample rate is read from AudioWorklet's `sampleRate`; channel samples are averaged, windowed-sinc low-pass filtered and statefully resampled to 16 kHz. Fractional phase/history survive arbitrary render-block boundaries. No MediaRecorder/WebM, base64, external encoder or browser-side filesystem storage.
 - The worklet itself caps native frames and output at the requested duration (1–30 seconds), at most 480,000 mono PCM16 samples. One bounded PCM buffer is transferred on completion; canonical 44-byte-header WAV is at most **960,044 bytes**. Muted output prevents mic feedback. Main-thread and backend deadlines also fail closed.
 - Sequential 1-second polling, one poll in flight, 4-second request timeout; all API credentials are headers, never query parameters. IDs deduplicate repeated starts. Missing/replaced snapshots abort old callbacks, capture and uploads. Final WAV/speech end waits for successful *actual start* acknowledgement. A stale-operation 409 after cancellation/replacement discards only that operation and awaits the next authoritative poll, without replay. Authentication, connection and uncertain-response failures disable audio instead of retrying.
 - Speech uses a retained plain-text utterance and real `onstart`/`onend`/`onerror` events; start and completion watchdogs are 4.5 and 120 seconds. Replacement cancels old speech. Browser voices may use **network services**; local synthesis and audible output cannot be guaranteed.
-- In this browser page, audio and text live in memory only. No storage APIs, telemetry, external requests, DOM HTML insertion or credential/error logging. Stopped audio is sent to the REPL and then its configured transcription agent; cancellation discards it. Keep the setup URL private.
-- The backend retains each successful transcription independently of draft submission/discard in a generated
-  `transcription-<uuid>` session: human audio root with empty bytes, original encoded size and sample-count duration,
-  then an ordinary assistant transcript attributed to the configured agent. Raw recordings remain live-operation-only.
-  Transcripts/descriptions can be sensitive. Active chat context/head/continuation and ordinary resume are unchanged.
+- In this browser page, audio and text live in memory only. No storage APIs, telemetry, external requests, DOM HTML insertion or credential/error logging. Stopped audio is sent to the REPL and then its configured transcription agent; cancellation before ingestion discards it. Keep the setup URL private.
+- The backend stores audio before inference in a generated `transcription-<uuid>` session: a human audio root
+  containing a blob reference, then an ordinary assistant transcript attributed to the configured agent on success.
+  With `--storage`, recordings are saved as raw bytes in `<storage>/blobs/<uuid>`, without blob metadata or lifecycle
+  status. Without it, blobs are process-local. JSONL and diagnostics contain
+  references, not audio bytes. Inference failure leaves the audio message/blob without an assistant transcript.
+  Stored recordings survive inference failure, interruption after ingestion, and draft discard; there is no automatic
+  blob cleanup or recording-deletion command. Protect the storage directory and backups. Provider debug captures are
+  reference-based diagnostics, not exact audio wire requests. Transcripts/descriptions can also be sensitive.
+  See [Attachments and blob storage](../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for schema and storage limits.
+  Active chat context/head/continuation and ordinary resume are unchanged.
   Every voice request is one fresh turn containing only current audio and configured instructions; no tools, RAG, skills,
   extensions, previous exchange or follow-up execution. Persistence failure leaves the draft unchanged and is reported.
 - Permissions, activation and background execution vary by browser/OS. A tab may be throttled/frozen or speech rejected/stalled despite setup succeeding. Focus the page and Enable again; this implementation intentionally has no automatic retry, recorder fallback or permanent-permission promise.

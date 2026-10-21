@@ -1,16 +1,20 @@
 package fmgp.yallmo.model.llm
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.AudioInput
+import fmgp.yallmo.model.{Blob, BlobId, MessagePayload}
 import zio.*
 
 /** Prompt-based audio inference capability. Structured turns belong to audio-capable agents. */
 trait LlmProviderAudio:
-  /** Performs inference using a text prompt and audio input. */
+  /** Performs inference using a text prompt and referenced audio resolved through the supplied read-only reader.
+    *
+    * TODO improve the readBlob / use streams
+    */
   def inferenceWithAudio(
       prompt: String,
-      audio: AudioInput,
-      model: Option[String] = None
+      audio: MessagePayload.AudioAttachment,
+      model: Option[String] = None,
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
   ): IO[YallmoError, String]
 
 trait LlmProviderImage:

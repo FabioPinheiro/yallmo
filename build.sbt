@@ -39,6 +39,7 @@ lazy val model = project
   .settings(
     name := "yallmo-model",
     libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-streams" % "2.1.24",
       "dev.zio" %% "zio" % "2.1.24",
       "dev.zio" %% "zio-json" % "0.9.0",
       "org.scalameta" %% "munit" % "1.2.4" % Test,

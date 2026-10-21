@@ -18,7 +18,7 @@ final class LlmProviderPayloadDebugSuite extends FunSuite:
     )
   }
 
-  test("redacts already-built audio wire data recursively without mutating the live HTTP payload") {
+  test("refuses accidental inline audio capture without mutating the live HTTP payload") {
     val live = ujson.Obj(
       "messages" -> ujson.Arr(
         ujson.Obj(
@@ -32,13 +32,13 @@ final class LlmProviderPayloadDebugSuite extends FunSuite:
         )
       )
     )
-    val redacted = LlmProviderPayloadDebug.redact(live)
-    assert(!ujson.write(redacted).contains("recording-sentinel"))
-    assertEquals(redacted("messages")(0)("content")(0)("input_audio")("data").str, "")
-    assertEquals(redacted("messages")(0)("content")(0)("input_audio")("format").str, "wav")
-    assertEquals(redacted("messages")(0)("content")(1)("text").str, "keep")
+    val turnId = LlmProviderPayloadDebug.newTurnId()
+    val (_, captured) = runZIO(
+      LlmProviderPayloadDebug.withRequestCapture(LlmProviderPayloadDebug.captureRequest(turnId, "test", "model", live))
+    )
+    assertEquals(captured, None)
+    assert(!Files.exists(Path.of("debug", s"$turnId-request.json")))
     assertEquals(live("messages")(0)("content")(0)("input_audio")("data").str, "recording-sentinel")
-    assertEquals(LlmProviderPayloadDebug.redact(redacted), redacted)
   }
 
   test("request capture scopes retain only requests made within that scope") {

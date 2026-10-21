@@ -1,6 +1,7 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, AudioInput, MessagePayload, YallmoError}
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.oai.{OAIAgent, OAILlmProvider}
@@ -167,7 +168,7 @@ final class RuntimeInstancesSuite extends FunSuite {
     val current = runtime(config.copy(providers = Map(chatId -> ProviderConfig.ChatGPT())))
     val audioRequest = request.copy(input =
       Chunk(
-        AudioInput(Chunk[Byte](1), fmgp.yallmo.model.AudioFormat.Wav),
+        AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), fmgp.yallmo.model.AudioFormat.Wav),
         MessagePayload.Instructions("Describe")
       )
     )
@@ -205,7 +206,7 @@ final class RuntimeInstancesSuite extends FunSuite {
           .next(
             AgentTask("Describe"),
             StaticContext("System"),
-            RunContext(Chunk(AudioInput(Chunk[Byte](1), fmgp.yallmo.model.AudioFormat.Wav)))
+            RunContext(Chunk(AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), fmgp.yallmo.model.AudioFormat.Wav)))
           )
           .provideEnvironment(ZEnvironment[fmgp.yallmo.model.llm.LlmProvider](connection))
       case _ => ZIO.dieMessage("Expected OAI provider")

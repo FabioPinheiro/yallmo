@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.ProviderGenerateOptions
 import fmgp.yallmo.model.llm.*
@@ -104,7 +105,7 @@ final class OAISuite extends FunSuite:
   }
 
   test("maps audio in ordered shared turns without sending local metadata") {
-    val audio = AudioInput(Chunk[Byte](1, 2, 3), AudioFormat.Wav, 999L, Some(12.5), Some("LOCAL_ONLY"))
+    val audio = AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav, Some("LOCAL_ONLY"))
     val request = AgentTurnRequest(
       "audio-model",
       Chunk(
@@ -114,7 +115,7 @@ final class OAISuite extends FunSuite:
       ),
       toolChoice = ToolChoice.None
     )
-    val body = OAIChatCompletionsMapper.turnRequestBody(request.model, request)
+    val body = OAIChatCompletionsMapper.turnRequestBody(request.model, request, Map(audio.blobId -> "AQID"))
     val content = body("messages")(1)("content").arr
 
     assertEquals(body("model").str, "audio-model")
@@ -131,12 +132,12 @@ final class OAISuite extends FunSuite:
   }
 
   test("validates audio transcription input and response text") {
-    val audio = AudioInput(Chunk[Byte](1), AudioFormat.Wav)
-    assertEquals(OAILlmProvider.validateAudio(audio), Right(audio))
-    assert(OAILlmProvider.validateAudio(AudioInput(Chunk.empty, AudioFormat.Wav)).isLeft)
+    val bytes = Chunk[Byte](1)
+    assertEquals(OAILlmProvider.validateAudio(bytes), Right(bytes))
+    assert(OAILlmProvider.validateAudio(Chunk.empty).isLeft)
     assert(
       OAILlmProvider
-        .validateAudio(AudioInput(Chunk.fill(OAILlmProvider.MaxAudioBytes + 1)(1.toByte), AudioFormat.Wav))
+        .validateAudio(Chunk.fill(OAILlmProvider.MaxAudioBytes + 1)(1.toByte))
         .isLeft
     )
     assertEquals(

@@ -26,13 +26,10 @@ final class MessagePayloadSuite extends FunSuite {
   )
 
   fixtures.foreach { case (payload, json) =>
-    test(s"${payload.getClass.getSimpleName} preserves existing JSON and is unchanged by audio redaction") {
+    test(s"${payload.getClass.getSimpleName} preserves existing JSON") {
       assertEquals(payload.toJson, json)
       assertEquals(json.fromJson[MessagePayload], Right(payload))
-      assertEquals(payload.redacted, payload)
       val data = MessageData(AgentId("agent"), None, Instant.parse("2026-01-01T00:00:00Z"), payload)
-      assertEquals(data.redacted, data)
-      assertEquals(Message(data).redacted, Message(data))
       assertEquals(data.toJson.fromJson[MessageData], Right(data))
     }
   }

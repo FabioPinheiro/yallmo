@@ -39,9 +39,7 @@ final case class MessageData(
     parentId: Option[MessageId],
     timestamp: Instant,
     payload: MessagePayload
-) derives JsonCodec {
-  def redacted: MessageData = copy(payload = payload.redacted)
-}
+) derives JsonCodec
 
 final case class Message(id: MessageId, data: MessageData) {
   def agentId: AgentId = data.agentId
@@ -49,8 +47,6 @@ final case class Message(id: MessageId, data: MessageData) {
   def timestamp: Instant = data.timestamp
   def payload: MessagePayload = data.payload
 
-  /** Retains the original live identity; redacted audio cannot reproduce that identity by hashing. */
-  def redacted: Message = copy(data = data.redacted)
 }
 
 object Message {
@@ -75,8 +71,8 @@ sealed trait MessagePayload derives JsonCodec {
   def role: String
   def contentStr: String
 
-  /** Metadata-only projection for retained storage/debug views. Live serialization remains available for hashing. */
-  def redacted: MessagePayload = this
+  /** Binary content is referenced, never embedded in a message. */
+  def blobIds: Chunk[BlobId] = Chunk.empty
 }
 
 /** The container format of audio supplied to a multimodal model request. */
@@ -91,32 +87,23 @@ object AudioFormat {
   )
 }
 
-/** Live bytes are only for provider encoding and identity hashing, never for retained storage/debug views. */
-final case class AudioInput(
-    bytes: Chunk[Byte],
-    format: AudioFormat,
-    sizeBytes: Long,
-    durationSeconds: Option[Double] = None,
-    description: Option[String] = None
-) extends MessagePayload derives JsonCodec {
-  override def role: String = "user"
-  override def contentStr: String = {
-    val duration = durationSeconds.fold("")(value => s", durationSeconds=$value")
-    val detail = description.fold("")(value => s", description=$value")
-    s"AudioInput(format=${format.wireName}, sizeBytes=$sizeBytes$duration$detail)"
-  }
-  override def toString: String = contentStr
-  override def redacted: AudioInput = copy(bytes = Chunk.empty)
-}
-
-object AudioInput {
-
-  /** Capture-time convenience; explicit metadata construction also supports restored, empty-byte audio. */
-  def apply(bytes: Chunk[Byte], format: AudioFormat): AudioInput =
-    new AudioInput(bytes, format, bytes.size.toLong)
-}
-
 object MessagePayload {
+
+  /** Audio content stored separately from the immutable message. */
+  final case class AudioAttachment(
+      blobId: BlobId,
+      format: AudioFormat,
+      description: Option[String] = None
+  ) extends MessagePayload derives JsonCodec {
+    override def role: String = "user"
+    override def blobIds: Chunk[BlobId] = Chunk(blobId)
+    override def contentStr: String =
+      s"AudioAttachment(blobId=${blobId.value}, format=${format.wireName}${description.fold("")(value =>
+          s", description=$value"
+        )})"
+    override def toString: String = contentStr
+  }
+
   final case class User(text: String) extends MessagePayload derives JsonCodec {
     override def role: String = "user"
     override def contentStr: String = text

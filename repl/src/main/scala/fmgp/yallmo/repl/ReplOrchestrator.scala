@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
+import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
 import java.time.{Instant, ZoneOffset}
@@ -45,6 +45,16 @@ final class ReplOrchestratorLive[-R] private (
       agentId: AgentId,
       messages: Chunk[MessagePayload]
   ): IO[YallmoError, Session] = orchestrator.append(id, agentId, messages)
+
+  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = orchestrator.readBlob(blobId)
+
+  override def appendWithBlobWriter[R1](
+      id: SessionId,
+      agentId: AgentId,
+      message: MessagePayload,
+      produce: (Chunk[Byte] => IO[YallmoError, Unit]) => ZIO[R1, YallmoError, Unit]
+  ): ZIO[R1, YallmoError, Session] =
+    orchestrator.appendWithBlobWriter(id, agentId, message, produce)
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] = orchestrator.fork(source, target)
 

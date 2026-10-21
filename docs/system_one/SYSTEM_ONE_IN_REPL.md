@@ -130,6 +130,10 @@ so> run
 
 `state-run-context` takes no argument. Before replacing state, it prints a warning and asks for confirmation: this operation sends the complete current conversation transcript to the System One provider when the user later runs the request. On confirmation, it replaces the draft state with the whole current outer `RunContext`, represented as `{"messages":[...]}` using the existing `MessagePayload` JSON encoding. It includes every transcript message, not only text prompts, and does not include `StaticContext` or session-storage metadata. Because messages can contain sensitive and large tool or retrieval payloads, `show` must make that visible and normal request-size validation can reject it; the builder must not silently summarize or truncate it.
 
+Attachment payloads in this projection contain `BlobId` references, format and optional description, not recording
+bytes. Do not resolve blobs, embed audio/base64, or imply that this text-only System One endpoint accepts audio.
+Transcript/description text can still be sensitive.
+
 The configured builder model is inserted when the draft is created, printed in the builder header, and visible in `show`. If it is absent, `/so request` must fail before starting the nested loop. `/so run <body>` remains a full request API and therefore receives its model from `body`.
 
 `run` must not duplicate provider execution logic. It serializes the draft as the full canonical body and invokes the same application operation used by `/so run <body>`. Thus direct input and builder input have identical validation, provider selection, error handling, and result rendering.

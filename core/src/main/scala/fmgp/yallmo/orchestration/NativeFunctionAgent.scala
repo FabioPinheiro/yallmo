@@ -34,17 +34,24 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
     * @param provider
     *   resolved agent used for every provider-native turn in this program
     */
-  def bind[R1](provider: Agent[Any]): AgentInstance[R1] = new AgentInstance[R1] {
-    override val id: AgentId = NativeFunctionAgent.this.id
-    override val capabilities: AgentCapabilities = policyFor(provider)
-    override def configuredContext(context: StaticContext[R1]): IO[YallmoError, StaticContext[R1]] =
-      ZIO.fromEither(resolveContext(provider, context))
-    override def next(
-        task: AgentTask,
-        staticContext: StaticContext[R1],
-        runContext: RunContext
-    ): ZIO[R1, YallmoError, AgentTurn] = nextWith(staticContext, runContext, provider.turn, capabilities)
-  }
+  def bind[R1](provider: Agent[Any], readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable): AgentInstance[R1] =
+    new AgentInstance[R1] {
+      override val id: AgentId = NativeFunctionAgent.this.id
+      override val capabilities: AgentCapabilities = policyFor(provider)
+      override def configuredContext(context: StaticContext[R1]): IO[YallmoError, StaticContext[R1]] =
+        ZIO.fromEither(resolveContext(provider, context))
+      override def next(
+          task: AgentTask,
+          staticContext: StaticContext[R1],
+          runContext: RunContext
+      ): ZIO[R1, YallmoError, AgentTurn] =
+        nextWith(
+          staticContext,
+          runContext,
+          request => provider.turn(request.copy(readBlob = readBlob)),
+          capabilities
+        )
+    }
 
   private def resolveContext[A](
       provider: Agent[Any],
@@ -122,17 +129,17 @@ object NativeFunctionAgent {
 
   private def input(runContext: RunContext, staticContext: StaticContext[?]): Chunk[MessagePayload] =
     runContext.messages.flatMap {
-      case audio: AudioInput                               => Chunk(audio)
-      case MessagePayload.User(text)                       => Chunk(MessagePayload.User(text))
-      case MessagePayload.Assistant(text)                  => Chunk(MessagePayload.Assistant(text))
-      case MessagePayload.FunctionCallRequest(call)        => Chunk(MessagePayload.FunctionCallRequest(call))
-      case MessagePayload.FunctionCallOutput(output)       => Chunk(MessagePayload.FunctionCallOutput(output))
-      case MessagePayload.Reasoning(summary, continuation) => Chunk(MessagePayload.Reasoning(summary, continuation))
+      case payload: MessagePayload.AudioAttachment     => Chunk(payload)
+      case payload: MessagePayload.User                => Chunk(payload)
+      case payload: MessagePayload.Assistant           => Chunk(payload)
+      case payload: MessagePayload.FunctionCallRequest => Chunk(payload)
+      case payload: MessagePayload.FunctionCallOutput  => Chunk(payload)
+      case payload: MessagePayload.Reasoning           => Chunk(payload)
       case MessagePayload.ToolResult(toolKey, text) => Chunk(MessagePayload.Context(s"tool result from $toolKey", text))
       case MessagePayload.RagResult(retrieverKey, documents) =>
         val rendered = documents.map(document => s"source=${document.source}\n${document.text}").mkString("\n\n")
         Chunk(MessagePayload.Context(s"RAG result from $retrieverKey", rendered))
-      case context: MessagePayload.Context => Chunk(context)
+      case payload: MessagePayload.Context => Chunk(payload)
       case _: MessagePayload.Instructions  => Chunk.empty
     } :+ MessagePayload.Instructions(instructions(staticContext))
 

@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.config.ProviderId
 import fmgp.yallmo.orchestration.*
@@ -381,8 +382,8 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
   }
 
   private val unusedRecorder = new AudioRecorder {
-    def record(seconds: Int): Task[AudioInput] = ZIO.dieMessage("Command input must not record audio")
-    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    def record(seconds: Int): Task[CapturedAudio] = ZIO.dieMessage("Command input must not record audio")
+    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       ZIO.dieMessage("Command input must not record audio")
   }
 
@@ -505,8 +506,8 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val observed = scala.collection.mutable.ListBuffer.empty[String]
     val app = application((text, _) => observed += text)
     val recorder = new AudioRecorder {
-      def record(seconds: Int): Task[AudioInput] = ZIO.dieMessage("Menu navigation must not record audio")
-      def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+      def record(seconds: Int): Task[CapturedAudio] = ZIO.dieMessage("Menu navigation must not record audio")
+      def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
         ZIO.dieMessage("Menu navigation must not record audio")
     }
 

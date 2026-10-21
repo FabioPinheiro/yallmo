@@ -1,11 +1,12 @@
 package fmgp.yallmo.repl.browser
 
-import fmgp.yallmo.model.{AudioFormat, AudioInput}
+import fmgp.yallmo.model.{AudioFormat, BlobId, MessagePayload}
+import fmgp.yallmo.repl.voice.CapturedAudio
 import zio.Chunk
 
 /** Accept only the page's canonical 44-byte PCM header; MIME labels are not format validation. */
 private[browser] object WavAudio {
-  def validate(bytes: Chunk[Byte], maximumSeconds: Int): Either[BrowserAudioError, AudioInput] = {
+  def validate(bytes: Chunk[Byte], maximumSeconds: Int): Either[BrowserAudioError, CapturedAudio] = {
     def u16(offset: Int): Int = (bytes(offset) & 255) | ((bytes(offset + 1) & 255) << 8)
     def u32(offset: Int): Long = u16(offset).toLong | (u16(offset + 2).toLong << 16)
     def tag(offset: Int, value: String): Boolean = value.indices.forall(i => bytes(offset + i) == value(i).toByte)
@@ -17,7 +18,7 @@ private[browser] object WavAudio {
       tag(36, "data") && u32(40) == bytes.length - 44
     Either.cond(
       valid,
-      AudioInput(bytes, AudioFormat.Wav, bytes.length.toLong, Some((bytes.length - 44).toDouble / 32000)),
+      CapturedAudio(MessagePayload.AudioAttachment(BlobId.fresh(), AudioFormat.Wav), bytes),
       BrowserProtocol.failure("invalid_wav")
     )
   }

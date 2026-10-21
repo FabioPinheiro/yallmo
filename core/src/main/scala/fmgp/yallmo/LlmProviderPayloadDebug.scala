@@ -9,7 +9,9 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.UUID
 
-/** Best-effort native-turn diagnostics. Provider continuations and wire audio bytes are recursively redacted. */
+/** Best-effort native-turn diagnostics. Provider continuations are protected; audio diagnostics are built from blob
+  * references.
+  */
 object LlmProviderPayloadDebug {
   private val LocalDirectory = Path.of("debug")
   private val Redacted = "<redacted>"
@@ -24,9 +26,12 @@ object LlmProviderPayloadDebug {
     ScopedRequestCapture.locally(None)(effect.zip(ScopedRequestCapture.get))
 
   def captureRequest(turnId: String, provider: String, model: String, payload: ujson.Value): UIO[Unit] =
-    write(turnId, "request", ujson.Obj("provider" -> provider, "model" -> model, "payload" -> redact(payload)))
-      .flatMap(path => ScopedRequestCapture.set(Some(path)))
-      .catchAll(logFailure)
+    if containsInlineAudio(payload) then
+      ZIO.logWarning("provider debug capture skipped: use blob references instead of inline audio")
+    else
+      write(turnId, "request", ujson.Obj("provider" -> provider, "model" -> model, "payload" -> redact(payload)))
+        .flatMap(path => ScopedRequestCapture.set(Some(path)))
+        .catchAll(logFailure)
 
   def captureResponse(turnId: String, provider: String, model: String, response: AgentTurnResponse): UIO[Unit] =
     write(
@@ -80,20 +85,23 @@ object LlmProviderPayloadDebug {
   private def logFailure(error: Throwable): UIO[Unit] =
     ZIO.logWarning(s"provider payload debug capture failed: ${error.getMessage}")
 
+  /** Reject accidental wire-body capture rather than replacing or discarding content. */
+  private def containsInlineAudio(value: ujson.Value): Boolean = value match {
+    case obj: ujson.Obj =>
+      obj.value.exists { case (key, child) =>
+        (key == "input_audio" && child.objOpt.exists(_.contains("data"))) || containsInlineAudio(child)
+      }
+    case array: ujson.Arr => array.value.exists(containsInlineAudio)
+    case _                => false
+  }
+
   private[yallmo] def redact(value: ujson.Value): ujson.Value = value match
     case obj: ujson.Obj =>
       ujson.Obj.from(obj.value.iterator.map { case (key, child) =>
         key -> (if SensitiveKeys.contains(key) then ujson.Str(Redacted)
-                else if key == "input_audio" then redactAudio(child)
                 else redact(child))
       })
     case array: ujson.Arr => ujson.Arr.from(array.value.map(redact))
     case other            => other
 
-  private def redactAudio(value: ujson.Value): ujson.Value = value match
-    case obj: ujson.Obj =>
-      ujson.Obj.from(obj.value.iterator.map { case (key, child) =>
-        key -> (if key == "data" then ujson.Str("") else redact(child))
-      })
-    case other => redact(other)
 }

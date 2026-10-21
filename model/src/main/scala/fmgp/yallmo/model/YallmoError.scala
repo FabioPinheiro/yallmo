@@ -107,6 +107,16 @@ object YallmoError {
       extends RuntimeException(message, cause)
       with YallmoError
 
+  final case class BlobMissing(blobId: BlobId)
+      extends RuntimeException(s"Blob '${blobId.value}' is missing")
+      with YallmoError
+  final case class BlobAlreadyExists(blobId: BlobId)
+      extends RuntimeException(s"Blob '${blobId.value}' already exists")
+      with YallmoError
+  final case class BlobWriterClosed(blobId: BlobId)
+      extends RuntimeException(s"Blob writer '${blobId.value}' is closed")
+      with YallmoError
+
   final case class InvalidConfig(message: String) extends RuntimeException(message) with YallmoError
   final case class AuthenticationFailure(message: String) extends RuntimeException(message) with YallmoError
   final case class HttpFailure(message: String) extends RuntimeException(message) with YallmoError

@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
 import fmgp.yallmo.orchestration.*
@@ -32,12 +33,14 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
     while !check && java.lang.System.nanoTime() < deadline do Thread.sleep(20)
     assert(check)
   }
-  private val unusedAudio = AudioInput(Chunk(1.toByte), AudioFormat.Wav)
+  private val unusedAudio = CapturedAudio(Chunk(1.toByte), AudioFormat.Wav)
   private val jvmRecorder = new AudioRecorder {
-    def record(seconds: Int): Task[AudioInput] = ZIO.succeed(unusedAudio)
-    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    def record(seconds: Int): Task[CapturedAudio] =
+      ZIO.succeed(unusedAudio.copy(input = unusedAudio.input.copy(blobId = fmgp.yallmo.model.BlobId.fresh())))
+    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       termination.map {
-        case VoiceRecordingTermination.Stop   => Some(unusedAudio)
+        case VoiceRecordingTermination.Stop =>
+          Some(unusedAudio.copy(input = unusedAudio.input.copy(blobId = fmgp.yallmo.model.BlobId.fresh())))
         case VoiceRecordingTermination.Cancel => None
       }
   }
@@ -351,9 +354,10 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
           assertEquals(request.tools, Chunk.empty)
           assertEquals(request.toolChoice, ToolChoice.None)
           assertEquals(request.parallelToolCalls, false)
-          val audio = request.input.head.asInstanceOf[AudioInput]
-          assertEquals(audio.sizeBytes, audio.bytes.size.toLong)
-          if command == "m" then assert(audio.durationSeconds.exists(_ > 0))
+          val audio = request.input.head.asInstanceOf[fmgp.yallmo.model.MessagePayload.AudioAttachment]
+          val blob = run(request.readBlob(audio.blobId))
+          assertEquals(blob.id, audio.blobId)
+          assert(blob.bytes.nonEmpty)
         }
         terminal.quit()
       } finally terminal.close()

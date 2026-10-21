@@ -204,10 +204,11 @@ the terminal cannot support a JLine status bar.
 `Esc` first switches from INSERT to NORMAL; pressing it again in NORMAL does nothing. `v` and `m` are terminal-client keybindings, not
 REPL commands. They do not change the active chat session, head, context or continuation. Every successful exchange
 is retained separately before draft insertion, even if the draft is later discarded: a generated `transcription-<uuid>`
-session contains human-authored metadata-only audio as root and the transcriber-authored assistant transcript as its child.
+session contains a human-authored audio reference as root and the transcriber-authored assistant transcript as its child.
+Audio is stored before inference; an inference failure leaves the audio message/blob without an assistant transcript.
 No user-supplied session name is needed. These sessions appear in normal listings, but are never implicitly resumed or
-imported into ordinary chat or later voice requests. Without `--storage` retention is process-local; with it retention
-survives restart. A storage failure is reported explicitly and leaves the draft unchanged.
+imported into ordinary chat or later voice requests. Without `--storage`, messages and blobs are process-local; with it they
+survive restart. A storage failure is reported explicitly and leaves the draft unchanged.
 In NORMAL, `q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL;
 press `i` to edit. Cancellation, failure and empty transcripts preserve the exact draft and NORMAL cursor. Capture completion/error/deadline
 returns without requiring another key.
@@ -225,11 +226,12 @@ sequenceDiagram
     Line->>Line: preserve editable draft and cursor
     Line->>Recorder: record until Space or Esc (maximum 30 seconds)
     Recorder->>Recorder: microphone → in-memory 16 kHz mono WAV
-    Recorder-->>Line: AudioInput(WAV bytes)
+    Recorder-->>Line: CapturedAudio(AudioAttachment with BlobId, WAV bytes)
     Line->>Voice: transcribe(audio)
-    Voice->>Model: validate audio size, then send prompt and base64 WAV
+    Voice->>Voice: append audio reference and bytes in separate session
+    Voice->>Model: read blob, validate audio size, send prompt and base64 WAV
     Model-->>Voice: text result
-    Voice->>Voice: retain audio metadata + assistant in separate session
+    Voice->>Voice: append assistant transcript as child of audio message
     Voice-->>Line: transcript text
     Line->>Line: insert transcript at the saved cursor
     Note over User,Line: User reviews and edits the draft, then presses Enter.
@@ -284,7 +286,7 @@ At REPL startup, `ReplMain` builds these components:
 2. `ReplStartup.application` validates all capability IDs against the available catalogs and checks that the
    transcriber's effective capabilities are empty. Core `ConfiguredAgentSettings` provides shared model/prompt decoding.
 3. `AudioRecorder`, a local Java Sound implementation, does **not** open the microphone at startup.
-4. `Transcriber` makes exactly one shared `AgentTurnRequest` per invocation: only the current direct `AudioInput`
+4. `Transcriber` makes exactly one shared `AgentTurnRequest` per invocation: only the current `MessagePayload.AudioAttachment`
    followed by configured `Instructions`, no history/continuation/context features/tool definitions, `ToolChoice.None`,
    `parallelToolCalls = false`. It does not use the conversational runner or execute tools. Calls, unsupported results,
    blank text or incomplete/non-stop responses fail without follow-up turns.
@@ -292,9 +294,9 @@ At REPL startup, `ReplMain` builds these components:
    only on the first enabled `m` or `t` and lives in the REPL scope. Disabled voice does not start capture or the server.
 
 The JVM recorder prefers 16 kHz, 16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo formats and
-converts them to 16 kHz mono before encoding WAV entirely in memory. Original encoded size and captured-frame duration
-are retained locally. Browser duration comes from the validated canonical WAV sample count. Neither path adds an
-external decoder. Size/duration/description are persistence/debug metadata, never model input.
+converts them to 16 kHz mono before encoding WAV entirely in memory. Browser WAV uses a validated canonical header.
+Neither path adds an external decoder. Blobs store only raw bytes; no lifecycle status, size metadata, or duration is stored.
+Size and the audio description are persistence/debug metadata, never model input.
 
 ### Preconditions
 
@@ -314,12 +316,19 @@ A voice request proceeds only when all of the following hold:
 
 ### Privacy and SSH boundary
 
-The raw WAV and base64 representation exist only in memory for the audio transcription request. They are not written to disk, placed
-in REPL history, or emitted through the provider payload debug facility. Storage receives the live identity but retains
-only empty audio bytes and original metadata. Restored audio cannot be replayed. Assistant transcripts are retained
-normally in their separate sessions independently of draft discard; transcripts and descriptions may contain sensitive
-text. The editable transcript is untrusted user input and is never automatically submitted to chat. Existing debug paths
-remain audio-safe; no transcription debug section or hash lookup command is added.
+Audio messages contain a `BlobId`, never WAV bytes. With `--storage <directory>`, each recording is stored in
+`<directory>/blobs/<uuid>` as raw bytes, without metadata or framing. `objects.jsonl` stores only message envelopes
+and references. Without `--storage`, blobs are held in memory. `readBlob(id)` returns the stored bytes; missing blobs
+are reported explicitly. No lifecycle or integrity status is tracked. Failed/cancelled producers retain bytes collected
+so far, and those bytes remain readable even though the ingestion operation reports its failure or interruption.
+Orchestrator buffers stream/writer input in memory and appends the full blob to Storage after production; the message
+is visible first. Storage accepts blobs and messages separately. Provider adapters receive a `readBlob` function.
+Provider HTTP requests resolve audio to base64; debug captures instead contain blob references and format. They are
+not exact wire bodies for audio. Terminal/history rendering does not load bytes. Existing credential and continuation
+protection remains unchanged. Only the current audio payload schema is supported.
+Assistant transcripts remain in their separate sessions independently of draft discard; transcripts and descriptions
+may contain sensitive text. The editable transcript is untrusted user input and is never automatically submitted to chat.
+No transcription debug section or hash lookup command is added.
 
 Microphone access belongs to the machine running the REPL process. If `yallmo` is launched on a remote SSH host,
 `Esc v` attempts to use that remote host’s microphone—not the local SSH client’s microphone. Browser `m` instead uses the device

@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.provider.JsonSchemaEncoder
 import fmgp.yallmo.model.llm.*
@@ -12,7 +13,7 @@ private[openai] object OpenAiCodexTurnMapper {
   private[openai] def validateRequest(request: AgentTurnRequest): Either[String, AgentTurnRequest] =
     request.validate.flatMap(validated =>
       Either.cond(
-        !validated.input.exists(_.isInstanceOf[AudioInput]),
+        !validated.input.exists(_.isInstanceOf[AudioAttachment]),
         validated,
         "OpenAI Codex does not support audio input"
       )
@@ -97,7 +98,7 @@ private[openai] object OpenAiCodexTurnMapper {
 
   private def toInputItem(item: MessagePayload): Either[String, Chunk[ujson.Value]] =
     item match
-      case _: AudioInput                  => Left("OpenAI Codex does not support audio input")
+      case _: AudioAttachment             => Left("OpenAI Codex does not support audio input")
       case MessagePayload.User(text)      => Right(Chunk(userMessage(text)))
       case MessagePayload.Assistant(text) =>
         Right(

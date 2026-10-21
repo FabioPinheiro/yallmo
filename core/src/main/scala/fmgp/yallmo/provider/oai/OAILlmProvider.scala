@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import zio.*
 import zio.http.*
 import fmgp.yallmo.*
@@ -25,8 +26,9 @@ final case class OAILlmProvider private[yallmo] (
 
   override def inferenceWithAudio(
       prompt: String,
-      audio: AudioInput,
-      model: Option[String] = None
+      audio: AudioAttachment,
+      model: Option[String] = None,
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
   ): IO[YallmoError, String] =
     for {
       selectedModel <- ZIO.fromEither(resolveModel(model))
@@ -36,11 +38,12 @@ final case class OAILlmProvider private[yallmo] (
           .left
           .map(YallmoError.InvalidConfig.apply)
       )
-      _ <- ZIO.fromEither(validateAudio(audio).left.map(YallmoError.InvalidConfig.apply))
+      resolved <- resolveAudio(audio, readBlob)
       captureId = LlmProviderPayloadDebug.newTurnId()
       body = OAIChatCompletionsMapper.audioRequestBody(selectedModel, prompt, audio)
       _ <- LlmProviderPayloadDebug.captureRequest(captureId, "OpenAI-compatible endpoint", selectedModel, body)
-      response <- complete(body)
+      wire = OAIChatCompletionsMapper.audioRequestBody(selectedModel, prompt, audio, Map(audio.blobId -> resolved))
+      response <- complete(wire)
       _ <- ZIO
         .fail(YallmoError.ProtocolFailure("Audio completion returned unexpected tool calls"))
         .when(response.functionCalls.nonEmpty)
@@ -187,15 +190,23 @@ object OAILlmProvider {
   val RequestTimeout: Duration = 2.minutes
   val MaxAudioBytes = 1024 * 1024
 
-  private[oai] def validateAudio(audio: AudioInput): Either[String, AudioInput] =
+  private[oai] def validateAudio(bytes: Chunk[Byte]): Either[String, Chunk[Byte]] =
     for {
-      _ <- Either.cond(audio.bytes.nonEmpty, (), "Audio bytes must not be empty (metadata-only audio cannot be sent).")
-      _ <- Either.cond(
-        audio.bytes.size <= MaxAudioBytes,
-        (),
-        s"Audio input exceeds the $MaxAudioBytes byte limit."
-      )
-    } yield audio
+      _ <- Either.cond(bytes.nonEmpty, (), "Audio bytes must not be empty.")
+      _ <- Either.cond(bytes.size <= MaxAudioBytes, (), s"Audio input exceeds the $MaxAudioBytes byte limit.")
+    } yield bytes
+
+  private[oai] def resolveAudio(
+      audio: AudioAttachment,
+      reader: BlobId => IO[YallmoError, Blob]
+  ): IO[YallmoError, String] =
+    for {
+      blob <- reader(audio.blobId)
+      _ <- ZIO
+        .fail(YallmoError.InvalidConfig("Blob lookup returned a different ID"))
+        .unless(blob.id == audio.blobId)
+      bytes <- ZIO.fromEither(validateAudio(blob.bytes).left.map(YallmoError.InvalidConfig.apply))
+    } yield java.util.Base64.getEncoder.encodeToString(bytes.toArray)
 
   val live: ZLayer[Client, Throwable, OAILlmProvider] =
     ZLayer.fromZIO {

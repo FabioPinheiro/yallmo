@@ -1,9 +1,9 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.model.{MessagePayload, AudioInput}
+import fmgp.yallmo.model.MessagePayload
 import fmgp.yallmo.repl.ReplState
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
-import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
+import fmgp.yallmo.repl.voice.{AudioRecorder, CapturedAudio, VoiceRecordingTermination}
 import zio.*
 
 /** Single-flight lazy construction in the enclosing REPL scope, never in a widget-sized scope. */
@@ -12,8 +12,8 @@ private[terminal] final class TerminalBrowserAudio private (
     val recordingStarted: UIO[Boolean]
 ) {
   val recorder: AudioRecorder = new AudioRecorder {
-    def record(seconds: Int): Task[AudioInput] = bridge.flatMap(_.recorder.record(seconds))
-    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    def record(seconds: Int): Task[CapturedAudio] = bridge.flatMap(_.recorder.record(seconds))
+    def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       bridge.flatMap(_.recorder.recordUntil(termination))
   }
 

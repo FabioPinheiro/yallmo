@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.voice
 
-import fmgp.yallmo.model.{AudioFormat, AudioInput}
+import fmgp.yallmo.model.{AudioFormat, BlobId, MessagePayload}
 import zio.*
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -9,14 +9,14 @@ import javax.sound.sampled.{AudioFileFormat, AudioFormat as JavaAudioFormat, Aud
 
 /** Records bounded local microphone input as an in-memory 16 kHz mono WAV payload. */
 trait AudioRecorder {
-  def record(seconds: Int): Task[AudioInput]
+  def record(seconds: Int): Task[CapturedAudio]
 
   /** Captures until the caller stops or cancels it, with the normal maximum duration as a safety limit.
     *
     * The supplied effect is awaited concurrently with capture. A cancellation deliberately returns no audio, so callers
     * never send a cancelled recording to a transcription provider.
     */
-  def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]]
+  def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]]
 }
 
 /** The local terminal's decision while an interactive recording is active. */
@@ -43,7 +43,7 @@ object AudioRecorder {
 
   val live: ULayer[AudioRecorder] = ZLayer.succeed(Live)
 
-  private[voice] def toWav(pcm: Array[Byte], length: Int, captureFormat: JavaAudioFormat): AudioInput = {
+  private[voice] def toWav(pcm: Array[Byte], length: Int, captureFormat: JavaAudioFormat): CapturedAudio = {
     val wav = ByteArrayOutputStream()
     val captured = AudioInputStream(
       ByteArrayInputStream(pcm, 0, length),
@@ -59,22 +59,20 @@ object AudioRecorder {
       captured.close()
     }
     val bytes = Chunk.fromArray(wav.toByteArray)
-    AudioInput(
-      bytes,
-      AudioFormat.Wav,
-      bytes.length.toLong,
-      Some(length.toDouble / captureFormat.getFrameSize / captureFormat.getFrameRate)
+    CapturedAudio(
+      MessagePayload.AudioAttachment(BlobId.fresh(), AudioFormat.Wav),
+      bytes
     )
   }
 
   private object Live extends AudioRecorder {
-    override def record(seconds: Int): Task[AudioInput] =
+    override def record(seconds: Int): Task[CapturedAudio] =
       for {
         _ <- ZIO.fromEither(validateDuration(seconds).left.map(VoiceInputError.InvalidDuration.apply))
         audio <- capture(seconds, () => None)
       } yield audio
 
-    override def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[AudioInput]] =
+    override def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
       ZIO.scoped {
         for {
           terminationRef <- ZIO.succeed(new AtomicReference[Option[VoiceRecordingTermination]](None))
@@ -89,7 +87,7 @@ object AudioRecorder {
     private def capture(
         maximumSeconds: Int,
         termination: () => Option[VoiceRecordingTermination]
-    ): Task[AudioInput] =
+    ): Task[CapturedAudio] =
       ZIO
         .attemptBlocking {
           val format = selectCaptureFormat()

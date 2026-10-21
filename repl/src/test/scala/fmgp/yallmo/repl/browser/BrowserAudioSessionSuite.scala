@@ -58,7 +58,6 @@ final class BrowserAudioSessionSuite extends FunSuite {
         assertEquals(code(duplicateStart), "stale_operation")
         assertEquals(result.map(_.bytes), Some(wav(320)))
         assertEquals(result.map(_.sizeBytes), Some(wav(320).size.toLong))
-        assertEquals(result.flatMap(_.durationSeconds), Some(320.0 / 32000))
         assertEquals(code(duplicate), "stale_operation")
         assert(idle.operation.isEmpty)
       }

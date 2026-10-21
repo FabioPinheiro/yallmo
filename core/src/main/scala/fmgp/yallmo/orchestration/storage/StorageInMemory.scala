@@ -1,12 +1,15 @@
 package fmgp.yallmo.orchestration.storage
 
-import fmgp.yallmo.model.{AgentId, Message, MessageData, MessagePayload, YallmoError}
+import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import java.time.Instant
 import zio.*
 
 /** Process-local [[Storage]] implementation for callers that do not need durable filesystem state. */
-private[orchestration] final class StorageInMemory private (sessions: Ref[Map[SessionId, Session]]) extends Storage {
+private[orchestration] final class StorageInMemory private (
+    sessions: Ref[Map[SessionId, Session]],
+    blobs: Ref[Map[BlobId, Blob]]
+) extends Storage {
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     sessions.get.map { values =>
       Chunk.fromIterable(
@@ -57,7 +60,7 @@ private[orchestration] final class StorageInMemory private (sessions: Ref[Map[Se
             else {
               val appended = messages.foldLeft(session.messages) { (stored, payload) =>
                 val parentId = stored.lastOption.map(_.id)
-                stored :+ Message(MessageData(agentId, parentId, Instant.now(), payload)).redacted
+                stored :+ Message(MessageData(agentId, parentId, Instant.now(), payload))
               }
               val updated = session.copy(messages = appended)
               Right(updated)
@@ -67,6 +70,17 @@ private[orchestration] final class StorageInMemory private (sessions: Ref[Map[Se
             case Right(updated) => (Right(updated), current.updated(id, updated))
         }
         .flatMap(ZIO.fromEither)
+
+  override def append(blob: Blob): IO[YallmoError, Unit] =
+    blobs
+      .modify { current =>
+        if current.contains(blob.id) then (false, current)
+        else (true, current.updated(blob.id, blob))
+      }
+      .flatMap(inserted => ZIO.fail(YallmoError.BlobAlreadyExists(blob.id)).unless(inserted).unit)
+
+  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] =
+    blobs.get.flatMap(current => ZIO.fromOption(current.get(blobId)).orElseFail(YallmoError.BlobMissing(blobId)))
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
     sessions
@@ -92,5 +106,8 @@ private[orchestration] final class StorageInMemory private (sessions: Ref[Map[Se
 }
 
 object StorageInMemory {
-  def make: UIO[StorageInMemory] = Ref.make(Map.empty[SessionId, Session]).map(new StorageInMemory(_))
+  def make: UIO[StorageInMemory] = for {
+    sessions <- Ref.make(Map.empty[SessionId, Session])
+    blobs <- Ref.make(Map.empty[BlobId, Blob])
+  } yield new StorageInMemory(sessions, blobs)
 }

@@ -1,7 +1,7 @@
 package fmgp.yallmo.model.llm
 
-import fmgp.yallmo.model.{FunctionToolDefinition, MessagePayload, ToolChoice}
-import zio.Chunk
+import fmgp.yallmo.model.{Blob, BlobId, FunctionToolDefinition, MessagePayload, ToolChoice, YallmoError}
+import zio.{Chunk, IO}
 
 /** Provider-neutral stop reason for a completed model turn. */
 enum LlmStopReason {
@@ -12,14 +12,17 @@ enum LlmStopReason {
   case Unknown(value: String)
 }
 
-/** One fully assembled model request. Provider adapters only serialize this value; they do not execute tools. */
+/** One fully assembled model request. Adapters may read referenced blobs but do not execute tools. `readBlob` is a
+  * request-local read-only dependency, not serialized content. Orchestrator supplies its Storage reader.
+  */
 final case class AgentTurnRequest(
     model: String,
     input: Chunk[MessagePayload],
     tools: Chunk[FunctionToolDefinition] = Chunk.empty,
     toolChoice: ToolChoice = ToolChoice.Auto,
     parallelToolCalls: Boolean = false,
-    options: ProviderGenerateOptions = ProviderGenerateOptions()
+    options: ProviderGenerateOptions = ProviderGenerateOptions(),
+    readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
 ) {
   def validate: Either[String, AgentTurnRequest] =
     val duplicateToolNames =

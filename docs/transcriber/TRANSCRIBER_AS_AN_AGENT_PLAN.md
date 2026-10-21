@@ -1,8 +1,24 @@
 # Transcriber as a configured audio agent
 
+> Audio storage update: the discard/redaction and audio-wide hash-exception decisions below describe the historical implementation.
+> They are superseded by [Attachments and blob storage](../orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+> Audio now uses blob references, separate content storage, and append-before-inference; historical results below are unchanged.
+> The current Scala payload is `MessagePayload.AudioAttachment`; older `AudioInput` names below are historical.
+
 Status: implemented; automated validation and independent review passed. Manual microphone/browser and remote endpoint/model audio checks remain outstanding. Results and residual risks are recorded in [TRANSCRIBER_AS_AN_AGENT_EXECUTION_PLAN.md](TRANSCRIBER_AS_AN_AGENT_EXECUTION_PLAN.md).
 
-## Goal
+## Current audio storage contract
+
+The original design and acceptance criteria below are retained as historical context, not current storage requirements.
+The current payload is `MessagePayload.AudioAttachment(blobId, format, description)`; capture bytes live in REPL-local
+`CapturedAudio`. Persist the reference and blob before inference, then append a valid assistant transcript on success.
+There are no persisted size/duration fields, destructive audio projections, audio hash exceptions, or legacy decoders.
+With filesystem storage, recordings survive inference failure and draft discard. Only capture cancelled before ingestion
+is discarded; producer failure/interruption after ingestion preserves collected bytes. Message hashes verify normally
+and do not authenticate blob contents. See the blob-storage plan for APIs, limits, compatibility, and validation.
+Configured-agent/capability policy, fresh single-turn voice requests, separate sessions, and editable insertion remain current.
+
+## Original goal
 
 Replace the dedicated core `provider.Transcriber` service with a configured, audio-capable agent. Reuse and improve the model/core turn APIs so audio is a real message payload rather than a REPL-only side channel. The REPL-local `repl.voice.Transcriber` service invokes that ordinary agent and handles transcript validation/retention; it is not a core service or a new agent type.
 
@@ -34,7 +50,7 @@ Both JVM and browser voice input must use the configured transcription agent, in
 - Defer message-hash lookup in `/debug` to [DEBUG_BY_MESSAGE_ID_PLAN.md](DEBUG_BY_MESSAGE_ID_PLAN.md). This implementation does not add transcription records to the active chat's debug/inference context merely to expose them in the UI.
 - The user authorizes updating the local `yallmo.json` as well as tracked examples. Preserve existing agents, selection, provider endpoints, and credentials; never print or commit secrets.
 
-## Current implementation findings
+## Pre-migration implementation findings (historical)
 
 ### Model
 
@@ -69,7 +85,7 @@ Both JVM and browser voice input must use the configured transcription agent, in
 - `StorageStore` also checks conflicting duplicate IDs and missing parents. Those checks are distinct from hash verification.
 - Provider debug capture operates on already-built wire JSON. Redacting the model serializer alone will not redact base64 `input_audio.data` there.
 
-## Intended design
+## Original intended design (storage decisions superseded)
 
 ### Audio payload
 

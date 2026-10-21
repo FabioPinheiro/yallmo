@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "3.9.0"
+ThisBuild / scalaVersion := "3.10.0"
 ThisBuild / organization := "app.fmgp"
 ThisBuild / version := "2.0.0-SNAPSHOT"
 ThisBuild / versionScheme := Some("early-semver")
@@ -28,11 +28,28 @@ ThisBuild / Test / javaOptions ++= Seq(
 
 lazy val root = project
   .in(file("."))
-  .aggregate(model, core, repl)
+  .aggregate(model, core, repl) // , capabilitiesLab)
   .settings(
     name := "yallmo",
     publish / skip := true,
   )
+
+// /** Isolated capture-checking experiment; production modules must not depend on this nightly-compiled project yet. */
+// lazy val capabilitiesLab = project
+//   .in(file("capabilities-lab"))
+//   .settings(
+//     name := "yallmo-capabilities-lab",
+//     publish / skip := true,
+//     // Match lampepfl/atc's pinned compiler rather than tracking a moving nightly.
+//     scalaVersion := "3.10.2-RC1-bin-20261015-88be2f5-NIGHTLY",
+//     resolvers += "Scala nightlies" at "https://repo.scala-lang.org/artifactory/maven-nightlies/",
+//     scalacOptions ++= Seq(
+//       "-language:experimental.captureChecking",
+//       "-language:experimental.modularity",
+//     ),
+//     libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
+//     Test / fork := true,
+//   )
 
 lazy val model = project
   .in(file("model"))
@@ -92,4 +109,3 @@ lazy val repl = project
       "org.slf4j" % "slf4j-nop" % "2.0.13" % Runtime,
     )
   )
-

@@ -5,6 +5,7 @@ Review [the Scala Days notes for inspiration](../scala_agent_orchestration_inspi
 
 Review the scala 3 capture-checking
 - [ATC: A Minimal Agent With Tracked Capabilities](https://github.com/lampepfl/atc)
+- [ACIT: Tracked Agent Capabilities In Types](https://github.com/lampepfl/tacit)
 - [Scala 3 Capture Checking](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/index.html)
   - [Capture Checking Basics](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/basics.html)
   - [Safe Mode](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/safe.html)

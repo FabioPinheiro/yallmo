@@ -35,7 +35,6 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation-DAG visualization plan](docs/visualization/CONVERSATION_DAG_VISUALIZATION_PLAN.md)
-- [Ideas and planned work](docs/TODO_AND_IDEAS.md)
 
 ## Project layout
 
@@ -45,12 +44,29 @@ The project aims to keep the important boundaries small and explicit: transcript
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
 
 
-## WIP & TODO
+## WIP & TODO & IDEAS
 
-### Newest Inference Engines
+### TODO - Agent Comands
+
+Each agent should bring their own comments to the REPL.
+
+### TODO - Newest Inference Engines
 
 Docker Model Runner is no longer sufficient for the experiments I want to run. I want direct access to the latest **vLLM** and **llama.cpp** engines and APIs, without waiting for Docker Model Runner to expose their capabilities.
 
 - **Incremental input and output:** stream text and audio chunks into supported backends and process them while more input is arriving; receive text and audio chunks incrementally. Streaming output alone is not enough. Actual support depends on the engine, model, and endpoint.
 - **Realtime voice experiments:** try [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) through [vLLM's Realtime API](https://docs.vllm.ai/en/latest/serving/online_serving/speech_to_text/#realtime-api) for incremental speech-to-text. Conversation and speech synthesis remain separate capabilities, composed as needed.
 - **System One models:** experiment with constrained decision models alongside conversational models, keeping their contracts separate. Run **Laya in a custom Docker container** and integrate it through the [System One / Jev boundary](docs/system_one/System_One_Overview.md), rather than treating it as a chat-completion model.
+
+### IDEA - /btw
+
+Add a command that entres a conversation mode. Where its not allowed to use most of the tool. Specially, is not allowed to modify anything.
+It can still have submode to search the files in the FS and search the Internet
+When exiting this mode a summary will be written back into the context of the other.
+
+The idea is to have a conversation, discuss ideas and understanding the options.
+
+### IDEA - agents can share tools/functions with other agents
+
+We have use capture-checking to make sure those tools don't space the resquet
+

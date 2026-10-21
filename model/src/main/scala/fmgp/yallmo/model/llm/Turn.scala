@@ -1,7 +1,7 @@
 package fmgp.yallmo.model.llm
 
 import fmgp.yallmo.model.{Blob, BlobId, FunctionToolDefinition, MessagePayload, ToolChoice, YallmoError}
-import zio.{Chunk, IO}
+import zio.*
 
 /** Provider-neutral stop reason for a completed model turn. */
 enum LlmStopReason {
@@ -14,6 +14,8 @@ enum LlmStopReason {
 
 /** One fully assembled model request. Adapters may read referenced blobs but do not execute tools. `readBlob` is a
   * request-local read-only dependency, not serialized content. Orchestrator supplies its Storage reader.
+  *
+  * TODO REVIEW the readBlob should be a ZStream
   */
 final case class AgentTurnRequest(
     model: String,

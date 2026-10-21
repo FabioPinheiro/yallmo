@@ -22,6 +22,12 @@ private[storage] object StorageJson {
       kind <- ArtifactKind.from(envelope.kind)
       artifact <- kind match
         case ArtifactKind.Msg =>
-          envelope.value.toJson.fromJson[MessageData].map(value => DecodedArtifact.Msg(StoredArtifact(id, value)))
+          if envelope.value.asObject.flatMap(_.get("payload")).flatMap(_.asObject).exists(_.contains("AudioInput")) then
+            Left(
+              "legacy AudioInput payload is unsupported; stop the REPL and recover into a new directory with " +
+                "sbt \"core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio <source> <new-destination>\". " +
+                "Redacted recordings become unavailable-audio notices; the source is unchanged."
+            )
+          else envelope.value.toJson.fromJson[MessageData].map(value => DecodedArtifact.Msg(StoredArtifact(id, value)))
     } yield artifact
 }

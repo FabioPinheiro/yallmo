@@ -56,9 +56,9 @@ lazy val model = project
   .settings(
     name := "yallmo-model",
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-streams" % "2.1.24",
-      "dev.zio" %% "zio" % "2.1.24",
-      "dev.zio" %% "zio-json" % "0.9.0",
+      "dev.zio" %% "zio-streams" % "2.1.27",
+      "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     )
   )
@@ -69,9 +69,9 @@ lazy val core = project
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio" % "2.1.24",
+      "dev.zio" %% "zio" % "2.1.27",
       "dev.zio" %% "zio-http" % "3.0.1",
-      "dev.zio" %% "zio-json" % "0.9.0",
+      "dev.zio" %% "zio-json" % "1.1.1",
       "com.lihaoyi" %% "upickle" % "4.3.2",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
       "com.google.genai" % "google-genai" % "1.53.0",

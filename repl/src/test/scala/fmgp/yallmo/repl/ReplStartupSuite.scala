@@ -132,6 +132,20 @@ final class ReplStartupSuite extends FunSuite {
     assertEquals(missing, Left(YallmoError.UnknownAgent(AgentId("missing"))))
   }
 
+  test("startup log level initializes REPL turns and remains changeable with /log") {
+    assertEquals(run(startup().application(Chunk.empty, availability)).initialState.logLevel, LogLevel.Warning)
+    for level <- List(LogLevel.Debug, LogLevel.Trace, LogLevel.None) do {
+      val application = run(startup(launch = options.copy(logLevel = level)).application(Chunk.empty, availability))
+      assertEquals(application.initialState.logLevel, level)
+      val created = submit(application, application.initialState, "/new")
+      assertEquals(created.state.logLevel, level)
+      val changed = submit(application, created.state, "/log error")
+      assertEquals(changed.state.logLevel, LogLevel.Error)
+      val selected = run(application.selectAgent(eve))
+      assertEquals(selected.initialState.logLevel, level)
+    }
+  }
+
   test("selected agent settings validate without leaking values or initializing unrelated providers") {
     val bad = Seq(
       Json.Obj(),

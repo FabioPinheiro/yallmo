@@ -3,7 +3,7 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.AgentId
 import java.nio.file.Paths
 import munit.FunSuite
-import zio.Chunk
+import zio.{Chunk, LogLevel}
 
 final class ReplLaunchOptionsSuite extends FunSuite {
   private val options = ReplLaunchOptions(Paths.get("yallmo.json"))
@@ -15,6 +15,45 @@ final class ReplLaunchOptionsSuite extends FunSuite {
       ReplLaunchOptions.parse(Chunk("--agent", "eve", "--storage=./sessions", "--config", "yallmo.json")),
       Right(options.copy(agentId = Some(AgentId("eve")), storageRoot = Some(Paths.get("./sessions"))))
     )
+  }
+
+  test("--log-level accepts every terminal level in either syntax, case-insensitively") {
+    assertEquals(options.logLevel, LogLevel.Warning)
+    for (name, level) <- List(
+        "trace" -> LogLevel.Trace,
+        "debug" -> LogLevel.Debug,
+        "info" -> LogLevel.Info,
+        "warning" -> LogLevel.Warning,
+        "error" -> LogLevel.Error,
+        "fatal" -> LogLevel.Fatal,
+        "off" -> LogLevel.None
+      )
+    do
+      for flag <- List(Chunk(s"--log-level=$name"), Chunk("--log-level", name.toUpperCase(java.util.Locale.ROOT))) do
+        assertEquals(
+          ReplLaunchOptions.parse(Chunk("--config=yallmo.json", "--agent=bob", "--storage=./sessions") ++ flag),
+          Right(
+            options.copy(agentId = Some(AgentId("bob")), storageRoot = Some(Paths.get("./sessions")), logLevel = level)
+          )
+        )
+  }
+
+  test("--log-level rejects invalid, missing and duplicate values") {
+    for (args, reason) <- List(
+        (
+          Chunk("--log-level=private-value"),
+          "Invalid --log-level value. Expected trace, debug, info, warning, error, fatal or off."
+        ),
+        (Chunk("--log-level"), "--log-level requires a value"),
+        (Chunk("--log-level="), "--log-level requires a value"),
+        (Chunk("--log-level", "--agent=bob"), "--log-level requires a value"),
+        (Chunk("--log-level=debug", "--log-level=info"), "--log-level may appear only once")
+      )
+    do
+      assertEquals(
+        ReplLaunchOptions.parse(Chunk("--config=yallmo.json") ++ args),
+        Left(s"$reason\n${ReplLaunchOptions.Usage}")
+      )
   }
 
   test("removed UI flags are rejected rather than selecting a terminal client") {

@@ -79,6 +79,7 @@ private[repl] final class ReplStartup private (
               ),
               availability,
               replOrchestrator,
+              initialState = ReplState(logLevel = options.logLevel),
               activeAgent = selection.map(_.feedback),
               providerCatalog = Some(providerCatalog),
               providerLogin = Some(providerLogin),

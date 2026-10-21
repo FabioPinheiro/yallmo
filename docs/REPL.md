@@ -15,6 +15,7 @@ selected agent. See [setup](HOW_TO_RUN.md) and the sanitized [example](examples/
 # Keep sbt attached to this terminal so JLine can use its TTY.
 sbt --server -no-server "repl/run --config ./yallmo.json"
 sbt --server -no-server "repl/run --config ./yallmo.json --agent bob --storage ./zzz"
+sbt --server -no-server "repl/run --config ./yallmo.json --log-level debug"
 ```
 
 `--agent` overrides `defaultAgentId`; absent both, startup stays unselected and prompts are rejected without an agent
@@ -168,8 +169,10 @@ redacted before capture.
 ## Log files and terminal filtering
 
 With `--storage <directory>`, general lifecycle events are appended to `<directory>/logs/repl.log`; agent-runner events use
-`<directory>/logs/agent-runners/`. Terminal output starts at WARNING; `/log` can select any supported terminal level, including
-INFO/DEBUG/TRACE or OFF. File output independently defaults to INFO and above: `/log` never changes its threshold, including
+`<directory>/logs/agent-runners/`. Terminal output defaults to WARNING. Use `--log-level <trace|debug|info|warning|error|fatal|off>`
+to set the initial threshold for startup (including tool availability logs) and subsequent REPL turns. Values are
+case-insensitive; both `--log-level debug` and `--log-level=debug` work. `/log` can change the terminal level later.
+File output independently defaults to INFO and above: neither `--log-level` nor `/log` changes its threshold, including
 `/log off`. DEBUG/TRACE events are excluded from files by default. Without `--storage`, durable log files are not enabled.
 
 Browser audio logs record service start/stop and port, startup failure, browser connect/reconnect, and disconnect reasons

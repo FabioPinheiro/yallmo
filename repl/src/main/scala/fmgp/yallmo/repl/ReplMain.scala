@@ -10,7 +10,8 @@ import fmgp.yallmo.tool.{BashExecutor, GitClient, WorkspaceFileSystem}
 
 /** Starts the config-driven REPL. --config is required; --agent overrides its optional startup default. Missing files
   * are initialized privately with empty catalogs. Without a selected agent, commands remain available but prompts are
-  * rejected. --storage persists conversations. The JLine client requires an interactive terminal.
+  * rejected. --storage persists conversations. --log-level sets the initial terminal log threshold. The JLine client
+  * requires an interactive terminal.
   */
 object ReplMain extends ZIOAppDefault {
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
@@ -46,7 +47,7 @@ object ReplMain extends ZIOAppDefault {
       userName <- System.property("user.name").map(_.filter(_.trim.nonEmpty).getOrElse("user"))
       config <- ConfigFile.loadOrInitialize(options.configPath, userName)
       _ <- ZIO.scoped {
-        (for {
+        ZIO.logLevelScoped(options.logLevel) *> (for {
           startup <- ReplStartup.make(config, options)
           startupTools <- ReplTools.evaluate
           availableTools: Chunk[AgentTool[ReplEnvironment]] = startupTools.available

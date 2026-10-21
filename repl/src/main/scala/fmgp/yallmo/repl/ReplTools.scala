@@ -32,7 +32,7 @@ object ReplTools {
   private val bash: AgentTool[Environment] = new BashTool(workspace)
   private val repositoryChanges: AgentTool[Environment] = new RepositoryChangesTool(workspace)
 
-  /** Checks the few requirements of this REPL's fixed tool set once at startup. */
+  /** Checks the few requirements of this REPL's fixed tool set once at startup and logs availability at DEBUG. */
   def evaluate: URIO[Environment, ReplStartupTools] =
     for {
       hasWorkspace <- WorkspaceFileSystem.isDirectory(workspace)
@@ -44,8 +44,7 @@ object ReplTools {
             git.isWorkTree(workspace).map(isWorkTree => Either.cond(isWorkTree, (), "workspace is not a Git work tree"))
         }
       }
-    } yield {
-      val unavailable = Chunk.fromIterable(
+      unavailable = Chunk.fromIterable(
         List(
           Option.unless(hasWorkspace)("readFile" -> Chunk("workspace is not an accessible directory")),
           Option.unless(hasWorkspace)("listFiles" -> Chunk("workspace is not an accessible directory")),
@@ -53,7 +52,7 @@ object ReplTools {
           gitStatus.left.toOption.map(reason => "repositoryChanges" -> Chunk(reason))
         ).flatten
       )
-      val available = Chunk.fromIterable(
+      available = Chunk.fromIterable(
         List(
           Option.when(hasWorkspace)(readFile),
           Option.when(hasWorkspace)(listFiles),
@@ -61,6 +60,10 @@ object ReplTools {
           gitStatus.toOption.map(_ => repositoryChanges)
         ).flatten
       )
-      ReplStartupTools(available, ReplToolAvailability(available.map(_.definition.key), unavailable))
-    }
+      startupTools = ReplStartupTools(available, ReplToolAvailability(available.map(_.definition.key), unavailable))
+      _ <- ZIO.logDebug(s"Startup tool availability: ${startupTools.availability}")
+      _ <- ZIO.logInfo(
+        s"Available tools (${available.size}): ${available.map(_.definition.key).mkString(", ")}"
+      )
+    } yield startupTools
 }

@@ -1,5 +1,8 @@
 # Conversation DAG visualization plan
 
+Status: backend graph API remains planned. The existing [visualization prototype](../../visualization/README.md) reads a
+local snapshot with a Node generator; the browser consumes only its generated projection. It is not the Scala graph API below.
+
 ## 1. Goal
 
 Provide a local, read-only web application for exploring a Yallmo conversation:
@@ -20,7 +23,11 @@ The initial product is a **historical conversation explorer**. It visualizes com
 - A session ref points to a head artifact.
 - `Storage.fork(source, target)` makes two session heads share prior message artifacts.
 
-This means the object store has a parent-linked history and shared fork ancestry. The present public read API is not sufficient for a visualizer: `Storage.loadSession` returns only a flattened `Chunk[MessagePayload]`, losing message IDs, timestamps, and parent links. There is no HTTP server yet.
+This means the object store has a parent-linked history and shared fork ancestry. `Orchestrator.loadSession` returns a
+`Session` with complete `Chunk[Message]` envelopes, including IDs, timestamps, and parents; `Storage` is internal.
+There is no typed family/graph query API or visualization HTTP server yet (the REPL browser-audio server is separate).
+Audio messages are `MessagePayload.AudioAttachment` references; their bytes live outside JSONL as described in
+[Attachments and blob storage](../orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
 
 The visualizer must query Yallmo through a new read model. The browser must never parse `objects.jsonl` or access the Storage directory directly.
 
@@ -74,14 +81,14 @@ ZIO HTTP routes (/api/v1/...)
 React + React Flow browser application
 ```
 
-Add a small public projection API near `fmgp.yallmo.orchestration.universe`; it owns traversal and redaction. Keep `StorageStore`, object-file layout, and ref-file layout private implementation details.
+Add a small public projection API near `fmgp.yallmo.orchestration`; it owns traversal and redaction. Keep `StorageStore`, object-file layout, and ref-file layout private implementation details.
 
 The backend is the authority for graph shape, access scope, previews, and redaction. React Flow only renders the returned projection.
 
 ## 6. Backend read model
 
 Create public serializable models in `core`, for example in
-`fmgp.yallmo.orchestration.universe.visualization`:
+`fmgp.yallmo.orchestration.visualization`:
 
 ```scala
 enum GraphScope:
@@ -121,7 +128,7 @@ final case class ConversationGraph(
 )
 ```
 
-`GraphNodeKind` maps each `MessagePayload` variant to a stable API name: `user`, `assistant`, `reasoning`, `rag_result`, `function_call`, `function_result`, `tool_result`, and `context`. Unknown future payloads must render as `unknown`, rather than failing the whole graph.
+`GraphNodeKind` maps each `MessagePayload` variant to a stable API name: `user`, `assistant`, `reasoning`, `rag_result`, `function_call`, `function_result`, `tool_result`, and `context`. The current snapshot prototype renders `AudioAttachment` as `unknown`, with reference/format/description JSON in its details. Future dedicated audio nodes must remain reference-only. Unknown future payloads must render as `unknown`, rather than failing the whole graph.
 
 `MessageDetail` is a separate type returned only for a selected message. It contains structured, redacted content appropriate for its kind; it must not simply serialize internal `MessagePayload` blindly.
 
@@ -247,6 +254,7 @@ No write endpoints are part of this plan. CORS is disabled by default; the local
 The graph API defaults to previews. It must never expose:
 
 - provider credentials, HTTP headers, or debug-capture files;
+- resolved blob bytes, base64 audio, or filesystem blob paths; previews/details must not call `readBlob`;
 - `Reasoning.continuation.encryptedContent`;
 - system prompts or agent artifact configuration;
 - unrestricted raw tool arguments/results if a redaction policy marks them sensitive.
@@ -255,10 +263,10 @@ For MVP, serve the UI only on loopback and treat tool text as potentially sensit
 
 ## 10. Frontend prototype
 
-Create a separate `visualizer/` Vite application using TypeScript:
+The implemented prototype lives in `visualization/`, using TypeScript. The original target layout for the HTTP-backed version is:
 
 ```text
-visualizer/
+visualization/
   src/api.ts          HTTP client and wire types
   src/graph.ts        API graph -> React Flow nodes and edges
   src/nodes.tsx       custom compact node renderers
@@ -272,7 +280,7 @@ Dependencies:
 - `@xyflow/react` (React Flow);
 - `elkjs` for layered left-to-right layout.
 
-The UI uses a static fixture that exactly follows the HTTP graph response before the backend exists. This permits quick feedback on the interaction model without changing persisted data.
+The current prototype uses a generated local-storage projection, not a mock conversation or live HTTP backend. Fixture data remains useful for tests of the planned graph contract. Generation must not read `blobs/` or resolve attachment content.
 
 Node rendering:
 

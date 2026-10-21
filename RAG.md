@@ -15,9 +15,9 @@ curl -L -o target/yallmo-demo/all-MiniLM-L6-v2/model.onnx \
 curl -L -o target/yallmo-demo/all-MiniLM-L6-v2/vocab.txt \
   https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/vocab.txt
 
-sbt 'run -- --model target/yallmo-demo/all-MiniLM-L6-v2/model.onnx --vocab target/yallmo-demo/all-MiniLM-L6-v2/vocab.txt --query "What does Norse mythology say about ravens and Odin?"'
+sbt 'core/runMain fmgp.yallmo.rag.RagMainDemo --model target/yallmo-demo/all-MiniLM-L6-v2/model.onnx --vocab target/yallmo-demo/all-MiniLM-L6-v2/vocab.txt --query "What does Norse mythology say about ravens and Odin?"'
 ```
 
-The default source directory is `data/lores`; override it with `--source <directory>`. Top-level Markdown files are ingested, excluding a directory `README.md`. A small deterministic smoke-test corpus and expected queries live in [`data/rag-demo`](../data/rag-demo/README.md).
+The default source directory is `data/lores`; override it with `--source <directory>`. Top-level Markdown files are ingested, excluding a directory `README.md`. The former `data/rag-demo` smoke-test corpus is not included in this checkout; supply your own source directory.
 
 The demonstration does not persist embeddings. Production integration should add a versioned index manifest, a corpus/update policy, and an explicit per-agent retrieval allowlist.

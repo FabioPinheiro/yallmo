@@ -1,6 +1,6 @@
 # Understanding Pi's LLM Request Payload
 
-This document explains the request captured in [`PI_EXAMPLES.MD`](PI_EXAMPLES.MD). The JSON object beginning with `{"model": ...}` is a **logical provider request body** produced by Pi for an OpenAI Codex Responses model.
+This document explains the request captured in [`PI_EXAMPLES.MD`](../docs/examples/PI_EXAMPLES.MD). The JSON object beginning with `{"model": ...}` is a **logical provider request body** produced by Pi for an OpenAI Codex Responses model.
 
 > **Privacy:** a captured payload can contain the full system prompt, user messages, file contents, command output, and tool schemas. Do not commit or share it without reviewing it.
 

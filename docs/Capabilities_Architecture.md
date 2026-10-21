@@ -200,7 +200,10 @@ Use the following explicit policy for the voice agent so future application cata
 
 Omitted settings can pass the effective-empty check when the inherited catalogs are already empty; they do not mean that the category is permanently disabled.
 
-Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, `ToolChoice.None`, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Successful exchanges are retained in separate generated sessions before text is offered to the editable draft.
+Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, `ToolChoice.None`, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
+`Orchestrator.turn` supplies `AgentTurnRequest.readBlob`; inference failure leaves that audio intact. A valid assistant
+transcript is then appended before text is offered to the editable draft. Recordings survive draft discard when using
+filesystem storage. See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
 
 The generic audio marker/lookup does not prove the selected remote model accepts audio. Shared audio agents are not globally forced into these single-turn/no-tools restrictions: those are properties of the REPL voice invocation.
 
@@ -210,6 +213,10 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 - **Raw provider APIs:** `inferenceWithTextAndTools` is deprecated at the text-provider interface; `generateWithTools` is deprecated on the common provider API and explicitly on the OAI/Codex implementations. Their internal `toolLoop`/`executeTool` helpers are also deprecated. These APIs remain for compatibility but do not pass through the configured agent wrapper/runner. Use `Agent` with `NativeFunctionAgent`/`AgentRunner` for new tool-executing code; deprecation does not retrofit policy enforcement into the legacy path.
 - **Caller-supplied agents:** `RuntimeInstances.fromAgents`/registered instances are returned as supplied, without inventing configuration policy for them. Program-side policy and runner checks still apply when used through the runner.
 - **Not transcript sanitization:** allowlists prevent fresh capability application/execution. They do not remove old tool results, previously inserted skill text, or arbitrary caller-provided context from history. Direct-request filtering does not identify the origin of text inside a payload.
+- **Blob access is not a new authorization policy:** `readBlob` is a request-local function, not serialized content.
+  `Orchestrator.turn` binds its own Storage reader; `NativeFunctionAgent.bind(adapter, orchestrator.readBlob)` binds the
+  reader for runner calls. Direct adapters default to `Blob.unavailable` and need an explicit reader for audio. The four
+  capability allowlists do not scope blob reads to particular sessions or agents; trusted callers own access control.
 - **Not credentials/provider routing policy:** these four allowlists do not grant accounts, endpoints or providers. Model/prompt settings are also not grants.
 - **No remote probes:** successful local validation proves references, catalogs and adapter compatibility, not authentication, remote availability or model capabilities.
 - **Secret-safe diagnostics:** never log the full configuration, credentials, raw recordings, or hidden skill/extension contents to explain a policy error.

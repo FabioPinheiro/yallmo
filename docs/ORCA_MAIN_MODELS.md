@@ -1,7 +1,7 @@
 # Orca main models
 
-This is a source-based map of the two core modules, not a replacement for the
-ADRs. It focuses on the public or load-bearing models in `tools` and `flow`;
+This describes the external Orca project, not Yallmo's implemented models. Source/ADR paths below are relative to an
+Orca checkout. It is a source-based map of Orca's two core modules, not a replacement for its ADRs. It focuses on the public or load-bearing models in `tools` and `flow`;
 backend wire DTOs and renderer-specific models are intentionally omitted.
 
 **Type parameters:** `B` is a `BackendTag` (Claude, Codex, OpenCode, Pi, or
@@ -322,4 +322,5 @@ limit.
 | Progress and run state | `flow/src/main/scala/orca/progress/ProgressLog.scala`, `flow/src/main/scala/orca/sessions/SessionRecord.scala` |
 | Review domain | `flow/src/main/scala/orca/review/{ReviewLoop,Reviewers,ReviewFinding,ReviewReport}.scala` |
 
-For lifecycle invariants and design rationale, read [ADR 0018](adr/0018-stage-bound-flow-runtime.md). For the earlier architectural overview, see [the ADR visual guide](adr/README.md).
+For lifecycle invariants and design rationale, read `adr/0018-stage-bound-flow-runtime.md` in the Orca checkout.
+For its earlier architectural overview, see `adr/README.md` there; these ADRs are not part of Yallmo's documentation.

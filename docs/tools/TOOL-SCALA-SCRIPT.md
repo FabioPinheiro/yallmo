@@ -1,7 +1,7 @@
 # TOOL SCALA SCRIPT
 
 Create a tool that allowed to create and run scala code in one shot.
-Review [THe scala days notes for inspiration](./scala_agent_orchestration_inspiration.md)
+Review [the Scala Days notes for inspiration](../scala_agent_orchestration_inspiration.md)
 
 Review the scala 3 capture-checking
 - [ATC: A Minimal Agent With Tracked Capabilities](https://github.com/lampepfl/atc)

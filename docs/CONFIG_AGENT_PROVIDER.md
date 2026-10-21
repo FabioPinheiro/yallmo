@@ -15,6 +15,10 @@
 - REPL startup requires `--config <file>`. Missing files initialize privately with the JVM user name and empty catalogs. `--agent` overrides `defaultAgentId`; absent both, the REPL starts unselected and rejects prompts without side effects. The old `--provider`/`--model` flags are removed. AGENTS supports in-session selection from the startup snapshot without inference/authentication. New selections keep the current session and conversation while changing the chat runtime and prompt, not the independent voice agent. Sessions can be resumed independently of the selected agent; new message authors are enrolled on persistence without rewriting prior authors. Pre-switch opaque provider continuations are excluded from the new binding's request view, not removed from stored history. Live config reload is not implemented.
 - Profile login persists credentials only to the selected private configuration profile; there is no global `/login` command. Voice uses only the explicit `transcriberAgent` and its configured model/prompt, independently of chat selection, with no fallback. Missing references disable voice; invalid explicit settings fail local startup. All four effective capability sets must be empty (use explicit `[]` allowlists). See [setup](HOW_TO_RUN.md).
 
+- Audio payloads contain a `BlobId`, not bytes. `Orchestrator.turn` and REPL native bindings supply the blob reader;
+  direct audio adapter calls must supply it themselves. Voice persists audio before inference, independently of active chat.
+  This schema does not decode/migrate old `AudioInput` records. See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+
 For current capability configuration and enforcement, see [Capabilities architecture](Capabilities_Architecture.md).
 
 The sections below retain the earlier design and future milestones. Earlier `AppConfig`/`program` names, array examples and claimed settings-decoding helper are historical sketches, not the current API.
@@ -336,4 +340,4 @@ Each milestone should be useful and reviewable alone. Do not combine config, rou
 - Legacy `--provider` / `--model` migration: do not let them silently override a named agent's behavior.
 - Human display name versus stable message-author ID; keep that distinction possible.
 
-**Current scope: immutable models/codecs, safe config-file initialization/loading, RuntimeInstances caching/concurrency, OrchestratorLive integration and configured/unselected REPL startup. Live Ref updates, credential persistence, in-session selection and history switching remain deferred. See the current implementation boundary at the top.**
+**For current behavior, use the implementation boundary at the top. The milestones above are historical: in-session agent selection and explicit profile-login credential saving are implemented. Live config reload and persistence of refreshed credentials remain deferred.**

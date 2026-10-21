@@ -30,10 +30,11 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Interactive REPL](docs/REPL.md) — NORMAL `v`: JVM voice; `m`: browser microphone; `t`: explicitly speak the current assistant reply.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
 - [Capabilities architecture](docs/Capabilities_Architecture.md) — configuration inheritance, restrictions, enforcement flow, and REPL voice policy.
-- [ChatGPT subscription provider](docs/OPENAI_SUBSCRIPTION.md)
+- [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)
+- [Attachments and blob storage](docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
-- [Conversation-DAG visualization plan](docs/CONVERSATION_DAG_VISUALIZATION_PLAN.md)
+- [Conversation-DAG visualization plan](docs/visualization/CONVERSATION_DAG_VISUALIZATION_PLAN.md)
 - [Ideas and planned work](docs/TODO_AND_IDEAS.md)
 
 ## Project layout

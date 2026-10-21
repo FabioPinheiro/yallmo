@@ -175,6 +175,13 @@ Every request and server-originated event needs a session ID, request/turn ID wh
 
 The current `ReplApplication.submit` returns a new immutable `ReplState` only after a complete linear turn. A server introduces a `SessionCoordinator` that owns the session event log, materialized branch state, run metadata, and an explicit **one active turn per session** queue/lock. It does not own attached-client state.
 
+Storage prerequisite: the current filesystem backend also requires serialization of **all message/session mutations
+across one storage root**, including different sessions. Per-session queues alone do not satisfy that contract; the
+server must add a shared storage-boundary writer coordinator before running sessions concurrently. See
+[Attachments and blob storage](../../../../../../../../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+Message events carry attachment references, never blob bytes. A future authenticated blob transport needs its own
+access/size/lifecycle policy; `readBlob` is not implicitly a public network endpoint.
+
 Rules:
 
 - serialize submitted turns and later cancellation requests for a session; never race state transitions;

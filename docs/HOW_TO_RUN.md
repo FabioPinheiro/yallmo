@@ -62,13 +62,19 @@ The REPL always uses the JLine client and requires an interactive terminal. Stre
 not supported; there is no fallback client or UI selection flag. See the [REPL guide](REPL.md) for commands, storage
 and voice behavior.
 
+`--storage` retains voice recordings as raw files in `<directory>/blobs/`, even if transcription fails or the draft is
+later discarded. Protect the entire directory and its backups. Without this flag, sessions and blobs are process-local.
+The current audio schema does not decode/migrate old inline/redacted audio records: if your store contains them,
+keep a backup and start with a fresh directory. Filesystem message/session writes require one owner and serialization across the storage root.
+See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for the full contract.
+
 ## ChatGPT subscription profiles
 
 A configured `ChatGPTAgent` can start logged out, but inference then fails locally. Profiles use literal private
 credentials in the selected configuration profile. In the line UI, press `Esc`, `p`, select the ChatGPT profile, and choose login
 inside its details. Restart after saving credentials. There is no global `/login` command.
 Refreshed credentials currently remain **only in the cached connection's memory**;
-restarting from stale rotating credentials may require reauthentication. See [the provider guide](OPENAI_SUBSCRIPTION.md).
+restarting from stale rotating credentials may require reauthentication. See [REPL profile behavior](REPL.md#chatgpt-subscription-generation).
 
 ## Other demos
 

@@ -1,6 +1,7 @@
 # Native Provider-Turn Agent Loop — Completed
 
-> This implementation plan is complete. It remains as a short delivery record; active architecture documentation belongs in [`src/main/scala/fmgp/llm/orchestration/ORCHESTRATION.md`](src/main/scala/fmgp/llm/orchestration/ORCHESTRATION.md).
+> This implementation plan is complete. It remains as a historical delivery record; active architecture documentation belongs in [Agent orchestration](../core/src/main/scala/fmgp/yallmo/orchestration/ORCHESTRATION.md).
+> Names and tool/persistence limits below describe that delivery, not today's APIs. For current audio retention and diagnostics, see [Attachments and blob storage](../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
 
 ## Delivered
 

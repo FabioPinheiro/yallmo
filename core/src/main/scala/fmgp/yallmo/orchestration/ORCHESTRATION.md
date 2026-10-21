@@ -1,76 +1,64 @@
 # Agent orchestration
 
-`fmgp.yallmo.orchestration` is a bounded, model-directed agent loop. An `AgentInstance` proposes a decision, but
-`AgentRunner` remains the trusted component that validates and executes retrieval and tool actions.
+`fmgp.yallmo.orchestration` is a bounded, model-directed agent loop. An `AgentInstance` proposes a decision;
+`AgentRunner` validates and executes retrieval/tool actions. Application flows that do not need model-selected actions
+should use ordinary named ZIO methods, not a second workflow interpreter.
 
-This replaces the removed `Workflow` AST. Application flows that do not need model-selected actions should use ordinary named ZIO methods;
-`AgentRunner` is for flows where the model selects the next action.
+## Ownership
+
+| Component | Responsibility |
+| --- | --- |
+| `Agent` / `AudioAgent` | Named adapter performing one `AgentTurnRequest` → `AgentTurnResponse`; never executes tools |
+| `OAIAgent` / `ChatGPTAgent` | Canonical validation, provider-specific mapping, and turn diagnostics |
+| `OAILlmProvider` / `OpenAiCodexClient` | Provider inference and HTTP completion; neither is an `Agent` |
+| `NativeFunctionAgent` | Assemble native requests, preserve continuations/call IDs, and propose decisions |
+| `AgentRunner` | Capability checks, schema validation, approval guards, execution, budgets, and repetition |
+| `RuntimeInstances` | Lazy named-agent/provider resolution and configured capability wrappers |
+| `Orchestrator` | Public agent/session persistence API and blob ingestion/reads |
+| `Storage` | Internal session/message/blob persistence; no agent resolution or execution |
+
+Configuration and authorization are described in [Capabilities architecture](../../../../../../../docs/Capabilities_Architecture.md).
 
 ## End-to-end flow
 
 ```mermaid
 flowchart TD
-    Request[User request] --> Runner[AgentRunner]
-    Runner --> Extensions[ContextExtension values]
-    Extensions --> AgentInstance[LlmDecisionAgent]
-    AgentInstance --> Client[LlmClient inferenceWithText]
-    Client --> Provider[LLM provider]
-    Provider --> Client
-    Client --> Codec[JsonAgentDecisionCodec]
-    Codec --> Decision{AgentDecision}
-
-    Decision --> Final[FinalAnswer]
-    Final --> Result[AgentResult]
-
-    Decision --> Retrieve[RetrieveRag]
-    Retrieve --> Retriever[KnowledgeRetriever]
-    Retriever --> RagMessage[Message RagResult]
-
-    Decision --> Tool[CallExternalTool]
-    Tool --> Policy[Tool allowlist and ToolApproval]
-    Policy --> ToolMessage[Message ToolResult]
-
-    RagMessage --> Extensions
-    ToolMessage --> Extensions
+    Request[User task and prior RunContext] --> Runner[AgentRunner]
+    Runner --> Policy[Resolve configured capabilities]
+    Policy --> Extensions[Effective context extensions]
+    Extensions --> Program[NativeFunctionAgent]
+    Program --> Adapter[Agent.turn: one provider request]
+    Adapter --> Decision{AgentDecision}
+    Decision --> Final[FinalAnswer: return AgentTurnResult]
+    Decision --> Actions[Actions in declaration order]
+    Actions --> Validate[Authorize and validate arguments]
+    Validate --> Execute[Trusted tool or retriever implementation]
+    Execute --> Record[Append linked results to RunContext]
+    Record --> Extensions
 ```
 
-The `Extensions -> AgentInstance -> Client -> Provider -> Codec` path is one model turn. A retrieval or tool result is
-appended to the current agent context, then the runner starts another turn. A final answer terminates the run.
-
-A non-LLM `AgentInstance` can construct an `AgentTurn` directly in Scala; this is useful for tests and code-controlled
-policies. Only `LlmDecisionAgent` calls `LlmClient`.
+A native tool-only response has no fabricated empty assistant message. Function-call requests and outputs retain their
+call IDs. Provider reasoning/continuations remain typed payloads, separate from visible assistant text.
 
 ## Core contracts
 
-Every decision-making implementation uses the same interface:
+A decision-making program implements `AgentInstance[R]`. Its `configuredContext` hook validates/filters capabilities
+before extensions or actions run; `next` returns a proposed turn:
 
 ```scala
 trait AgentInstance[R] {
   def id: AgentId
-
-  def next(
-      task: AgentTask,
-      staticContext: StaticContext[R],
-      runContext: RunContext
-  ): ZIO[R, OrchestrationError, AgentTurn]
+  def capabilities: AgentCapabilities
+  def configuredContext(context: StaticContext[R]): ZIO[R, YallmoError, StaticContext[R]]
+  def next(task: AgentTask, context: StaticContext[R], history: RunContext): ZIO[R, YallmoError, AgentTurn]
 }
-```
 
-An `AgentTurn` records an optional textual assistant reply and carries a terminal answer or non-empty action batch:
-
-```scala
 final case class AgentTurn(
-  assistant: Option[Message.Assistant],
-  decision: AgentDecision
+    assistant: Option[MessagePayload.Assistant],
+    decision: AgentDecision,
+    additionalMessages: Chunk[MessagePayload] = Chunk.empty
 )
-```
 
-A native tool-only response has `assistant = None`; its `FunctionCallRequest` is appended directly to the transcript.
-No empty assistant message is fabricated.
-
-An agent cannot execute capabilities itself. Its decision is data:
-
-```scala
 enum AgentDecision {
   case FinalAnswer(text: String)
   case Actions(actions: Chunk[LlmAction])
@@ -82,140 +70,107 @@ enum LlmAction {
 }
 ```
 
-`AgentRunner` owns the registries and executes the actions in declaration order. It verifies that a requested tool or
-retriever is both registered globally and advertised in the calling `StaticContext`. `run` starts with an empty
-transcript and returns `AgentResult`; `runWithContext` accepts a prior `RunContext` and returns `AgentRun`, which makes
-multi-prompt clients such as the REPL able to retain their transcript.
+`AgentRunner.run` starts with an empty transcript and returns `AgentResult`. `runWithContext` accepts prior history and
+returns `AgentTurnResult(result, runContext)`. A non-LLM program can propose these values directly for deterministic
+policies/tests; it need not construct a provider request.
 
-## Context
+## Context and capabilities
 
-The runner separates context into two immutable values:
+- `StaticContext[R]` contains the system prompt, tool/retriever definitions, skills, and ordered context extensions.
+- `RunContext` contains ordered `MessagePayload` values, not persisted envelopes. Appends produce a new context.
+- `ContextExtension.apply(staticContext, runContext)` returns `ZIO[R, YallmoError, RunContext]`; it cannot change static
+  capabilities after the run starts. Extensions may load memory, add RAG, redact context, or add request metadata.
+- Omitted capability allowlists inherit the application's catalog; explicit empty lists disable a category.
+- Native program and configured adapter restrictions intersect. Direct configured-adapter requests also filter tools.
+- The runner requires both an effective advertised definition and a registered implementation before execution.
 
-- `StaticContext[R]` is fixed for an entire run. It contains the `systemPrompt`, permitted tool and retriever
-  definitions, skills, and ordered `ContextExtension[R]` transforms.
-- `RunContext` contains only the ordered `messages` transcript. It produces a new value when a user or assistant
-  message, retrieval result, or tool result is appended.
+`ToolApproval.guard` can add human/policy approval around an authorized tool. Allowlists and approval are not a sandbox;
+trusted Scala implementations retain their own permissions and resource-safety responsibilities.
 
-`ContextExtension.apply(staticContext, runContext)` returns `ZIO[R, OrchestrationError, RunContext]`. Extensions run
-before every model turn and can load memory, add predefined RAG, redact data, or add request metadata. Its return type
-prevents an extension from changing instructions or adding capabilities after a run starts.
+## Native requests and blob readers
 
-## LLM decision protocol
+`NativeFunctionAgent.bind(adapter, orchestrator.readBlob)` explicitly binds a resolved adapter and its read-only blob
+function. The REPL supplies this binding. Direct `Orchestrator.turn` calls replace the request's reader with the
+orchestrator's Storage reader. Direct adapter callers can supply `AgentTurnRequest.readBlob`; its default is
+`Blob.unavailable`, so audio cannot be sent without an available reader. The function is not serialized request content.
 
-`LlmDecisionAgent` renders the current context and calls the existing provider-neutral interface:
+Audio is `MessagePayload.AudioAttachment(blobId, format, description)`, not inline bytes. OAI resolves full blobs,
+rejects missing/empty/oversized content, and base64-encodes bytes for HTTP. Audio diagnostics are constructed from
+references before wire encoding; accidental inline-audio request capture is refused. Captures are therefore not exact
+audio wire bodies. Credential and continuation-ciphertext protections remain in place; prompt/tool/transcript text can
+still be sensitive.
 
-```scala
-LlmClient.inferenceWithText(prompt, options, model)
-```
+`ChatGPTAgent` rejects unsupported audio before authentication/network access. Audio capability is an adapter property,
+not proof that a particular configured endpoint/model accepts it.
 
-The response is retained as an `Message.Assistant`; `AgentDecisionCodec` also turns it into a typed decision:
+## Persistence and attachment ingestion
 
-```scala
-trait AgentDecisionCodec {
-  def instructions: String
+`Orchestrator` exposes ordinary message `append`, `readBlob`, and `appendWithBlobBytes` / `appendWithBlobStream` /
+`appendWithBlobWriter`. The message must contain exactly one blob ID for these ingestion methods. The caller allocates
+that ID before storage. Orchestrator appends the immutable message reference first, buffers produced bytes in memory,
+then submits one full `Blob` to Storage. This is not provider audio streaming; finite input must fit in memory and callers
+must bound it. A reference may be visible while its blob is still missing.
 
-  def decode(
-      response: String,
-      staticContext: StaticContext[?]
-  ): IO[OrchestrationError, AgentDecision]
-}
-```
+After successful message persistence, failed/interrupted/defective producers still store bytes collected so far, then
+propagate their outcome if blob storage succeeds. Message and blob appends are not transactional. Duplicate IDs are
+rejected without replacing existing content; an already-appended message is not rolled back.
 
-`JsonAgentDecisionCodec` is the included codec. It requires exactly one JSON object and no Markdown.
+Filesystem messages live in `objects.jsonl`; raw blobs live in `blobs/<uuid>`. Session refs retain complete immutable
+message envelopes and parent-linked lineage. Message hashes cover references, not blob contents. There is no blob
+lifecycle/completeness/integrity metadata, automatic cleanup, or legacy inline/redacted-audio decoder. Failed filesystem
+writes and overlapping reads may expose partial bytes.
 
-Finish a run:
+Exactly one Storage service owns each filesystem root. Callers must serialize message/session mutations across the
+whole root, not just within a session; StorageFS has no internal writer lock. This matters before introducing parallel
+sessions/workers. Durable session persistence belongs to Orchestrator, not to the runner's in-memory loop.
+
+See [Attachments and blob storage](../../../../../../../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for the
+full contract, compatibility changes, validation, and the open message-append failure-path finding.
+
+## REPL voice is a separate application flow
+
+The REPL-local `Transcriber` invokes an ordinary configured audio agent, independent of chat selection. It stores audio
+in a generated transcription session before one fresh tool-free turn, then appends a valid assistant transcript before
+offering text to the editable draft. Failure leaves stored audio intact. Draft discard does not delete recordings.
+The active chat session/head/context is unchanged; no transcription exchange is implicitly imported into later chat or
+voice requests. See [REPL voice](../../../../../../../docs/REPL.md#voice-input-lifecycle).
+
+## Legacy JSON-decision protocol
+
+`LlmDecisionAgent` remains a compatibility path. It renders context, calls `LlmProvider.inferenceWithText`, and decodes
+text with `AgentDecisionCodec` / `JsonAgentDecisionCodec`. It does not resolve audio: audio history produces a logged
+`SYSTEM ERROR: decision agents do not support audio input` marker and inference continues without bytes or metadata.
+
+The JSON codec requires one object, without Markdown. Examples:
 
 ```json
 {"finalAnswer":"The final response for the user."}
 ```
 
-Request RAG:
-
 ```json
-{
-  "actions": [
-    {
-      "kind": "retrieve_rag",
-      "retrieverKey": "knowledge",
-      "query": "Faro beaches"
-    }
-  ]
-}
+{"actions":[{"kind":"retrieve_rag","retrieverKey":"knowledge","query":"Faro beaches"}]}
 ```
 
-Request a registered external tool:
-
 ```json
-{
-  "actions": [
-    {
-      "kind": "call_tool",
-      "toolKey": "current-time",
-      "arguments": {}
-    }
-  ]
-}
+{"actions":[{"kind":"call_tool","toolKey":"current-time","arguments":{}}]}
 ```
 
-## Guardrails
+Deprecated provider-owned tool loops remain compatibility APIs; new tool-executing callers should use
+`Agent` / `NativeFunctionAgent` / `AgentRunner` so configured policy and trusted execution remain on the path.
 
-`AgentBudget` bounds one run. It limits:
+## Guardrails and verification
 
-- model turns
-- action count
-- total timeout
+`AgentBudget` bounds model turns, action count, and total timeout. Actions execute sequentially. Tool failure, denial,
+unknown tools, and malformed arguments become linked error outputs where applicable; retrieval failures remain typed
+run failures. Expected errors use `YallmoError`.
 
-The runner returns typed `OrchestrationError` values for malformed decisions, unavailable capabilities, empty action
-batches, rejected tool calls, and budget exhaustion.
-
-`ToolApproval.guard` can wrap an `AgentTool` to require a human or policy decision before a model-selected call runs.
-
-## Current and future provider integration
-
-The current implementation uses `inferenceWithText` and strict JSON decoding so it works with the existing `LlmClient`
-contract. A future `LlmClient` turn-level API should expose provider-native tool calls and stop reasons. That adapter can
-produce the same `AgentDecision` and `LlmAction` values, leaving `AgentRunner`, authorization, budgets, and context
-rules unchanged.
-
-## Pi-inspired design mapping
-
-Pi and this package share the important security boundary: a model proposes actions, while trusted runtime code owns
-capability execution and decides whether another turn is needed. The concepts map as follows:
-
-| Pi | This package | Notes |
-| --- | --- | --- |
-| Agent loop | `AgentRunner.run` / `runLoop` | It calls the agent, executes its requested actions, records results in context, and repeats until `FinalAnswer`. |
-| Assistant reply | `AgentTurn.assistant` / `Message.Assistant` | The reply is appended before the runner acts on its decision. |
-| Assistant tool call | `LlmAction` | It is declarative until `AgentRunner` resolves it against the per-agent capability allowlist. |
-| Tool definition and execution | `AgentToolDefinition` / `AgentTool` | `ToolApproval.guard` is the policy or human-confirmation boundary. |
-| Tool result message | `Message.ToolResult` | The next turn receives the normalized text result, not the tool implementation. |
-| System prompt, skills, and context transforms | `StaticContext` and `ContextExtension` | Static configuration is fixed for a run; extensions return only updated `RunContext` values. |
-| Active session branch | `RunContext.messages` | This is only the in-memory, linear history for one run. It is **not** a durable Pi-style session tree. |
-| Context compaction and session persistence | Not implemented | Keep these outside the runner until ASAR needs resumable, branchable orchestration runs. |
-
-Pi also supports parallel calls from one assistant message. This runner intentionally executes action batches in order:
-ASAR tools may mutate state or require approval, so concurrency must be an explicit capability property rather than the
-default.
-
-### Recommended evolution
-
-1. Rename `LlmAction` to `AgentAction` in the next intentionally breaking API revision. Non-LLM `AgentInstance`
-   implementations already create these values, so the current name incorrectly implies that only an LLM can do so.
-2. Add an append-only `AgentRunEvent` stream and extend `AgentRun` with those events. `AgentRun` already returns the
-   final `AgentResult` and `RunContext`; events would add Pi-like audit, debug, and progress reporting without forcing
-   durable session storage into the trusted execution loop.
-3. Add durable session trees, compaction, and branch selection only when a product workflow needs pause/resume or
-   alternative paths. They require stable entry IDs, JSONL/versioning, and explicit context projection; they should not
-   be hidden inside `RunContext`.
-
-## Runnable no-credential demo
-
-The no-credential demo uses a scripted example agent to run three turns: retrieve source-attributed knowledge, invoke an advertised formatter tool,
-and return the tool result.
+Offline verification from the repository root:
 
 ```bash
-sbt "yallmo/runMain fmgp.yallmo.orchestration.OrchestrationMainDemo"
+sbt --batch 'model/testOnly *; core/testOnly *; repl/testOnly *'
 ```
 
-It does not call an LLM provider, so it demonstrates the trusted loop and capability boundaries without credentials.
-Swap the scripted example agent for `LlmDecisionAgent` once an `LlmClient` layer is provided.
+Tests cover protocol/mappers, configured policy, linked action ordering/recovery, persistence/blob lifecycle boundaries,
+and REPL isolation/draft behavior. Automated fixtures are not evidence of real microphone, browser playback, or remote
+provider audio compatibility. Compaction, a typed durable run-event stream, and parallel tool execution remain separate
+future work.

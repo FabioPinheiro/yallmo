@@ -86,7 +86,7 @@ Provider configuration and credentials remain trusted application data. Do not p
 ## Research-child policy
 
 - Use a fixed research-only system prompt: locate evidence, cite sources, state uncertainty, and do not take external actions beyond advertised read-only tools.
-- Use an explicitly configured cheaper/simple model through a child `LlmTurnClient`; it is not a single audio transcription request.
+- Use an explicitly configured cheaper/simple model through a child `Agent.turn(AgentTurnRequest)` call; it is not a single audio transcription request.
 - Give each request an independent child transcript. Return only the bounded `ResearchReport` to the parent; retain child events/transcript only under explicit debug/audit policy.
 - Inherit parent cancellation. Child timeout/cancellation must cancel its search/MCP work and clean up server processes.
 - Forbid recursive `research` calls and child-agent spawning.

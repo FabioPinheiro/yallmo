@@ -33,7 +33,7 @@ does not prevent startup; inference requires its literal credentials. Separate p
 a different profile or a paid platform API. In the line UI, inspect a ChatGPT profile in PROVIDER to
 log in and save credentials privately to that profile's config. Restart is required to use them; login does not
 switch agents or update the running provider snapshot. Token refresh still stays only in memory.
-See [setup, privacy and limitations](OPENAI_SUBSCRIPTION.md).
+See [setup and credential limitations](HOW_TO_RUN.md#chatgpt-subscription-profiles).
 
 ## Conversation labels
 
@@ -147,7 +147,7 @@ another process racing between read and replace can lose updates. Do not edit co
 | `/tools` | Show the startup availability snapshot for agent tools. |
 | `/debug print` | Print the current transcript as Pi-style JSONL. |
 | `/debug export` | Replace `~/.yallmo/yallmo-debug.log` with the current snapshot. |
-| `/debug request` | Print the latest raw request payload sent by the current session to the LLM provider. |
+| `/debug request` | Print the latest provider-request capture for the current session; audio uses blob references, not its exact wire body. |
 | `/log <trace\|debug\|info\|warning\|error\|fatal\|off>` | Set only the terminal log level for subsequent REPL turns (default `warning`). `info`/`debug`/`trace` can lower it, and `off` suppresses terminal logs. File logging independently remains INFO and above. |
 | `/new [name]` | Start a fresh session. With `--storage`, persist it immediately; provide `name` to choose its ID. |
 | `/session list` | List sessions held by the configured storage; the active session is marked with `*`. |
@@ -269,7 +269,8 @@ the boundary. **Keep the printed setup URL private.** The page removes its fragm
 reopen the original URL. Never share it or expose/forward the listener publicly.
 
 Browser WAV is canonical in-memory 16 kHz mono PCM16, at most **960,044 bytes** (30 seconds plus 44-byte header). Only stopped,
-valid audio goes through the configured transcription agent; cancelled/failed audio is discarded. Speech text is sent only by
+valid audio goes through the configured transcription agent; capture cancelled or failed before ingestion is discarded.
+Once ingestion begins, failure or interruption does not delete the stored audio. Speech text is sent only by
 `t` and lives in memory, but browser/OS speech engines may use **network services**: local synthesis is not guaranteed.
 
 Permission revocation, autoplay rules, suspended audio contexts, device loss and background/frozen tabs may interrupt audio even after
@@ -296,7 +297,8 @@ At REPL startup, `ReplMain` builds these components:
 The JVM recorder prefers 16 kHz, 16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo formats and
 converts them to 16 kHz mono before encoding WAV entirely in memory. Browser WAV uses a validated canonical header.
 Neither path adds an external decoder. Blobs store only raw bytes; no lifecycle status, size metadata, or duration is stored.
-Size and the audio description are persistence/debug metadata, never model input.
+Only format and optional description accompany the blob reference in the message; size is computed from captured/read bytes,
+not persisted as metadata. Description is not sent to the model; format is required for wire encoding.
 
 ### Preconditions
 
@@ -325,7 +327,13 @@ Orchestrator buffers stream/writer input in memory and appends the full blob to 
 is visible first. Storage accepts blobs and messages separately. Provider adapters receive a `readBlob` function.
 Provider HTTP requests resolve audio to base64; debug captures instead contain blob references and format. They are
 not exact wire bodies for audio. Terminal/history rendering does not load bytes. Existing credential and continuation
-protection remains unchanged. Only the current audio payload schema is supported.
+protection remains unchanged. Only the current `MessagePayload.AudioAttachment` schema is supported; old inline/redacted
+`AudioInput` records are not migrated or decoded. For a store containing those records, keep a backup and start with a
+fresh storage directory.
+Recordings are retained even if transcription fails or the draft is discarded; there is no automatic blob cleanup or
+recording-deletion command. Treat the entire storage directory and its backups as sensitive, not just `objects.jsonl`.
+See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for duplicate-ID behavior,
+partial filesystem reads/writes, buffering limits, and the single-writer storage contract.
 Assistant transcripts remain in their separate sessions independently of draft discard; transcripts and descriptions
 may contain sensitive text. The editable transcript is untrusted user input and is never automatically submitted to chat.
 No transcription debug section or hash lookup command is added.

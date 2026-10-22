@@ -6,7 +6,7 @@ import fmgp.yallmo.orchestration.AgentTool
 import fmgp.yallmo.orchestration.config.ConfigFile
 import fmgp.yallmo.repl.terminal.TerminalRepl
 import fmgp.yallmo.repl.voice.AudioRecorder
-import fmgp.yallmo.tool.{BashExecutor, GitClient, WorkspaceFileSystem}
+import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, WorkspaceFileSystem}
 
 /** Starts the config-driven REPL. --config is required; --agent overrides its optional startup default. Missing files
   * are initialized privately with empty catalogs. Without a selected agent, commands remain available but prompts are
@@ -27,7 +27,8 @@ object ReplMain extends ZIOAppDefault {
       AudioRecorder.live,
       WorkspaceFileSystem.live,
       BashExecutor.live,
-      GitClient.live
+      GitClient.live,
+      ScalaCodeExecutor.live
     )
 
   override val run: ZIO[ZIOAppArgs & Scope, Any, ExitCode] = {

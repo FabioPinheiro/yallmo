@@ -14,7 +14,7 @@ import fmgp.yallmo.orchestration.config.{
   ProviderId
 }
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
-import fmgp.yallmo.tool.{BashExecutor, GitClient, WorkspaceFileSystem}
+import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, WorkspaceFileSystem}
 import fmgp.yallmo.repl.voice.Transcriber
 import munit.FunSuite
 import zio.*
@@ -29,7 +29,8 @@ final class ReplStartupSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
 
-  private val tools = ZLayer.make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live)
+  private val tools = ZLayer
+    .make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live, ScalaCodeExecutor.live)
   private val availability = ReplToolAvailability(Chunk.empty, Chunk.empty)
   private val options = ReplLaunchOptions(Paths.get("yallmo.json"))
   private val bob = AgentId("bob")

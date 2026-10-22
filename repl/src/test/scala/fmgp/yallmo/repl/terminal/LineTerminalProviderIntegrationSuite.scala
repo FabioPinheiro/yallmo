@@ -7,7 +7,7 @@ import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, Provide
 import fmgp.yallmo.provider.openai.*
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
-import fmgp.yallmo.tool.{BashExecutor, GitClient, WorkspaceFileSystem}
+import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, WorkspaceFileSystem}
 import munit.FunSuite
 import org.jline.reader.{LineReader, Reference, Widget}
 import org.jline.terminal.Size
@@ -38,7 +38,8 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     "future":{"keep":[1,true,null]}
   }"""
   private val availability = ReplToolAvailability(Chunk.empty, Chunk.empty)
-  private val tools = ZLayer.make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live)
+  private val tools = ZLayer
+    .make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live, ScalaCodeExecutor.live)
   private val recorder = new AudioRecorder {
     def record(seconds: Int): Task[CapturedAudio] = ZIO.dieMessage("Menus must not record")
     def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =

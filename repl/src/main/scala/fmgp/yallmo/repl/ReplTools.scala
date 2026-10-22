@@ -24,19 +24,21 @@ final case class ReplToolAvailability(
 
 /** REPL tools constrained to the process working directory. */
 object ReplTools {
-  type Environment = WorkspaceFileSystem & BashExecutor & GitClient
+  type Environment = WorkspaceFileSystem & BashExecutor & GitClient & ScalaCodeExecutor
 
   private val workspace = Path.of("").toAbsolutePath.normalize
   private val readFile: AgentTool[Environment] = new ReadFileTool(workspace)
   private val listFiles: AgentTool[Environment] = new ListFilesTool(workspace)
   private val bash: AgentTool[Environment] = new BashTool(workspace)
   private val repositoryChanges: AgentTool[Environment] = new RepositoryChangesTool(workspace)
+  private val scala: AgentTool[Environment] = new ScalaTool
 
   /** Checks the few requirements of this REPL's fixed tool set once at startup and logs availability at DEBUG. */
   def evaluate: URIO[Environment, ReplStartupTools] =
     for {
       hasWorkspace <- WorkspaceFileSystem.isDirectory(workspace)
       hasBash <- ZIO.serviceWithZIO[BashExecutor](_.isAvailable)
+      hasScala <- ZIO.serviceWithZIO[ScalaCodeExecutor](_.isAvailable)
       gitStatus <- ZIO.serviceWithZIO[GitClient] { git =>
         git.isAvailable.flatMap {
           case false => ZIO.succeed(Left("git is not available on PATH"))
@@ -49,7 +51,8 @@ object ReplTools {
           Option.unless(hasWorkspace)("readFile" -> Chunk("workspace is not an accessible directory")),
           Option.unless(hasWorkspace)("listFiles" -> Chunk("workspace is not an accessible directory")),
           Option.unless(hasBash)("bash" -> Chunk("bash is not available on PATH")),
-          gitStatus.left.toOption.map(reason => "repositoryChanges" -> Chunk(reason))
+          gitStatus.left.toOption.map(reason => "repositoryChanges" -> Chunk(reason)),
+          Option.unless(hasScala)("scala" -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
         ).flatten
       )
       available = Chunk.fromIterable(
@@ -57,7 +60,8 @@ object ReplTools {
           Option.when(hasWorkspace)(readFile),
           Option.when(hasWorkspace)(listFiles),
           Option.when(hasBash)(bash),
-          gitStatus.toOption.map(_ => repositoryChanges)
+          gitStatus.toOption.map(_ => repositoryChanges),
+          Option.when(hasScala)(scala)
         ).flatten
       )
       startupTools = ReplStartupTools(available, ReplToolAvailability(available.map(_.definition.key), unavailable))

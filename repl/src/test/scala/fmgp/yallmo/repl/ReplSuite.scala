@@ -12,6 +12,7 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.repl.debug.{ReplDebug, ReplDebugSnapshot}
 import fmgp.yallmo.repl.grammar.*
 import fmgp.yallmo.repl.terminal.TerminalRepl
+import fmgp.yallmo.tool.ScalaCodeExecutor
 
 final class ReplSuite extends FunSuite {
   test("REPL startup selects only tools whose requirements pass") {
@@ -19,15 +20,22 @@ final class ReplSuite extends FunSuite {
       ReplTools.evaluate.provide(
         ZLayer.succeed(workspaceFileSystem(workspaceAccessible = true)) ++
           ZLayer.succeed(bashExecutor(bashAvailable = true)) ++
-          ZLayer.succeed(gitClient(gitAvailable = false, workTree = false))
+          ZLayer.succeed(gitClient(gitAvailable = false, workTree = false)) ++
+          ZLayer.succeed(new ScalaCodeExecutor {
+            def isAvailable: UIO[Boolean] = ZIO.succeed(true)
+            def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[fmgp.yallmo.tool.CommandOutput] = {
+              val _ = (code, timeout, maxOutputBytes)
+              ZIO.dieMessage("not executed during tool discovery")
+            }
+          })
       )
     )
 
-    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash"))
+    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scala"))
     assertEquals(
       tools.availability,
       ReplToolAvailability(
-        available = Chunk("readFile", "listFiles", "bash"),
+        available = Chunk("readFile", "listFiles", "bash", "scala"),
         unavailable = Chunk("repositoryChanges" -> Chunk("git is not available on PATH"))
       )
     )

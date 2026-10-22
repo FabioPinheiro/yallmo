@@ -340,9 +340,19 @@ Orchestrator buffers stream/writer input in memory and appends the full blob to 
 is visible first. Storage accepts blobs and messages separately. Provider adapters receive a `readBlob` function.
 Provider HTTP requests resolve audio to base64; debug captures instead contain blob references and format. They are
 not exact wire bodies for audio. Terminal/history rendering does not load bytes. Existing credential and continuation
-protection remains unchanged. Only the current `MessagePayload.AudioAttachment` schema is supported; old inline/redacted
-`AudioInput` records are not migrated or decoded. For a store containing those records, keep a backup and start with a
-fresh storage directory.
+protection remains unchanged. Normal loading supports only the current `MessagePayload.AudioAttachment` schema.
+If startup reports a legacy `AudioInput` record, stop all writers and recover into a **new** directory:
+
+```sh
+sbt "core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio ./zzz ./zzz-recovered"
+```
+
+Restart the REPL with `--storage ./zzz-recovered`. Recovery leaves the source unchanged and preserves sessions,
+transcripts, forks and existing blobs. Previously redacted recordings become explicit unavailable-audio context
+notices: the old format discarded their bytes, so playback/transcription cannot be restored. Message IDs and
+references are updated together. Current-schema hashes are checked; redacted legacy audio hashes cannot be verified.
+Nonempty inline audio is rejected for manual recovery rather than silently discarded. The destination must not
+already exist; keep the original as a backup. Alternatively, start with an empty storage directory.
 Recordings are retained even if transcription fails or the draft is discarded; there is no automatic blob cleanup or
 recording-deletion command. Treat the entire storage directory and its backups as sensitive, not just `objects.jsonl`.
 See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for duplicate-ID behavior,

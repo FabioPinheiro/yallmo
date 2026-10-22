@@ -41,9 +41,20 @@ final class ReplApplication[R](
     * unchanged; failures leave the current application untouched.
     */
   def selectAgent(id: AgentId): IO[YallmoError, ReplApplication[R]] =
-    agentSelector.fold[IO[YallmoError, ReplApplication[R]]](
-      ZIO.fail(YallmoError.InvalidConfig("Agent selection is unavailable in this application"))
-    )(_(id))
+    agentSelector
+      .fold[IO[YallmoError, ReplApplication[R]]](
+        ZIO.fail(YallmoError.InvalidConfig("Agent selection is unavailable in this application"))
+      )(_(id))
+      .tapBoth(
+        error =>
+          ZIO.logWarning(
+            s"Agent selection failed user=${AgentId.value(userId)} agent=${AgentId.value(id)}: ${error.getMessage}"
+          ),
+        _ =>
+          ZIO.logInfo(
+            s"Agent selected user=${AgentId.value(userId)} agent=${AgentId.value(id)} previous=${activeAgent.fold("none")(_.agentId)}"
+          )
+      )
 
   def submit(state: ReplState, line: String): ZIO[R, Nothing, ReplTransition] =
     ZIO.scoped {

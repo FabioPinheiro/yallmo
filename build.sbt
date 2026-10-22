@@ -63,7 +63,7 @@ lazy val model = project
     )
   )
 
-// Standalone filesystem capability API; not exposed to application or agent tools yet.
+// Rooted filesystem capability API.
 lazy val filesystem = project
   .in(file("filesystem"))
   .settings(
@@ -78,7 +78,7 @@ lazy val filesystem = project
 
 lazy val core = project
   .in(file("core"))
-  .dependsOn(model)
+  .dependsOn(model, filesystem)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(

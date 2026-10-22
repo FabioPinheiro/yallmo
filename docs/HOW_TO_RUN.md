@@ -37,13 +37,18 @@ Use the sanitized [example](examples/repl-config.json) as a structural starting 
 configuration, not into a committed file containing credentials. Set `userName` to the desired human identity; it must
 not collide with a configured agent ID. Agent/provider catalogs are JSON objects keyed by ID.
 
-Each supported agent (`OAIAgent` or `ChatGPTAgent`) needs exactly one matching provider. In its `config`:
+Settings requirements depend on the agent type. Native LLM agents (`OAIAgent` and `ChatGPTAgent`) need exactly one matching provider. In their `config`:
 
 - `model` is required and must not be blank;
 - `systemPrompt` is optional for both agent types; absent means the standard Yallmo assistant prompt. `OAIAgent` sends
   it as a `system` message; `ChatGPTAgent` sends it as the Responses API `instructions` field;
 - `thinkingLevel` is optional: `minimal`, `low`, `medium`, `high` (adapters may ignore unsupported options);
 - `parallelToolCalls` is optional and defaults to `false`.
+
+`FolderStructureAgent` instead requires only `filesystem.root`, pointing to an existing directory. It needs no provider,
+model, system prompt or generation options, and can be selected at startup or through AGENTS. Each submitted prompt
+reviews that directory and writes `fs-structure.json` and `state.jsonl`; selection alone does not execute a review.
+See [per-agent filesystem configuration](CONFIG_AGENT_PROVIDER.md#per-agent-filesystem-configuration).
 
 For OAI, set the provider `endpoint` to the API base URL, not its final `/chat/completions` route. No model-wide default
 is inherited from the endpoint or environment.

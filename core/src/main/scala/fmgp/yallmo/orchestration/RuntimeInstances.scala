@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
 import fmgp.yallmo.model.llm.LlmProvider
 import fmgp.yallmo.model.som.SOMProvider
@@ -9,17 +10,21 @@ import fmgp.yallmo.provider.openai.{ChatGPTAgent, OpenAiCodexClient}
 import zio.*
 import zio.http.Client
 
+import java.nio.file.Path
+
 /** Owns lazy runtime instances for one immutable configuration snapshot.
   *
   * Successful lookups are cached and concurrent initialization is serialized. Already-created agents retain their
-  * identity and environment requirements; configured native agents need no per-turn environment. Neither construction
-  * nor lookup makes network requests or reads environment variables. Failures are not cached.
+  * identity and environment requirements; configured agents have their dependencies bound at initialization. Neither
+  * construction nor lookup makes network requests or reads environment variables. Folder-agent lookup validates its
+  * configured filesystem root after resolving its symbolic links, but does not review it or write state. Failures are
+  * not cached.
   *
   * The captured HTTP client must outlive this registry. Reusing a Config with a new registry creates independent
   * caches; changing configuration does not mutate existing instances. ChatGPT refresh stays in connection-local memory.
   *
   * @tparam R
-  *   per-turn environment required by caller-supplied agents; configured native agents require no extra services
+  *   per-turn environment required by caller-supplied agents; configured agents require no extra services
   * @param config
   *   immutable definitions used to lazily construct agents/providers, not initialized instances
   * @param httpClient
@@ -37,7 +42,7 @@ final class RuntimeInstances[-R] private (
     initializationLock: Semaphore
 ) {
 
-  /** Agents constructed lazily from config.agents; caller-supplied instances remain in registeredAgents. */
+  /** Environment-bound agents constructed lazily from config.agents; supplied agents retain R in registeredAgents. */
   private var initializedAgents = Map.empty[AgentId, Agent[Any]]
 
   /** Connections constructed lazily from config.providers and shared by agents referencing the same provider ID. */
@@ -51,7 +56,7 @@ final class RuntimeInstances[-R] private (
   def getProvider(id: ProviderId): IO[YallmoError, LlmProvider | SOMProvider] =
     initializationLock.withPermit(getProviderNow(id))
 
-  /** Returns a caller-supplied or cached agent; otherwise initializes the configured agent and its provider lazily.
+  /** Returns a caller-supplied or cached agent; otherwise initializes the configured agent and its dependencies lazily.
     *
     * @param id
     *   ID of either an already-initialized caller-supplied agent or a definition in config.agents
@@ -151,8 +156,32 @@ final class RuntimeInstances[-R] private (
             case _ => ZIO.fail(YallmoError.InvalidConfig("ChatGPTAgent requires a ChatGPT provider"))
           }
         } yield agent
+      case "FolderStructureAgent" =>
+        for {
+          settings <- ZIO
+            .fromOption(definition.filesystem)
+            .orElseFail(YallmoError.InvalidConfig("FolderStructureAgent requires filesystem.root"))
+          _ <- ZIO
+            .fail(YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem.root must not be blank"))
+            .when(settings.root.trim.isEmpty)
+          // Resolve trusted configuration once; workspace operations still reject symbolic links.
+          root <- ZIO
+            .attemptBlocking(Path.of(settings.root).toRealPath())
+            .mapError(error =>
+              YallmoError.InvalidConfig(
+                s"Agent '${AgentId.value(id)}' filesystem: Cannot resolve filesystem.root: ${error.getMessage}"
+              )
+            )
+          fs <- FileSystem
+            .open(root.toString)
+            .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem: $error"))
+        } yield FolderStructureAgent.make(id, fs)
       case name =>
-        ZIO.fail(YallmoError.InvalidConfig(s"Unsupported agentType ($name); expected OAIAgent or ChatGPTAgent"))
+        ZIO.fail(
+          YallmoError.InvalidConfig(
+            s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent or FolderStructureAgent"
+          )
+        )
     }
 
   private def singleProvider(
@@ -182,7 +211,7 @@ object RuntimeInstances {
   def make(config: Config): ZIO[Client, YallmoError, RuntimeInstances[Any]] =
     make(config, Chunk.empty[Agent[Any]])
 
-  /** Adds already-created agents (e.g. a human input channel) alongside configured native agents.
+  /** Adds already-created agents (e.g. a human input channel) alongside configured agents.
     *
     * Duplicate supplied IDs and collisions with configured IDs are rejected rather than silently overwritten.
     *

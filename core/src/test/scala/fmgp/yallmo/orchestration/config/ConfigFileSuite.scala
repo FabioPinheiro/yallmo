@@ -49,6 +49,40 @@ final class ConfigFileSuite extends FunSuite {
     }
   }
 
+  test("per-agent filesystem roots round-trip without opening directories; older configs need no filesystem") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      val id = AgentId("folder-reviewer")
+      val legacy = """{"userName":"operator","agents":{"folder-reviewer":{"agentType":"OAIAgent"}}}"""
+      Files.writeString(path, legacy)
+      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).agents(id).filesystem, None)
+      assertEquals(Files.readString(path), legacy)
+
+      val workspace = root.resolve("not created")
+      val definition = AgentConfig("OAIAgent", filesystem = Some(FileSystemConfig(workspace.toString)))
+      val config = Config("operator", agents = Map(id -> definition))
+      val json = config.toJson
+      Files.writeString(path, json)
+      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+      assertEquals(Files.readString(path), json)
+      assert(!Files.exists(workspace))
+    }
+  }
+
+  test("blank or malformed filesystem roots fail validation without rewriting the config") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      for filesystem <- List("{}", """{"root":""}""", """{"root":"  "}""", """{"root":123}""", "[]") do {
+        val json =
+          s"""{"userName":"operator","agents":{"folder-reviewer":{"agentType":"OAIAgent","filesystem":$filesystem}}}"""
+        Files.writeString(path, json)
+        val result = run(ConfigFile.loadOrInitialize(path, "ignored").either)
+        assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
+        assertEquals(Files.readString(path), json)
+      }
+    }
+  }
+
   test("configured browser audio ports round-trip and invalid ports fail without rewriting") {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")

@@ -9,6 +9,7 @@ import fmgp.yallmo.orchestration.config.{
   AgentCapabilities,
   Config,
   ConfigFile,
+  FileSystemConfig,
   OAuthCredentialsConfig,
   ProviderConfig,
   ProviderId
@@ -153,7 +154,10 @@ final class ReplStartupSuite extends FunSuite {
       Json.Obj("model" -> Json.Str(" ")),
       Json.Obj("model" -> Json.Str("ok"), "systemPrompt" -> Json.Str(" ")),
       Json.Obj("model" -> Json.Str("ok"), "thinkingLevel" -> Json.Str("secret-placeholder")),
-      Json.Obj("model" -> Json.Bool(false))
+      Json.Obj("model" -> Json.Bool(false)),
+      Json.Obj("model" -> Json.Str("ok"), "systemPrompt" -> Json.Bool(false)),
+      Json.Obj("model" -> Json.Str("ok"), "thinkingLevel" -> Json.Bool(false)),
+      Json.Obj("model" -> Json.Str("ok"), "parallelToolCalls" -> Json.Str("secret-placeholder"))
     )
     bad.foreach { fields =>
       val definition = config.copy(agents = config.agents.updated(bob, config.agents(bob).copy(config = fields)))
@@ -165,6 +169,68 @@ final class ReplStartupSuite extends FunSuite {
       config.providers.updated(account, ProviderConfig.ChatGPT(endpoint = Some("https://untrusted.invalid")))
     )
     assertEquals(startup(unrelatedInvalid).selected.map(_.adapter.id), Some(bob))
+  }
+
+  test("folder agents start and switch without native settings or providers, executing only on submission") {
+    val root = Files.createTempDirectory("yallmo-repl-folder-")
+    val folderId = AgentId("folder-reviewer")
+    try {
+      Files.writeString(root.resolve("README.md"), "example")
+      val definition = config.copy(
+        defaultAgentId = Some(folderId),
+        agents = config.agents.updated(
+          folderId,
+          AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(root.toString)))
+        )
+      )
+      val current = startup(definition)
+      assertEquals(current.selected.map(_.adapter.id), Some(folderId))
+      val application = run(current.application(Chunk.empty, availability))
+      assertEquals(application.activeAgent.map(_.provider), Some("none"))
+      assertEquals(application.activeAgent.map(_.model), Some("n/a"))
+      assertEquals(application.agentChoices.find(_.id == folderId).map(_.model), Some("n/a"))
+      assert(!Files.exists(root.resolve("state.jsonl")))
+      assert(!Files.exists(root.resolve("fs-structure.json")))
+
+      val first = submit(application, application.initialState, "Review the folder")
+      assert(first.events.exists(_.isInstanceOf[ReplEvent.AgentTurn]), first.events.toString)
+      assertEquals(ujson.read(Files.readString(root.resolve("state.jsonl")))("reviewCount").num, 1.0)
+      assertEquals(ujson.read(Files.readString(root.resolve("fs-structure.json")))("files")(0)("name").str, "README.md")
+      val native = run(application.selectAgent(bob))
+      assertEquals(native.activeAgent.map(_.model), Some("local-model"))
+      val reselected = run(native.selectAgent(folderId))
+      val second = submit(reselected, first.state, "Review again")
+      assert(second.events.exists(_.isInstanceOf[ReplEvent.AgentTurn]), second.events.toString)
+      assertEquals(second.state.sessionId, first.state.sessionId)
+      assertEquals(Files.readString(root.resolve("state.jsonl")).linesIterator.size, 2)
+      assertEquals(
+        second.state.runContext.messages.collect { case MessagePayload.Assistant(text) => text }.size,
+        2
+      )
+    } finally {
+      val paths = Files.walk(root)
+      try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+      finally paths.close()
+    }
+  }
+
+  test("folder selection validates its own filesystem settings, not native model settings") {
+    val folderId = AgentId("folder-reviewer")
+    val definition = config.copy(agents = config.agents.updated(folderId, AgentConfig("FolderStructureAgent")))
+    val application = run(startup(definition).application(Chunk.empty, availability))
+    val error = run(application.selectAgent(folderId).either).swap.toOption.get
+    assert(error.getMessage.contains("filesystem.root"))
+    assert(!error.getMessage.contains("model"))
+    assertEquals(application.activeAgent.map(_.agentId), Some("bob"))
+
+    val unsupported = definition.copy(agents = definition.agents.updated(folderId, AgentConfig("UnknownAgent")))
+    val result = run(
+      ReplStartup
+        .make(unsupported, options.copy(agentId = Some(folderId)))
+        .provideEnvironment(ZEnvironment(noNetwork))
+        .either
+    )
+    assert(result.swap.toOption.exists(_.getMessage.contains("Unsupported agentType")))
   }
 
   test("operator IDs cannot collide with configured agents") {
@@ -501,6 +567,39 @@ final class ReplStartupSuite extends FunSuite {
     val initial = run(startup(invalid).application(Chunk.empty, availability))
     assert(run(initial.selectAgent(eve).either).isLeft)
     assertEquals(initial.activeAgent.map(_.agentId), Some("bob"))
+  }
+
+  test("agent selection logs INFO on success and WARNING on failure to repl.log with terminal logging disabled") {
+    val root = Files.createTempDirectory("yallmo-selection-logs-")
+    try {
+      val application = run(startup().application(Chunk.empty, availability))
+      val selected = run {
+        ZIO.scoped {
+          for {
+            _ <- ReplLoggers.initialize(root)
+            _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(ReplLoggers.filesAt(root))).build
+            _ <- ZIO.logLevelScoped(LogLevel.None)
+            next <- application.selectAgent(eve)
+            failure <- next.selectAgent(AgentId("missing")).either
+          } yield {
+            assertEquals(failure, Left(YallmoError.UnknownAgent(AgentId("missing"))))
+            next
+          }
+        }
+      }
+      assertEquals(selected.activeAgent.map(_.agentId), Some("eve"))
+      val lines = Files.readString(ReplLoggers.replFilePath(root)).linesIterator.toVector
+      assertEquals(lines.size, 2)
+      assert(lines(0).contains("level=INFO"), lines(0))
+      assert(lines(0).contains("Agent selected user=operator agent=eve previous=bob"), lines(0))
+      assert(lines(1).contains("level=WARN"), lines(1))
+      assert(lines(1).contains("Agent selection failed user=operator agent=missing"), lines(1))
+      assert(lines(1).contains(YallmoError.UnknownAgent(AgentId("missing")).getMessage), lines(1))
+    } finally {
+      val paths = Files.walk(root)
+      try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+      finally paths.close()
+    }
   }
 
   test("switching updates requests and authors while continuing the same conversation and durable session") {

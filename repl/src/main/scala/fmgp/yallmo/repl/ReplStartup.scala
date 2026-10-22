@@ -3,21 +3,12 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.{Agent, AgentId, YallmoError}
 import fmgp.yallmo.model.llm.ProviderGenerateOptions
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.orchestration.config.{Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
+import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
 import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import zio.*
 import zio.http.Client
 import zio.json.ast.Json
-
-private[repl] final case class ReplSelectedAgent(
-    adapter: Agent[Any],
-    providerId: ProviderId,
-    program: NativeFunctionAgent[Agent[Any]],
-    systemPrompt: String
-) {
-  def feedback: ReplActiveAgent = ReplActiveAgent.fromNative(providerId, program)
-}
 
 /** Configured startup and lazy agent selection, sharing runtime caches and session storage across selections. */
 private[repl] final class ReplStartup private (
@@ -60,7 +51,7 @@ private[repl] final class ReplStartup private (
               definition.providerIds.map(ProviderId.value).toVector,
               model = definition.config.fields
                 .collectFirst { case ("model", Json.Str(value)) => value }
-                .getOrElse("<invalid model>")
+                .getOrElse(if definition.agentType == "FolderStructureAgent" then "n/a" else "<invalid model>")
             )
           }
         def build(selection: Option[ReplSelectedAgent]): IO[YallmoError, ReplApplication[ReplTools.Environment]] =
@@ -73,7 +64,7 @@ private[repl] final class ReplStartup private (
             new ReplApplication[ReplTools.Environment](
               new ReplSession[ReplTools.Environment](
                 runner,
-                selection.map(value => value.program.bind[ReplTools.Environment](value.adapter, orchestrator.readBlob)),
+                selection.map(_.bind[ReplTools.Environment](orchestrator.readBlob)),
                 context
               ),
               availability,
@@ -156,8 +147,25 @@ private[repl] object ReplStartup {
       instances: RuntimeInstances[Any],
       id: AgentId
   ): IO[YallmoError, ReplSelectedAgent] =
+    ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id)).flatMap { definition =>
+      definition.agentType match {
+        case "OAIAgent" | "ChatGPTAgent" => resolveNative(definition, instances, id)
+        case "FolderStructureAgent"      =>
+          instances.getAgent(id).map(adapter => ReplSelectedAgent.Folder(adapter, definition.capabilities))
+        case name =>
+          ZIO.fail(
+            YallmoError
+              .InvalidConfig(s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent or FolderStructureAgent")
+          )
+      }
+    }
+
+  private def resolveNative(
+      definition: AgentConfig,
+      instances: RuntimeInstances[Any],
+      id: AgentId
+  ): IO[YallmoError, ReplSelectedAgent] =
     for {
-      definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
       settings <- ZIO
         .fromEither(ConfiguredAgentSettings.decode(definition, defaultSystemPrompt = Some(DefaultSystemPrompt)))
         .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}"))
@@ -165,7 +173,7 @@ private[repl] object ReplStartup {
       providerId <- ZIO
         .fromOption(definition.providerIds.headOption)
         .orElseFail(YallmoError.InvalidConfig("Selected agent requires one provider"))
-    } yield ReplSelectedAgent(
+    } yield ReplSelectedAgent.Native(
       adapter,
       providerId,
       NativeFunctionAgent[Agent[Any]](

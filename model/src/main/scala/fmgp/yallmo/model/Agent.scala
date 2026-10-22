@@ -28,10 +28,8 @@ object AgentId {
   *
   * Its ID is the stable identity used to register the agent and attribute persisted messages.
   *
-  * REVIEW: Keep the environment requirement on the trait: it describes the services an agent needs for every turn. A
-  * method-level `turn[R]` would require every implementation to work for arbitrary `R`, preventing an agent from
-  * requiring services such as an HTTP client or credentials. All current concrete agents use `Any`; if that remains
-  * true, remove the environment parameter entirely rather than moving it to `turn`.
+  * The environment describes the services needed for each turn, such as a rooted filesystem capability. Callers
+  * initialize and supply those services; each agent decides how to use them to complete its turn.
   */
 trait Agent[-Environment] {
   def id: AgentId

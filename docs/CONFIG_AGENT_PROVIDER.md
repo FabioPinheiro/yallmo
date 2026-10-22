@@ -5,7 +5,8 @@
 ## Current implementation boundary
 
 - `core/.../orchestration/config/Config.scala` is data only: `userName`, `defaultAgentId`, ID-keyed **maps** of agents and providers, optional `transcriberAgent`, and `browserAudioPort` (default 5180, valid 1–65535). Newly initialized config files serialize the port; older files missing it retain the default without being rewritten. JSON catalogs are objects, not arrays.
-- `AgentConfig.agentType` currently supports `OAIAgent` and `ChatGPTAgent`. Each requires exactly one matching provider. REPL startup decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback. The terminal default system prompt lives in `ReplStartup`, not core. Generic `ConfiguredAgentSettings.decode` requires a configured prompt unless its caller supplies `defaultSystemPrompt = Some(...)`; the REPL supplies its fallback for chat, but not for transcription.
+- The native `AgentConfig.agentType` values `OAIAgent` and `ChatGPTAgent` each require exactly one matching provider. REPL startup decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback. The terminal default system prompt lives in `ReplStartup`, not core. Generic `ConfiguredAgentSettings.decode` requires a configured prompt unless its caller supplies `defaultSystemPrompt = Some(...)`; the REPL supplies its fallback for chat, but not for transcription.
+- `FolderStructureAgent` is a provider-free configured agent requiring `filesystem.root`; its first lookup validates that existing directory and binds the filesystem once. Its turns need no extra environment. REPL startup and in-session selection use its direct execution binding, without decoding native model/prompt/generation settings or requiring a provider. The agent menu and footer show `n/a` for its model.
 - `RuntimeInstances.make(config)` captures a shared HTTP client, but initializes connections and agents only on lookup. Caches and the initialization semaphore belong to this runtime registry, not to `Config`.
 - `RuntimeInstances.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.
 - `RuntimeInstances.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
@@ -20,6 +21,81 @@
   This schema does not decode/migrate old `AudioInput` records. See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
 
 For current capability configuration and enforcement, see [Capabilities architecture](Capabilities_Architecture.md).
+
+### Per-agent filesystem configuration
+
+`AgentConfig` accepts an optional typed `filesystem` field. Existing configurations omit it and retain their behavior.
+`FolderStructureAgent` requires it, but needs no provider or model:
+
+```json
+{
+  "userName": "operator",
+  "agents": {
+    "folder-reviewer": {
+      "agentType": "FolderStructureAgent",
+      "filesystem": { "root": "/trusted/agents/folder-reviewer" }
+    }
+  }
+}
+```
+
+Roots must be non-blank. Absolute paths are recommended; relative paths use the process working directory, matching
+`FileSystem.open`, not the configuration file's directory. Loading/validating configuration does not open a filesystem,
+check directory existence, or create directories. Runtime setup must validate an existing root before granting the
+instance to an agent. `RuntimeInstances.initializeAgent` resolves the trusted root with `Path.toRealPath()` on first
+lookup, following links in the root itself or its ancestors, then opens the resulting absolute directory and caches
+`FolderStructureAgent.make(id, fs)`. Missing or dangling roots fail without creating directories. Retargeting a configured
+link does not redirect an already-initialized agent. Links inside the workspace remain forbidden; `FileSystem.open`
+itself still requires a symlink-free root. State filenames and review behavior belong to the agent, not this config.
+
+With the application's existing `Client` layer and a turn `request`:
+
+```scala
+for {
+  config <- ConfigFile.loadOrInitialize(configPath, "operator")
+  instances <- RuntimeInstances.make(config)
+  agent <- instances.getAgent(AgentId("folder-reviewer"))
+  response <- agent.turn(request)
+} yield response
+```
+
+The registry API still captures a shared HTTP client, but this agent never uses it or makes provider requests.
+
+### Folder-review example (direct use)
+
+The implementation remains `Agent[FileSystem]`; its factory receives an initialized filesystem and binds that
+instance once, returning `Agent[Any]`. The configured cache uses `Agent[Any]` because these agents need no remaining
+per-turn environment, not `Agent[?]`, which would hide unknown requirements. Already-created agents registered by
+callers continue to retain their own `Agent[R]` requirements.
+
+Given a decoded `rootConfig: FileSystemConfig` and an `agentId`, direct construction is also possible:
+
+```scala
+for {
+  fs <- FileSystem.open(rootConfig.root)
+  agent = FolderStructureAgent.make(agentId, fs)
+  response <- agent.turn(request)
+} yield response
+```
+
+Reuse that bound agent for subsequent turns. This provider-free example ignores request content, recursively
+lists the current folder/file names, and generates descriptions such as `Directory src.` and `File Main.scala.`.
+It reads no workspace file contents and does not use an LLM. Its `Folder`, `File` and `State` case classes/codecs all
+live inside `FolderStructureAgent`'s companion object.
+
+- `fs-structure.json`: replaced with the freshly reviewed tree as pretty JSON, using `name`, `description`, `folders`
+  and `files`. Existing hand-written descriptions are not preserved. The same JSON is returned as assistant text for
+  use in a subsequent prompt.
+- `state.jsonl`: appends one `{"reviewCount":1}`-shaped snapshot per completed write sequence, with the default JSONL
+  sync policy. Counts resume from the last record on a later turn or newly constructed agent. Only a missing file
+  starts at zero; empty/corrupt state and negative/exhausted counts fail explicitly.
+
+Only the two root-level output names are excluded from the reviewed tree; matching names inside subfolders remain
+ordinary entries. Assume sequential turns and exclusive ownership of the agent's root; there is no agent-level locking.
+The structure write precedes the counter append; the two writes are not transactional, so failure/interruption may
+leave an updated structure without an updated counter. Filesystem failures are surfaced as typed `AgentExecutionFailed`
+errors, without silently resetting state. Configured registry construction is wired; REPL selection's native-LLM
+assumptions are unchanged.
 
 The sections below retain the earlier design and future milestones. Earlier `AppConfig`/`program` names, array examples and claimed settings-decoding helper are historical sketches, not the current API.
 

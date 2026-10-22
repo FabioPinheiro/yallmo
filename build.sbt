@@ -28,7 +28,7 @@ ThisBuild / Test / javaOptions ++= Seq(
 
 lazy val root = project
   .in(file("."))
-  .aggregate(model, core, repl) // , capabilitiesLab)
+  .aggregate(model, core, repl, filesystem) // , capabilitiesLab)
   .settings(
     name := "yallmo",
     publish / skip := true,
@@ -58,6 +58,19 @@ lazy val model = project
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-json" % "1.1.1",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    )
+  )
+
+// Standalone filesystem capability API; not exposed to application or agent tools yet.
+lazy val filesystem = project
+  .in(file("filesystem"))
+  .settings(
+    name := "yallmo-filesystem",
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     )

@@ -1,6 +1,9 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.view.ViewProtocol.*
+import fmgp.yallmo.server.jsonrpc.JsonRpc
+import fmgp.yallmo.server.protocol.YallmoProtocol.*
+import fmgp.yallmo.server.protocol.YallmoProtocol.given
+import zio.Chunk
 import munit.FunSuite
 import zio.json.*
 
@@ -44,19 +47,21 @@ final class ViewWebSuite extends FunSuite {
 
   test("the shared JVM/JS contract decodes transcript text and attachment references") {
     val json =
-      """{"id":"main","agentIds":["human"],"messages":[{"id":"sha256:abc","agentId":"human","timestamp":"2026-01-01T00:00:00Z","role":"user","content":"<script>not HTML</script>","blobIds":["a-blob"]}]}"""
-    val result = json.fromJson[SessionView]
+      """{"id":"main","agentIds":["human"],"messages":[{"id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","agentId":"human","timestamp":"2026-01-01T00:00:00Z","role":"user","content":"<script>not HTML</script>","blobIds":["00000000-0000-0000-0000-000000000001"]}]}"""
+    val result = json.fromJson[SessionSnapshot]
     assertEquals(result.map(_.messages.head.content), Right("<script>not HTML</script>"))
     assertEquals(result.map(_.messages.head.parentId), Right(None))
-    assertEquals(result.flatMap(value => value.toJson.fromJson[SessionView]), result)
+    assertEquals(result.flatMap(value => value.toJson.fromJson[SessionSnapshot]), result)
   }
 
   test("API failures and empty session lists decode without browser dependencies") {
     assertEquals(
-      """{"code":"session_not_found","message":"Session not found"}""".fromJson[ApiError],
-      Right(ApiError("session_not_found", "Session not found"))
+      """{"jsonrpc":"2.0","id":"r1","error":{"code":-32004,"message":"Not found"}}"""
+        .fromJson[JsonRpc.Failure]
+        .map(_.error),
+      Right(JsonRpc.Error(ErrorCode.NotFound, "Not found"))
     )
-    assertEquals("[]".fromJson[List[SessionSummaryView]], Right(Nil))
-    assert("not JSON".fromJson[SessionView].isLeft)
+    assertEquals("[]".fromJson[SessionsList.Result], Right(Chunk.empty))
+    assert("not JSON".fromJson[SessionSnapshot].isLeft)
   }
 }

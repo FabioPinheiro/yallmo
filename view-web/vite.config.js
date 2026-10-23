@@ -12,13 +12,16 @@ export default defineConfig(({ command }) => ({
     },
   },
   server: {
+    //host: "127.0.0.1", // Keep local transcript/WebSocket access private by default.
     host: true, // Listens on all addresses, including the Docker network
     port: 5173,
     strictPort: true,
     proxy: {
-      "/api": {
-        target: "http://127.0.0.1:8080",
+      "/rpc": {
+        target: "ws://127.0.0.1:8080",
+        ws: true,
         changeOrigin: true,
+        rewriteWsOrigin: false, // Preserve browser Origin for backend validation.
       },
     },
   },

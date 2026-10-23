@@ -137,12 +137,23 @@ lazy val viewWeb = project
     scalaJSLinkerConfig ~= (_.withModuleKind(org.scalajs.linker.interface.ModuleKind.ESModule)),
     Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-dev",
     Compile / fullLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-prod",
-    // Compile the small, platform-neutral HTTP contract on both JVM and JS, without another module.
-    Compile / unmanagedSources += (LocalRootProject / baseDirectory).value /
-      "server/src/main/scala/fmgp/yallmo/view/ViewProtocol.scala",
+    // Reuse the existing domain/protocol sources without a JVM dependency or a second set of browser DTOs.
+    // The experimental System One/macro package is not part of the socket contract.
+    Compile / unmanagedSources ++= {
+      val root = (LocalRootProject / baseDirectory).value
+      val domain = (root / "model/src/main/scala" ** "*.scala")
+        .get()
+        .filterNot(_.getPath.contains("/model/som/"))
+      domain ++ Seq(
+        root / "server/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala",
+        root / "server/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala",
+      )
+    },
     // sbt 2's %% includes the Scala.js platform suffix for this project.
     libraryDependencies ++= Seq(
       "com.raquo" %% "laminar" % "17.2.1",
+      "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
@@ -160,7 +171,7 @@ lazy val server = project
   .dependsOn(core)
   .settings(
     name := "yallmo-server",
-    Compile / mainClass := Some("fmgp.yallmo.view.ViewServerMain"),
+    Compile / mainClass := Some("fmgp.yallmo.server.OrchestratorServerMain"),
     Compile / run / fork := true,
     Test / fork := true,
     libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,

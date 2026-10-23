@@ -91,6 +91,7 @@ final class StorageFSSuite extends FunSuite:
           written <- Promise.make[Nothing, Unit]
           release <- Promise.make[Nothing, Unit]
           store = new StorageStore {
+            override def listMessages: UIO[Chunk[Message]] = delegate.listMessages
             override def get(id: MessageId): UIO[Option[DecodedArtifact]] = delegate.get(id)
             override def put(value: MessageData): IO[YallmoError, StoredArtifact[MessageData]] =
               for {
@@ -132,6 +133,7 @@ final class StorageFSSuite extends FunSuite:
           writes <- Ref.make(Chunk.empty[Boolean])
           reads <- Ref.make(Chunk.empty[Boolean])
           store = new StorageStore {
+            override def listMessages: UIO[Chunk[Message]] = delegate.listMessages
             override def get(id: MessageId): UIO[Option[DecodedArtifact]] =
               ZIO.checkInterruptible(status => reads.update(_ :+ status.isInterruptible)) *> delegate.get(id)
             override def put(value: MessageData): IO[YallmoError, StoredArtifact[MessageData]] =

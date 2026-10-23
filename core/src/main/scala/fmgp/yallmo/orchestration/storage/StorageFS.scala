@@ -5,8 +5,9 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.{FileAlreadyExistsException, Files, NoSuchFileException, Path, StandardOpenOption}
+import java.nio.file.{FileAlreadyExistsException, Files, LinkOption, NoSuchFileException, Path, StandardOpenOption}
 import java.time.Instant
+import scala.jdk.CollectionConverters.*
 import zio.*
 
 /** Filesystem-backed [[Storage]] implementation.
@@ -32,6 +33,24 @@ import zio.*
   * transactional storage backend.
   */
 private[orchestration] final class StorageFS(val root: Path, store: StorageStore) extends Storage {
+
+  override def listMessages: IO[YallmoError, Chunk[Message]] = store.listMessages
+
+  override def listBlobIds: IO[YallmoError, Chunk[BlobId]] =
+    ZIO
+      .attemptBlocking {
+        val files = Files.list(root.resolve("blobs"))
+        try
+          Chunk.fromIterable(
+            files.iterator.asScala
+              .filter(path => Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+              .flatMap(path => BlobId.from(path.getFileName.toString).toOption)
+              .toList
+              .sortBy(_.value)
+          )
+        finally files.close()
+      }
+      .mapError(error => YallmoError.StorageFailure("list blobs", error))
 
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     StorageFiles.list(root).flatMap { ids =>

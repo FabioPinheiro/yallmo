@@ -57,6 +57,29 @@ final class RuntimeInstancesSuite extends FunSuite {
 
   private val noNetwork = fakeClient(_ => ZIO.dieMessage("Initialization must not send HTTP requests"))
 
+  test("agent ID listing includes configured and supplied agents without initializing invalid definitions") {
+    val supplied = new Agent[Any] {
+      val id = AgentId("supplied")
+      def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+        ZIO.dieMessage("Listing must not execute agents")
+    }
+    val invalid = AgentId("uninitialized")
+    val result = run(for {
+      registry <- RuntimeInstances
+        .make(
+          config.copy(agents = config.agents.updated(invalid, AgentConfig("IntentionallyUnsupported"))),
+          Chunk(supplied)
+        )
+        .provideEnvironment(ZEnvironment(noNetwork))
+      before <- registry.listAgentIds
+      lookup <- registry.getAgent(invalid).either
+      after <- registry.listAgentIds
+    } yield (before, lookup, after))
+    assertEquals(result._1.map(AgentId.value), Chunk("bob", "charlie", "eve", "supplied", "uninitialized"))
+    assert(result._2.isLeft)
+    assertEquals(result._3, result._1)
+  }
+
   private def credentials(account: String, expiresAtMillis: Long = Long.MaxValue): OAuthCredentialsConfig = {
     val payload = Base64.getUrlEncoder.withoutPadding.encodeToString(
       s"""{"https://api.openai.com/auth":{"chatgpt_account_id":"$account"}}""".getBytes(StandardCharsets.UTF_8)

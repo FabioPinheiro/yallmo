@@ -8,12 +8,24 @@ import zio.*
 
 /** Default [[Orchestrator]] implementation backed by an internal [[Storage]]. */
 final class OrchestratorLive[-R] private (
-    storage: Storage,
-    instances: RuntimeInstances[R]
+    val storage: Storage,
+    val instances: RuntimeInstances[R]
 ) extends Orchestrator[R] {
 
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
     instances.getAgent(id)
+
+  def listAgentIds: IO[YallmoError, Chunk[AgentId]] =
+    instances.listAgentIds
+
+  def listMessages: IO[YallmoError, Chunk[Message]] =
+    storage.listMessages.mapError(YallmoError.StorageFailed.apply)
+
+  def listBlobIds: IO[YallmoError, Chunk[BlobId]] =
+    storage.listBlobIds.mapError(YallmoError.StorageFailed.apply)
+
+  override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
+    storage.listSessions.mapError(YallmoError.StorageFailed.apply)
 
   @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
   override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] = ???
@@ -51,9 +63,6 @@ final class OrchestratorLive[-R] private (
                 else addSessionAgent(id, execution.agentId) *> append(id, execution.agentId, response))
         .mapError(SessionSubmitFailure(_, Some(accepted)))
     } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
-
-  override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
-    storage.listSessions.mapError(YallmoError.StorageFailed.apply)
 
   override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
     validateAgents(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)
@@ -116,11 +125,11 @@ final class OrchestratorLive[-R] private (
 object OrchestratorLive {
 
   /** Creates an orchestrator using a shared registry and ephemeral, process-local storage. */
-  def inMemory[R](instances: RuntimeInstances[R]): UIO[Orchestrator[R]] =
+  def inMemory[R](instances: RuntimeInstances[R]): UIO[OrchestratorLive[R]] =
     StorageInMemory.make.map(storage => new OrchestratorLive(storage, instances))
 
   /** Opens filesystem storage using a shared registry. */
-  def filesystem[R](root: Path, instances: RuntimeInstances[R]): IO[YallmoError, Orchestrator[R]] =
+  def filesystem[R](root: Path, instances: RuntimeInstances[R]): IO[YallmoError, OrchestratorLive[R]] =
     StorageFS.open(root).map(storage => new OrchestratorLive(storage, instances))
 
 }

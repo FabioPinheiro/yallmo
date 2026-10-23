@@ -32,6 +32,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Capabilities architecture](docs/Capabilities_Architecture.md) — configuration inheritance, restrictions, enforcement flow, and REPL voice policy.
 - [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)
 - [Attachments and blob storage](docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
+- [Read-only orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation-DAG visualization plan](docs/visualization/CONVERSATION_DAG_VISUALIZATION_PLAN.md)
@@ -41,6 +42,8 @@ The project aims to keep the important boundaries small and explicit: transcript
 - `model/` — provider-neutral models and orchestration state.
 - `core/` — providers, orchestration, tools, and RAG.
 - `repl/` — the interactive terminal client and lazy scoped browser audio bridge.
+- `server/` — read-only ZIO HTTP API and packaged SPA over an existing orchestrator.
+- `view-web/` — minimal Scala.js/Laminar session viewer, with Vite for development and bundling.
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
 
 

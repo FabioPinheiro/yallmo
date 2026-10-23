@@ -30,3 +30,5 @@ zzz/
 visualization/node_modules/
 visualization/dist/
 visualization/src/generated/
+view-web/node_modules/
+view-web/dist/

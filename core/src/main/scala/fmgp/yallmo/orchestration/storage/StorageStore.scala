@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration.storage
 
-import fmgp.yallmo.model.{MessageData, MessageId}
+import fmgp.yallmo.model.{Message, MessageData, MessageId}
 import fmgp.yallmo.model.YallmoError
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -12,6 +12,7 @@ import zio.*
 
 /** Append-only object database for one storage root. It persists messages only. */
 private[storage] trait StorageStore {
+  def listMessages: UIO[Chunk[Message]]
   def get(id: MessageId): UIO[Option[DecodedArtifact]]
   def put(value: MessageData): IO[YallmoError, StoredArtifact[MessageData]]
 }
@@ -28,6 +29,16 @@ private[storage] object StorageStore {
 
   private final case class LiveStorageStore(root: Path, index: Ref[Map[MessageId, DecodedArtifact]])
       extends StorageStore {
+    override def listMessages: UIO[Chunk[Message]] =
+      index.get.map { values =>
+        Chunk
+          .fromIterable(values.values)
+          .map { case DecodedArtifact.Msg(stored) =>
+            Message(stored.id, stored.value)
+          }
+          .sortBy(message => (message.timestamp.getEpochSecond, message.timestamp.getNano, MessageId.value(message.id)))
+      }
+
     override def get(id: MessageId): UIO[Option[DecodedArtifact]] = index.get.map(_.get(id))
 
     override def put(value: MessageData): IO[YallmoError, StoredArtifact[MessageData]] = {

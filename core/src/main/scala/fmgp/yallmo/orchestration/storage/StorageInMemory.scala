@@ -10,6 +10,17 @@ private[orchestration] final class StorageInMemory private (
     sessions: Ref[Map[SessionId, Session]],
     blobs: Ref[Map[BlobId, Blob]]
 ) extends Storage {
+  override def listMessages: IO[YallmoError, Chunk[Message]] =
+    sessions.get.map { values =>
+      Chunk
+        .fromIterable(values.valuesIterator.flatMap(_.messages).toList)
+        .distinctBy(_.id)
+        .sortBy(message => (message.timestamp.getEpochSecond, message.timestamp.getNano, MessageId.value(message.id)))
+    }
+
+  override def listBlobIds: IO[YallmoError, Chunk[BlobId]] =
+    blobs.get.map(values => Chunk.fromIterable(values.keys.toList.sortBy(_.value)))
+
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
     sessions.get.map { values =>
       Chunk.fromIterable(

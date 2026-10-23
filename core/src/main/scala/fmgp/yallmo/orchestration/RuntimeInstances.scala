@@ -48,6 +48,10 @@ final class RuntimeInstances[-R] private (
   /** Connections constructed lazily from config.providers and shared by agents referencing the same provider ID. */
   private var initializedProviders = Map.empty[ProviderId, LlmProvider | SOMProvider]
 
+  /** All configured and caller-supplied IDs. Does not initialize agents, inspect their workspaces or expose config. */
+  def listAgentIds: UIO[Chunk[AgentId]] =
+    ZIO.succeed(Chunk.fromIterable((config.agents.keySet ++ registeredAgents.keySet).toList.sortBy(AgentId.value)))
+
   /** Resolves one connection, without authenticating or contacting its endpoint.
     *
     * @param id

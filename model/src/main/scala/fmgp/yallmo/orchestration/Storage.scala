@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{AgentId, Blob, BlobId, MessagePayload, YallmoError}
+import fmgp.yallmo.model.{AgentId, Blob, BlobId, Message, MessagePayload, YallmoError}
 import zio.{Chunk, IO}
 
 /** Lightweight information suitable for a session picker. */
@@ -12,6 +12,10 @@ final case class SessionSummary(id: SessionId, messageCount: Long, agentIds: Chu
   * access storage through [[Orchestrator]], which validates those IDs against its registered agents.
   */
 private[orchestration] trait Storage {
+  def listMessages: IO[YallmoError, Chunk[Message]]
+
+  def listBlobIds: IO[YallmoError, Chunk[BlobId]]
+
   def listSessions: IO[YallmoError, Chunk[SessionSummary]]
 
   def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session]

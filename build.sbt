@@ -28,7 +28,7 @@ ThisBuild / Test / javaOptions ++= Seq(
 
 lazy val root = project
   .in(file("."))
-  .aggregate(model, core, repl, filesystem) // , capabilitiesLab)
+  .aggregate(model, core, repl, filesystem, server, viewWeb) // , capabilitiesLab)
   .settings(
     name := "yallmo",
     publish / skip := true,
@@ -121,4 +121,70 @@ lazy val repl = project
       // Keep third-party SLF4J users silent without emitting the missing-provider warning.
       "org.slf4j" % "slf4j-nop" % "2.0.13" % Runtime,
     )
+  )
+
+/** Explicit release tasks: ordinary backend compilation never invokes npm or the Scala.js linker. */
+lazy val bundleFrontend = taskKey[Unit]("Link and bundle the view SPA (requires npm ci in view-web)")
+lazy val bundle = taskKey[Unit]("Package the view server with the production SPA")
+
+lazy val viewWeb = project
+  .in(file("view-web"))
+  .enablePlugins(ScalaJSPlugin)
+  .settings(
+    name := "yallmo-view-web",
+    Test / javaOptions := Nil,
+    scalaJSUseMainModuleInitializer := true,
+    scalaJSLinkerConfig ~= (_.withModuleKind(org.scalajs.linker.interface.ModuleKind.ESModule)),
+    Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-dev",
+    Compile / fullLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-prod",
+    // Compile the small, platform-neutral HTTP contract on both JVM and JS, without another module.
+    Compile / unmanagedSources += (LocalRootProject / baseDirectory).value /
+      "server/src/main/scala/fmgp/yallmo/view/ViewProtocol.scala",
+    // sbt 2's %% includes the Scala.js platform suffix for this project.
+    libraryDependencies ++= Seq(
+      "com.raquo" %% "laminar" % "17.2.1",
+      "dev.zio" %% "zio-json" % "1.1.1",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    ),
+    bundleFrontend := Def.uncached {
+      val _ = (Compile / fullLinkJS).value
+      val directory = baseDirectory.value
+      val result = scala.sys.process.Process(Seq("npm", "run", "build"), directory).!
+      if (result != 0) sys.error("SPA bundling failed. Run npm ci in view-web first.")
+      ()
+    },
+  )
+
+lazy val server = project
+  .in(file("server"))
+  .dependsOn(core)
+  .settings(
+    name := "yallmo-server",
+    Compile / mainClass := Some("fmgp.yallmo.view.ViewServerMain"),
+    Compile / run / fork := true,
+    Test / fork := true,
+    libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
+    Compile / resourceGenerators += Def.task {
+      Def.uncached {
+        val assets = (LocalRootProject / baseDirectory).value / "view-web/dist"
+        val output = (Compile / resourceManaged).value / "view-web"
+        // External Vite output is not an sbt input; inspect it on every resource pass.
+        // Remove stale fingerprinted assets, including when dist has been removed.
+        IO.delete(output)
+        (assets ** "*").get().filter(_.isFile).flatMap { file =>
+          IO.relativize(assets, file).map { relative =>
+            val target = output / relative
+            IO.copyFile(file, target)
+            target
+          }
+        }
+      }
+    }.taskValue,
+    bundle := Def.taskDyn {
+      val _ = (viewWeb / bundleFrontend).value
+      Def.task {
+        val _ = (Compile / packageBin).value
+        ()
+      }
+    }.value,
   )

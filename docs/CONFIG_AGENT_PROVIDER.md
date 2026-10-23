@@ -356,7 +356,7 @@ Keep provider protocols and existing schema encoding in their current adapters. 
 
 ## 11. First implemented slice and next initialization boundary
 
-The following immutable models now exist in `core/src/main/scala/fmgp/yallmo/orchestration/config/`:
+The following immutable models now exist in `core/shared/src/main/scala/fmgp/yallmo/orchestration/config/`:
 
 - `AppConfig`: version, user name, agent/provider catalogs and optional startup default.
 - `AgentConfig`: stable `AgentId`, registered program name, zero/multiple `providerIds` and immutable `zio.json.ast.Json.Obj` program settings.

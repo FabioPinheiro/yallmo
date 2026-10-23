@@ -39,10 +39,12 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 ## Project layout
 
-- `model/` — provider-neutral models and orchestration state.
-- `core/` — providers, orchestration, tools, and RAG.
-- `repl/` — the interactive terminal client and lazy scoped browser audio bridge.
-- `server/` — read-only ZIO HTTP API and packaged SPA over an existing orchestrator.
+- `model/` — JVM/JS provider-neutral models and orchestration state.
+- `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
+- `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG.
+- `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
+- `repl/` — the JVM interactive terminal client and lazy scoped browser audio bridge.
+- `server/` — JVM-only read-only JSON-RPC WebSocket host and packaged SPA over an existing orchestrator.
 - `view-web/` — minimal Scala.js/Laminar session viewer, with Vite for development and bundling.
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
 

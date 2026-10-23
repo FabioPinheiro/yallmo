@@ -16,19 +16,33 @@ ThisBuild / scalacOptions ++= Seq(
 ThisBuild / libraryDependencySchemes ++= Seq(
   "dev.zio" %% "zio-json" % "always",
 )
-// Applied to every forked application/test JVM, not just the sbt launcher.
-ThisBuild / Compile / run / javaOptions ++= Seq(
-  "--enable-native-access=ALL-UNNAMED",
-  "--sun-misc-unsafe-memory-access=allow",
-)
-ThisBuild / Test / javaOptions ++= Seq(
-  "--enable-native-access=ALL-UNNAMED",
-  "--sun-misc-unsafe-memory-access=allow",
+// JVM flags must not leak into Scala.js projects or test runners.
+lazy val jvmSettings = Seq(
+  Compile / run / javaOptions ++= Seq(
+    "--enable-native-access=ALL-UNNAMED",
+    "--sun-misc-unsafe-memory-access=allow",
+  ),
+  Test / javaOptions ++= Seq(
+    "--enable-native-access=ALL-UNNAMED",
+    "--sun-misc-unsafe-memory-access=allow",
+  ),
 )
 
 lazy val root = project
   .in(file("."))
-  .aggregate(model, core, repl, filesystem, server, viewWeb) // , capabilitiesLab)
+  .aggregate(
+    modelJVM,
+    modelJS,
+    filesystemJVM,
+    filesystemJS,
+    coreJVM,
+    coreJS,
+    protocolJVM,
+    protocolJS,
+    repl,
+    server,
+    viewWeb
+  )
   .settings(
     name := "yallmo",
     publish / skip := true,
@@ -51,20 +65,35 @@ lazy val root = project
 //     Test / fork := true,
 //   )
 
-lazy val model = project
+// Explicit shared/jvm/js source sets; retain the existing JVM task IDs (model/test, core/test, ...).
+lazy val model = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
   .in(file("model"))
   .settings(
     name := "yallmo-model",
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
-    )
+    ),
   )
+  .jvmSettings(jvmSettings)
+  .jsSettings(
+    libraryDependencies ++= Seq(
+      "io.github.cquiroz" %% "scala-java-time" % "2.8.0",
+      "pt.kcry" %% "sha" % "2.0.2", // This is old!
+      ("org.scala-js" %% "scalajs-java-securerandom" % "1.0.0").cross(CrossVersion.for3Use2_13),
+    ),
+  )
+lazy val modelJVM = model.jvm
+lazy val modelJS = model.js
 
-// Rooted filesystem capability API.
-lazy val filesystem = project
+// Rooted capabilities/JSONL helpers are shared; FileSystem's NIO implementation is JVM-only.
+lazy val filesystem = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
   .in(file("filesystem"))
   .settings(
     name := "yallmo-filesystem",
@@ -73,34 +102,59 @@ lazy val filesystem = project
       "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
-    )
+    ),
   )
+  .jvmSettings(jvmSettings)
+lazy val filesystemJVM = filesystem.jvm
+lazy val filesystemJS = filesystem.js
 
-lazy val core = project
+lazy val core = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
   .in(file("core"))
   .dependsOn(model, filesystem)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio" % "2.1.27",
-      "dev.zio" %% "zio-http" % "3.0.1",
-      "dev.zio" %% "zio-json" % "1.1.1",
       "com.lihaoyi" %% "upickle" % "4.3.2",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    ),
+  )
+  .jvmSettings(jvmSettings)
+  .jvmSettings(
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-http" % "3.0.1",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
       "com.google.genai" % "google-genai" % "1.53.0",
-      // JLine 4.0.14 is also the terminal stack used by the Scala 3.9.0 REPL.
-      "org.jline" % "jline-reader" % "4.0.14",
-      "org.jline" % "jline-terminal-jni" % "4.0.14",
-      "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
     Compile / run / fork := true,
     Test / fork := true,
   )
+lazy val coreJVM = core.jvm
+lazy val coreJS = core.js
+
+// Only domain values and wire codecs: no runtime, transport, credentials or HTTP dependencies.
+lazy val protocol = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
+  .in(file("protocol"))
+  .dependsOn(model)
+  .settings(
+    name := "yallmo-protocol",
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-json" % "1.1.1",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    ),
+  )
+  .jvmSettings(jvmSettings)
+lazy val protocolJVM = protocol.jvm
+lazy val protocolJS = protocol.js
 
 lazy val repl = project
   .in(file("repl"))
-  .dependsOn(core)
-  .aggregate(core)
+  .dependsOn(coreJVM)
+  .aggregate(coreJVM)
+  .settings(jvmSettings)
   .settings(
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
@@ -117,6 +171,9 @@ lazy val repl = project
     }.taskValue,
     Compile / run / fork := true,
     libraryDependencies ++= Seq(
+      // JLine 4.0.14 is also the terminal stack used by the Scala 3.9.0 REPL.
+      "org.jline" % "jline-reader" % "4.0.14",
+      "org.jline" % "jline-terminal-jni" % "4.0.14",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       // Keep third-party SLF4J users silent without emitting the missing-provider warning.
       "org.slf4j" % "slf4j-nop" % "2.0.13" % Runtime,
@@ -130,25 +187,13 @@ lazy val bundle = taskKey[Unit]("Package the view server with the production SPA
 lazy val viewWeb = project
   .in(file("view-web"))
   .enablePlugins(ScalaJSPlugin)
+  .dependsOn(protocolJS)
   .settings(
     name := "yallmo-view-web",
-    Test / javaOptions := Nil,
     scalaJSUseMainModuleInitializer := true,
     scalaJSLinkerConfig ~= (_.withModuleKind(org.scalajs.linker.interface.ModuleKind.ESModule)),
     Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-dev",
     Compile / fullLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-prod",
-    // Reuse the existing domain/protocol sources without a JVM dependency or a second set of browser DTOs.
-    // The experimental System One/macro package is not part of the socket contract.
-    Compile / unmanagedSources ++= {
-      val root = (LocalRootProject / baseDirectory).value
-      val domain = (root / "model/src/main/scala" ** "*.scala")
-        .get()
-        .filterNot(_.getPath.contains("/model/som/"))
-      domain ++ Seq(
-        root / "server/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala",
-        root / "server/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala",
-      )
-    },
     // sbt 2's %% includes the Scala.js platform suffix for this project.
     libraryDependencies ++= Seq(
       "com.raquo" %% "laminar" % "17.2.1",
@@ -168,7 +213,8 @@ lazy val viewWeb = project
 
 lazy val server = project
   .in(file("server"))
-  .dependsOn(core)
+  .dependsOn(coreJVM, protocolJVM)
+  .settings(jvmSettings)
   .settings(
     name := "yallmo-server",
     Compile / mainClass := Some("fmgp.yallmo.server.OrchestratorServerMain"),

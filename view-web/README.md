@@ -29,6 +29,6 @@ explicitly reconnects after a disconnect; failed queries are not replayed automa
 and assemble bounded base64 chunks into a local browser Blob (64 MiB maximum), with local object-URL cleanup and
 visible partial-transfer errors. There is no Fetch client or HTTP blob fallback.
 
-The browser compiles the existing model sources and server JSON-RPC/application protocol sources, using Scala.js
-ZIO/streams dependencies for their shared domain types. No JVM core dependency or duplicate browser DTOs are used.
-The experimental System One/macros package is excluded; see `build.sbt` for the source-sharing boundary.
+The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RPC/application protocol and domain types.
+There is no direct source inclusion, JVM core dependency or duplicate browser DTO layer. The cross-projects use
+`shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.

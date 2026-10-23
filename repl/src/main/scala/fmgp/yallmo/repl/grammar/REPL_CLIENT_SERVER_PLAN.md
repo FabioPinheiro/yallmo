@@ -1,7 +1,8 @@
 # REPL → server → core: client/server redesign plan
 
 **Status: read-only WebSocket server/clients and website migration complete; REST viewer removed. Unix-domain sockets
-are deferred. Server-owned execution, connected REPL mode and runtime extraction remain pending.**
+are deferred. The approved Full-layout JVM/JS build and shared protocol extraction are complete. Server-owned execution,
+connected REPL mode and runtime extraction remain pending.**
 
 This revision records the decisions made after the transport review: **one JSON-RPC 2.0 application protocol over
 WebSocket and, when resumed, Unix-domain sockets**, with one server-owned runtime as the execution target. The current
@@ -75,7 +76,9 @@ only static assets and the WebSocket upgrade; do not reintroduce a second applic
 
 ## 2. Current code versus the proposed boundary
 
-Today, [build.sbt](../../../../../../../../build.sbt) declares `repl.dependsOn(core)` and `server.dependsOn(core)`.
+Today, [build.sbt](../../../../../../../../build.sbt) declares `repl.dependsOn(coreJVM)` and
+`server.dependsOn(coreJVM, protocolJVM)`. The `model`, `filesystem`, `core` and `protocol` cross-projects use
+`CrossType.Full`, with portable sources in `shared/src` and platform-specific sources in `jvm/src` / `js/src`.
 The REPL starts its own runtime through `ReplMain`/`ReplStartup`; the server is a separate read-only viewer.
 `OrchestratorServerMain` opens filesystem storage with an empty registry and starts the WebSocket/SPA host.
 Embedded use supplies the existing `OrchestratorLive`. The server is not yet the REPL's execution daemon.
@@ -84,14 +87,15 @@ The target compile dependency is **`repl → server → core`**, with no `server
 `.dependsOn(core)` to `.dependsOn(server)` does not implement the process split: the client must stop constructing its
 own `OrchestratorLive`, provider clients and tool services in connected mode.
 
-Initially, keeping client/API packages inside `server` is the smallest module change. That makes the REPL a thin
-*runtime client*, not a minimal distribution: `core` remains a transitive dependency. Extracting a shared `protocol`
-and/or JVM `client` module later could reduce coupling and packaging size, but requires separate approval. Do not add
-modules or move transport types into `model` just to make the diagram look cleaner.
+The separately approved build extraction now places shared JSON-RPC/application types in `protocol`, depending only
+on `model`; JVM transport/client classes remain in `server`. The target REPL is still a thin *runtime client*, not a
+minimal distribution: `coreJVM` remains a transitive dependency of `server`. Any later JVM client-module extraction
+requires separate approval. Do not move transport types into `model` just to make the diagram look cleaner.
 
-Scala.js now compiles the existing model sources (excluding experimental System One/macros) plus the server's
-`jsonrpc/JsonRpc.scala` and `protocol/YallmoProtocol.scala` as shared source. It has no JVM `core` dependency or duplicate
-viewer DTOs. `ViewProtocol` is removed. A dedicated JVM/JS protocol module remains optional and requires separate approval.
+The website now depends on `protocolJS → modelJS`, replacing direct source inclusion. The protocol files live under
+`protocol/shared/src/main/scala/fmgp/yallmo/server/`, retaining their packages. All model sources, including System One
+and macros, compile/test on JVM and JS. The website has no core dependency or duplicate viewer DTOs. `ViewProtocol`
+remains removed. The JVM server depends on `coreJVM` and `protocolJVM`.
 
 ### What stays where
 
@@ -465,8 +469,10 @@ or let a client choose arbitrary server commands, workspaces, environments or fi
   adapter shares the contract/application runtime; Unix parity does not gate WebSocket delivery. No REST execution API.
   Notifications are the future incremental-output convention, not multiple responses to a request. HTTP serves only
   browser assets/bootstrap/upgrade infrastructure.
-- **G4 resolved for this slice:** protocol/JVM client packages remain inside `server`; Scala.js compiles the same
-  protocol/model sources. No new module was introduced. Any later extraction still requires separate approval.
+- **G4 resolved and build extraction approved:** the JVM/JS `protocol` module owns shared envelopes/application types
+  and depends only on `model`. JVM transport/client classes remain in `server`; the website depends on `protocolJS`.
+  `model`, `filesystem`, `core` and `protocol` use Full shared/platform layouts. Further module extraction still requires
+  separate approval.
 
 ### Decisions still requiring confirmation
 

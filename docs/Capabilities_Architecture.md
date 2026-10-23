@@ -65,16 +65,16 @@ All source paths below are relative to the repository root.
 
 | Component | Responsibility |
 | --- | --- |
-| [`AgentCapabilities.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala) | Decode optional allowlists; validate IDs and filter context (`resolve`); intersect restrictions (`intersect`); filter assembled tool requests (`filterRequest`) |
-| [`ConfigFile.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/config/ConfigFile.scala) | Validate configuration references and, when catalogs are supplied, capability IDs for all configured agents |
-| [`RuntimeInstances.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/RuntimeInstances.scala) | Lazily resolve/cache ordinary agents and providers; attach configured policy; provide generic checked audio-agent lookup |
-| [`ConfiguredAgent.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/ConfiguredAgent.scala) | Apply tool restrictions even to fully assembled direct requests; reject prohibited tool-call responses |
-| [`OAIAgent.scala`](../core/src/main/scala/fmgp/yallmo/provider/oai/OAIAgent.scala), [`ChatGPTAgent.scala`](../core/src/main/scala/fmgp/yallmo/provider/openai/ChatGPTAgent.scala) | Own agent identity, `turn`, canonical request/response mapping through protocol mappers, and turn diagnostics |
-| [`OAILlmProvider.scala`](../core/src/main/scala/fmgp/yallmo/provider/oai/OAILlmProvider.scala), [`OpenAiCodexClient.scala`](../core/src/main/scala/fmgp/yallmo/provider/openai/OpenAiCodexClient.scala) | Own provider inference/HTTP completion and provider-specific credentials; neither is an `Agent` or exposes `turn` |
-| [`AgentInstance.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/AgentInstance.scala) | Define the program-side policy and `configuredContext` hook used by the runner |
-| [`NativeFunctionAgent.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/NativeFunctionAgent.scala) | Combine program/adapter policies; assemble native requests from filtered context; decode responses into proposed actions |
-| [`AgentRunner.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala) | Resolve context before extensions; authorize actions and validate tool arguments before executing implementations |
-| [`ToolApproval.scala`](../core/src/main/scala/fmgp/yallmo/orchestration/ToolApproval.scala) | Optional additional approval guard around a tool implementation |
+| [`AgentCapabilities.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala) | Decode optional allowlists; validate IDs and filter context (`resolve`); intersect restrictions (`intersect`); filter assembled tool requests (`filterRequest`) |
+| [`ConfigFile.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/config/ConfigFile.scala) | Validate configuration references and, when catalogs are supplied, capability IDs for all configured agents |
+| [`RuntimeInstances.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/RuntimeInstances.scala) | Lazily resolve/cache ordinary agents and providers; attach configured policy; provide generic checked audio-agent lookup |
+| [`ConfiguredAgent.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/ConfiguredAgent.scala) | Apply tool restrictions even to fully assembled direct requests; reject prohibited tool-call responses |
+| [`OAIAgent.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/oai/OAIAgent.scala), [`ChatGPTAgent.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/openai/ChatGPTAgent.scala) | Own agent identity, `turn`, canonical request/response mapping through protocol mappers, and turn diagnostics |
+| [`OAILlmProvider.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/oai/OAILlmProvider.scala), [`OpenAiCodexClient.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/openai/OpenAiCodexClient.scala) | Own provider inference/HTTP completion and provider-specific credentials; neither is an `Agent` or exposes `turn` |
+| [`AgentInstance.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentInstance.scala) | Define the program-side policy and `configuredContext` hook used by the runner |
+| [`NativeFunctionAgent.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/NativeFunctionAgent.scala) | Combine program/adapter policies; assemble native requests from filtered context; decode responses into proposed actions |
+| [`AgentRunner.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala) | Resolve context before extensions; authorize actions and validate tool arguments before executing implementations |
+| [`ToolApproval.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/ToolApproval.scala) | Optional additional approval guard around a tool implementation |
 | [`ReplStartup.scala`](../repl/src/main/scala/fmgp/yallmo/repl/ReplStartup.scala) | Supply REPL catalogs, validate policies, bind selected agents, and enforce REPL-specific voice requirements |
 
 `OpenAiCodexClient` retains its existing name but is a provider connection, not a second agent. `ChatGPTAgent` validates/maps native requests before asking that connection to complete a wire request; OAuth credentials, refresh coordination, HTTP headers, SSE decoding, and transport timeouts remain in the connection. Named agents sharing one connection therefore share account state, not agent identity. Native request-body mapping lives in `OpenAiCodexTurnMapper`, not in the provider connection.
@@ -223,8 +223,8 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 
 ## 10. Tests and related documentation
 
-- [`AgentCapabilitiesSuite`](../core/src/test/scala/fmgp/yallmo/orchestration/AgentCapabilitiesSuite.scala): omitted/empty/partial settings, unknown IDs, intersections, direct-request bypass attempts, filtered skills/extensions and denied actions.
-- [`RuntimeInstancesSuite`](../core/src/test/scala/fmgp/yallmo/orchestration/RuntimeInstancesSuite.scala): generic resolution/cache/audio checks and configured tool-request boundary.
+- [`AgentCapabilitiesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCapabilitiesSuite.scala): omitted/empty/partial settings, unknown IDs, intersections, direct-request bypass attempts, filtered skills/extensions and denied actions.
+- [`RuntimeInstancesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/RuntimeInstancesSuite.scala): generic resolution/cache/audio checks and configured tool-request boundary.
 - [`ReplStartupSuite`](../repl/src/test/scala/fmgp/yallmo/repl/ReplStartupSuite.scala): application-specific voice validation, inherited policies, ordinary selection and isolated retention.
 - [`TranscriberSuite`](../repl/src/test/scala/fmgp/yallmo/repl/voice/TranscriberSuite.scala): fresh tool-free turns, unexpected response rejection and retention failures.
 - [Agent/provider configuration](CONFIG_AGENT_PROVIDER.md) — its opening section describes the current implementation; later sections include historical designs.

@@ -123,10 +123,11 @@ Mutation/execution/diagnostic methods remain definitions only and return Method 
 are advertised. Unix-domain sockets, execution authorization and connected REPL submission remain deferred.
 
 The website uses `view-web/.../OrchestratorWSClient.scala`, a browser-native WebSocket adapter with a Future API.
-`build.sbt` compiles the **same model sources and server protocol sources** for Scala.js, excluding the experimental
-System One/macros package. No model files are moved, no duplicate browser DTOs/new module are introduced, and the
-browser does not depend on JVM core/providers/tools. ZIO/streams Scala.js dependencies support those existing model types;
-unused runtime code is removed by the linker. The JVM client remains in `server/`.
+`viewWeb` depends on `protocolJS`, which depends on `modelJS`. The `protocol/shared/src` directory owns the
+JSON-RPC envelopes and wire types; their existing `fmgp.yallmo.server` packages are unchanged. The JVM-only server
+depends on `protocolJVM` and `coreJVM`. There is no direct source inclusion or duplicate browser DTO layer.
+Models, including System One/macros, compile and test on both platforms; the browser does not depend on core/providers/tools.
+The JVM client and transport adapters remain in `server/`.
 
 Both clients correlate concurrent requests over one connection and bound pending requests to 128. Request deadlines
 are 15 seconds by default. Timeout/interruption abandons the local wait, not server work. Close/error fails pending

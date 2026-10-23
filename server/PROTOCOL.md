@@ -1,8 +1,8 @@
 # Yallmo wire protocol v1
 
 **Status: read-only WebSocket slice implemented; mutation/execution remain contract definitions only.** DTOs are in
-[`YallmoProtocol.scala`](src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala); envelopes are in
-[`JsonRpc.scala`](src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala). Both use ordinary `derives JsonCodec`.
+[`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala); envelopes are in
+[`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala). Both use ordinary `derives JsonCodec`.
 `OrchestratorWSServer(master)` serves `/rpc` and SPA assets over the supplied runtime. The website has migrated to a
 browser-native WebSocket client; the former REST viewer/Fetch API has been removed. HTTP is static/upgrade infrastructure
 only. `OrchestratorWSClient.connect(endpoint)` returns a scoped JVM `OrchestratorClient`. No Unix adapter is implemented yet.
@@ -90,9 +90,9 @@ Domain values are reused instead of redefining viewer DTOs:
 
 Collections reuse core's `Chunk`, which encodes as ordinary JSON arrays. Missing codecs for reused domain values are
 locally derived in `YallmoProtocol` (import `YallmoProtocol.given` when encoding these domain values directly).
-No model/core source or persisted format is changed. Scala.js compiles those existing model sources (excluding the
-experimental System One/macros package) plus the same protocol files, rather than depending on JVM core or duplicating
-DTOs. Missing codecs remain protocol-local.
+The Full-layout extraction preserves persisted formats and wire schemas. The website depends on `protocolJS → modelJS`,
+not directly included sources, JVM core or duplicate DTOs. All model sources, including System One/macros, compile and
+test on both platforms. Missing codecs remain protocol-local.
 
 Snapshots are the necessary exception to direct reuse: raw `Session`/`Message` include `MessagePayload.Reasoning`
 with a private `ProviderContinuation`. `MessageSnapshot.from`/`SessionSnapshot.from` expose the existing domain IDs,
@@ -199,7 +199,7 @@ Protocol errors never contain stack traces. Run failures after registration use 
 execution errors into Invalid Request. Malformed/unidentifiable requests use `id: null`; notifications receive no reply.
 
 Wire examples and derived-codec round trips are tested in
-[`YallmoProtocolSuite.scala`](src/test/scala/fmgp/yallmo/server/jsonrpc/YallmoProtocolSuite.scala). Actual WebSocket
+[`YallmoProtocolSuite.scala`](../protocol/shared/src/test/scala/fmgp/yallmo/server/jsonrpc/YallmoProtocolSuite.scala). Actual WebSocket
 queries, errors, correlation, timeouts and scope/disconnect cleanup are tested in `OrchestratorWebSocketSuite`;
 `WebSocketSupportSuite` covers fragment limits and continuation UTF-8 handling. `OrchestratorWebHostSuite` covers
 static assets, security headers, removed REST routes and the new standalone entry point. Browser client tests cover

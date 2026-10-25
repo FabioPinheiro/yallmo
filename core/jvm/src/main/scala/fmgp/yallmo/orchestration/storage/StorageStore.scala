@@ -10,7 +10,11 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import scala.jdk.CollectionConverters.*
 import zio.*
 
-/** Append-only object database for one storage root. It persists messages only. */
+/** Append-only object database for one storage root. It persists messages only.
+  *
+  * StorageFS owns writer serialization, including the whole batch and session-head publication. Index maps are
+  * immutable and only grow under that owner, so already-published message IDs remain safe to traverse without its lock.
+  */
 private[storage] trait StorageStore {
   def listMessages: UIO[Chunk[Message]]
   def get(id: MessageId): UIO[Option[DecodedArtifact]]
@@ -71,6 +75,9 @@ private[storage] object StorageStore {
       }
       .mapError(error => failed("create storage object-store layout", error))
 
+  /** Fails at the first invalid record, identifying its physical JSONL line and message ID when decodable. Diagnostics
+    * describe integrity failures without including message payloads.
+    */
   private def load(root: Path): IO[YallmoError, Map[MessageId, DecodedArtifact]] =
     ZIO
       .attemptBlocking(Files.readAllLines(objectsPath(root), StandardCharsets.UTF_8))
@@ -82,13 +89,25 @@ private[storage] object StorageStore {
             else
               ZIO
                 .fromEither(
-                  StorageJson.decodeEnvelope(line).left.map(details => invalid(s"record ${offset + 1}: $details"))
+                  StorageJson
+                    .decodeEnvelope(line)
+                    .left
+                    .map(details => invalid(s"$ObjectsFileName record ${offset + 1}: $details"))
                 )
                 .flatMap { artifact =>
+                  val location = s"$ObjectsFileName record ${offset + 1}, message ${MessageId.value(artifact.id)}"
                   CanonicalArtifactHash.verify(artifact) match
                     case Left((stored, computed)) =>
-                      ZIO.fail(invalid(s"record ${offset + 1}: hash mismatch $stored != $computed"))
-                    case Right(_) => validateInsert(index, artifact).as(index.updated(artifact.id, artifact))
+                      ZIO.fail(
+                        invalid(
+                          s"$location: hash mismatch; stored ID ${MessageId.value(stored)}, " +
+                            s"computed ID ${MessageId.value(computed)}. Message data does not match its stored ID."
+                        )
+                      )
+                    case Right(_) =>
+                      validateInsert(index, artifact)
+                        .mapError(error => YallmoError.StorageFailure(s"$location: ${error.getMessage}", error))
+                        .as(index.updated(artifact.id, artifact))
                 }
         }
       }

@@ -1,208 +1,179 @@
 # Yallmo wire protocol v1
 
-**Status: read-only WebSocket slice implemented; mutation/execution remain contract definitions only.** DTOs are in
-[`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala); envelopes are in
-[`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala). Both use ordinary `derives JsonCodec`.
-`OrchestratorWSServer(master)` serves `/rpc` and SPA assets over the supplied runtime. The website has migrated to a
-browser-native WebSocket client; the former REST viewer/Fetch API has been removed. HTTP is static/upgrade infrastructure
-only. `OrchestratorWSClient.connect(endpoint)` returns a scoped JVM `OrchestratorClient`. No Unix adapter is implemented yet.
-Enabled methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Other methods below return Method not found and are not advertised. No progress notifications are emitted yet.
-The browser compiles the same domain/protocol sources as the server; there is no separate viewer wire contract.
+**Implemented: viewer reads and trusted-local configured execution. Authentication is explicitly deferred for this local path.**
+This is not an authenticated identity or public-hosting service. Keep loopback binding and Host/Origin safeguards;
+do not expose it through a public proxy. Claimed user names are impersonable.
 
-## Exactly what crosses each connection
+DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
+and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
+The browser shares protocol/model sources but remains a read-only viewer. HTTP serves static assets and the WebSocket
+upgrade only; no conversation/blob REST endpoint, upload, login, voice, diagnostics or tool-control API was enabled.
 
-The **JSON documents are identical** on WebSocket and Unix-domain sockets:
+## Connection and capabilities
 
-- **WebSocket:** one complete UTF-8 JSON-RPC document per text message. No extra Content-Length header inside it.
-- **Unix socket:** `Content-Length: <UTF-8 byte count>\r\n\r\n`, then exactly those UTF-8 JSON bytes. A read can contain
-  part of a document or several documents; reads are not message boundaries.
-- Requests: `{"jsonrpc":"2.0","id":"r1","method":"sessions.list","params":{}}`.
-- Successful replies: `{"jsonrpc":"2.0","id":"r1","result":[]}`.
-- Error replies: `{"jsonrpc":"2.0","id":"r1","error":{"code":-32601,"message":"Method not found"}}`.
-- Notifications have `method` and `params`, but **no id**. They never receive replies.
+Send `initialize` first. Protocol `1` is independent of JSON-RPC `"2.0"`. Initialization is negotiation, **not authentication**.
+`OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
-JSON property order is irrelevant. Yallmo-generated request IDs are non-null strings. JSON-RPC numeric/null IDs are
-representable in the envelope DTOs too; explicit null is not a notification. Every listed operation uses a named
-parameter object, including `{}` for no parameters. Optional fields are omitted when absent; explicit null on an
-optional application field decodes as absent. Required null results/IDs are retained with `@jsonExplicitNull`.
+Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
+Operator additionally advertises **only** `sessions.create` and `turn.submit`. Notifications are empty.
+A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
-These are intentionally simple DTO codecs, not a JSON-RPC framework. The shared read-only handler validates complete
-input, `jsonrpc == "2.0"`, IDs, named params, required members and mixed envelope fields. The client validates replies
-and result/error exclusivity. Envelope codecs alone do not enforce those protocol rules. Decode concrete envelope
-classes, not a discriminator-tagged Scala envelope ADT. Batches are ordinary arrays: validate members individually,
-return one array containing request/error replies, and send nothing for a notification-only batch. Empty batches are
-invalid. Current limits are 64 batch members, 1 MiB per assembled incoming/outgoing JSON message and 128 pending client
-requests. Oversized responses close the connection with 1009; there is no pagination fallback yet. See README for
-fragmentation limitations of the pinned ZIO HTTP API. The WebSocket tests exercise framing/protocol validation.
+Operator requires all of: configured backend, actual loopback transport peer, **absent Origin**, and a nonempty initialized
+claimed `humanId`. Anonymous connections and Origin-bearing browsers remain Viewer. `clientName` is never authority;
+a browser cannot gain permission by naming itself a REPL or calling a mutation method. Host/Origin validation and the
+loopback listener remain in force. Authenticated public deployment requires separate authentication and security review.
 
-## Connection setup
+Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
+also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed.
+The server independently resolves configured assistants; it never accepts executable code, author IDs or provider state
+from a turn request. Identity rebinding is rejected. Configured/caller-supplied agent ID collisions are rejected;
+known dynamically registered human authors can reconnect.
 
-The current read-only listener uses loopback binding and Host/Origin checks for both WebSocket upgrades and SPA assets. It has
-no operator authentication or remote-hosting support. Its `local-viewer`/`viewer` identity is a local marker, not proof
-of an OS identity. Before enabling writes or remote hosting, authenticate through the separately agreed transport
-mechanism. Send `initialize` first; this is version/capability negotiation, **not authentication**. Other methods are unavailable
-until initialization succeeds. JSON-RPC's fixed `"2.0"` and Yallmo's integer `protocolVersion: 1` are different versions.
+Presence is connection-owned and cleaned on disconnect; duplicate same-name viewers retain presence while connected.
+A human registered on create/submit remains in the runtime registry for the process lifetime, independently of active
+viewers. Neither retention nor a stable label is authentication or durable identity.
 
-`initialize.result.methods` and `.notifications` list only operations/events actually enabled and authorized on that
-connection. Defining a DTO below does not advertise a working handler. The current server advertises only the seven read-only
-methods listed above and an empty notifications list. Browser viewers cannot acquire execution
-permission merely by submitting an operator method. Viewer permissions cover read queries/blob downloads; session
-mutation, execution/control and diagnostics require operator permission. Authentication/bootstrap is still a
-transport implementation decision; credentials are not supplied as arbitrary identities in these application params.
+## Framing and bounds
 
-## Requests and results
+WebSocket `/rpc` carries one complete UTF-8 JSON-RPC document per text message, with no Content-Length header.
+Unix framing is not implemented. Requests use named params, including `{}` for no params:
 
-Names below are exact. Scala operation objects contain the matching `method`, `Params` and `Result` types.
-Domain IDs reuse `AgentId`, `SessionId`, `MessageId` and `BlobId` and their validating codecs; they still encode as
-JSON strings. Session names must be safe path segments, message IDs must be `sha256:` plus 64 lowercase hex digits,
-and blob IDs must be canonical lowercase UUIDs. Offsets/sizes are integers; timestamps use `Instant`/ISO-8601.
-Request/command/run IDs remain protocol strings, not domain IDs.
+```json
+{"jsonrpc":"2.0","id":"r1","method":"sessions.list","params":{}}
+```
 
-| Method / Scala object | `params` | `result` |
+Responses use exactly one of `result` or `error`. Notifications have no ID and receive no response. Explicit null IDs
+are not notifications. Generated IDs are strings; envelope codecs also represent numeric/null IDs. Property order
+is irrelevant. Optional application fields are omitted when absent; null decodes as absent. Required null envelope
+results/IDs are retained. The handler validates envelopes/params beyond what derived codecs alone enforce.
+
+- 1 MiB assembled incoming/outgoing JSON; oversized responses close with **1009**, no pagination fallback.
+- At most **64** batch members. Batches process sequentially within one admitted connection worker and return one
+  aggregate response; other admitted messages can proceed. Empty batches are invalid; notification-only batches send nothing.
+- **8** nonwaiting connection workers. Saturation closes with **1013**; no unbounded task/semaphore waiter queue.
+  Outgoing text/control sends are serialized. Reads on the same socket remain responsive during a blocked turn.
+- JVM client: at most **128** pending requests; correlation by ID, late replies ignored after interruption/deadline.
+  Read/create deadlines default to **15 seconds**; `turn.submit` deliberately has **no read deadline**.
+- Both clients fail pending waits on close/error and never reconnect/replay automatically. A deadline or disconnect
+  is a lost local wait, not evidence that server work stopped.
+- JVM transport uses public JDK WebSocket, which sends no Origin by default. It retains strict Unicode/UTF-8 byte
+  bounds across fragments, one-message callback backpressure and scoped bounded executor resources. Server-side
+  pinned ZIO HTTP framing restrictions remain documented in [README](README.md#security-and-transport-limits).
+
+## Enabled requests and results
+
+| Method | `params` | `result` |
 | --- | --- | --- |
-| `initialize` / `Initialize` | `{protocolVersion: Int, clientName: String}` | `{protocolVersion: Int, serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int}` |
-| `sessions.list` / `SessionsList` | `{}` | `[SessionSummary]` |
-| `sessions.get` / `SessionsGet` | `{sessionId: SessionId}` | `SessionSnapshot` |
-| `sessions.create` / `SessionsCreate` | `{name?: SessionId}` | `SessionSnapshot` |
-| `sessions.fork` / `SessionsFork` | `{sourceSessionId: SessionId, name?: SessionId}` | `SessionSnapshot` |
-| `messages.list` / `MessagesList` | `{}` | `[MessageSnapshot]` |
-| `agents.list` / `AgentsList` | `{}` | `[AgentId]` |
-| `tools.list` / `ToolsList` | `{agentId: AgentId}` | `[AgentToolDefinition]` |
-| `blobs.list` / `BlobsList` | `{}` | `[BlobId]` |
-| `blobs.read` / `BlobsRead` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
-| `turn.submit` / `TurnSubmit` | `{commandId: String, sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId}` | `TurnOutcome` (one final response) |
-| `runs.get` / `RunsGet` | `{runId: String}` | `{runId: String, commandId: String, sessionId: SessionId, agentId: AgentId, status: RunStatus, outcome?: TurnOutcome}` |
-| `runs.cancel` / `RunsCancel` | `{runId: String}` | `{runId: String, requested: Boolean}` |
-| `diagnostics.message` / `DiagnosticsMessage` | `{sessionId: SessionId, messageId: MessageId}` | `{message: MessageSnapshot, providerRequest?: Object}` |
+| `initialize` | `{protocolVersion: Int, clientName: String, humanId?: AgentId}` | `{protocolVersion: Int, serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int, configuredAgentIds?: [AgentId]}` |
+| `sessions.list` | `{}` | `[SessionSummary]` |
+| `sessions.get` | `{sessionId: SessionId}` | `SessionSnapshot` |
+| `sessions.create` | `{name?: SessionId}` | `SessionSnapshot` |
+| `messages.list` | `{}` | `[MessageSnapshot]` |
+| `agents.list` | `{}` | `[AgentId]` |
+| `blobs.list` | `{}` | `[BlobId]` |
+| `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
+| `turn.submit` | `{sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
-Domain values are reused instead of redefining viewer DTOs:
+Existing domain types/codecs are reused. IDs encode as strings: safe path-segment `SessionId`, `sha256:` plus
+64 lowercase hex characters for `MessageId`, canonical lowercase UUID for `BlobId`. Timestamps use ISO-8601 `Instant`.
+Collections encode as arrays. Protocol-local codecs do not alter storage formats.
 
-- `Identity = {id: AgentId, role: "viewer" | "operator"}`. The server determines it.
-- Core/model `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId]}`.
-- Core/model `AgentTask = {prompt: String}` and `AgentResult = {agentId: AgentId, text: String}`.
-- Core/model `AgentToolDefinition = {key: String, description: String, inputSchema: JsonSchema.ObjectSchema}`.
+- `Identity = {id: AgentId, role: "viewer" | "operator"}`.
+- `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId]}`.
+- `AgentTask = {prompt: String}`; `AgentResult = {agentId: AgentId, text: String}`.
 - `SessionSnapshot = {id: SessionId, agentIds: [AgentId], messages: [MessageSnapshot]}`.
 - `MessageSnapshot = {id: MessageId, agentId: AgentId, parentId?: MessageId, timestamp: String, role: String,
   content: String, blobIds: [BlobId], toolName?: String}`.
-- `ApplicationError = {code: String, message: String}`. Codes are machine-readable reasons; messages are safe display text.
-- `RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled"`.
+- `ApplicationError = {code: String, message: String}` with safe display text, never provider errors, credentials,
+  filesystem paths or stacks. Transcript/tool text may itself contain sensitive material.
 
-Collections reuse core's `Chunk`, which encodes as ordinary JSON arrays. Missing codecs for reused domain values are
-locally derived in `YallmoProtocol` (import `YallmoProtocol.given` when encoding these domain values directly).
-The Full-layout extraction preserves persisted formats and wire schemas. The website depends on `protocolJS → modelJS`,
-not directly included sources, JVM core or duplicate DTOs. All model sources, including System One/macros, compile and
-test on both platforms. Missing codecs remain protocol-local.
+Snapshots expose public text/attachment references, not opaque `ProviderContinuation`. They never fabricate stored
+messages or change persisted history. Listing order remains sessions/agents/blobs by ID, all messages by timestamp
+then ID; session messages are in transcript order.
 
-Snapshots are the necessary exception to direct reuse: raw `Session`/`Message` include `MessagePayload.Reasoning`
-with a private `ProviderContinuation`. `MessageSnapshot.from`/`SessionSnapshot.from` expose the existing domain IDs,
-public text and attachment references, never that opaque continuation. They do not modify stored messages. Other
-payload text, including tool output, remains sensitive and requires authorization.
+`blobs.read`: offset must be nonnegative and no greater than size; maxBytes is 1..65536 decoded bytes. At EOF, data
+is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. No upload or binary frames.
+Core full-blob reads and partial-failure storage limitations remain; this is not a blob lifecycle/status service.
 
-Tool inputs reuse the existing `JsonSchema` model with default derived encoding, **not** a new provider JSON Schema
-encoder. `inputSchema` is the object subtype, so its fields are directly `properties`, `required`,
-`additionalProperties`, and optional `description`. Nested property/item schemas use the enum's default tags:
-`StringSchema`, `NumberSchema`, `IntegerSchema`, `BooleanSchema`, `ArraySchema`, `ObjectSchema`. For example:
+## Submission, continuation and failure semantics
 
-```json
-{"key":"inspect","description":"Read","inputSchema":{"properties":{"path":{"StringSchema":{"allowedValues":[]}}},"required":["path"],"additionalProperties":false}}
-```
+Create returns an empty session with initialized human authorship. Names are IDs, never paths. Only generated-name
+create collisions retry server-side; an explicit duplicate conflicts. A session must already exist for `turn.submit`.
+The REPL selects a configured agent **before** any prompt-induced create, retains create's returned ID even if the
+subsequent submit fails, then submits exactly once. Later prompts reuse the ID. `/new [name]` explicitly creates once.
 
-String schemas add `allowedValues`; array schemas contain `items`; object schemas contain `properties`, `required`
-and `additionalProperties`. Every schema can have optional `description`. This follows the shared model exactly.
+The application owns work, not the socket. A short root-local storage mutex coordinates filesystem mutation/publication
+and snapshot capture; **no provider/tool work is held under it**. Nonwaiting same-session turn exclusion rejects Busy
+before a second prompt. Independent sessions/agents execute concurrently, not under a global agent/run gate.
+Exactly one storage service owns a root; the cooperative standalone lease does not protect against legacy/uncooperative
+same-root owners. Do not run those writers together. No crash transaction or external side-effect rollback is promised.
 
-### Operation rules
+Under session admission, a supplied `expectedHead` must match the stored last message. Omitted/null skips the condition;
+there is no invented “must be empty” condition. Busy/head/configuration rejection precedes prompt writes. The core
+persist–run–persist path alone saves the prompt once and generated suffix after success; RPC never preappends it.
 
-- Session names are validated IDs, **not paths**. Omitted create/fork names are generated server-side. Create uses the
-  configured human identity; an assistant joins when used. Fork copies the source's **current head**, not an arbitrary
-  historical parent. List ordering follows the existing viewer: sessions/agents/blob IDs by ID, messages by timestamp
-  then ID. Session messages are in transcript order. Tools are ordered by their core `key`.
-- `turn.submit` selects an agent explicitly. The server resolves trusted execution and human authorship. Omitted
-  `expectedHead` disables the precondition; a supplied head must match under write admission or submission is rejected.
-  `commandId` is an execution/deduplication identity, not the JSON-RPC request ID. Reuse with different params conflicts.
-  Deduplication/retention is process-local; no restart guarantee or command-lookup operation is promised in this step.
-- `runs.get.outcome` is absent while queued/running and present when terminal. `runs.cancel.requested = true` means a
-  cancellation request was recorded, not that the run stopped. False means it was already terminal. Unknown run IDs
-  produce NotFound. Control requests must not wait behind the active turn. Disconnect is not cancellation.
-- `blobs.read` reads completed blobs only. `offset >= 0`, `1 <= maxBytes <= 65536`; violations are Invalid params.
-  An offset beyond the total size is invalid; an offset at EOF returns empty data and `eof: true`. Decode each base64
-  chunk separately and advance by its decoded byte count. Stop at `eof`; `totalBytes` must remain consistent. No uploads,
-  transfer sessions, binary frames or HTTP blob fallback are defined here. Example: bytes `00 01 ff` encode as `AAH/`.
-- `diagnostics.message.providerRequest` is authorized and redacted, never a server path or reusable provider secret.
-  It is absent when no capture is available. Transcript text/tool results can themselves be sensitive.
+`resetContinuation: true` discards old opaque provider continuation from future requests, not visible transcript.
+The server also resets on execution-binding change or unknown policy after restart. Resume asks for reset on the next
+turn; the client sends no history offset or provider continuation. Later same-binding turns reuse the server boundary.
+Remote UI runContext stays empty; public snapshots/deltas render original authors/content safely.
 
-## Turn notifications and final response
+Terminal `TurnOutcome` is a discriminated **application result**, not a JSON-RPC envelope:
 
-Notifications go to the submitting connection, identified by run ID; they are transient and not replayed. Their names
-and params are exactly:
+- `{status: "succeeded", session: SessionSnapshot, result: AgentResult, newMessages: [MessageSnapshot]}`.
+- `{status: "failed", acceptance: "notAccepted" | "accepted" | "unknown", session?: SessionSnapshot, error: ApplicationError}`.
 
-| Notification / Scala object | `params` |
-| --- | --- |
-| `turn.started` / `TurnStarted` | `{requestId: String \| Number \| null, commandId: String, runId: String, sessionId: SessionId}` |
-| `turn.progress` / `TurnProgress` | `{runId: String, text: String}` |
+Success includes the actual durable suffix (prompt plus generated output) with real persisted IDs. No runId, commandId,
+ledger, status, cancel, tombstone, deduplication, replay or exactly-once guarantee is active. An accepted typed failure
+retains the prompt and returns its safe snapshot. Missing accepted-session information is **Unknown**, never inferred
+NotAccepted. Defect/shutdown returns terminal Unknown with the best safely loadable snapshot; absence is not rollback.
+NotAccepted means known not persisted, Accepted means known persisted. Snapshot heads are last confirmed knowledge,
+not a guarantee that an uncertain write cannot advance them.
 
-`turn.started.requestId` copies the originating JSON-RPC ID without changing its type.
-`turn.started` means registered/admitted, **not prompt committed**. `turn.progress` is sanitized informational text,
-not a token-delta schema or a durable transcript. Producing it requires application instrumentation; adapters must not
-fabricate progress. A server only advertises notifications it can actually emit. Notifications are followed by one
-terminal response for the original request ID, not a second reply for registration.
+Application-scope work survives disconnect; only the connection wait is interrupted. Terminal delivery uses an
+application-owned Promise, including typed errors, defects, shutdown and already-closed-scope/startup races. Work and
+its finalizers stop **before** storage/tool ownership and root lease release. Uncooperative finalizers can delay shutdown.
+No terminal registry is retained. Ctrl+C abandons local waiting only; it never issues remote cancellation.
 
-`TurnOutcome` is a discriminated application result (not a tagged JSON-RPC envelope):
+After unknown transport outcome, refresh `/history` or reconnect, resume the known session and read history before
+**manual** resend. A lost create response may leave an unknown empty session: use `/session list`; never automatically
+create/submit again. A lost turn response may still yield durable completion. Busy/stale-head retains current client
+session/head; refresh before another manual attempt. There is no automatic reconciliation or safe replay claim.
 
-- `{status: "succeeded", runId: String, sessionId: SessionId, headMessageId: MessageId, result: AgentResult, newMessages: [MessageSnapshot]}`.
-- `{status: "failed", runId: String, sessionId: SessionId, accepted: Boolean, headMessageId?: MessageId, error: ApplicationError}`.
-- `{status: "cancelled", runId: String, sessionId: SessionId, accepted: Boolean, headMessageId?: MessageId}`.
-
-`accepted` means the prompt was saved; it cannot be inferred from `turn.started`. A registered run may fail before
-acceptance, so failed/cancelled outcomes can say false. A successful run includes the prompt and new persisted output
-in `newMessages`. `headMessageId` refers to durable state, not rollback of external side effects. Validation/policy
-rejection before run registration uses a JSON-RPC error instead.
-
-Example exchange, identical on both transports (only framing omitted):
+Example request (one terminal result when the connection remains usable):
 
 ```json
-{"jsonrpc":"2.0","id":"r3","method":"turn.submit","params":{"commandId":"c1","sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"}}}
-```
-```json
-{"jsonrpc":"2.0","method":"turn.started","params":{"requestId":"r3","commandId":"c1","runId":"run1","sessionId":"s1"}}
-```
-```json
-{"jsonrpc":"2.0","method":"turn.progress","params":{"runId":"run1","text":"Working"}}
-```
-```json
-{"jsonrpc":"2.0","id":"r3","result":{"status":"failed","runId":"run1","sessionId":"s1","accepted":true,"headMessageId":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","error":{"code":"provider_failed","message":"Provider unavailable"}}}
+{"jsonrpc":"2.0","id":"r3","method":"turn.submit","params":{"sessionId":"s1","agentId":"bob","task":{"prompt":"Hello"},"resetContinuation":false}}
 ```
 
-The server owns the run beyond connection lifetime. On reconnect, a known run ID can be queried. Without a received
-run ID, this MVP does **not** promise automatic uncertain-submission recovery. Never automatically resubmit a turn
-because its response was lost. Replay, subscriptions, historical branching, voice, human interaction, credential
-mutation and PTY messages are not defined here; they require explicit contract extensions. Pagination remains deferred.
+## Errors and disabled definitions
 
-## Error codes
-
-Standard JSON-RPC codes: `-32700` Parse error, `-32600` Invalid Request, `-32601` Method not found,
-`-32602` Invalid params, `-32603` Internal error.
-
-Application errors use these envelope codes, with optional `error.data: ApplicationError` for a safe reason:
+Standard JSON-RPC codes: -32700 Parse error, -32600 Invalid Request, -32601 Method not found,
+-32602 Invalid params, -32603 sanitized Internal error.
 
 | Code | Meaning |
 | --- | --- |
-| `-32001` | Unsupported Yallmo protocol version |
-| `-32002` | Unauthorized |
-| `-32003` | Forbidden |
-| `-32004` | Not found |
-| `-32005` | Conflict (head mismatch, duplicate session, conflicting command ID) |
-| `-32006` | Busy (write/run admission unavailable) |
-| `-32007` | Rejected (other application validation/policy rejection) |
+| -32001 | Unsupported protocol version |
+| -32002 | Unauthorized / initialization required |
+| -32003 | Forbidden / configured viewer mutation |
+| -32004 | Not found |
+| -32005 | Conflict / head mismatch, explicit name or identity collision |
+| -32006 | Busy / same-session turn already active |
+| -32007 | Rejected / invalid author or configured assistant selection |
 
-Protocol errors never contain stack traces. Run failures after registration use `TurnOutcome` instead of collapsing
-execution errors into Invalid Request. Malformed/unidentifiable requests use `id: null`; notifications receive no reply.
+Pre-execution rejections are JSON-RPC errors; execution failures use `TurnOutcome`. Provider causes/stacks are not sent.
+Unconfigured mutation endpoints return MethodNotFound. Malformed unidentifiable requests use null ID; notifications
+receive no reply. Connection overload is a close, not a run-capacity/ledger API.
 
-Wire examples and derived-codec round trips are tested in
-[`YallmoProtocolSuite.scala`](../protocol/shared/src/test/scala/fmgp/yallmo/server/jsonrpc/YallmoProtocolSuite.scala). Actual WebSocket
-queries, errors, correlation, timeouts and scope/disconnect cleanup are tested in `OrchestratorWebSocketSuite`;
-`WebSocketSupportSuite` covers fragment limits and continuation UTF-8 handling. `OrchestratorWebHostSuite` covers
-static assets, security headers, removed REST routes and the new standalone entry point. Browser client tests cover
-initialization, reconnect without replay, timeouts, response correlation and bounded chunk reconstruction; production
-and Vite browser smoke checks exercise the real website/download path. Write authorization, execution, Unix framing,
-persistence semantics and notification delivery remain future work.
+Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, diagnostics and
+`TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.
+They are not advertised, prerequisites for active submission, implemented controls or a promised roadmap.
+Provider/login/voice/human-interaction transport and public authentication remain separate pending work.
+
+## Validation
+
+`YallmoProtocolSuite` freezes enabled shapes, optional fields/defaults and shared JVM/JS decoding.
+`OrchestratorWebSocketSuite` retains initialization/correlation/pending/deadline/disconnect/framing gates;
+`ServerSubmissionSuite` covers actual durable execution, concurrent sessions, Busy/head checks, viewer denial,
+disconnect, shutdown/lease ordering, closed scope, overload and continuation/restart policy. Connected REPL suites
+exercise negotiated capabilities, state retention/no replay and actual terminal submission to temporary configured
+server storage with fake providers and no client-local bootstrap. See component handoffs for exact run counts/logs.

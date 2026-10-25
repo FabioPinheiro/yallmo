@@ -97,41 +97,6 @@ final class ReplOrchestratorSuite extends FunSuite {
     assertEquals(result._3.map(_.id.value), Chunk("shared"))
   }
 
-  test("the first turn creates a timestamped durable session when /new was not used") {
-    val root = Files.createTempDirectory("yallmo-repl-storage-")
-    try {
-      val result = runZIO {
-        for {
-          replOrchestrator <- replOrchestratorAt(root)
-          persisted <- replOrchestrator.submitPrompt(ReplState(), "first", execution(gammaId, Chunk.empty))
-          id <- ZIO.fromOption(persisted.state.sessionId).orElseFail(new AssertionError("missing session ID"))
-          resumed <- replOrchestrator.resumeReplSession(id)
-        } yield (id, resumed)
-      }
-
-      assert(result._1.matches("main-\\d{8}-\\d{6}"))
-      assertEquals(result._2.runContext.messages, Chunk(Message.User("first")))
-    } finally deleteRecursively(root)
-  }
-
-  test("unselected submission rejects execution before creating or partially writing a session") {
-    val result = runZIO {
-      for {
-        human = agent(bobId)
-        instances <- RuntimeInstances.fromAgents(Chunk(human))
-        orchestrator <- OrchestratorLive.inMemory(instances)
-        repl = ReplOrchestratorLive.make(orchestrator, human, None)
-        rejected <- repl
-          .submitPrompt(ReplState(), "hello", execution(gammaId, Chunk(Message.Assistant("not selected"))))
-          .either
-        sessions <- repl.listSessions
-      } yield (rejected, sessions)
-    }
-    assert(result._1.swap.toOption.exists(_.error.isInstanceOf[YallmoError.InvalidConfig]))
-    assertEquals(result._1.swap.toOption.flatMap(_.acceptedSession), None)
-    assertEquals(result._2, Chunk.empty)
-  }
-
   private def replOrchestratorAt(root: Path): IO[YallmoError, ReplOrchestrator[Any]] = {
     val bob = agent(bobId)
     val gamma = agent(gammaId)

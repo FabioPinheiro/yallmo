@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
@@ -178,7 +179,7 @@ final class ReplPromptPersistenceSuite extends FunSuite {
         Some(program),
         StaticContext[Any]("Test")
       ),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       repl
     )
   }

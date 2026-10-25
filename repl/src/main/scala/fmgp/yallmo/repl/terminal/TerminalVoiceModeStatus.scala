@@ -10,11 +10,14 @@ import java.util.List
 /** Persistent, terminal-capability-dependent feedback for the line editor's local modes. */
 private[terminal] final class TerminalVoiceModeStatus(
     reader: LineReader,
-    private var activeAgent: Option[ReplActiveAgent] = None
+    private var activeAgent: Option[ReplActiveAgent] = None,
+    remoteConnection: Boolean = false, // FIXME REMOVE!
+    private var selectedAgentId: Option[fmgp.yallmo.model.AgentId] = None,
+    canSubmit: Boolean = false
 ) extends TerminalMode {
   private val status = Option(Status.getStatus(reader.getTerminal))
 
-  private var currentHint = TerminalMenus.hintForKeyMap(LineReader.VIINS)
+  private var currentHint = TerminalMenus.hintForKeyMap(LineReader.VIINS, remoteConnection, canSubmit)
 
   override def install(): Unit = {
     reader match {
@@ -25,8 +28,9 @@ private[terminal] final class TerminalVoiceModeStatus(
     installCallback(LineReader.CALLBACK_KEYMAP)(updateForKeyMap())
   }
 
-  def selectAgent(value: Option[ReplActiveAgent]): Unit = {
+  def selectAgent(value: Option[ReplActiveAgent], selected: Option[fmgp.yallmo.model.AgentId] = None): Unit = {
     activeAgent = value
+    selectedAgentId = selected
     refresh()
   }
 
@@ -37,7 +41,7 @@ private[terminal] final class TerminalVoiceModeStatus(
   def transcribing(): Unit = update("[TRANSCRIBING]  Processing local voice input…")
 
   def updateForKeyMap(): Unit =
-    update(TerminalMenus.hintForKeyMap(reader.getKeyMap))
+    update(TerminalMenus.hintForKeyMap(reader.getKeyMap, remoteConnection, canSubmit))
 
   def close: UIO[Unit] =
     ZIO.attemptBlocking {
@@ -71,7 +75,16 @@ private[terminal] final class TerminalVoiceModeStatus(
     status.foreach { bar =>
       bar.resize()
       bar.update(
-        List.of(TerminalStatusLayout.render(currentHint, activeAgent, reader.getTerminal.getWidth, reader.getTerminal))
+        List.of(
+          TerminalStatusLayout.render(
+            if remoteConnection then
+              s"$currentHint · selected: ${TerminalStatusLayout.sanitize(selectedAgentId.fold("none")(fmgp.yallmo.model.AgentId.value))}"
+            else currentHint,
+            activeAgent,
+            reader.getTerminal.getWidth,
+            reader.getTerminal
+          )
+        )
       )
     }
 }

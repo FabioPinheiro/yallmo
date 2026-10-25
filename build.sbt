@@ -152,8 +152,7 @@ lazy val protocolJS = protocol.js
 
 lazy val repl = project
   .in(file("repl"))
-  .dependsOn(coreJVM)
-  .aggregate(coreJVM)
+  .dependsOn(coreJVM, server)
   .settings(jvmSettings)
   .settings(
     name := "yallmo-repl",

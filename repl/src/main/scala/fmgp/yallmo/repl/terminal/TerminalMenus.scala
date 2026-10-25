@@ -10,23 +10,25 @@ private[terminal] final class TerminalMenus(
     reader: LineReader,
     activeAgent: Option[ReplActiveAgent],
     openProvider: Option[() => Unit] = None,
-    openAgents: Option[() => Unit] = None
+    openAgents: Option[() => Unit] = None,
+    remoteConnection: Boolean = false
 ) {
   import TerminalMenus.*
 
   def install(): Unit = {
     installNormal()
-    installMenu(ProviderKeyMap)
+    if !remoteConnection then installMenu(ProviderKeyMap)
     installMenu(AgentsKeyMap)
     if openAgents.isEmpty then fallbackAgents.foreach(_.install())
-    bind(LineReader.VICMD, "p", "open-provider") {
-      openProvider match {
-        case Some(open) => open()
-        case None       =>
-          reader.setKeyMap(ProviderKeyMap)
-          reader.printAbove("PROVIDER: catalog unavailable · Esc: NORMAL · i: edit")
+    if !remoteConnection then
+      bind(LineReader.VICMD, "p", "open-provider") {
+        openProvider match {
+          case Some(open) => open()
+          case None       =>
+            reader.setKeyMap(ProviderKeyMap)
+            reader.printAbove("PROVIDER: catalog unavailable · Esc: NORMAL · i: edit")
+        }
       }
-    }
     bind(LineReader.VICMD, "a", "open-agents") {
       openAgents match {
         case Some(open) => open()
@@ -92,13 +94,27 @@ private[terminal] object TerminalMenus {
   val ProviderKeyMap = "provider"
   val AgentsKeyMap = "agents"
 
-  def hintForKeyMap(keyMap: String): String = keyMap match {
-    case LineReader.VICMD =>
-      "[NORMAL]  p: provider · a: agents · i: edit · v: voice input · m: browser mic · t: speak reply · q: exit"
-    case TerminalProviderMode.KeyMapName =>
-      "[PROVIDER]  Up/Down: select · Enter: open/save · Esc: back/NORMAL · ChatGPT details: login"
-    case ProviderKeyMap => "[PROVIDER]  Catalog unavailable · Esc: NORMAL · i: edit"
-    case AgentsKeyMap   => "[AGENTS]  Up/Down: select · Enter: activate · Esc: NORMAL · i: edit"
-    case _              => "[INSERT]  Esc: NORMAL · Enter: submit"
-  }
+  def hintForKeyMap(keyMap: String, remoteConnection: Boolean = false, canSubmit: Boolean = false): String =
+    if remoteConnection && canSubmit then
+      keyMap match {
+        case LineReader.VICMD => "[TRUSTED LOCAL · UNAUTHENTICATED]  a: configured agent · i: prompts · q: exit"
+        case AgentsKeyMap     => "[AGENTS]  Model/provider unknown · Enter: select · Esc: NORMAL"
+        case _ => "[CONNECTED]  Enter: submit · /new [name] · /history · /session list|resume <id> · /log · /exit"
+      }
+    else if remoteConnection then
+      keyMap match {
+        case LineReader.VICMD => "[READ-ONLY]  a: agent preference · i: commands · q: exit"
+        case AgentsKeyMap     => "[AGENTS]  IDs only; capability unknown · Enter: prefer · Esc: NORMAL"
+        case _                => "[READ-ONLY]  /help · /session list|resume <id> · /history · /log · /exit"
+      }
+    else
+      keyMap match {
+        case LineReader.VICMD =>
+          "[NORMAL]  p: provider · a: agents · i: edit · v: voice input · m: browser mic · t: speak reply · q: exit"
+        case TerminalProviderMode.KeyMapName =>
+          "[PROVIDER]  Up/Down: select · Enter: open/save · Esc: back/NORMAL · ChatGPT details: login"
+        case ProviderKeyMap => "[PROVIDER]  Catalog unavailable · Esc: NORMAL · i: edit"
+        case AgentsKeyMap   => "[AGENTS]  Up/Down: select · Enter: activate · Esc: NORMAL · i: edit"
+        case _              => "[INSERT]  Esc: NORMAL · Enter: submit"
+      }
 }

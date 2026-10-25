@@ -1,18 +1,26 @@
 package fmgp.yallmo.server
 
-import java.nio.file.{Files, Path}
+import java.nio.file.Path
 import java.util.Locale
 import scala.util.Try
-import fmgp.yallmo.model.Agent
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances}
+import fmgp.yallmo.server.application.ServerApplication
 import zio.*
 
-/** Standalone read-only WebSocket/SPA host. Embedded applications should supply their existing master instead. */
+/** Standalone loopback WebSocket/SPA host; execution requires configured trusted-local capability. Embedded
+  * applications should supply their existing master instead.
+  */
 object OrchestratorServerMain extends ZIOAppDefault {
   private val Levels = "trace|debug|info|warning|error|fatal|off"
-  private val Usage = s"Usage: server/run --storage <existing-directory> [--port <1-65535>] [--log-level <$Levels>]"
+  private val Usage =
+    s"Usage: server/run --storage <existing-directory> [--config <path> [--workspace <existing-directory>]] [--port <1-65535>] [--log-level <$Levels>]"
 
-  private[server] final case class Options(storage: Path, port: Int = 8080, logLevel: LogLevel = LogLevel.Info)
+  private[server] final case class Options(
+      storage: Path,
+      port: Int = 8080,
+      logLevel: LogLevel = LogLevel.Info,
+      config: Option[Path] = None,
+      workspace: Option[Path] = None
+  )
 
   override val run: ZIO[ZIOAppArgs & Scope, Throwable, Unit] =
     for {
@@ -28,13 +36,14 @@ object OrchestratorServerMain extends ZIOAppDefault {
         )
         .when(options.logLevel == LogLevel.Trace)
       _ <- ZIO.logDebug(s"Opening storage ${options.storage.toAbsolutePath.normalize()}")
-      exists <- ZIO.attemptBlocking(Files.isDirectory(options.storage))
-      _ <- ZIO.fail(new IllegalArgumentException("Storage directory must already exist")).unless(exists)
-      instances <- RuntimeInstances.fromAgents(Chunk.empty[Agent[Any]])
-      master <- OrchestratorLive.filesystem(options.storage, instances)
-      bound <- new OrchestratorWSServer(master).start(options.port)
-      _ <- ZIO.logInfo(s"Orchestrator listening at http://127.0.0.1:$bound (JSON-RPC WebSocket: /rpc)")
-      _ <- ZIO.never
+      _ <- ZIO
+        .scoped(for {
+          application <- ServerApplication.open(options.storage, options.config, options.workspace)
+          bound <- new OrchestratorWSServer(application.master, application.configured).start(options.port)
+          _ <- ZIO.logInfo(s"Orchestrator listening at http://127.0.0.1:$bound (JSON-RPC WebSocket: /rpc)")
+          _ <- ZIO.never
+        } yield ())
+        .provideLayer(ServerApplication.live)
     } yield ()
 
   /** Replace ZIO's INFO-filtered default console logger, rather than changing individual statements' severity. */
@@ -59,7 +68,11 @@ object OrchestratorServerMain extends ZIOAppDefault {
             }
         }
         for {
-          _ <- Either.cond(Set("--storage", "--port", "--log-level").contains(key), (), "Unknown server option")
+          _ <- Either.cond(
+            Set("--storage", "--port", "--log-level", "--config", "--workspace").contains(key),
+            (),
+            "Unknown server option"
+          )
           _ <- Either.cond(!values.contains(key), (), s"$key may appear only once")
           supplied <- value.filter(_.trim.nonEmpty).toRight(s"$key requires a value")
           parsed <- collect(remaining, values.updated(key, supplied))
@@ -70,6 +83,9 @@ object OrchestratorServerMain extends ZIOAppDefault {
       values <- collect(args, Map.empty)
       storage <- values.get("--storage").toRight("--storage is required")
       root <- Try(Path.of(storage)).toEither.left.map(_ => "Invalid --storage path")
+      config <- values.get("--config").traversePath("--config")
+      workspace <- values.get("--workspace").traversePath("--workspace")
+      _ <- Either.cond(workspace.isEmpty || config.nonEmpty, (), "--workspace requires --config")
       port <- values.get("--port").fold[Either[String, Int]](Right(8080)) { value =>
         value.toIntOption.filter(port => port >= 1 && port <= 65535).toRight("Invalid --port; expected 1-65535")
       }
@@ -85,6 +101,13 @@ object OrchestratorServerMain extends ZIOAppDefault {
           case _         => Left(s"Invalid --log-level; expected $Levels")
         }
       }
-    } yield Options(root, port, level)).left.map(error => s"$error\n$Usage")
+    } yield Options(root, port, level, config, workspace)).left.map(error => s"$error\n$Usage")
   }
+
+  extension (value: Option[String])
+    private def traversePath(option: String): Either[String, Option[Path]] =
+      value match {
+        case None       => Right(None)
+        case Some(path) => Try(Path.of(path)).toEither.left.map(_ => s"Invalid $option path").map(Some(_))
+      }
 }

@@ -3,8 +3,8 @@ package fmgp.yallmo.repl.terminal
 import fmgp.yallmo.orchestration.config.ProviderId
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import fmgp.yallmo.repl.ProviderLoginService
-import fmgp.yallmo.repl.ReplProviderCatalog
-import fmgp.yallmo.repl.ReplProviderCatalog.*
+import fmgp.yallmo.server.application.ProviderCatalog
+import fmgp.yallmo.server.application.ProviderCatalog.*
 import fmgp.yallmo.repl.LoginMethod
 import zio.IO
 
@@ -302,7 +302,7 @@ private[terminal] object TerminalProviderMenu {
   trait Client {
     def execute(operation: Operation): IO[Error, Reply]
   }
-  def client(catalog: ReplProviderCatalog): Client = new Client {
+  def client(catalog: ProviderCatalog): Client = new Client {
     def execute(operation: Operation): IO[Error, Reply] = operation match {
       case Operation.Refresh            => catalog.list.map(Reply.Listed.apply)
       case Operation.Inspect(id)        => catalog.load(id).map(Reply.Loaded.apply)

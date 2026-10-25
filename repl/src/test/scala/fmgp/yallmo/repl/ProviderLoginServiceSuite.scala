@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.*
 import munit.FunSuite
@@ -55,12 +56,12 @@ final class ProviderLoginServiceSuite extends FunSuite {
     Runtime.default.unsafe.run(effect).getOrThrowFiberFailure()
   }
 
-  private def withFile(body: (Path, ReplProviderCatalog) => Unit): Unit = {
+  private def withFile(body: (Path, ProviderCatalog) => Unit): Unit = {
     val directory = Files.createTempDirectory("provider-login-suite-")
     val path = directory.resolve("synthetic.json")
     try {
       Files.writeString(path, fixture, UTF_8)
-      body(path, run(ReplProviderCatalog.make(path)))
+      body(path, run(ProviderCatalog.make(path)))
     } finally {
       val paths = Files.walk(directory)
       try paths.iterator.asScala.toVector.reverse.foreach(Files.deleteIfExists(_))
@@ -108,8 +109,8 @@ final class ProviderLoginServiceSuite extends FunSuite {
     withFile { (path, catalog) =>
       for (
         (id, error) <- List(
-          "local" -> ReplProviderCatalog.CredentialError.NotChatGPT,
-          "missing" -> ReplProviderCatalog.CredentialError.MissingProvider
+          "local" -> ProviderCatalog.CredentialError.NotChatGPT,
+          "missing" -> ProviderCatalog.CredentialError.MissingProvider
         )
       ) {
         val before = Files.readString(path, UTF_8)
@@ -130,7 +131,7 @@ final class ProviderLoginServiceSuite extends FunSuite {
       assertEquals(
         run(new ProviderLoginService(catalog, auth).run(selected, LoginMethod.Browser, new Interaction)),
         Result.Failed(
-          Error.Catalog(ReplProviderCatalog.CredentialError.Catalog(ReplProviderCatalog.Error.InvalidEndpoint))
+          Error.Catalog(ProviderCatalog.CredentialError.Catalog(ProviderCatalog.Error.InvalidEndpoint))
         )
       )
       assertEquals(auth.starts, 0)
@@ -213,7 +214,7 @@ final class ProviderLoginServiceSuite extends FunSuite {
         Result.Saved
       )
       val saved = Files.readString(path, UTF_8).fromJson[Config].toOption.get
-      assertEquals(saved.userName, "updated-user")
+      assertEquals(ujson.read(Files.readString(path, UTF_8))("userName").str, "updated-user")
       assertEquals(
         saved
           .providers(ProviderId.unsafe("second"))
@@ -245,10 +246,10 @@ final class ProviderLoginServiceSuite extends FunSuite {
   test("deleted, converted and untrusted targets changed during OAuth never receive credentials") {
     withFile { (path, catalog) =>
       val scenarios = List(
-        """{"userName":"changed","providers":{}}""" -> ReplProviderCatalog.CredentialError.MissingProvider,
-        """{"userName":"changed","providers":{"first":{"providerType":"OAI","endpoint":"http://localhost:1234/v1"}}}""" -> ReplProviderCatalog.CredentialError.NotChatGPT,
-        """{"userName":"changed","providers":{"first":{"providerType":"ChatGPT","endpoint":"https://untrusted.example"}}}""" -> ReplProviderCatalog.CredentialError
-          .Catalog(ReplProviderCatalog.Error.InvalidEndpoint)
+        """{"userName":"changed","providers":{}}""" -> ProviderCatalog.CredentialError.MissingProvider,
+        """{"userName":"changed","providers":{"first":{"providerType":"OAI","endpoint":"http://localhost:1234/v1"}}}""" -> ProviderCatalog.CredentialError.NotChatGPT,
+        """{"userName":"changed","providers":{"first":{"providerType":"ChatGPT","endpoint":"https://untrusted.example"}}}""" -> ProviderCatalog.CredentialError
+          .Catalog(ProviderCatalog.Error.InvalidEndpoint)
       )
       scenarios.foreach { (changed, error) =>
         Files.writeString(path, fixture, UTF_8)
@@ -275,7 +276,7 @@ final class ProviderLoginServiceSuite extends FunSuite {
       }
       assertEquals(
         run(new ProviderLoginService(catalog, auth).run(selected, LoginMethod.Browser, new Interaction)),
-        Result.Failed(Error.Catalog(ReplProviderCatalog.CredentialError.InvalidCredentials))
+        Result.Failed(Error.Catalog(ProviderCatalog.CredentialError.InvalidCredentials))
       )
       assertEquals(Files.readString(path, UTF_8), fixture)
     }
@@ -288,11 +289,11 @@ final class ProviderLoginServiceSuite extends FunSuite {
       try {
         val target = fileSystem.getPath("/synthetic.json")
         Files.writeString(target, fixture, UTF_8)
-        val catalog = run(ReplProviderCatalog.make(target))
+        val catalog = run(ProviderCatalog.make(target))
         assertEquals(
           run(new ProviderLoginService(catalog, new FakeAuth).run(selected, LoginMethod.Browser, new Interaction)),
           Result.Failed(
-            Error.Catalog(ReplProviderCatalog.CredentialError.Catalog(ReplProviderCatalog.Error.SaveFailed))
+            Error.Catalog(ProviderCatalog.CredentialError.Catalog(ProviderCatalog.Error.SaveFailed))
           )
         )
         assertEquals(Files.readString(target, UTF_8), fixture)
@@ -305,7 +306,7 @@ final class ProviderLoginServiceSuite extends FunSuite {
       val unsafeId = "unsafe\u001b\n\u202e"
       Files.writeString(
         path,
-        Config("test", providers = Map(ProviderId.unsafe(unsafeId) -> ProviderConfig.ChatGPT())).toJson,
+        Config(providers = Map(ProviderId.unsafe(unsafeId) -> ProviderConfig.ChatGPT())).toJson,
         UTF_8
       )
       val io = new Interaction(None)

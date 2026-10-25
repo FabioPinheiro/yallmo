@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.orchestration.config.{OAuthCredentialsConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import zio.*
@@ -12,7 +13,7 @@ import zio.*
   * logs.
   */
 final class ProviderLoginService(
-    catalog: ReplProviderCatalog,
+    catalog: ProviderCatalog,
     auth: OpenAiCodexAuth.OAuthFlow,
     loginTimeout: Duration = OpenAiCodexAuth.BrowserLoginTimeout
 ) {
@@ -70,7 +71,7 @@ object ProviderLoginService {
   /** Fixed categories only: never contains provider/transport exceptions, tokens, or callback URLs. */
   enum Error {
     case AuthenticationFailed
-    case Catalog(error: ReplProviderCatalog.CredentialError)
+    case Catalog(error: ProviderCatalog.CredentialError)
   }
 
   enum Result {

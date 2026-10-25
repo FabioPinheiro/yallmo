@@ -7,6 +7,7 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.repl.debug.ReplDebugSnapshot
 import fmgp.yallmo.orchestration.{AgentResult, RunContext, StaticContext}
+import fmgp.yallmo.server.application.SessionSubmission
 
 /** The immutable state retained by one interactive REPL session.
   *
@@ -15,13 +16,19 @@ import fmgp.yallmo.orchestration.{AgentResult, RunContext, StaticContext}
   * @param continuationStart
   *   messages before this offset remain in the transcript but their opaque provider state is excluded from requests
   *   after an agent change or session resume; later continuations belong to the current runtime binding
+  * @param remoteHeadMessageId
+  *   last confirmed public snapshot head, used only by connected submission; None omits the precondition
+  * @param remoteResetContinuation
+  *   client-only reset intent for the next remote turn; never a provider continuation or local history offset
   */
 final case class ReplState(
     runContext: RunContext = RunContext(),
     logLevel: LogLevel = LogLevel.Warning,
     sessionId: Option[String] = None,
     lastProviderRequest: Option[Path] = None,
-    continuationStart: Int = 0 // TODO REVIEW considered for removal
+    continuationStart: Int = 0, // TODO REVIEW considered for removal
+    remoteHeadMessageId: Option[MessageId] = None,
+    remoteResetContinuation: Boolean = false
 ) {
 
   /** Refreshes durable conversation state without changing client preferences or provider continuation boundaries. */
@@ -36,62 +43,54 @@ final case class ReplTurn(
     newMessages: Chunk[MessagePayload]
 )
 
-/** Adapts REPL diagnostics and provider continuations to session-aware orchestration.
-  *
-  * @param agent
-  *   selected runner program; None represents an unselected startup and rejects prompts before running tools, changing
-  *   the transcript, capturing provider requests or persisting a turn
-  */
-final class ReplSession[R](
-    runner: AgentRunner[R],
-    agent: Option[AgentInstance[R]],
-    staticContext: StaticContext[R],
+/** Adapts local diagnostics and terminal state around application submission. */
+final class ReplSession[R] private (
+    submitTurn: Option[(ReplState, String, ReplOrchestrator[R]) => ZIO[R, SessionSubmitFailure, ReplTurn]]
 ) {
 
-  /** Captures the current transcript without executing the agent. */
+  /** Compatibility constructor for trusted in-process callers and test programs. */
+  def this(runner: AgentRunner[R], agent: Option[AgentInstance[R]], staticContext: StaticContext[R]) =
+    this(agent.map { selected => (state, prompt, orchestrator) =>
+      orchestrator.submitPrompt(
+        state,
+        prompt,
+        SessionSubmission.configuredExecution(runner, selected, staticContext, state.continuationStart)
+      )
+    })
+
   def debugSnapshot(state: ReplState): ReplDebugSnapshot =
     ReplDebugSnapshot(state.runContext.messages)
 
-  /** Preserves core submission failures so the client can recover the accepted session after an agent error. */
+  /** The capture path is local-only. Core submission failures retain their accepted session unchanged. */
   def submit(
       state: ReplState,
       prompt: String,
       orchestrator: ReplOrchestrator[R]
   ): ZIO[R, SessionSubmitFailure, ReplTurn] =
-    agent match {
+    submitTurn match {
       case None =>
         ZIO.fail(
           SessionSubmitFailure(
             YallmoError.InvalidConfig(
-              "No agent selected. Press Esc, a to select an agent, or configure defaultAgentId / --agent <id>."
+              "No agent selected. Press Esc, a to select an agent, or use --agent <id>."
             ),
             None
           )
         )
-      case Some(selected) =>
-        val execution = runner.execution(withCurrentContinuations(selected, state.continuationStart), staticContext)
-        LlmProviderPayloadDebug
-          .withRequestCapture(orchestrator.submitPrompt(state, prompt, execution))
-          .map { case (turn, requestCapture) =>
-            turn.copy(state = turn.state.copy(lastProviderRequest = requestCapture.orElse(state.lastProviderRequest)))
-          }
-    }
-
-  /** Filter only the request view: the runner's append-only transcript and durable history remain unchanged. */
-  private def withCurrentContinuations(selected: AgentInstance[R], start: Int): AgentInstance[R] =
-    if start <= 0 then selected
-    else
-      new AgentInstance[R] {
-        override val id: AgentId = selected.id
-        override def next(
-            task: AgentTask,
-            context: StaticContext[R],
-            current: RunContext
-        ): ZIO[R, YallmoError, AgentTurn] = {
-          val messages = current.messages.zipWithIndex.collect {
-            case (message, index) if index >= start || !message.isInstanceOf[MessagePayload.Reasoning] => message
-          }
-          selected.next(task, context, current.copy(messages = messages))
+      case Some(run) =>
+        LlmProviderPayloadDebug.withRequestCapture(run(state, prompt, orchestrator)).map { case (turn, capture) =>
+          turn.copy(state = turn.state.copy(lastProviderRequest = capture.orElse(state.lastProviderRequest)))
         }
+    }
+}
+
+object ReplSession {
+
+  /** Normal local-mode construction delegates configured execution entirely to the server application. */
+  private[repl] def fromApplication[R](application: SessionSubmission[R]): ReplSession[R] =
+    new ReplSession[R](Option.when(application.selectedAgentId.nonEmpty) { (state, prompt, _) =>
+      application.submit(state.sessionId, prompt, state.continuationStart).map { turn =>
+        ReplTurn(state.withSession(turn.session), turn.result, turn.newMessages)
       }
+    })
 }

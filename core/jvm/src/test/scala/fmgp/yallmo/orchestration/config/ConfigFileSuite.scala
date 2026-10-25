@@ -8,6 +8,7 @@ import zio.json.*
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.Comparator
+import java.util.concurrent.CopyOnWriteArrayList
 
 final class ConfigFileSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
@@ -23,18 +24,24 @@ final class ConfigFileSuite extends FunSuite {
     }
   }
 
-  test("missing config is initialized privately with empty catalogs and no selected agent") {
+  test("missing config is initialized privately with empty catalogs and no terminal preferences") {
     withDirectory { root =>
       val path = root.resolve("nested/yallmo.json")
-      val initial = run(ConfigFile.loadOrInitialize(path, "operator"))
-      assertEquals(initial, Config("operator"))
+      val initial = run(ConfigFile.loadOrInitialize(path))
+      assertEquals(initial, Config())
+      assertEquals(initial.agents, Map.empty)
+      assertEquals(initial.providers, Map.empty)
+      assertEquals(
+        initial.toJson.fromJson[zio.json.ast.Json.Obj].toOption.get.fields.map(_._1).toSet,
+        Set("agents", "providers", "browserAudioPort")
+      )
       assertEquals(initial.browserAudioPort, 5180)
       assert("\"browserAudioPort\"\\s*:\\s*5180".r.findFirstIn(Files.readString(path)).nonEmpty)
       assertEquals(Files.readString(path).fromJson[Config], Right(initial))
       if Files.getFileStore(path).supportsFileAttributeView("posix") then
         assertEquals(Files.getPosixFilePermissions(path), PosixFilePermissions.fromString("rw-------"))
       val before = Files.readString(path)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "another operator")), initial)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)), initial)
       assertEquals(Files.readString(path), before)
     }
   }
@@ -44,7 +51,7 @@ final class ConfigFileSuite extends FunSuite {
       val path = root.resolve("yallmo.json")
       val json = """{"userName":"operator","agents":{},"providers":{}}"""
       Files.writeString(path, json)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).browserAudioPort, 5180)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)).browserAudioPort, 5180)
       assertEquals(Files.readString(path), json)
     }
   }
@@ -55,15 +62,15 @@ final class ConfigFileSuite extends FunSuite {
       val id = AgentId("folder-reviewer")
       val legacy = """{"userName":"operator","agents":{"folder-reviewer":{"agentType":"OAIAgent"}}}"""
       Files.writeString(path, legacy)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).agents(id).filesystem, None)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)).agents(id).filesystem, None)
       assertEquals(Files.readString(path), legacy)
 
       val workspace = root.resolve("not created")
       val definition = AgentConfig("OAIAgent", filesystem = Some(FileSystemConfig(workspace.toString)))
-      val config = Config("operator", agents = Map(id -> definition))
+      val config = Config(agents = Map(id -> definition))
       val json = config.toJson
       Files.writeString(path, json)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)), config)
       assertEquals(Files.readString(path), json)
       assert(!Files.exists(workspace))
     }
@@ -76,7 +83,7 @@ final class ConfigFileSuite extends FunSuite {
         val json =
           s"""{"userName":"operator","agents":{"folder-reviewer":{"agentType":"OAIAgent","filesystem":$filesystem}}}"""
         Files.writeString(path, json)
-        val result = run(ConfigFile.loadOrInitialize(path, "ignored").either)
+        val result = run(ConfigFile.loadOrInitialize(path).either)
         assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
         assertEquals(Files.readString(path), json)
       }
@@ -87,16 +94,16 @@ final class ConfigFileSuite extends FunSuite {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")
       for port <- List(1, 6190, 65535) do {
-        val config = Config("operator", browserAudioPort = port)
+        val config = Config(browserAudioPort = port)
         val json = config.toJson
         Files.writeString(path, json)
-        assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+        assertEquals(run(ConfigFile.loadOrInitialize(path)), config)
         assertEquals(Files.readString(path), json)
       }
       for value <- List("-1", "0", "65536", "1.5", "\"not-a-port\"") do {
         val json = s"""{"userName":"operator","browserAudioPort":$value}"""
         Files.writeString(path, json)
-        val result = run(ConfigFile.loadOrInitialize(path, "ignored").either)
+        val result = run(ConfigFile.loadOrInitialize(path).either)
         assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]), value)
         assertEquals(Files.readString(path), json)
       }
@@ -107,7 +114,6 @@ final class ConfigFileSuite extends FunSuite {
     withDirectory { root =>
       val id = ProviderId.unsafe("account")
       val config = Config(
-        "operator",
         providers = Map(
           id -> ProviderConfig.ChatGPT(
             Some(OAuthCredentialsConfig("synthetic-access", "synthetic-refresh", 0))
@@ -117,7 +123,7 @@ final class ConfigFileSuite extends FunSuite {
       val json = config.toJsonPretty + "\n\n"
       val path = root.resolve("yallmo.json")
       Files.writeString(path, json)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)), config)
       assertEquals(Files.readString(path), json)
     }
   }
@@ -125,7 +131,7 @@ final class ConfigFileSuite extends FunSuite {
   test("concurrent initialization publishes one complete configuration without overwriting a winner") {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")
-      val results = run(ZIO.foreachPar(1 to 20)(i => ConfigFile.loadOrInitialize(path, s"operator-$i")))
+      val results = run(ZIO.foreachPar(1 to 20)(_ => ConfigFile.loadOrInitialize(path)))
       assertEquals(results.distinct.size, 1)
       assertEquals(Files.readString(path).fromJson[Config], Right(results.head))
       val files = Files.list(root)
@@ -140,7 +146,7 @@ final class ConfigFileSuite extends FunSuite {
       val json =
         """{"userName":"operator","providers":{"account":{"providerType":"ChatGPT","credentials":{"accessToken":"secret-placeholder","refreshToken":"refresh-placeholder","expiresAtMillis":"bad-secret-value"}}}}"""
       Files.writeString(path, json)
-      val result = run(ConfigFile.loadOrInitialize(path, "ignored").either)
+      val result = run(ConfigFile.loadOrInitialize(path).either)
       assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
       assert(!result.swap.toOption.get.toString.contains("secret"))
       assertEquals(Files.readString(path), json)
@@ -152,7 +158,6 @@ final class ConfigFileSuite extends FunSuite {
       val path = root.resolve("yallmo.json")
       val provider = ProviderConfig.OAI("http://localhost")
       val config = Config(
-        "operator",
         providers = Map(
           ProviderId.unsafe("local") -> provider,
           ProviderId.unsafe("other") -> provider
@@ -161,51 +166,77 @@ final class ConfigFileSuite extends FunSuite {
       val json = config.toJson
       assert(!json.contains("\"id\""))
       Files.writeString(path, json)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
+      assertEquals(run(ConfigFile.loadOrInitialize(path)), config)
       assertEquals(Files.readString(path), json)
     }
   }
 
-  test("blank names and dangling default/provider references fail validation") {
+  test("dangling provider references fail validation without rewriting") {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")
       val id = ProviderId.unsafe("local")
-      Seq(
-        Config(" "),
-        Config("operator", defaultAgentId = Some(AgentId("missing"))),
-        Config("operator", agents = Map(AgentId("bob") -> AgentConfig("OAIAgent", Seq(id))))
-      ).foreach { config =>
-        Files.writeString(path, config.toJson)
-        assert(run(ConfigFile.loadOrInitialize(path, "ignored").either).isLeft)
-        assertEquals(Files.readString(path), config.toJson)
+      val config = Config(agents = Map(AgentId("bob") -> AgentConfig("OAIAgent", Seq(id))))
+      Files.writeString(path, config.toJson)
+      assert(run(ConfigFile.loadOrInitialize(path).either).isLeft)
+      assertEquals(Files.readString(path), config.toJson)
+    }
+  }
+
+  test("non-file paths fail without changing the directory") {
+    withDirectory { root =>
+      assert(run(ConfigFile.loadOrInitialize(root).either).isLeft)
+      assert(Files.isDirectory(root))
+    }
+  }
+
+  test("legacy terminal keys ignore all values and emit one fixed sanitized warning without rewriting") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      val warning =
+        "Ignoring removed configuration keys userName, defaultAgentId, transcriberAgent; use REPL flags --user-name, --agent, --transcriber-agent instead"
+      val legacyFields = List(
+        """"userName":"SECRET_NAME"""",
+        """"defaultAgentId":"SECRET_MISSING_AGENT"""",
+        """"transcriberAgent":"SECRET_MISSING_TRANSCRIBER"""",
+        """"userName":[],"defaultAgentId":123,"transcriberAgent":{"SECRET":"VALUE"}"""
+      )
+      for fields <- legacyFields do {
+        val legacy = s"{$fields}"
+        val logs = new CopyOnWriteArrayList[String]()
+        val logger = ZLogger.default.map(line => { logs.add(line); () })
+        Files.writeString(path, legacy)
+        val loaded = run {
+          ZIO.scoped {
+            (Runtime.removeDefaultLoggers >>> Runtime.addLogger(logger)).build *> ConfigFile.loadOrInitialize(path)
+          }
+        }
+        assertEquals(loaded, Config())
+        assertEquals(legacy.fromJson[Config], Right(Config()))
+        assertEquals(loaded.toJson, Config().toJson)
+        assertEquals(logs.size, 1)
+        assert(logs.get(0).contains("level=WARN"))
+        assert(logs.get(0).contains(warning))
+        assert(!logs.get(0).contains("SECRET"))
+        assertEquals(Files.readString(path), legacy)
       }
     }
   }
 
-  test("non-file paths and invalid initial names fail without creating a config") {
-    withDirectory { root =>
-      assert(run(ConfigFile.loadOrInitialize(root, "operator").either).isLeft)
-      val path = root.resolve("missing.json")
-      assert(run(ConfigFile.loadOrInitialize(path, " ").either).isLeft)
-      assert(!Files.exists(path))
-    }
-  }
-
-  test("transcriberAgent is optional, round-trips and rejects unknown references without rewriting") {
+  test("unknown fields remain forward compatible and nested terminal key names do not warn") {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")
-      val legacy = """{"userName":"operator"}"""
-      Files.writeString(path, legacy)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")).transcriberAgent, None)
-      val id = AgentId("Transcriber")
-      val config = Config("operator", agents = Map(id -> AgentConfig("OAIAgent")), transcriberAgent = Some(id))
-      Files.writeString(path, config.toJson)
-      assertEquals(run(ConfigFile.loadOrInitialize(path, "ignored")), config)
-      val unknown = config.copy(agents = Map.empty).toJson
-      Files.writeString(path, unknown)
-      val error = run(ConfigFile.loadOrInitialize(path, "ignored").either).swap.toOption.get
-      assert(error.getMessage.contains("transcriberAgent") && error.getMessage.contains("Transcriber"))
-      assertEquals(Files.readString(path), unknown)
+      val json = """{"future":{"userName":"unused"},"browserAudioPort":6190}"""
+      val logs = new CopyOnWriteArrayList[String]()
+      val logger = ZLogger.default.map(line => { logs.add(line); () })
+      Files.writeString(path, json)
+      val loaded = run {
+        ZIO.scoped {
+          (Runtime.removeDefaultLoggers >>> Runtime.addLogger(logger)).build *> ConfigFile.loadOrInitialize(path)
+        }
+      }
+      assertEquals(loaded, Config(browserAudioPort = 6190))
+      assert(logs.isEmpty)
+      assertEquals(Files.readString(path), json)
     }
   }
 
@@ -215,7 +246,7 @@ final class ConfigFileSuite extends FunSuite {
       val json =
         """{"userName":"operator","agents":{"agent":{"agentType":"OAIAgent","capabilities":{"tools":"SECRET_INVALID_TYPE"}}}}"""
       Files.writeString(path, json)
-      val error = run(ConfigFile.loadOrInitialize(path, "ignored").either).swap.toOption.get
+      val error = run(ConfigFile.loadOrInitialize(path).either).swap.toOption.get
       assert(error.isInstanceOf[YallmoError.InvalidConfig])
       assert(!error.getMessage.contains("SECRET_INVALID_TYPE"))
       assertEquals(Files.readString(path), json)

@@ -1,7 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.orchestration.config.ProviderId
-import fmgp.yallmo.repl.ReplProviderCatalog.*
+import fmgp.yallmo.server.application.ProviderCatalog.*
 import fmgp.yallmo.repl.LoginMethod
 import munit.FunSuite
 import org.jline.reader.{EndOfFileException, LineReader, Reference, UserInterruptException, Widget}

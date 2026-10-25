@@ -65,20 +65,20 @@ final class OrchestratorLive[-R] private (
     } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
 
   override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
-    validateAgents(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)
+    validateAuthors(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     storage.loadSession(id).mapError(YallmoError.StorageFailed.apply)
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
-    getAgent(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
+    instances.validateAuthor(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
 
   override def append(
       id: SessionId,
       agentId: AgentId,
       messages: Chunk[MessagePayload]
   ): IO[YallmoError, Session] =
-    getAgent(agentId) *> storage.append(id, agentId, messages).mapError(YallmoError.StorageFailed.apply)
+    instances.validateAuthor(agentId) *> storage.append(id, agentId, messages).mapError(YallmoError.StorageFailed.apply)
 
   override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = storage.readBlob(blobId)
 
@@ -89,7 +89,7 @@ final class OrchestratorLive[-R] private (
       produce: (Chunk[Byte] => IO[YallmoError, Unit]) => ZIO[R1, YallmoError, Unit]
   ): ZIO[R1, YallmoError, Session] =
     for {
-      _ <- getAgent(agentId)
+      _ <- instances.validateAuthor(agentId)
       session <- loadSession(id)
       _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(session.agentIds.contains(agentId))
       blobId <- message.blobIds.toList match {
@@ -118,8 +118,8 @@ final class OrchestratorLive[-R] private (
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
     storage.fork(source, target).mapError(YallmoError.StorageFailed.apply)
 
-  private def validateAgents(agentIds: Chunk[AgentId]): IO[YallmoError, Unit] =
-    ZIO.foreachDiscard(agentIds)(getAgent)
+  private def validateAuthors(agentIds: Chunk[AgentId]): IO[YallmoError, Unit] =
+    ZIO.foreachDiscard(agentIds)(instances.validateAuthor)
 }
 
 object OrchestratorLive {

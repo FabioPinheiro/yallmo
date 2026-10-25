@@ -134,6 +134,27 @@ final class OrchestratorSubmitSuite extends FunSuite {
     }
   }
 
+  test("a registered user cannot execute a turn or accept a prompt as an assistant") {
+    withRoot { root =>
+      run {
+        for {
+          orchestrator <- open(root)
+          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          invalid = new AgentExecution[Any] {
+            override val agentId: AgentId = humanId
+            override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
+              ZIO.dieMessage("A user has no executable agent")
+          }
+          failed <- orchestrator.submit(sessionId, humanId, AgentTask("reject"), invalid).either
+          stored <- orchestrator.loadSession(sessionId)
+        } yield {
+          assertEquals(failed, Left(SessionSubmitFailure(YallmoError.UnknownAgent(humanId), None)))
+          assertEquals(stored.messages, Chunk.empty)
+        }
+      }
+    }
+  }
+
   test("an execution cannot replace accepted history or change its response author") {
     withRoot { root =>
       run {
@@ -193,7 +214,8 @@ final class OrchestratorSubmitSuite extends FunSuite {
         ZIO.dieMessage("Only the supplied execution should be invoked")
     }
     for {
-      instances <- RuntimeInstances.fromAgents(Chunk(participant(humanId), participant(assistantId)))
+      instances <- RuntimeInstances.fromAgents(Chunk(participant(assistantId)))
+      _ <- instances.registerUser(humanId)
       orchestrator <- OrchestratorLive.filesystem(root, instances)
     } yield orchestrator
   }

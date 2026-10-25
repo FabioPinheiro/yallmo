@@ -3,8 +3,7 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
-import java.time.{Instant, ZoneOffset}
-import java.time.format.DateTimeFormatter
+import fmgp.yallmo.server.application.SessionSubmission
 import zio.*
 
 /** REPL-facing extension of [[Orchestrator]]. */
@@ -51,9 +50,8 @@ trait ReplOrchestrator[-R] extends Orchestrator[R] {
 /** Adapts the application-facing orchestrator API to REPL state and session conventions. */
 final class ReplOrchestratorLive[-R] private (
     orchestrator: Orchestrator[R],
-    userAgent: Agent[R],
-    assistantAgent: Option[Agent[R]]
-) extends ReplOrchestrator[R] { // TODO rename/merge with ReplOrchestrator
+    sessions: SessionSubmission[?]
+) extends ReplOrchestrator[R] {
 
   export orchestrator.{getAgent, submit, listSessions, createSession, loadSession, append, fork}
 
@@ -78,58 +76,25 @@ final class ReplOrchestratorLive[-R] private (
     listSessions.map(_.map(_.id.value))
 
   override def newReplSession(name: Option[String]): IO[YallmoError, ReplState] =
-    sessionId(name).flatMap { id =>
-      createSession(id, agentIds).as(ReplState(sessionId = Some(id.value)))
-    }
+    sessions.create(name).map(session => ReplState().withSession(session))
 
   override private[repl] def submitPrompt[R1](
       previous: ReplState,
       prompt: String,
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, ReplTurn] =
-    for {
-      _ <- ZIO
-        .fail(SessionSubmitFailure(YallmoError.InvalidConfig("No matching assistant selected"), None))
-        .unless(assistantAgent.exists(_.id == execution.agentId))
-      id <- (previous.sessionId match {
-        case Some(value) => sessionId(Some(value))
-        case None        => sessionId(None).tap(createSession(_, agentIds))
-      }).mapError(SessionSubmitFailure(_, None))
-      turn <- submit(id, userAgent.id, AgentTask(prompt), execution)
-    } yield ReplTurn(previous.withSession(turn.session), turn.result, turn.newMessages)
+    sessions.submitExecution(previous.sessionId, prompt, execution).map { turn =>
+      ReplTurn(previous.withSession(turn.session), turn.result, turn.newMessages)
+    }
 
   override def resumeReplSession(id: String): IO[YallmoError, ReplState] =
-    for {
-      sessionId <- sessionId(Some(id))
-      session <- loadSession(sessionId)
-    } yield ReplState(
-      RunContext(session.messages.map(_.payload)),
-      sessionId = Some(session.id.value),
-      continuationStart = session.messages.size
-    )
+    sessions.load(id).map { session =>
+      ReplState(continuationStart = session.messages.size).withSession(session)
+    }
 
-  private val agentIds = Chunk(userAgent.id) ++ Chunk.fromIterable(assistantAgent.map(_.id))
-
-  private def sessionId(name: Option[String]): IO[YallmoError, SessionId] =
-    name match
-      case Some(value) => ZIO.fromEither(SessionId.from(value).left.map(YallmoError.InvalidSessionId(value, _)))
-      case None        => nextTimestampedSessionId
-
-  private def nextTimestampedSessionId: IO[YallmoError, SessionId] = {
-    def next: IO[YallmoError, SessionId] =
-      val id = SessionId.unsafe(ReplOrchestratorLive.SessionNameFormatter.format(Instant.now()))
-      loadSession(id).either.flatMap {
-        case Left(YallmoError.StorageFailed(YallmoError.SessionNotFound(_))) => ZIO.succeed(id)
-        case Right(_)                                                        => ZIO.sleep(1.second) *> next
-        case Left(error)                                                     => ZIO.fail(error)
-      }
-    next
-  }
 }
 
 object ReplOrchestratorLive {
-  private[repl] val SessionNameFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("'main-'uuuuMMdd-HHmmss").withZone(ZoneOffset.UTC)
 
   /** Adapts storage/session conventions for one selection; switching constructs another adapter over shared storage.
     *
@@ -142,5 +107,14 @@ object ReplOrchestratorLive {
       userAgent: Agent[R],
       assistantAgent: Option[Agent[R]]
   ): ReplOrchestrator[R] =
-    new ReplOrchestratorLive(orchestrator, userAgent, assistantAgent)
+    new ReplOrchestratorLive(
+      orchestrator,
+      SessionSubmission.make(orchestrator, userAgent.id, assistantAgent.map(_.id))
+    )
+
+  private[repl] def fromApplication[R](
+      orchestrator: Orchestrator[R],
+      sessions: SessionSubmission[R]
+  ): ReplOrchestrator[R] =
+    new ReplOrchestratorLive(orchestrator, sessions)
 }

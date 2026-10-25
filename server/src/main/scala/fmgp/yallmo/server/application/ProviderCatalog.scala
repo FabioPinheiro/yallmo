@@ -1,6 +1,6 @@
-package fmgp.yallmo.repl
+package fmgp.yallmo.server.application
 
-import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{Config, ConfigFile, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import zio.*
 import zio.json.*
@@ -19,8 +19,8 @@ import scala.util.Try
   * coordinate external writers. Existing files must be regular, non-symlink files in a trusted directory. Missing files
   * are not initialized here; startup owns initialization. No environment, network or authentication is used.
   */
-final class ReplProviderCatalog private (path: Path, lock: Semaphore) {
-  import ReplProviderCatalog.*
+final class ProviderCatalog private (path: Path, lock: Semaphore) {
+  import ProviderCatalog.*
 
   /** All configured providers, sorted by their stored IDs, with credential-safe display values only. */
   def list: IO[Error, Vector[Entry]] =
@@ -116,13 +116,7 @@ final class ReplProviderCatalog private (path: Path, lock: Semaphore) {
             case _                                    => Left(Error.InvalidConfig)
           }
           config <- text.fromJson[Config].left.map(_ => Error.InvalidConfig)
-          _ <- Either.cond(
-            config.userName.trim.nonEmpty && config.browserAudioPort >= 1 && config.browserAudioPort <= 65535 &&
-              config.defaultAgentId.forall(config.agents.contains) &&
-              config.agents.values.forall(_.providerIds.forall(config.providers.contains)),
-            (),
-            Error.InvalidConfig
-          )
+          _ <- ConfigFile.validate(config).left.map(_ => Error.InvalidConfig)
         } yield Snapshot(obj, config)
       }
     } yield snapshot
@@ -152,7 +146,7 @@ final class ReplProviderCatalog private (path: Path, lock: Semaphore) {
       .uninterruptible
 }
 
-object ReplProviderCatalog {
+object ProviderCatalog {
 
   /** Creation intentionally has no OAuth or secret fields, nor a ChatGPT endpoint override. */
   enum Creation {
@@ -192,8 +186,8 @@ object ReplProviderCatalog {
   }
 
   /** Captures only a path and a per-instance lock. Does not read/create the file. */
-  def make(path: Path): UIO[ReplProviderCatalog] =
-    Semaphore.make(1).map(new ReplProviderCatalog(path.toAbsolutePath.normalize, _))
+  def make(path: Path): UIO[ProviderCatalog] =
+    Semaphore.make(1).map(new ProviderCatalog(path.toAbsolutePath.normalize, _))
 
   private final case class Snapshot(json: Json.Obj, config: Config)
 

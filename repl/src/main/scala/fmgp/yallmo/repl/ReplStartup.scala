@@ -1,72 +1,48 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.model.{Agent, AgentId, YallmoError}
-import fmgp.yallmo.model.llm.ProviderGenerateOptions
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
+import fmgp.yallmo.server.application.ApplicationRuntime
 import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
+import java.nio.file.Path
 import zio.*
 import zio.http.Client
-import zio.json.ast.Json
 
 /** Configured startup and lazy agent selection, sharing runtime caches and session storage across selections. */
 private[repl] final class ReplStartup private (
-    val instances: RuntimeInstances[Any],
+    runtime: ApplicationRuntime,
     val userAgent: Agent[Any],
     val selected: Option[ReplSelectedAgent],
-    val providerCatalog: ReplProviderCatalog,
+    val providerCatalog: ProviderCatalog,
     val providerLogin: ProviderLoginService,
-    options: ReplLaunchOptions,
-    config: Config
+    options: ReplLaunchOptions
 ) {
+  val browserAudioPort: Int = runtime.browserAudioPort
+
+  val instances: RuntimeInstances[Any] = runtime.instances
 
   /** Builds storage and a session. Unselected sessions expose commands but reject prompts without running tools. */
-  def application(
-      availableTools: Chunk[AgentTool[ReplTools.Environment]],
-      availability: ReplToolAvailability
-  ): IO[YallmoError, ReplApplication[ReplTools.Environment]] =
+  def application: ZIO[Scope, YallmoError, ReplApplication[Any]] =
     for {
-      context = StaticContext[ReplTools.Environment](
-        ReplStartup.DefaultSystemPrompt,
-        tools = availableTools.map(_.definition)
-      )
-      _ <- ZIO.fromEither(ConfigFile.validateCapabilities(config, context))
-      orchestrator <- options.storageRoot match {
-        case None       => OrchestratorLive.inMemory(instances)
-        case Some(root) => OrchestratorLive.filesystem(root, instances)
-      }
-      voice <- ReplStartup.voice(config, instances, context, orchestrator, userAgent.id)
+      opened <- runtime.openWorkspace(Path.of("").toAbsolutePath.normalize)
+      (assembled, availability) = opened
+      context = assembled.context(None)
+      orchestrator = assembled.orchestrator
+      voice <- ReplStartup.voice(runtime, options.transcriberAgentId, context, orchestrator, userAgent.id)
       application <- {
-        val runner = new AgentRunner[ReplTools.Environment](
-          availableTools.map(tool => tool.definition.key -> tool).toMap,
-          Map.empty
+        val choices = runtime.agentSummaries.map(summary =>
+          ReplAgentChoice(summary.id, summary.agentType, summary.providerIds, summary.model)
         )
-        val choices = config.agents.toVector
-          .sortBy(pair => AgentId.value(pair._1))
-          .map { case (id, definition) =>
-            ReplAgentChoice(
-              id,
-              definition.agentType,
-              definition.providerIds.map(ProviderId.value).toVector,
-              model = definition.config.fields
-                .collectFirst { case ("model", Json.Str(value)) => value }
-                .getOrElse(if definition.agentType == "FolderStructureAgent" then "n/a" else "<invalid model>")
-            )
-          }
-        def build(selection: Option[ReplSelectedAgent]): IO[YallmoError, ReplApplication[ReplTools.Environment]] =
+        def build(
+            selection: Option[ReplSelectedAgent]
+        ): IO[YallmoError, ReplApplication[Any]] =
           ZIO.succeed {
-            val replOrchestrator = ReplOrchestratorLive.make(orchestrator, userAgent, selection.map(_.adapter))
-            val context = StaticContext[ReplTools.Environment](
-              selection.fold(ReplStartup.DefaultSystemPrompt)(_.systemPrompt),
-              tools = availableTools.map(_.definition)
-            )
-            new ReplApplication[ReplTools.Environment](
-              new ReplSession[ReplTools.Environment](
-                runner,
-                selection.map(_.bind[ReplTools.Environment](orchestrator.readBlob)),
-                context
-              ),
+            val submission = assembled.submission(userAgent.id, selection.map(_.binding))
+            val replOrchestrator = ReplOrchestratorLive.fromApplication(orchestrator, submission)
+            new ReplApplication[Any](
+              ReplSession.fromApplication(submission),
               availability,
               replOrchestrator,
               initialState = ReplState(logLevel = options.logLevel),
@@ -75,7 +51,7 @@ private[repl] final class ReplStartup private (
               providerLogin = Some(providerLogin),
               agentChoices = choices,
               agentSelector =
-                Some(id => ReplStartup.resolve(config, instances, id).flatMap(value => build(Some(value)))),
+                Some(id => runtime.resolve(id).map(ReplSelectedAgent(_)).flatMap(value => build(Some(value)))),
               transcriber = voice,
               userId = userAgent.id
             )
@@ -87,102 +63,50 @@ private[repl] final class ReplStartup private (
 
 private[repl] object ReplStartup {
 
-  val DefaultSystemPrompt =
-    "You are Yallmo, a concise terminal assistant. Answer the user's request concisely. Use an advertised tool only when it is needed."
+  val DefaultSystemPrompt = ApplicationRuntime.DefaultSystemPrompt
 
-  /** Resolves the ordinary configured audio agent and applies REPL voice policy without inference or auth probes. */
+  /** Explicit trusted in-process audio selection; no default or provider/auth probe. */
   private[repl] def voice[R](
-      config: Config,
-      instances: RuntimeInstances[Any],
+      runtime: ApplicationRuntime,
+      transcriberAgentId: Option[AgentId],
       available: StaticContext[R],
       orchestrator: Orchestrator[Any],
       humanId: AgentId
   ): IO[YallmoError, Option[Transcriber]] =
-    ZIO.foreach(config.transcriberAgent) { id =>
-      val checked = for {
-        definition <- ZIO
-          .fromOption(config.agents.get(id))
-          .orElseFail(YallmoError.InvalidConfig("transcriberAgent must reference a configured agent"))
-        settings <- ZIO.fromEither(ConfiguredAgentSettings.decode(definition))
-        context <- ZIO.fromEither(definition.capabilities.resolve(id, available))
-        _ <- ZIO
-          .fail(
-            YallmoError.InvalidConfig(
-              "Transcription requires effectively empty capabilities.tools/retrievers/skills/extensions; explicitly set each allowlist to [] to disable inherited capabilities"
-            )
-          )
-          .unless(
-            context.tools.isEmpty && context.retrievers.isEmpty && context.skills.isEmpty && context.extensions.isEmpty
-          )
-        agent <- instances.getAudioAgent(id)
-      } yield Transcriber.make(agent, settings, orchestrator, humanId)
-      checked.mapError(error =>
-        YallmoError.InvalidConfig(s"transcriberAgent '${AgentId.value(id)}': ${error.getMessage}")
-      )
-    }
-
-  /** Registers the configured human identity and resolves only the CLI/default agent, without inference or auth.
-    *
-    * @param config
-    *   loaded immutable catalog, including the human name and optional startup preference
-    * @param options
-    *   CLI agent selection takes precedence over defaultAgentId; absent selections remain unselected
-    */
-  def make(config: Config, options: ReplLaunchOptions): ZIO[Client, YallmoError, ReplStartup] =
-    for {
-      humanId <- ZIO.fromEither(
-        AgentId.from(config.userName).left.map(_ => YallmoError.InvalidConfig("userName must not be blank"))
-      )
-      channel <- HumanTurnChannel.make
-      human = HumanAgent.make(humanId, channel)
-      instances <- RuntimeInstances.make(config, Chunk(human))
-      selected <- ZIO.foreach(options.agentId.orElse(config.defaultAgentId))(resolve(config, instances, _))
-      catalog <- ReplProviderCatalog.make(options.configPath)
-      client <- ZIO.service[Client]
-      login = new ProviderLoginService(catalog, OpenAiCodexAuth.oauthFlow(client))
-    } yield new ReplStartup(instances, human, selected, catalog, login, options, config)
-
-  private def resolve(
-      config: Config,
-      instances: RuntimeInstances[Any],
-      id: AgentId
-  ): IO[YallmoError, ReplSelectedAgent] =
-    ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id)).flatMap { definition =>
-      definition.agentType match {
-        case "OAIAgent" | "ChatGPTAgent" => resolveNative(definition, instances, id)
-        case "FolderStructureAgent"      =>
-          instances.getAgent(id).map(adapter => ReplSelectedAgent.Folder(adapter, definition.capabilities))
-        case name =>
-          ZIO.fail(
-            YallmoError
-              .InvalidConfig(s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent or FolderStructureAgent")
-          )
+    ZIO.foreach(transcriberAgentId)(id =>
+      runtime.resolveTranscriber(id, available).map { case (agent, settings) =>
+        Transcriber.make(agent, settings, orchestrator, humanId)
       }
-    }
-
-  private def resolveNative(
-      definition: AgentConfig,
-      instances: RuntimeInstances[Any],
-      id: AgentId
-  ): IO[YallmoError, ReplSelectedAgent] =
-    for {
-      settings <- ZIO
-        .fromEither(ConfiguredAgentSettings.decode(definition, defaultSystemPrompt = Some(DefaultSystemPrompt)))
-        .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}"))
-      adapter <- instances.getAgent(id)
-      providerId <- ZIO
-        .fromOption(definition.providerIds.headOption)
-        .orElseFail(YallmoError.InvalidConfig("Selected agent requires one provider"))
-    } yield ReplSelectedAgent.Native(
-      adapter,
-      providerId,
-      NativeFunctionAgent[Agent[Any]](
-        id,
-        settings.model,
-        ProviderGenerateOptions(responseMimeType = None, thinkingLevel = settings.thinkingLevel),
-        settings.parallelToolCalls
-      ),
-      settings.systemPrompt
     )
 
+  /** The server loader owns the default file. Register the supplied local human before any assembly. */
+  def make(options: ReplLaunchOptions): ZIO[Client, YallmoError, ReplStartup] =
+    for {
+      humanId <- identity(options)
+      channel <- HumanTurnChannel.make
+      human = HumanAgent.make(humanId, channel)
+      loaded <- ApplicationRuntime.load(Chunk(human))
+      (runtime, catalog) = loaded
+      startup <- fromRuntime(runtime, catalog, human, options)
+    } yield startup
+
+  private def identity(options: ReplLaunchOptions): IO[YallmoError, AgentId] =
+    ZIO.fromEither(
+      AgentId.from(options.userName).left.map(_ => YallmoError.InvalidConfig("Invalid --user-name identity"))
+    )
+
+  /** Trusted deterministic fixture seam, never a config/path or remote transport boundary. */
+  private[repl] def fromRuntime(
+      runtime: ApplicationRuntime,
+      catalog: ProviderCatalog,
+      human: Agent[Any],
+      options: ReplLaunchOptions
+  ): ZIO[Client, YallmoError, ReplStartup] =
+    for {
+      humanId <- identity(options)
+      _ <- ZIO.fail(YallmoError.InvalidConfig("Local human identity mismatch")).unless(human.id == humanId)
+      selected <- ZIO.foreach(options.agentId)(id => runtime.resolve(id).map(ReplSelectedAgent(_)))
+      client <- ZIO.service[Client]
+      login = new ProviderLoginService(catalog, OpenAiCodexAuth.oauthFlow(client))
+    } yield new ReplStartup(runtime, human, selected, catalog, login, options)
 }

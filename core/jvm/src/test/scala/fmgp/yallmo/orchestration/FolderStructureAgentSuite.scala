@@ -69,7 +69,6 @@ final class FolderStructureAgentSuite extends FunSuite {
       val otherFs = run(FileSystem.open(otherRoot.toString))
       val otherId = AgentId("other-reviewer")
       val config = Config(
-        "operator",
         agents = Map(
           id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(root.toString))),
           otherId -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(otherRoot.toString)))
@@ -79,7 +78,7 @@ final class FolderStructureAgentSuite extends FunSuite {
       Files.writeString(path, config.toJson)
       run {
         (for {
-          loaded <- ConfigFile.loadOrInitialize(path, "ignored")
+          loaded <- ConfigFile.loadOrInitialize(path)
           instances <- RuntimeInstances.make(loaded)
           agent <- instances.getAgent(id)
           cached <- instances.getAgent(id)
@@ -105,7 +104,6 @@ final class FolderStructureAgentSuite extends FunSuite {
       val relative = Path.of("").toAbsolutePath.relativize(rootLink)
       for (path, index) <- List(rootLink, parentLink.resolve(root.getFileName), relative).zipWithIndex do {
         val config = Config(
-          "operator",
           agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(path.toString))))
         )
         val instances = run(RuntimeInstances.make(config).provide(Client.default))
@@ -123,7 +121,6 @@ final class FolderStructureAgentSuite extends FunSuite {
       val otherRoot = Files.createDirectory(root.resolveSibling("other"))
       val link = Files.createSymbolicLink(root.resolveSibling("root-link"), root)
       val config = Config(
-        "operator",
         agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(link.toString))))
       )
       val instances = run(RuntimeInstances.make(config).provide(Client.default))
@@ -144,7 +141,6 @@ final class FolderStructureAgentSuite extends FunSuite {
       Files.createSymbolicLink(root.resolve("inside-link"), target)
       val link = Files.createSymbolicLink(root.resolveSibling("root-link"), root)
       val config = Config(
-        "operator",
         agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(link.toString))))
       )
       val result = run {
@@ -167,7 +163,7 @@ final class FolderStructureAgentSuite extends FunSuite {
         ZIO
           .foreach(None :: invalid.map(path => Some(FileSystemConfig(path)))) { filesystem =>
             val config =
-              Config("operator", agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = filesystem)))
+              Config(agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = filesystem)))
             RuntimeInstances.make(config).flatMap(_.getAgent(id).either)
           }
           .provide(Client.default)

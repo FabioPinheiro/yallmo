@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.grammar.{CompletionRequest, ReplGrammar}
 import fmgp.yallmo.repl.voice.AudioRecorder
@@ -20,29 +21,59 @@ import zio.*
 import java.nio.file.{Files, Path, Paths}
 import java.util.List
 
-/** JLine-backed terminal client with editable input, persistent history, and grammar-driven Tab completion. */
+/** JLine-backed terminal client with editable input, persistent history, and grammar-driven Tab completion.
+  *
+  * @param createBrowserAudioBridge
+  *   deferred acquisition of the HTTP bridge for browser microphone recording (`m`) and speech playback (`t`), not a
+  *   browser launcher. [[TerminalBrowserAudio]] acquires it lazily when a browser-audio action needs it, caches a
+  *   successful bridge, and releases it when the REPL scope ends. The terminal displays a setup URL to open manually.
+  *   Supplying this effect allows a configured port or a test implementation; connected mode never evaluates it.
+  */
 final class TerminalRepl[R] private[terminal] (
-    private var application: ReplApplication[R],
+    private var application: ReplApplicationApi[R],
     reader: StatusLineReader,
-    recorder: AudioRecorder,
-    createBrowser: ZIO[Scope, BrowserAudioError, BrowserAudioBridge] = BrowserAudioBridge.make
+    recorder: Option[AudioRecorder],
+    createBrowserAudioBridge: => ZIO[Scope, BrowserAudioError, BrowserAudioBridge] = BrowserAudioBridge.make
 ) {
-  private val loginInput = new TerminalProviderLoginInput(reader.getTerminal, Some(reader))
-  private val terminalStatus = new TerminalVoiceModeStatus(reader, application.activeAgent)
-  private val providerMenu = new TerminalProviderMode(reader)
+  def this(application: ReplApplicationApi[R], reader: StatusLineReader, recorder: AudioRecorder) =
+    this(application, reader, Some(recorder), BrowserAudioBridge.make)
+  def this(
+      application: ReplApplicationApi[R],
+      reader: StatusLineReader,
+      recorder: AudioRecorder,
+      createBrowserAudioBridge: => ZIO[Scope, BrowserAudioError, BrowserAudioBridge]
+  ) =
+    this(application, reader, Some(recorder), createBrowserAudioBridge)
+
+  private val loginInput =
+    Option.when(!application.remoteConnection)(new TerminalProviderLoginInput(reader.getTerminal, Some(reader)))
+  private val terminalStatus = new TerminalVoiceModeStatus(
+    reader,
+    application.activeAgent,
+    application.remoteConnection,
+    application.selectedAgentId,
+    application.canSubmit
+  )
+  private val providerMenu = Option.when(!application.remoteConnection)(new TerminalProviderMode(reader))
   private val agentMenu = new TerminalAgentMode(reader)
-  private val providerClient = application.providerCatalog.map(TerminalProviderMenu.client)
+  private val providerClient = Option
+    .unless(application.remoteConnection)(application.providerCatalog)
+    .flatten
+    .map(TerminalProviderMenu.client)
   private val menus = new TerminalMenus(
     reader,
     application.activeAgent,
-    Some(() => providerMenu.open()),
-    Some(() => agentMenu.open(application.agentChoices, application.activeAgent))
+    providerMenu.map(menu => () => menu.open()),
+    Some(() =>
+      agentMenu.openSelection(application.agentChoices, application.selectedAgentId, application.remoteConnection)
+    ),
+    application.remoteConnection
   )
-  private val transcriber = application.transcriber
+  private val transcriber = Option.unless(application.remoteConnection)(application.transcriber).flatten
   terminalStatus.install()
   menus.install()
   installStartupMode()
-  providerMenu.install()
+  providerMenu.foreach(_.install())
   agentMenu.install()
   installQuitBinding()
 
@@ -51,34 +82,38 @@ final class TerminalRepl[R] private[terminal] (
       .scoped {
         for {
           state <- Ref.make(application.initialState)
-          // Widgets must retain the configured file/console loggers across their unsafe runtime boundary.
-          runtime <- ZIO.runtime[Any]
-          scope <- ZIO.service[Scope]
-          browser <- TerminalBrowserAudio.make(
-            // A recording widget holds JLine's lock: never make capture wait for printAbove on another thread.
-            url => ZIO.attemptBlocking(reader.printAbove(s"Browser audio setup: $url")).ignore.forkIn(scope).unit,
-            createBrowser
-          )
-          _ <- ZIO.succeed {
-            new VoiceInsert(reader, recorder, transcriber, terminalStatus, runtime = runtime).install()
-            new VoiceInsert(
-              reader,
-              browser.recorder,
-              transcriber,
-              terminalStatus,
-              "m",
-              browser.recordingStarted,
-              runtime
-            )
-              .install()
-            installSpeechBinding(state, browser, scope, runtime)
+          _ <- ZIO.foreachDiscard(recorder.filter(_ => !application.remoteConnection)) { localRecorder =>
+            for {
+              // Widgets must retain the configured file/console loggers across their unsafe runtime boundary.
+              runtime <- ZIO.runtime[Any]
+              scope <- ZIO.service[Scope]
+              browser <- TerminalBrowserAudio.make(
+                // A recording widget holds JLine's lock: never make capture wait for printAbove on another thread.
+                url => ZIO.attemptBlocking(reader.printAbove(s"Browser audio setup: $url")).ignore.forkIn(scope).unit,
+                createBrowserAudioBridge
+              )
+              _ <- ZIO.succeed {
+                new VoiceInsert(reader, localRecorder, transcriber, terminalStatus, runtime = runtime).install()
+                new VoiceInsert(
+                  reader,
+                  browser.recorder,
+                  transcriber,
+                  terminalStatus,
+                  "m",
+                  browser.recordingStarted,
+                  runtime
+                )
+                  .install()
+                installSpeechBinding(state, browser, scope, runtime)
+              }
+            } yield ()
           }
           previousReadWasInterrupt <- Ref.make(false)
           _ <- loop(state, previousReadWasInterrupt)
         } yield ()
       }
       .ensuring(ZIO.attemptBlocking {
-        agentMenu.close(); providerMenu.close()
+        agentMenu.close(); providerMenu.foreach(_.close())
       }.ignore *> saveHistory *> terminalStatus.close)
 
   private def loop(state: Ref[ReplState], previousReadWasInterrupt: Ref[Boolean]): ZIO[R, Nothing, Unit] = {
@@ -110,7 +145,7 @@ final class TerminalRepl[R] private[terminal] (
 
   /** Switch only the runtime, retaining the conversation/session. Old opaque provider state is not replayable. */
   private def selectAgent(id: fmgp.yallmo.model.AgentId, state: Ref[ReplState]): UIO[Unit] =
-    if application.activeAgent.exists(_.agentId == fmgp.yallmo.model.AgentId.value(id)) then
+    if application.selectedAgentId.contains(id) && !application.remoteConnection then
       ZIO.succeed(agentMenu.complete(Right(())))
     else
       application.selectAgent(id).either.flatMap {
@@ -119,9 +154,12 @@ final class TerminalRepl[R] private[terminal] (
           state.get.flatMap { previous =>
             ZIO.succeed {
               application = next
-              terminalStatus.selectAgent(next.activeAgent)
+              terminalStatus.selectAgent(next.activeAgent, next.selectedAgentId)
               agentMenu.complete(Right(()))
-            } *> state.set(previous.copy(continuationStart = previous.runContext.messages.size))
+            } *> state.set(
+              if next.remoteConnection then previous.copy(remoteResetContinuation = true)
+              else previous.copy(continuationStart = previous.runContext.messages.size)
+            )
           }
       }
 
@@ -133,18 +171,19 @@ final class TerminalRepl[R] private[terminal] (
     val execute = action match {
       case Action.Catalog(operation) =>
         providerClient
-          .fold[IO[ReplProviderCatalog.Error, TerminalProviderMenu.Reply]](
-            ZIO.fail(ReplProviderCatalog.Error.ReadFailed)
+          .fold[IO[ProviderCatalog.Error, TerminalProviderMenu.Reply]](
+            ZIO.fail(ProviderCatalog.Error.ReadFailed)
           )(_.execute(operation))
           .either
-          .flatMap(result => ZIO.succeed(providerMenu.complete(result)))
+          .flatMap(result => ZIO.succeed(providerMenu.foreach(_.complete(result))))
       case Action.Login(id, method) =>
-        loginInput
-          .profileLogin(id, method, application.providerLogin)
-          .flatMap(result => ZIO.succeed(providerMenu.completeLogin(result)))
+        ZIO.foreachDiscard(loginInput)(
+          _.profileLogin(id, method, application.providerLogin)
+            .flatMap(result => ZIO.succeed(providerMenu.foreach(_.completeLogin(result))))
+        )
       case Action.Close => ZIO.unit
     }
-    execute *> ZIO.succeed(providerMenu.takeAction()).flatMap {
+    execute *> ZIO.succeed(providerMenu.flatMap(_.takeAction())).flatMap {
       case Some(next) => handleProviderActions(next)
       case None       => ZIO.unit
     }
@@ -160,7 +199,13 @@ final class TerminalRepl[R] private[terminal] (
             (TerminalEventRenderer.render(event) *>
               Console
                 .printLine(
-                  "NORMAL: Esc. p: PROVIDER (Up/Down, Enter: inspect/create; ChatGPT details: login); a: AGENTS; i: edit; v: JVM voice input; m: browser microphone; t: speak latest assistant; q: exit. Space stops recording; Esc cancels."
+                  if application.remoteConnection then
+                    if application.canSubmit then
+                      "TRUSTED LOCAL, UNAUTHENTICATED: a: configured agent; i: prompts; q: exit. /new [name], /session list|resume <id>, /history, /log. Ctrl+C never cancels server work."
+                    else
+                      "READ-ONLY: a: agent preference; i: commands; q: exit. /help, /session list, /session resume <id>, /history, /log, /exit."
+                  else
+                    "Use // to send a prompt beginning with /. NORMAL: Esc. p: PROVIDER (Up/Down, Enter: inspect/create; ChatGPT details: login); a: AGENTS; i: edit; v: JVM voice input; m: browser microphone; t: speak latest assistant; q: exit. Space stops recording; Esc cancels."
                 )
                 .orDie)
               .as(currentState -> false)
@@ -172,13 +217,13 @@ final class TerminalRepl[R] private[terminal] (
     }
 
   private def readLine: UIO[TerminalRepl.ReadResult] =
-    (loginInput.discardRemainder *> ZIO
+    (ZIO.foreachDiscard(loginInput)(_.discardRemainder) *> ZIO
       .attemptBlocking {
         val line = reader.readLine(TerminalPrompt.user(application.userId))
         agentMenu.takeSelection() match {
           case Some(id) => TerminalRepl.ReadResult.AgentSelection(id)
           case None     =>
-            providerMenu.takeAction() match {
+            providerMenu.flatMap(_.takeAction()) match {
               case Some(action) => TerminalRepl.ReadResult.ProviderAction(action)
               case None         => TerminalRepl.ReadResult.Line(line)
             }
@@ -282,7 +327,7 @@ object TerminalRepl {
   /** Runs the JLine client, restoring the system terminal on every exit. Unsupported terminals fail without fallback.
     */
   def runSystem[R](
-      application: ReplApplication[R],
+      application: ReplApplicationApi[R],
       recorder: AudioRecorder,
       browserAudioPort: Int = 5180
   ): ZIO[R, Throwable, Unit] =
@@ -291,7 +336,7 @@ object TerminalRepl {
     }
 
   private[terminal] def runWithTerminal[R](
-      application: ReplApplication[R],
+      application: ReplApplicationApi[R],
       terminal: Terminal,
       recorder: AudioRecorder,
       browserAudioPort: Int = 5180
@@ -303,17 +348,31 @@ object TerminalRepl {
         .attemptBlocking(
           new TerminalRepl(
             application,
-            buildReader(terminal),
+            buildReader(terminal, application.remoteConnection, application.canSubmit),
             recorder,
             BrowserAudioBridge.make(browserAudioPort)
           )
         )
         .flatMap(_.run)
 
+  /** Connected entry requires no recorder and never constructs browser, voice or provider-login services. */
+  def runConnectedSystem(application: ConnectedReplApplication): Task[Unit] =
+    ZIO.acquireReleaseWith(ZIO.attemptBlocking(TerminalBuilder.builder().system(true).build()))(closeTerminal) {
+      terminal => runConnectedWithTerminal(application, terminal)
+    }
+
+  private[repl] def runConnectedWithTerminal(application: ConnectedReplApplication, terminal: Terminal): Task[Unit] =
+    if terminal.getType.startsWith(Terminal.TYPE_DUMB) then
+      ZIO.fail(IllegalStateException("The REPL requires an interactive terminal with line-editing support."))
+    else
+      ZIO
+        .attemptBlocking(new TerminalRepl(application, buildReader(terminal, true, application.canSubmit), None))
+        .flatMap(_.run)
+
   private def closeTerminal(terminal: Terminal): UIO[Unit] =
     ZIO.attemptBlocking(terminal.close()).ignore
 
-  private def buildReader(terminal: Terminal): StatusLineReader = {
+  private def buildReader(terminal: Terminal, remoteConnection: Boolean, canSubmit: Boolean): StatusLineReader = {
     Option(historyPath.getParent).foreach(parent => Files.createDirectories(parent))
     // Equivalent to LineReaderBuilder's defaults, with a bounded status resize hook.
     val variables = new java.util.HashMap[String, Object]()
@@ -322,19 +381,27 @@ object TerminalRepl {
     variables.put(LineReader.HISTORY_FILE, historyPath)
     val reader = new StatusLineReader(terminal, variables)
     reader.setHistory(new org.jline.reader.impl.history.DefaultHistory())
-    reader.setCompleter(new ReplCompleter)
+    reader.setCompleter(new ReplCompleter(remoteConnection, canSubmit))
 
     // Default subsequent prompts to INSERT; installStartupMode selects NORMAL for the first prompt only.
     reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
     reader
   }
 
-  private final class ReplCompleter extends Completer {
+  private[terminal] final class ReplCompleter(remoteConnection: Boolean, canSubmit: Boolean = false) extends Completer {
     override def complete(reader: LineReader, line: ParsedLine, candidates: List[Candidate]): Unit = {
       val result = ReplGrammar.complete(CompletionRequest(line.line(), line.cursor()))
-      result.candidates.foreach { candidate =>
-        candidates.add(new Candidate(candidate.value, candidate.value, "REPL", candidate.description, null, null, true))
-      }
+      result.candidates
+        .filter(candidate =>
+          !remoteConnection ||
+            (!candidate.value.startsWith("/") && !line.line().trim.startsWith("/debug")) ||
+            ConnectedReplApplication.commands(canSubmit).contains(candidate.value)
+        )
+        .foreach { candidate =>
+          candidates.add(
+            new Candidate(candidate.value, candidate.value, "REPL", candidate.description, null, null, true)
+          )
+        }
     }
   }
 }

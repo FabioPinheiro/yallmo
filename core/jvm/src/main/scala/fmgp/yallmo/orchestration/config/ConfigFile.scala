@@ -20,10 +20,8 @@ object ConfigFile {
     *
     * @param path
     *   explicitly selected configuration file; parent directories are created only when initializing a missing file
-    * @param initialUserName
-    *   operator name for a newly initialized file; ignored when an existing file is loaded
     */
-  def loadOrInitialize(path: Path, initialUserName: String): IO[YallmoError, Config] =
+  def loadOrInitialize(path: Path): IO[YallmoError, Config] =
     for {
       json <- ZIO
         .attemptBlocking {
@@ -31,8 +29,7 @@ object ConfigFile {
           try Files.readString(target, UTF_8)
           catch {
             case _: NoSuchFileException =>
-              val initial = Config(initialUserName)
-              if initialUserName.trim.isEmpty then throw IllegalArgumentException("Missing initial user name")
+              val initial = Config()
               val parent = target.getParent
               Files.createDirectories(parent)
               val posix = Files.getFileStore(parent).supportsFileAttributeView("posix")
@@ -56,6 +53,18 @@ object ConfigFile {
           .left
           .map(_ => YallmoError.InvalidConfig("Invalid configuration JSON; check its structure and field types"))
       )
+      _ <- ZIO
+        .logWarning(
+          "Ignoring removed configuration keys userName, defaultAgentId, transcriberAgent; use REPL flags --user-name, --agent, --transcriber-agent instead"
+        )
+        .when(
+          json
+            .fromJson[zio.json.ast.Json.Obj]
+            .toOption
+            .exists(_.fields.exists { case (name, _) =>
+              Set("userName", "defaultAgentId", "transcriberAgent").contains(name)
+            })
+        )
       _ <- ZIO.fromEither(validate(config))
     } yield config
 
@@ -71,7 +80,6 @@ object ConfigFile {
 
   def validate(config: Config): Either[YallmoError, Unit] =
     for {
-      _ <- Either.cond(config.userName.trim.nonEmpty, (), YallmoError.InvalidConfig("userName must not be blank"))
       _ <- Either.cond(
         config.browserAudioPort >= 1 && config.browserAudioPort <= 65535,
         (),
@@ -81,18 +89,6 @@ object ConfigFile {
         config.agents.values.forall(_.filesystem.forall(_.root.trim.nonEmpty)),
         (),
         YallmoError.InvalidConfig("Agent filesystem.root must not be blank")
-      )
-      _ <- Either.cond(
-        config.defaultAgentId.forall(config.agents.contains),
-        (),
-        YallmoError.InvalidConfig("defaultAgentId must reference a configured agent")
-      )
-      _ <- Either.cond(
-        config.transcriberAgent.forall(config.agents.contains),
-        (),
-        YallmoError.InvalidConfig(
-          s"transcriberAgent '${config.transcriberAgent.map(AgentId.value).getOrElse("")}' must reference a configured agent"
-        )
       )
       _ <- Either.cond(
         config.agents.values.forall(_.providerIds.forall(config.providers.contains)),

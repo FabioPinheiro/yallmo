@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
@@ -95,7 +96,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
         }),
         StaticContext[Any]("synthetic")
       ),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       orchestrator,
       initialState = initial,
       activeAgent = Some(ReplActiveAgent(name, name, name, None)),
@@ -244,7 +245,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
         assertEquals(terminal.reader.getBuffer.cursor(), 2)
         assertEquals(fixture.transcriptions.size(), 0)
         assertEquals(fixture.prompts.size(), 0)
-        assert(terminal.text.contains("configure transcriberAgent"))
+        assert(terminal.text.contains("--transcriber-agent"))
       }
       terminal.quit()
     } finally terminal.close()

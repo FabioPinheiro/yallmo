@@ -1,9 +1,31 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.model.{AgentId, Message, MessagePayload}
+import org.jline.utils.AttributedString
 import zio.*
 
 private[terminal] object TerminalMessageRenderer {
+
+  /** Public wire projection only: never reconstruct persisted messages or private continuations. */
+  def renderSnapshot(message: fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot): String = {
+    def clean(value: String) = TerminalStatusLayout.sanitize(value)
+    val tool = message.toolName.fold("")(name => s" tool[${clean(name)}]")
+    val blobs = message.blobIds.map(id => s" blob[${clean(fmgp.yallmo.model.BlobId.value(id))}]").mkString
+    s"${clean(message.role)}[${clean(AgentId.value(message.agentId))}]$tool> ${sanitizeBody(message.content)}$blobs"
+  }
+
+  private def sanitizeBody(text: String): String = {
+    val plain = AttributedString.stripAnsi(text).replace("\r\n", "\n").replace('\r', '\n')
+    val result = new java.lang.StringBuilder
+    plain.codePoints().forEach { code =>
+      val kind = Character.getType(code)
+      if code == '\n' || code == '\t' ||
+        (!Character.isISOControl(code) && kind != Character.FORMAT &&
+          kind != Character.LINE_SEPARATOR && kind != Character.PARAGRAPH_SEPARATOR)
+      then result.appendCodePoint(code)
+    }
+    result.toString
+  }
 
   /** Renders stored history using each message's original author. */
   def render(messages: Chunk[Message]): Chunk[String] =

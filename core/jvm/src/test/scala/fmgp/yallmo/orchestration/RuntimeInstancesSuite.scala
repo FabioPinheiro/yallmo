@@ -80,6 +80,57 @@ final class RuntimeInstancesSuite extends FunSuite {
     assertEquals(result._3, result._1)
   }
 
+  test("user registration is concurrent, idempotent and visible without creating an executable agent") {
+    val id = AgentId("remote-user")
+    val current = runtime()
+    run {
+      for {
+        before <- current.isUser(id)
+        _ <- ZIO.foreachParDiscard(1 to 40)(_ => current.registerUser(id))
+        _ <- ZIO.foreachParDiscard(1 to 20)(_ => current.validateAuthor(id))
+        _ <- current.registerUser(id)
+        known <- current.isUser(id)
+        listed <- current.listAgentIds
+        agent <- current.getAgent(id).either
+        audio <- current.getAudioAgent(id).either
+        unknown <- current.validateAuthor(AgentId("unknown")).either
+      } yield {
+        assert(!before)
+        assert(known)
+        assertEquals(listed.count(_ == id), 1)
+        assertEquals(agent, Left(YallmoError.UnknownAgent(id)))
+        assertEquals(audio, Left(YallmoError.UnknownAgent(id)))
+        assertEquals(unknown, Left(YallmoError.UnknownAgent(AgentId("unknown"))))
+      }
+    }
+  }
+
+  test("user registration rejects configured and caller-supplied IDs without overwriting agents") {
+    val supplied = new Agent[Any] {
+      val id = AgentId("supplied")
+      def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+        ZIO.dieMessage("Collision validation must not execute supplied agents")
+    }
+    run {
+      for {
+        current <- RuntimeInstances.make(config, Chunk(supplied)).provideEnvironment(ZEnvironment(noNetwork))
+        before <- current.getAgent(bob)
+        collisions <- ZIO.foreachPar(Chunk(bob, eve, supplied.id))(current.registerUser(_).either)
+        after <- current.getAgent(bob)
+        preserved <- current.getAgent(supplied.id)
+        kinds <- ZIO.foreach(Chunk(bob, eve, supplied.id, AgentId("unknown")))(current.isUser)
+        _ <- current.registerUser(AgentId("new-user"))
+        listed <- current.listAgentIds
+      } yield {
+        assert(collisions.forall(_.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig])))
+        assert(before eq after)
+        assert(preserved eq supplied)
+        assert(kinds.forall(!_))
+        assertEquals(listed.map(AgentId.value), Chunk("bob", "charlie", "eve", "new-user", "supplied"))
+      }
+    }
+  }
+
   private def credentials(account: String, expiresAtMillis: Long = Long.MaxValue): OAuthCredentialsConfig = {
     val payload = Base64.getUrlEncoder.withoutPadding.encodeToString(
       s"""{"https://api.openai.com/auth":{"chatgpt_account_id":"$account"}}""".getBytes(StandardCharsets.UTF_8)
@@ -88,8 +139,6 @@ final class RuntimeInstancesSuite extends FunSuite {
   }
 
   private def config: Config = Config(
-    "operator",
-    defaultAgentId = Some(bob),
     agents = Map(
       bob -> AgentConfig("OAIAgent", Seq(oaiId)),
       eve -> AgentConfig("ChatGPTAgent", Seq(chatId)),

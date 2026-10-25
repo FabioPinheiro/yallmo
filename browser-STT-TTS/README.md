@@ -5,7 +5,7 @@ Plain same-origin HTML/ES modules/CSS; no installation, build, framework, extern
 ## Setup
 
 Configure the REPL's explicit `transcriberAgent` first: an audio-capable agent with a nonblank model/prompt and empty
-`tools`, `retrievers`, `skills` and `extensions` allowlists. See [the configuration example](../docs/examples/repl-config.json).
+`tools`, `retrievers`, `skills` and `extensions` allowlists. See [the configuration example](../docs/examples/yallmo.json).
 Missing references disable `m`/`v` before capture; invalid explicit configuration fails startup locally. Chat selection
 (including no selection) and chat-agent switches do not change the voice agent. Local adapter checks do not prove remote
 endpoint/model audio compatibility.

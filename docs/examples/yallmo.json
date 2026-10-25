@@ -1,7 +1,4 @@
 {
-  "userName": "operator",
-  "defaultAgentId": "bob",
-  "transcriberAgent": "Transcriber",
   "browserAudioPort": 5180,
   "agents": {
     "bob": {

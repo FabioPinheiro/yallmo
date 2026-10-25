@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.server.application.ProviderCatalog
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
@@ -7,7 +9,6 @@ import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, Provide
 import fmgp.yallmo.provider.openai.*
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
-import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, WorkspaceFileSystem}
 import munit.FunSuite
 import org.jline.reader.{LineReader, Reference, Widget}
 import org.jline.terminal.Size
@@ -37,9 +38,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     },
     "future":{"keep":[1,true,null]}
   }"""
-  private val availability = ReplToolAvailability(Chunk.empty, Chunk.empty)
-  private val tools = ZLayer
-    .make[ReplTools.Environment](WorkspaceFileSystem.live, BashExecutor.live, GitClient.live, ScalaCodeExecutor.live)
+  private val availability = ToolAvailability(Chunk.empty, Chunk.empty)
   private val recorder = new AudioRecorder {
     def record(seconds: Int): Task[CapturedAudio] = ZIO.dieMessage("Menus must not record")
     def recordUntil(termination: UIO[VoiceRecordingTermination]): Task[Option[CapturedAudio]] =
@@ -63,7 +62,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
   }
 
   private def application(
-      catalog: ReplProviderCatalog,
+      catalog: ProviderCatalog,
       prompts: scala.collection.mutable.ListBuffer[String],
       login: Option[ProviderLoginService] = None,
       active: ReplActiveAgent = ReplActiveAgent("fixed-agent", "fixed-provider", "fixed-model", None),
@@ -228,7 +227,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
 
   private def selected(path: Path, keys: String): Observation = {
     val prompts = scala.collection.mutable.ListBuffer.empty[String]
-    val app = application(run(ReplProviderCatalog.make(path)), prompts)
+    val app = application(run(ProviderCatalog.make(path)), prompts)
     val before = app.activeAgent
     val result = interact(app, keys)(identity)
     assertEquals(prompts.toList, List("draXft"))
@@ -255,7 +254,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
   test("AGENTS resolution failure retains the old runtime; selecting the current agent is a no-op") {
     for fail <- List(true, false) do
       withConfig() { path =>
-        val catalog = run(ReplProviderCatalog.make(path))
+        val catalog = run(ProviderCatalog.make(path))
         val prompts = scala.collection.mutable.ListBuffer.empty[String]
         var attempts = 0
         val choices = Vector(
@@ -336,22 +335,29 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     "unselected startup passes explicit config catalog through application; ChatGPT creation leaves runtime unchanged"
   ) {
     withConfig("""{"userName":"synthetic-user"}""") { path =>
-      val original = Files.readString(path).fromJson[Config].toOption.get
-      val startup = run(ReplStartup.make(original, ReplLaunchOptions(path)).provideLayer(Client.default))
-      val app = run(startup.application(Chunk.empty, availability))
-      assert(app.providerCatalog.contains(startup.providerCatalog))
-      assert(app.providerLogin.contains(startup.providerLogin))
-      val result = interact(app, "\n" + down + "\nnew-account\n\n" + resume)(_.provideLayer(tools))
-      assertEquals(result.history, List("draXft", "/exit"))
-      assertEquals(startup.selected, None)
-      assertEquals(app.activeAgent, None)
-      assert(run(startup.instances.getProvider(ProviderId.unsafe("new-account")).either).isLeft)
-      assertEquals(
-        Files.readString(path).fromJson[Config].toOption.get.providers(ProviderId.unsafe("new-account")),
-        ProviderConfig.ChatGPT()
-      )
-      assert(result.output.contains("new-account [ChatGPT]"))
-      assert(result.output.contains("Credentials: logged out"))
+      val startup = run((for {
+        channel <- HumanTurnChannel.make
+        human = HumanAgent.make(AgentId("synthetic-user"), channel)
+        loaded <- fmgp.yallmo.server.application.ApplicationRuntime.load(Chunk(human), path)
+        current <- ReplStartup.fromRuntime(loaded._1, loaded._2, human, ReplLaunchOptions("synthetic-user"))
+      } yield current).provideLayer(Client.default))
+      val scope = run(Scope.make)
+      try {
+        val app = run(scope.extend(startup.application))
+        assert(app.providerCatalog.contains(startup.providerCatalog))
+        assert(app.providerLogin.contains(startup.providerLogin))
+        val result = interact(app, "\n" + down + "\nnew-account\n\n" + resume)(identity)
+        assertEquals(result.history, List("draXft", "/exit"))
+        assertEquals(startup.selected, None)
+        assertEquals(app.activeAgent, None)
+        assert(run(startup.instances.getProvider(ProviderId.unsafe("new-account")).either).isLeft)
+        assertEquals(
+          Files.readString(path).fromJson[Config].toOption.get.providers(ProviderId.unsafe("new-account")),
+          ProviderConfig.ChatGPT()
+        )
+        assert(result.output.contains("new-account [ChatGPT]"))
+        assert(result.output.contains("Credentials: logged out"))
+      } finally run(scope.close(Exit.unit))
     }
   }
 
@@ -391,7 +397,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     val text = fixture.replace("\"local\":", "\"second\":{\"providerType\":\"ChatGPT\"},\"local\":")
     withConfig(text) { path =>
       val before = Files.readString(path)
-      val catalog = run(ReplProviderCatalog.make(path))
+      val catalog = run(ProviderCatalog.make(path))
       val prompts = scala.collection.mutable.ListBuffer.empty[String]
       val calls = scala.collection.mutable.ListBuffer.empty[String]
       var send: String => Unit = _ => fail("input not ready")
@@ -484,7 +490,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
         def completeBrowserLogin(login: OpenAiCodexBrowserLogin, redirect: String) = ZIO.never
       }
       val before = Files.readString(path)
-      val catalog = run(ReplProviderCatalog.make(path))
+      val catalog = run(ProviderCatalog.make(path))
       val prompts = scala.collection.mutable.ListBuffer.empty[String]
       val app = application(catalog, prompts, Some(new ProviderLoginService(catalog, flow, 1.second)))
       val result = interact(
@@ -538,7 +544,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     withConfig() { path =>
       val before = Files.readString(path)
       val prompts = scala.collection.mutable.ListBuffer.empty[String]
-      val catalog = run(ReplProviderCatalog.make(path))
+      val catalog = run(ProviderCatalog.make(path))
       var calls = 0
       val flow = new OpenAiCodexAuth.OAuthFlow {
         private def unexpected[A]: Task[A] = ZIO.succeed { calls += 1 } *> ZIO.dieMessage("unexpected login")

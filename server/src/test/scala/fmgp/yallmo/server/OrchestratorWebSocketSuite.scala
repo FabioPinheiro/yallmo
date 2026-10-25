@@ -54,7 +54,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         after <- client.loadSession(sessionId)
         messages <- client.listMessages
         agents <- client.listAgentIds
-        concurrent <- ZIO.foreachPar(1 to 20)(_ => client.loadSession(sessionId))
+        // Stay below the connection's nonwaiting worker bound; overload behavior is tested separately.
+        concurrent <- ZIO.foreachPar(1 to 20)(_ => client.loadSession(sessionId)).withParallelism(4)
       } yield {
         assertEquals(info.identity.role, Role.Viewer)
         assertEquals(info.notifications, Nil)
@@ -65,6 +66,141 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         assertEquals(messages, after.messages)
         assertEquals(agents, Chunk(author))
         assertEquals(concurrent.map(_.messages.size).toSet, Set(1))
+      }
+    })
+  }
+
+  test("human viewer presence is connection-owned, deduplicated and removed only after the final socket closes") {
+    val removed = new LinkedBlockingQueue[String]()
+    val capture = ZLogger.default.map { line =>
+      if line.contains("Viewer identity removed") then removed.offer(line)
+      ()
+    }
+    def awaitRemoval: Task[String] = ZIO.attemptBlocking {
+      Option(removed.poll(3, TimeUnit.SECONDS)).getOrElse(throw new AssertionError("No identity removal"))
+    }
+    run(ZIO.scoped {
+      for {
+        _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
+        master <- live
+        port <- new OrchestratorWSServer(master).start(0)
+        endpoint = s"ws://127.0.0.1:$port/rpc"
+        browser <- raw(port)
+        _ <- initialize(browser)
+        observer <- OrchestratorWSClient.connect(endpoint)
+        initial <- observer.listAgentIds
+        alice = AgentId("alice")
+        bob = AgentId("bob")
+        pair <- ZIO.foreachPar(1 to 2)(_ => OrchestratorWSClient.connect(endpoint, humanId = Some(alice)))
+        other <- OrchestratorWSClient.connect(endpoint, humanId = Some(bob), clientName = "connected-repl")
+        bound <- other.initialize("different-client-metadata")
+        all <- observer.listAgentIds
+        _ <- pair.head.close
+        _ <- awaitRemoval
+        retained <- observer.listAgentIds
+        _ <- pair.last.close
+        _ <- awaitRemoval
+        isolated <- observer.listAgentIds
+        _ <- other.close
+        _ <- awaitRemoval
+        finalIds <- observer.listAgentIds
+        registered <- master.listAgentIds
+        _ <- browser.send(JsonRpc.Request(Json.Str("browser"), AgentsList.method, Empty()).toJson)
+        browserIds <- browser.read
+      } yield {
+        assertEquals(initial, Chunk(author))
+        assertEquals(bound.identity, Identity(bob, Role.Viewer))
+        assertEquals(all, Chunk(alice, bob, author))
+        assertEquals(retained, all)
+        assertEquals(isolated, Chunk(bob, author))
+        assertEquals(finalIds, Chunk(author))
+        assertEquals(registered, Chunk(author))
+        assertEquals(decode[JsonRpc.Success[Chunk[AgentId]]](browserIds).result, Chunk(author))
+      }
+    })
+  }
+
+  test("aborted and rejected-frame sockets remove presence and identity logs escape terminal controls") {
+    val identities = new LinkedBlockingQueue[String]()
+    val capture = ZLogger.default.map { line =>
+      if line.contains("Viewer identity") then identities.offer(line)
+      ()
+    }
+    def identityLog: Task[String] = ZIO.attemptBlocking {
+      Option(identities.poll(3, TimeUnit.SECONDS)).getOrElse(throw new AssertionError("Missing identity lifecycle log"))
+    }
+    run(ZIO.scoped {
+      for {
+        _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
+        master <- live
+        port <- new OrchestratorWSServer(master).start(0)
+        observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        _ <- ZIO.foreachDiscard(List(false, true)) { rejectFrame =>
+          for {
+            socket <- raw(port)
+            label = AgentId("evil\n\u001b[31m\u009b2J")
+            _ <- socket.send(
+              JsonRpc
+                .Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "raw", Some(label)))
+                .toJson
+            )
+            _ <- socket.read
+            registration <- identityLog
+            present <- observer.listAgentIds
+            _ <- if rejectFrame then socket.sendBinary else socket.abort
+            removal <- identityLog
+            absent <- observer.listAgentIds
+          } yield {
+            assert(present.contains(label))
+            assertEquals(absent, Chunk(author))
+            assert(registration.contains("registered"))
+            assert(removal.contains("removed"))
+            List(registration, removal).foreach { line =>
+              assert(!line.contains('\u001b'))
+              assert(!line.contains('\u009b'))
+              assert(!line.contains("evil\n"))
+              assert(line.contains("\\u001b"))
+              assert(line.contains("\\u009b"))
+            }
+          }
+        }
+      } yield ()
+    })
+  }
+
+  test("raw sockets retain their initialized human or anonymous identity on every reinitialize") {
+    run(ZIO.scoped {
+      for {
+        master <- live
+        port <- new OrchestratorWSServer(master).start(0)
+        human <- raw(port)
+        alice = AgentId("alice")
+        replies <- ZIO.foreach(List(Some(alice), Some(alice), Some(AgentId("bob")), None)) { id =>
+          human.send(
+            JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "raw", id)).toJson
+          ) *> human.read
+        }
+        browser <- raw(port)
+        _ <- initialize(browser)
+        _ <- initialize(browser)
+        _ <- browser.send(
+          JsonRpc.Request(Json.Str("add"), Initialize.method, Initialize.Params(Version, "raw", Some(alice))).toJson
+        )
+        added <- browser.read
+        _ <- browser.send(JsonRpc.Request(Json.Str("agents"), AgentsList.method, Empty()).toJson)
+        ids <- browser.read
+      } yield {
+        assertEquals(
+          decode[JsonRpc.Success[Initialize.Result]](replies.head).result.identity,
+          Identity(alice, Role.Viewer)
+        )
+        assertEquals(replies(1), replies.head)
+        assertEquals(
+          replies.drop(2).map(decode[JsonRpc.Failure](_).error.code),
+          List(ErrorCode.Conflict, ErrorCode.Conflict)
+        )
+        assertEquals(decode[JsonRpc.Failure](added).error.code, ErrorCode.Conflict)
+        assertEquals(decode[JsonRpc.Success[Chunk[AgentId]]](ids).result, Chunk(alice, author))
       }
     })
   }
@@ -141,6 +277,16 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         before <- socket.read
         _ <- socket.send(JsonRpc.Request(Json.Str("version"), Initialize.method, Initialize.Params(99, "test")).toJson)
         version <- socket.read
+        _ <- socket.send(
+          JsonRpc
+            .Request(Json.Str("collision"), Initialize.method, Initialize.Params(Version, "test", Some(author)))
+            .toJson
+        )
+        collision <- socket.read
+        _ <- socket.send("""{"jsonrpc":"2.0","id":"after-failure","method":"agents.list","params":{}}""")
+        unauthorized <- socket.read
+        observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        unpolluted <- observer.listAgentIds
         _ <- initialize(socket)
         _ <- socket.send("""{"jsonrpc":"2.0","id":"write","method":"sessions.create","params":{}}""")
         write <- socket.read
@@ -150,6 +296,9 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       } yield {
         assertEquals(decode[JsonRpc.Failure](before).error.code, ErrorCode.Unauthorized)
         assertEquals(decode[JsonRpc.Failure](version).error.code, ErrorCode.UnsupportedVersion)
+        assertEquals(decode[JsonRpc.Failure](collision).error.code, ErrorCode.Conflict)
+        assertEquals(decode[JsonRpc.Failure](unauthorized).error.code, ErrorCode.Unauthorized)
+        assertEquals(unpolluted, Chunk(author))
         assertEquals(decode[JsonRpc.Failure](write).error, JsonRpc.Error.MethodNotFound)
         assertEquals(decode[JsonRpc.Failure](isolated).error.code, ErrorCode.Unauthorized)
       }
@@ -204,6 +353,106 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       } yield {
         assertEquals(decode[JsonRpc.Success[Initialize.Result]](reply).id, Json.Str("utf8"))
         assert(rejected.isLeft)
+      }
+    })
+  }
+
+  test("client sends human label and custom name in the first initialize and retains it on repeated initialize") {
+    run(ZIO.scoped {
+      for {
+        seen <- Ref.make(Vector.empty[Initialize.Params])
+        alice = AgentId("alice")
+        port <- peer(
+          (_, _) => ZIO.unit,
+          initializeWith = Some { (channel, request) =>
+            val params = request.params.as[Initialize.Params].fold(fail(_), identity)
+            seen.update(_ :+ params) *> reply(
+              channel,
+              request.id,
+              Initialize
+                .Result(
+                  Version,
+                  "peer",
+                  Identity(params.humanId.getOrElse(author), Role.Viewer),
+                  Nil,
+                  Nil,
+                  MaxBlobChunkBytes
+                )
+                .toJsonAST
+                .fold(fail(_), identity)
+            )
+          }
+        )
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(alice), clientName = "repl")
+        repeated <- client.initialize("renamed")
+        requests <- seen.get
+      } yield {
+        assertEquals(
+          requests,
+          Vector(Initialize.Params(Version, "repl", Some(alice)), Initialize.Params(Version, "renamed", Some(alice)))
+        )
+        assertEquals(repeated.identity, Identity(alice, Role.Viewer))
+      }
+    })
+  }
+
+  test("failed initialization closes the client scope for ignored labels, wrong roles and remote rejection") {
+    run(ZIO.scoped {
+      ZIO.foreachDiscard(List("ignored", "operator", "rejected")) { mode =>
+        for {
+          closed <- Promise.make[Nothing, Unit]
+          port <- peer(
+            (_, _) => ZIO.unit,
+            initializeWith = Some { (channel, request) =>
+              if mode == "rejected" then
+                channel.send(
+                  ChannelEvent.Read(
+                    WebSocketFrame.Text(
+                      JsonRpc
+                        .Failure(
+                          request.id,
+                          JsonRpc.Error(ErrorCode.UnsupportedVersion, "Unsupported protocol version")
+                        )
+                        .toJson
+                    )
+                  )
+                )
+              else
+                reply(
+                  channel,
+                  request.id,
+                  Initialize
+                    .Result(
+                      Version,
+                      "old-peer",
+                      Identity(
+                        if mode == "ignored" then author else AgentId("alice"),
+                        if mode == "operator" then Role.Operator else Role.Viewer
+                      ),
+                      Nil,
+                      Nil,
+                      MaxBlobChunkBytes
+                    )
+                    .toJsonAST
+                    .fold(fail(_), identity)
+                )
+            },
+            onClose = closed.succeed(()).unit
+          )
+          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(AgentId("alice"))).either
+          _ <- closed.await.timeoutFail(new AssertionError("Failed initialize leaked its socket"))(3.seconds)
+        } yield {
+          if mode == "rejected" then
+            assertEquals(
+              result,
+              Left(
+                OrchestratorClient.Error.Remote(
+                  JsonRpc.Error(ErrorCode.UnsupportedVersion, "Unsupported protocol version")
+                )
+              )
+            )
+          else assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
+        }
       }
     })
   }
@@ -318,8 +567,58 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
+  test("JDK client assembles fragmented replies including a Unicode code point split across wire frames") {
+    run(ZIO.scoped {
+      for {
+        port <- peer { (channel, request) =>
+          val output = JsonRpc.Success(request.id, Chunk(AgentId("日本🙂"))).toJson
+          val start = output.indexOf('日')
+          val bytes = Chunk.fromArray(output.substring(start).getBytes(java.nio.charset.StandardCharsets.UTF_8))
+          channel.send(ChannelEvent.Read(WebSocketFrame.Text(output.substring(0, start), false))) *>
+            channel.send(ChannelEvent.Read(WebSocketFrame.Continuation(bytes.take(2), false))) *>
+            channel.send(ChannelEvent.Read(WebSocketFrame.Continuation(bytes.drop(2), true)))
+        }
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        agents <- client.listAgentIds
+      } yield assertEquals(agents, Chunk(AgentId("日本🙂")))
+    })
+  }
+
+  test("JDK client rejects binary and oversized assembled replies and cleans up pending requests") {
+    run(ZIO.scoped {
+      ZIO.foreachDiscard(List(false, true)) { oversized =>
+        for {
+          port <- peer { (channel, request) =>
+            if !oversized then channel.send(ChannelEvent.Read(WebSocketFrame.Binary(Chunk[Byte](1))))
+            else {
+              val output = JsonRpc.Success(request.id, Chunk("x" * RpcWire.MaxMessageBytes)).toJson
+              val middle = output.length / 2
+              channel.send(ChannelEvent.Read(WebSocketFrame.Text(output.take(middle), false))) *>
+                channel.send(
+                  ChannelEvent.Read(
+                    WebSocketFrame.Continuation(
+                      Chunk.fromArray(output.drop(middle).getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                      true
+                    )
+                  )
+                )
+            }
+          }
+          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          pending <- client.listAgentIds.either
+          after <- client.listAgentIds.either
+        } yield {
+          assertEquals(pending, Left(OrchestratorClient.Error.InvalidResponse))
+          assertEquals(after, Left(OrchestratorClient.Error.Disconnected))
+        }
+      }
+    })
+  }
+
   private def peer(
-      respond: (WebSocketChannel, JsonRpc.Request[Json.Obj]) => Task[Unit]
+      respond: (WebSocketChannel, JsonRpc.Request[Json.Obj]) => Task[Unit],
+      initializeWith: Option[(WebSocketChannel, JsonRpc.Request[Json.Obj]) => Task[Unit]] = None,
+      onClose: UIO[Unit] = ZIO.unit
   ): ZIO[Scope, Throwable, Int] = {
     val socket: WebSocketApp[Any] = Handler.webSocket { channel =>
       channel
@@ -327,29 +626,32 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           case ChannelEvent.Read(WebSocketFrame.Text(text)) =>
             val request = decode[JsonRpc.Request[Json.Obj]](text)
             if request.method == Initialize.method then
-              channel.send(
-                ChannelEvent.Read(
-                  WebSocketFrame.Text(
-                    JsonRpc
-                      .Success(
-                        request.id,
-                        Initialize.Result(
-                          Version,
-                          "peer",
-                          Identity(author, Role.Viewer),
-                          List(SessionsList.method, AgentsList.method),
-                          Nil,
-                          MaxBlobChunkBytes
+              initializeWith.fold(
+                channel.send(
+                  ChannelEvent.Read(
+                    WebSocketFrame.Text(
+                      JsonRpc
+                        .Success(
+                          request.id,
+                          Initialize.Result(
+                            Version,
+                            "peer",
+                            Identity(author, Role.Viewer),
+                            List(SessionsList.method, AgentsList.method),
+                            Nil,
+                            MaxBlobChunkBytes
+                          )
                         )
-                      )
-                      .toJson
+                        .toJson
+                    )
                   )
                 )
-              )
+              )(handler => handler(channel, request))
             else respond(channel, request)
-          case _ => ZIO.unit
+          case ChannelEvent.Read(_: WebSocketFrame.Close) => channel.shutdown
+          case _                                          => ZIO.unit
         }
-        .ensuring(channel.shutdown)
+        .ensuring(channel.shutdown *> onClose)
     }
     for {
       env <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(100.millis)).build
@@ -363,6 +665,11 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     channel.send(ChannelEvent.Read(WebSocketFrame.Text(JsonRpc.Success(id, result).toJson)))
 
   private final class Raw(socket: JWebSocket, messages: LinkedBlockingQueue[Either[Throwable, String]]) {
+    def abort: UIO[Unit] = ZIO.succeed(socket.abort())
+    def sendBinary: Task[Unit] =
+      ZIO
+        .attemptBlocking(socket.sendBinary(java.nio.ByteBuffer.wrap(Array[Byte](1)), true).get(3, TimeUnit.SECONDS))
+        .unit
     def send(text: String, last: Boolean = true): Task[Unit] =
       ZIO.attemptBlocking(socket.sendText(text, last).get(3, TimeUnit.SECONDS)).unit
     def read: Task[String] = ZIO.attemptBlocking {

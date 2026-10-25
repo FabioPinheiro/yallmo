@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.{ToolAvailability as ApplicationToolAvailability}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.model.{Message, MessagePayload}
 import fmgp.yallmo.repl.debug.ReplDebugSnapshot
@@ -15,7 +16,15 @@ enum ReplEvent {
 
   /** Stored conversation messages, including their original authors and optional session name. */
   case Transcript(messages: Chunk[Message], sessionId: Option[String])
-  case ToolAvailability(value: ReplToolAvailability)
+  case SnapshotTranscript(
+      messages: Chunk[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot],
+      sessionId: Option[String]
+  )
+
+  /** Actual durable suffix from remote execution, not a reconstructed local transcript. */
+  case SnapshotDelta(messages: Chunk[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot])
+  case Unavailable(message: String)
+  case ToolAvailability(value: ApplicationToolAvailability)
   case LogLevelChanged(level: LogLevel)
   case SessionReset
   case SessionList(ids: Chunk[String], activeId: Option[String])

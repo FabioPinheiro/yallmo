@@ -1,17 +1,21 @@
 package fmgp.yallmo.server
 
 import fmgp.yallmo.orchestration.OrchestratorLive
-import java.util.UUID
+import fmgp.yallmo.server.application.ServerApplication
 import zio.*
 import zio.http.*
 import zio.json.*
 
 /** JSON-RPC WebSocket adapter and SPA host over the supplied master. Construction starts nothing. start binds loopback;
-  * routes may also be installed in an existing host. No second storage/runtime is created. This initial viewer boundary
-  * has Host/Origin checks, not execution authorization or remote-hosting support.
+  * routes may also be installed in an existing host. No second storage/runtime is created. Configured loopback peers
+  * without Origin may claim local authorship; browser and anonymous peers remain viewers. Host/Origin checks do not
+  * authenticate identities or support public hosting.
   */
-final class OrchestratorWSServer(master: OrchestratorLive[?]) {
-  private val rpc = new OrchestratorRpc(master)
+final class OrchestratorWSServer(
+    master: OrchestratorLive[?],
+    configured: Option[ServerApplication.Configured] = None
+) {
+  private val rpc = new OrchestratorRpc(master, configured)
 
   val routes: Routes[Any, Nothing] = Routes(
     RoutePattern.any -> handler { (_: Path, request: Request) =>
@@ -41,66 +45,90 @@ final class OrchestratorWSServer(master: OrchestratorLive[?]) {
 
   private def socket(request: Request): WebSocketApp[Any] = Handler
     .webSocket { channel =>
-      ZIO.succeed(UUID.randomUUID().toString).flatMap { connectionId =>
-        ZIO.logAnnotate("connectionId", connectionId) {
-          for {
-            connected <- Ref.make(false)
-            initialized <- Ref.make(false)
-            text <- WebSocketText.make
-            _ <- channel
-              .receiveAll {
-                case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
-                  connected.set(true) *> ZIO.logInfo(
-                    s"WebSocket connected peer=${request.remoteAddress.fold("unknown")(_.getHostAddress)}"
-                  )
-                case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) =>
-                  ZIO.logWarning("WebSocket handshake timed out") *> channel.shutdown
-                case ChannelEvent.Read(WebSocketFrame.Ping) => channel.send(ChannelEvent.Read(WebSocketFrame.Pong))
-                case ChannelEvent.Read(WebSocketFrame.Pong) => ZIO.unit
-                case ChannelEvent.Read(close: WebSocketFrame.Close) =>
-                  ZIO.logDebug(s"WebSocket peer requested close status=${close.status}") *> channel.shutdown
-                case ChannelEvent.Read(frame) =>
-                  text
-                    .accept(frame)
-                    .foldZIO(
-                      failure =>
-                        ZIO.logWarning(s"WebSocket frame rejected code=${failure.code} reason=${failure.reason}") *>
-                          channel.send(ChannelEvent.Read(WebSocketFrame.Close(failure.code, Some(failure.reason)))) *>
-                          channel.shutdown,
-                      message =>
-                        ZIO.foreachDiscard(message) { input =>
-                          for {
-                            _ <- ZIO.logDebug(s"RPC incoming bytes=${RpcWire.size(input)}")
-                            // Encode as a JSON string to escape control characters/newlines in untrusted input.
-                            _ <- ZIO.logTrace(s"RPC incoming payload=${input.toJson}")
-                            response <- rpc.handle(input, initialized)
-                            _ <- ZIO.foreachDiscard(response) { output =>
-                              if RpcWire.size(output) > RpcWire.MaxMessageBytes then
-                                ZIO.logWarning("WebSocket response exceeds message limit; closing with 1009") *>
-                                  channel
-                                    .send(ChannelEvent.Read(WebSocketFrame.Close(1009, Some("Response too large")))) *>
-                                  channel.shutdown
-                              else
-                                for {
-                                  _ <- channel.send(ChannelEvent.Read(WebSocketFrame.Text(output)))
-                                  _ <- ZIO.logDebug(s"RPC outgoing bytes=${RpcWire.size(output)}")
-                                  _ <- ZIO.logTrace(s"RPC outgoing payload=${output.toJson}")
-                                } yield ()
+      ZIO.scoped {
+        rpc
+          .openConnection(
+            request.remoteAddress.exists(_.isLoopbackAddress) &&
+              !request.headers.iterator.exists(_.headerName.equalsIgnoreCase("Origin"))
+          )
+          .flatMap { connection =>
+            ZIO.logAnnotate("connectionId", connection.id.toString) {
+              for {
+                connected <- Ref.make(false)
+                text <- WebSocketText.make
+                writes <- Semaphore.make(1)
+                workers <- Ref.make(0)
+                workerScope <- ZIO.service[Scope]
+                send = (frame: WebSocketFrame) => writes.withPermit(channel.send(ChannelEvent.Read(frame)))
+                _ <- channel
+                  .receiveAll {
+                    case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
+                      connected.set(true) *> ZIO.logInfo(
+                        s"WebSocket connected peer=${request.remoteAddress.fold("unknown")(_.getHostAddress)}"
+                      )
+                    case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) =>
+                      ZIO.logWarning("WebSocket handshake timed out") *> channel.shutdown
+                    case ChannelEvent.Read(WebSocketFrame.Ping)         => send(WebSocketFrame.Pong)
+                    case ChannelEvent.Read(WebSocketFrame.Pong)         => ZIO.unit
+                    case ChannelEvent.Read(close: WebSocketFrame.Close) =>
+                      ZIO.logDebug(s"WebSocket peer requested close status=${close.status}") *> channel.shutdown
+                    case ChannelEvent.Read(frame) =>
+                      text
+                        .accept(frame)
+                        .foldZIO(
+                          failure =>
+                            ZIO.logWarning(s"WebSocket frame rejected code=${failure.code} reason=${failure.reason}") *>
+                              send(WebSocketFrame.Close(failure.code, Some(failure.reason))) *>
+                              channel.shutdown,
+                          message =>
+                            ZIO.foreachDiscard(message) { input =>
+                              val work = for {
+                                _ <- ZIO.logDebug(s"RPC incoming bytes=${RpcWire.size(input)}")
+                                // Encode as a JSON string to escape control characters/newlines in untrusted input.
+                                _ <- ZIO.logTrace(s"RPC incoming payload=${input.toJson}")
+                                response <- rpc.handle(input, connection)
+                                _ <- ZIO.foreachDiscard(response) { output =>
+                                  if RpcWire.size(output) > RpcWire.MaxMessageBytes then
+                                    ZIO.logWarning("WebSocket response exceeds message limit; closing with 1009") *>
+                                      send(WebSocketFrame.Close(1009, Some("Response too large"))) *>
+                                      channel.shutdown
+                                  else
+                                    for {
+                                      _ <- send(WebSocketFrame.Text(output))
+                                      _ <- ZIO.logDebug(s"RPC outgoing bytes=${RpcWire.size(output)}")
+                                      _ <- ZIO.logTrace(s"RPC outgoing payload=${output.toJson}")
+                                    } yield ()
+                                }
+                              } yield ()
+                              ZIO.uninterruptibleMask { _ =>
+                                workers
+                                  .modify(count =>
+                                    (
+                                      count < OrchestratorWSServer.MaxConnectionWorkers,
+                                      if count < OrchestratorWSServer.MaxConnectionWorkers then count + 1 else count
+                                    )
+                                  )
+                                  .flatMap {
+                                    case true =>
+                                      work.ensuring(workers.update(_ - 1)).interruptible.forkIn(workerScope).unit
+                                    case false =>
+                                      send(WebSocketFrame.Close(1013, Some("Too many requests"))) *> channel.shutdown
+                                  }
+                              }
                             }
-                          } yield ()
-                        }
-                    )
-                case ChannelEvent.ExceptionCaught(error) =>
-                  ZIO.logErrorCause("WebSocket transport failed", Cause.fail(error))
-                case _ => ZIO.unit
-              }
-              .ensuring(
-                channel.shutdown *> connected.get
-                  .flatMap(established => ZIO.logInfo("WebSocket disconnected").when(established))
-                  .unit
-              )
-          } yield ()
-        }
+                        )
+                    case ChannelEvent.ExceptionCaught(error) =>
+                      ZIO.logErrorCause("WebSocket transport failed", Cause.fail(error)) *> channel.shutdown
+                    case _ => ZIO.unit
+                  }
+                  .ensuring(
+                    rpc.disconnect(connection) *> channel.shutdown *> connected.get
+                      .flatMap(established => ZIO.logInfo("WebSocket disconnected").when(established))
+                      .unit
+                  )
+              } yield ()
+            }
+          }
       }
     }
     .withConfig(RpcWire.webSocketConfig)
@@ -119,4 +147,8 @@ final class OrchestratorWSServer(master: OrchestratorLive[?]) {
       case _ => false
     }
   }
+}
+
+object OrchestratorWSServer {
+  private[server] val MaxConnectionWorkers = 8
 }

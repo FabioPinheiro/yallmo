@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ProviderCatalog
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.repl.grammar.*
 import fmgp.yallmo.model.{AgentId, YallmoError}
 import fmgp.yallmo.orchestration.SessionId
@@ -25,17 +27,17 @@ final case class ReplAgentChoice(id: AgentId, agentType: String, providers: Vect
   */
 final class ReplApplication[R](
     session: ReplSession[R],
-    toolAvailability: ReplToolAvailability,
+    toolAvailability: ToolAvailability,
     replOrchestrator: ReplOrchestrator[R],
     val initialState: ReplState = ReplState(),
     val activeAgent: Option[ReplActiveAgent] = None,
-    val providerCatalog: Option[ReplProviderCatalog] = None,
+    val providerCatalog: Option[ProviderCatalog] = None,
     val providerLogin: Option[ProviderLoginService] = None,
     val agentChoices: Vector[ReplAgentChoice] = Vector.empty,
     agentSelector: Option[AgentId => IO[YallmoError, ReplApplication[R]]] = None,
     val transcriber: Option[Transcriber] = None,
     val userId: AgentId = AgentId("user")
-) {
+) extends ReplApplicationApi[R] {
 
   /** Resolves a new application sharing storage and runtime caches. The current session and conversation carry on
     * unchanged; failures leave the current application untouched.

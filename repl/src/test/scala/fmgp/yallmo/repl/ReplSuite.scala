@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
 import java.nio.file.{Files, Path}
@@ -12,35 +13,8 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.repl.debug.{ReplDebug, ReplDebugSnapshot}
 import fmgp.yallmo.repl.grammar.*
 import fmgp.yallmo.repl.terminal.TerminalRepl
-import fmgp.yallmo.tool.ScalaCodeExecutor
 
 final class ReplSuite extends FunSuite {
-  test("REPL startup selects only tools whose requirements pass") {
-    val tools = runZIO(
-      ReplTools.evaluate.provide(
-        ZLayer.succeed(workspaceFileSystem(workspaceAccessible = true)) ++
-          ZLayer.succeed(bashExecutor(bashAvailable = true)) ++
-          ZLayer.succeed(gitClient(gitAvailable = false, workTree = false)) ++
-          ZLayer.succeed(new ScalaCodeExecutor {
-            def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-            def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[fmgp.yallmo.tool.CommandOutput] = {
-              val _ = (code, timeout, maxOutputBytes)
-              ZIO.dieMessage("not executed during tool discovery")
-            }
-          })
-      )
-    )
-
-    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scala"))
-    assertEquals(
-      tools.availability,
-      ReplToolAvailability(
-        available = Chunk("readFile", "listFiles", "bash", "scala"),
-        unavailable = Chunk("repositoryChanges" -> Chunk("git is not available on PATH"))
-      )
-    )
-  }
-
   test("typed grammar is the source for command parsing") {
     assertEquals(ReplGrammar.parse("/history"), Right(ReplInput.Command(ReplCommand.History)))
     assertEquals(ReplGrammar.parse("/tools"), Right(ReplInput.Command(ReplCommand.Tools)))
@@ -143,7 +117,7 @@ final class ReplSuite extends FunSuite {
         }),
         staticContext = StaticContext[Any]("Test")
       ),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       inMemoryReplOrchestrator(AgentId("unused"))
     )
 
@@ -204,7 +178,7 @@ final class ReplSuite extends FunSuite {
     val orchestrator = inMemoryReplOrchestrator(AgentId("bob"))
     val application = new ReplApplication[Any](
       new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       orchestrator
     )
     val created = runZIO(orchestrator.newReplSession(Some("history")))
@@ -230,7 +204,7 @@ final class ReplSuite extends FunSuite {
   test("history is empty before a session exists and reports invalid or missing sessions without changing state") {
     val application = new ReplApplication[Any](
       new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       inMemoryReplOrchestrator(AgentId("bob"))
     )
     assertEquals(
@@ -266,7 +240,7 @@ final class ReplSuite extends FunSuite {
         }),
         staticContext = StaticContext[Any]("Test")
       ),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       inMemoryReplOrchestrator(AgentId("logger"))
     )
 
@@ -413,7 +387,7 @@ final class ReplSuite extends FunSuite {
     val orchestrator = inMemoryReplOrchestrator(bob)
     val application = new ReplApplication[Any](
       new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test")),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       orchestrator,
       userId = AgentId("fabio")
     )
@@ -527,35 +501,6 @@ final class ReplSuite extends FunSuite {
     val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
     ReplOrchestratorLive.make(orchestrator, user, Some(assistant))
   }
-
-  private def workspaceFileSystem(workspaceAccessible: Boolean): fmgp.yallmo.tool.WorkspaceFileSystem =
-    new fmgp.yallmo.tool.WorkspaceFileSystem {
-      override def isDirectory(_path: Path): UIO[Boolean] = ZIO.succeed(workspaceAccessible)
-      override def readUtf8(_path: Path): Task[String] = ZIO.dieMessage("not used by this test")
-      override def list(_path: Path): Task[Chunk[String]] = ZIO.dieMessage("not used by this test")
-    }
-
-  private def bashExecutor(bashAvailable: Boolean): fmgp.yallmo.tool.BashExecutor = new fmgp.yallmo.tool.BashExecutor {
-    override def isAvailable: UIO[Boolean] = ZIO.succeed(bashAvailable)
-    override def execute(
-        _command: String,
-        _workspace: Path,
-        _timeout: Duration,
-        _maxOutputBytes: Int
-    ): Task[fmgp.yallmo.tool.CommandOutput] = ZIO.dieMessage("not used by this test")
-  }
-
-  private def gitClient(gitAvailable: Boolean, workTree: Boolean): fmgp.yallmo.tool.GitClient =
-    new fmgp.yallmo.tool.GitClient {
-      override def isAvailable: UIO[Boolean] = ZIO.succeed(gitAvailable)
-      override def isWorkTree(_workspace: Path): UIO[Boolean] = ZIO.succeed(workTree)
-      override def status(_workspace: Path): IO[fmgp.yallmo.tool.GitError, fmgp.yallmo.tool.CommandOutput] =
-        ZIO.dieMessage("not used by this test")
-      override def unstagedDiff(_workspace: Path): IO[fmgp.yallmo.tool.GitError, fmgp.yallmo.tool.CommandOutput] =
-        ZIO.dieMessage("not used by this test")
-      override def stagedDiff(_workspace: Path): IO[fmgp.yallmo.tool.GitError, fmgp.yallmo.tool.CommandOutput] =
-        ZIO.dieMessage("not used by this test")
-    }
 
   private def runZIO[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=>

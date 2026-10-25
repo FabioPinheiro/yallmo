@@ -25,22 +25,67 @@ final class YallmoProtocolSuite extends FunSuite {
     )
   }
 
+  test("initialize optional human label roundtrips and absent/null fields preserve anonymous clients") {
+    assertWire(
+      Initialize.Params(Version, "repl", Some(agentId)),
+      """{"protocolVersion":1,"clientName":"repl","humanId":"agent1"}"""
+    )
+    assertEquals(
+      """{"protocolVersion":1,"clientName":"browser"}""".fromJson[Initialize.Params],
+      Right(Initialize.Params(Version, "browser"))
+    )
+    assertEquals(
+      """{"protocolVersion":1,"clientName":"browser","humanId":null}""".fromJson[Initialize.Params],
+      Right(Initialize.Params(Version, "browser"))
+    )
+    assert("""{"protocolVersion":1,"clientName":"repl","humanId":" "}""".fromJson[Initialize.Params].isLeft)
+  }
+
   test("parameterless queries use an empty object, not an invented tagged command") {
     val request = JsonRpc.Request(Json.Str("r2"), SessionsList.method, Empty())
     assertWire(request, """{"id":"r2","method":"sessions.list","params":{},"jsonrpc":"2.0"}""")
     assert(!request.toJson.contains("SessionsList"))
   }
 
-  test("turn.submit includes explicit session/agent/command identities and omits an absent precondition") {
-    val params = TurnSubmit.Params("c1", sessionId, agentId, AgentTask("Hello"))
+  test("turn.submit uses an optional expected-head message ID") {
+    val params = TurnSubmit.Params(sessionId, agentId, AgentTask("Hello"))
     assertWire(
       JsonRpc.Request(Json.Str("r3"), TurnSubmit.method, params),
-      """{"id":"r3","method":"turn.submit","params":{"commandId":"c1","sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"}},"jsonrpc":"2.0"}"""
+      """{"id":"r3","method":"turn.submit","params":{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"resetContinuation":false},"jsonrpc":"2.0"}"""
     )
     assertWire(
       params.copy(expectedHead = Some(head)),
-      s"""{"commandId":"c1","sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":"${MessageId
-          .value(head)}"}"""
+      s"""{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":"${MessageId
+          .value(head)}","resetContinuation":false}"""
+    )
+    assertEquals(
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"}}"""
+        .fromJson[TurnSubmit.Params],
+      Right(params)
+    )
+    assertEquals(
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":null}"""
+        .fromJson[TurnSubmit.Params],
+      Right(params)
+    )
+  }
+
+  test("turn.submit resetContinuation is an explicit boolean defaulting to false") {
+    assertWire(
+      TurnSubmit.Params(sessionId, agentId, AgentTask("Hello"), resetContinuation = true),
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"resetContinuation":true}"""
+    )
+  }
+
+  test("sessions.fork uses the same optional head precondition and only names a source session") {
+    assertWire(SessionsFork.Params(sessionId), """{"sourceSessionId":"s1"}""")
+    assertWire(
+      SessionsFork.Params(sessionId, Some(SessionId.unsafe("fork")), Some(head)),
+      s"""{"sourceSessionId":"s1","name":"fork","expectedHead":"${MessageId.value(head)}"}"""
+    )
+    assertEquals(
+      """{"sourceSessionId":"s1","expectedHead":null}""".fromJson[SessionsFork.Params],
+      Right(SessionsFork.Params(sessionId))
     )
   }
 
@@ -59,9 +104,7 @@ final class YallmoProtocolSuite extends FunSuite {
     val message =
       Message(MessageData(agentId, Some(head), Instant.parse("2026-10-23T12:00:00Z"), MessagePayload.Assistant("Hi")))
     val outcome: TurnOutcome = TurnOutcome.Succeeded(
-      "run1",
-      sessionId,
-      message.id,
+      SessionSnapshot(sessionId, Chunk(agentId), Chunk(MessageSnapshot.from(message))),
       AgentResult(agentId, "Hi"),
       Chunk(MessageSnapshot.from(message))
     )
@@ -71,29 +114,42 @@ final class YallmoProtocolSuite extends FunSuite {
     assert(encoded.contains("\"status\":\"succeeded\""))
     assert(!encoded.contains("Succeeded"))
     assert(!encoded.contains("\"error\":"))
+    val snapshot = s"""{"id":"${MessageId.value(message.id)}","agentId":"agent1","parentId":"${MessageId.value(
+        head
+      )}","timestamp":"2026-10-23T12:00:00Z","role":"assistant","content":"Hi","blobIds":[]}"""
+    assertEquals(
+      encoded,
+      s"""{"id":"r3","result":{"status":"succeeded","session":{"id":"s1","agentIds":["agent1"],"messages":[$snapshot]},"result":{"agentId":"agent1","text":"Hi"},"newMessages":[$snapshot]},"jsonrpc":"2.0"}"""
+    )
+    assert(!encoded.contains("runId"))
+    assert(!encoded.contains("commandId"))
   }
 
-  test("execution failure after prompt acceptance is a typed result, not a protocol error") {
-    val outcome: TurnOutcome = TurnOutcome.Failed(
-      "run1",
-      sessionId,
-      true,
-      Some(head),
-      ApplicationError("provider_failed", "Provider unavailable")
-    )
-    assertWire(
-      JsonRpc.Success(Json.Str("r3"), outcome),
-      s"""{"id":"r3","result":{"status":"failed","runId":"run1","sessionId":"s1","accepted":true,"headMessageId":"${MessageId
-          .value(head)}","error":{"code":"provider_failed","message":"Provider unavailable"}},"jsonrpc":"2.0"}"""
-    )
-    val cancelled: TurnOutcome = TurnOutcome.Cancelled("run1", sessionId, false, None)
-    assertWire(
-      cancelled,
-      """{"status":"cancelled","runId":"run1","sessionId":"s1","accepted":false}"""
-    )
+  test("terminal failures encode sanitized acceptance and omit absent snapshots") {
+    List(
+      PromptAcceptance.NotAccepted -> "notAccepted",
+      PromptAcceptance.Accepted -> "accepted",
+      PromptAcceptance.Unknown -> "unknown"
+    ).foreach { case (acceptance, wireValue) =>
+      val outcome: TurnOutcome = TurnOutcome.Failed(
+        acceptance,
+        None,
+        ApplicationError("execution_failed", "Execution failed")
+      )
+      assertWire(
+        outcome,
+        s"""{"status":"failed","acceptance":"$wireValue","error":{"code":"execution_failed","message":"Execution failed"}}"""
+      )
+      val withSnapshot: TurnOutcome = TurnOutcome.Failed(
+        acceptance,
+        Some(SessionSnapshot(sessionId, Chunk(agentId), Chunk.empty)),
+        ApplicationError("execution_failed", "Execution failed")
+      )
+      assertEquals(withSnapshot.toJson.fromJson[TurnOutcome], Right(withSnapshot))
+    }
   }
 
-  test("standard errors and application rejections use error, never both result and error") {
+  test("pre-execution rejection uses a JSON-RPC error, not TurnOutcome") {
     assertWire(
       JsonRpc.Failure(Json.Null, JsonRpc.Error.ParseError),
       """{"id":null,"error":{"code":-32700,"message":"Parse error"},"jsonrpc":"2.0"}"""
@@ -102,6 +158,12 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire(
       JsonRpc.Failure(Json.Str("r3"), JsonRpc.Error(ErrorCode.Conflict, "Conflict", Some(details))),
       """{"id":"r3","error":{"code":-32005,"message":"Conflict","data":{"code":"head_conflict","message":"Session head changed"}},"jsonrpc":"2.0"}"""
+    )
+    val expired = ApplicationError("command_details_expired", "Use commands.get for the retained run ID").toJsonAST
+      .fold(fail(_), identity)
+    assertWire(
+      JsonRpc.Failure(Json.Str("r5"), JsonRpc.Error(ErrorCode.Conflict, "Conflict", Some(expired))),
+      """{"id":"r5","error":{"code":-32005,"message":"Conflict","data":{"code":"command_details_expired","message":"Use commands.get for the retained run ID"}},"jsonrpc":"2.0"}"""
     )
   }
 
@@ -131,6 +193,7 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire(ToolsList.Params(agentId), """{"agentId":"agent1"}""")
     assertWire(RunsGet.Params("run1"), """{"runId":"run1"}""")
     assertWire(RunsCancel.Result("run1", true), """{"runId":"run1","requested":true}""")
+    assertWire(RunsCancel.Result("run1", false), """{"runId":"run1","requested":false}""")
     assertWire(
       DiagnosticsMessage.Params(sessionId, head),
       s"""{"sessionId":"s1","messageId":"${MessageId.value(head)}"}"""
@@ -150,7 +213,7 @@ final class YallmoProtocolSuite extends FunSuite {
     )
   }
 
-  test("roles, run states and supported methods are plain JSON values") {
+  test("roles, disabled run states and supported methods are plain JSON values") {
     assertWire[Role](Role.Viewer, "\"viewer\"")
     assertWire[Role](Role.Operator, "\"operator\"")
     assertWire[RunStatus](RunStatus.Running, "\"running\"")
@@ -165,9 +228,38 @@ final class YallmoProtocolSuite extends FunSuite {
       ),
       """{"protocolVersion":1,"serverInstanceId":"instance1","identity":{"id":"human","role":"operator"},"methods":["sessions.list"],"notifications":[],"maxBlobChunkBytes":65536}"""
     )
-    val outcome: TurnOutcome = TurnOutcome.Cancelled("run1", sessionId, true, Some(head))
-    val result = RunsGet.Result("run1", "c1", sessionId, agentId, RunStatus.Cancelled, Some(outcome))
-    assertEquals(result.toJson.fromJson[RunsGet.Result], Right(result))
+  }
+
+  test("initialize optional configured assistant IDs are omitted for old peers and roundtrip without private config") {
+    val old = Initialize.Result(Version, "instance1", Identity(agentId, Role.Viewer), Nil, Nil, MaxBlobChunkBytes)
+    assert(!old.toJson.contains("configuredAgentIds"))
+    val capable = old.copy(configuredAgentIds = Some(Chunk(agentId)))
+    assertWire(
+      capable,
+      """{"protocolVersion":1,"serverInstanceId":"instance1","identity":{"id":"agent1","role":"viewer"},"methods":[],"notifications":[],"maxBlobChunkBytes":65536,"configuredAgentIds":["agent1"]}"""
+    )
+    assertEquals(old.toJson.fromJson[Initialize.Result], Right(old))
+  }
+
+  test("disabled commands.get draft retains codec compatibility but is not activated") {
+    assertWire(
+      JsonRpc.Request(Json.Str("r4"), CommandsGet.method, CommandsGet.Params("c1")),
+      """{"id":"r4","method":"commands.get","params":{"commandId":"c1"},"jsonrpc":"2.0"}"""
+    )
+    val running = RunsGet.Result("run1", "c1", sessionId, agentId, RunStatus.Running, None)
+    assertWire(
+      JsonRpc.Success(Json.Str("r4"), CommandsGet.Result("run1", Some(running))),
+      """{"id":"r4","result":{"runId":"run1","run":{"runId":"run1","commandId":"c1","sessionId":"s1","agentId":"agent1","status":"running"}},"jsonrpc":"2.0"}"""
+    )
+    assertWire(
+      JsonRpc.Success(Json.Str("r4"), CommandsGet.Result("run1", None)),
+      """{"id":"r4","result":{"runId":"run1"},"jsonrpc":"2.0"}"""
+    )
+    val outcome: TurnOutcome =
+      TurnOutcome.Failed(PromptAcceptance.Unknown, None, ApplicationError("execution_unknown", "Unknown"))
+    val terminal = running.copy(status = RunStatus.Cancelled, outcome = Some(outcome))
+    val result = CommandsGet.Result("run1", Some(terminal))
+    assertEquals(result.toJson.fromJson[CommandsGet.Result], Right(result))
   }
 
   test("heterogeneous batches use ordinary JSON arrays without another document abstraction") {
@@ -212,6 +304,22 @@ final class YallmoProtocolSuite extends FunSuite {
     assert("""{"blobId":"not-a-uuid","offset":0}""".fromJson[BlobsRead.Params].isLeft)
     assert("""{"sessionId":"s1","messageId":"sha256:bad"}""".fromJson[DiagnosticsMessage.Params].isLeft)
     assert("""{"name":"../private"}""".fromJson[SessionsCreate.Params].isLeft)
+    assert("""{"sourceSessionId":"s1","expectedHead":"sha256:bad"}""".fromJson[SessionsFork.Params].isLeft)
+    assert("""{"sourceSessionId":"s1","expectedHead":{"kind":"empty"}}""".fromJson[SessionsFork.Params].isLeft)
+    assert(
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":"sha256:bad"}"""
+        .fromJson[TurnSubmit.Params]
+        .isLeft
+    )
+    assert(
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":{"kind":"empty"}}"""
+        .fromJson[TurnSubmit.Params]
+        .isLeft
+    )
+    assert("\"maybe\"".fromJson[PromptAcceptance].isLeft)
+    assert(
+      """{"agentId":"agent1","task":{"prompt":"Hello"}}""".fromJson[TurnSubmit.Params].isLeft
+    )
   }
 
   test("message/session snapshots retain domain IDs but never expose provider continuations") {

@@ -37,7 +37,7 @@ final class VoiceInsertSuite extends FunSuite {
       new VoiceInsert(reader, recorder, None, status, command).install()
       try {
         assertEquals(reader.readLine("test> "), "drXaft")
-        assert(output.toString(UTF_8).contains("configure transcriberAgent"))
+        assert(output.toString(UTF_8).contains("--transcriber-agent"))
       } finally terminal.close()
     }
   }

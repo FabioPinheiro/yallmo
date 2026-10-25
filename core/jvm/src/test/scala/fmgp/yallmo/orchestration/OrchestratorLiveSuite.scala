@@ -35,6 +35,41 @@ final class OrchestratorLiveSuite extends FunSuite {
     assertEquals(session.messages.map(_.payload), Chunk(Message.User("hello")))
   }
 
+  test("registered users can join sessions and author text and blobs without an executable agent") {
+    val user = AgentId("user")
+    val unknown = AgentId("unknown")
+    val id = SessionId.unsafe("user-messages")
+    val input = MessagePayload.AudioAttachment(BlobId.fresh(), AudioFormat.Wav)
+    val bytes = Chunk[Byte](1, 2, 3)
+    runZIO {
+      for {
+        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        _ <- instances.registerUser(user)
+        orchestrator <- OrchestratorLive.inMemory(instances)
+        _ <- orchestrator.createSession(id, Chunk(agentId))
+        _ <- orchestrator.addSessionAgent(id, user)
+        _ <- orchestrator.append(id, user, Chunk(MessagePayload.User("hello")))
+        stored <- orchestrator.appendWithBlobBytes(id, user, input, bytes)
+        blob <- orchestrator.readBlob(input.blobId)
+        executable <- orchestrator.getAgent(user).either
+        rejectedJoin <- orchestrator.addSessionAgent(id, unknown).either
+        rejectedAppend <- orchestrator.append(id, unknown, Chunk(MessagePayload.User("reject"))).either
+        rejectedBlob <- orchestrator.appendWithBlobBytes(id, unknown, input, bytes).either
+        unchanged <- orchestrator.loadSession(id)
+      } yield {
+        assertEquals(stored.agentIds, Chunk(agentId, user))
+        assertEquals(stored.messages.map(_.agentId), Chunk(user, user))
+        assertEquals(stored.messages.map(_.payload), Chunk(MessagePayload.User("hello"), input))
+        assertEquals(blob.bytes, bytes)
+        assertEquals(executable, Left(YallmoError.UnknownAgent(user)))
+        assertEquals(rejectedJoin, Left(YallmoError.UnknownAgent(unknown)))
+        assertEquals(rejectedAppend, Left(YallmoError.UnknownAgent(unknown)))
+        assertEquals(rejectedBlob, Left(YallmoError.UnknownAgent(unknown)))
+        assertEquals(unchanged, stored)
+      }
+    }
+  }
+
   test("explicit runtime registration rejects duplicate IDs before orchestrator creation") {
     val result = runZIO {
       (for {

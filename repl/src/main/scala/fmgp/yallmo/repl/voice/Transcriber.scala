@@ -12,7 +12,7 @@ trait Transcriber {
 }
 
 object Transcriber {
-  val DisabledMessage = "Voice transcription is disabled: configure transcriberAgent with an audio-capable agent."
+  val DisabledMessage = "Voice transcription is disabled: use --transcriber-agent <id> with an audio-capable agent."
 
   // Audio transcription intentionally retains its separate single-provider-turn ingestion path.
   @scala.annotation.nowarn("cat=deprecation")

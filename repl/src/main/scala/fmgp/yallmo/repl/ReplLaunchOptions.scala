@@ -1,42 +1,39 @@
 package fmgp.yallmo.repl
 
-import java.nio.file.{Path, Paths}
 import fmgp.yallmo.model.AgentId
 import zio.{Chunk, LogLevel}
 
-/** Validated startup options. A configuration file is mandatory; no provider/model CLI overrides exist.
-  *
-  * @param configPath
-  *   required JSON file to load, or initialize privately if missing
-  * @param agentId
-  *   optional initial agent override; otherwise use defaultAgentId, or start unselected when neither is present
-  * @param storageRoot
-  *   optional durable conversation directory; absent means process-local session storage
-  * @param logLevel
-  *   initial terminal log threshold for startup and REPL turns; file logging remains independent
-  */
+/** CLI-only local identity and explicit selections; server configuration is not a REPL option. */
 private[repl] final case class ReplLaunchOptions(
-    configPath: Path,
+    userName: String,
     agentId: Option[AgentId] = None,
-    storageRoot: Option[Path] = None,
-    logLevel: LogLevel = LogLevel.Warning
+    transcriberAgentId: Option[AgentId] = None,
+    logLevel: LogLevel = LogLevel.Warning,
+    server: Option[String] = None
 )
 
 private[repl] object ReplLaunchOptions {
   val Usage =
-    "Usage: yallmo --config <file> [--agent <id>] [--storage <directory>] [--log-level <trace|debug|info|warning|error|fatal|off>]"
+    "Usage: yallmo --user-name <id> [--server <ws(s)://host:port/path>] [--agent <id>] [--transcriber-agent <id>] [--log-level <trace|debug|info|warning|error|fatal|off>]"
 
   private final case class Parsed(
-      configPath: Option[Path] = None,
+      userName: Option[String] = None,
       agentId: Option[AgentId] = None,
-      storageRoot: Option[Path] = None,
-      logLevel: LogLevel = LogLevel.Warning
+      transcriberAgentId: Option[AgentId] = None,
+      logLevel: LogLevel = LogLevel.Warning,
+      server: Option[String] = None
   )
 
-  def parse(arguments: Chunk[String]): Either[String, ReplLaunchOptions] = {
-    def path(value: String, key: String): Either[String, Path] =
-      scala.util.Try(Paths.get(value)).toEither.left.map(_ => s"Invalid $key path")
+  private def validateServer(value: String): Either[String, String] = {
+    val valid = scala.util.Try(new java.net.URI(value)).toOption.exists { uri =>
+      Set("ws", "wss").contains(uri.getScheme) && uri.getHost != null &&
+      uri.getRawUserInfo == null && uri.getRawQuery == null && uri.getRawFragment == null &&
+      uri.getPort >= -1 && uri.getPort <= 65535 && uri.getPort != 0
+    }
+    Either.cond(valid, value, "Invalid --server endpoint. Expected ws/wss URI without credentials, query or fragment.")
+  }
 
+  def parse(arguments: Chunk[String]): Either[String, ReplLaunchOptions] = {
     def logLevel(value: String): Either[String, LogLevel] =
       value.trim.toLowerCase(java.util.Locale.ROOT) match {
         case "trace"   => Right(LogLevel.Trace)
@@ -51,14 +48,25 @@ private[repl] object ReplLaunchOptions {
 
     def update(options: Parsed, key: String, value: String): Either[String, Parsed] =
       key match {
-        case "--config" => path(value, key).map(file => options.copy(configPath = Some(file)))
-        case "--agent"  =>
+        case "--user-name" =>
           AgentId
-            .from(value.trim)
+            .from(value)
+            .left
+            .map(error => s"Invalid --user-name value: $error")
+            .map(id => options.copy(userName = Some(AgentId.value(id))))
+        case "--transcriber-agent" =>
+          AgentId
+            .from(value)
+            .left
+            .map(error => s"Invalid --transcriber-agent value: $error")
+            .map(id => options.copy(transcriberAgentId = Some(id)))
+        case "--agent" =>
+          AgentId
+            .from(value)
             .left
             .map(error => s"Invalid --agent value: $error")
             .map(id => options.copy(agentId = Some(id)))
-        case "--storage"   => path(value, key).map(root => options.copy(storageRoot = Some(root)))
+        case "--server"    => validateServer(value).map(endpoint => options.copy(server = Some(endpoint)))
         case "--log-level" => logLevel(value).map(level => options.copy(logLevel = level))
         case _             => Left(s"Unknown option '$key'.")
       }
@@ -66,9 +74,25 @@ private[repl] object ReplLaunchOptions {
     def loop(rest: List[String], seen: Set[String], options: Parsed): Either[String, ReplLaunchOptions] =
       rest match {
         case Nil =>
-          options.configPath
-            .toRight("--config is required.")
-            .map(file => ReplLaunchOptions(file, options.agentId, options.storageRoot, options.logLevel))
+          Either
+            .cond(
+              options.server.isEmpty || options.transcriberAgentId.isEmpty,
+              (),
+              "--transcriber-agent is unavailable with --server (connected mode is read-only)."
+            )
+            .flatMap(_ =>
+              options.userName
+                .toRight("--user-name is required.")
+                .map(name =>
+                  ReplLaunchOptions(
+                    name,
+                    options.agentId,
+                    options.transcriberAgentId,
+                    options.logLevel,
+                    options.server
+                  )
+                )
+            )
         case argument :: tail =>
           val (key, value, remaining) = argument.split("=", 2).toList match {
             case key :: value :: Nil => (key, Some(value), tail)
@@ -80,7 +104,7 @@ private[repl] object ReplLaunchOptions {
           }
           for {
             _ <- Either.cond(
-              Set("--config", "--agent", "--storage", "--log-level").contains(key),
+              Set("--user-name", "--agent", "--transcriber-agent", "--log-level", "--server").contains(key),
               (),
               if key.startsWith("-") then s"Unknown option '$key'."
               else s"Unexpected argument '$key'. Expected an option starting with --."

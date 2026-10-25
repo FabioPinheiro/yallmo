@@ -1,4 +1,4 @@
-package fmgp.yallmo.repl
+package fmgp.yallmo.server.application
 
 import fmgp.yallmo.orchestration.AgentTool
 import fmgp.yallmo.tool.*
@@ -6,39 +6,34 @@ import zio.*
 
 import java.nio.file.Path
 
-/** Tools selected for one REPL startup.
+/** Tools selected for one application startup.
   *
-  * Only these tools are put in both the agent context and the runner. The availability value is retained solely for the
-  * `/tools` command.
+  * Only these tools are put in both the agent context and the runner. The availability value is retained for clients to
+  * display.
   */
-final case class ReplStartupTools(
-    available: Chunk[AgentTool[ReplTools.Environment]],
-    availability: ReplToolAvailability
+final case class StartupTools(
+    available: Chunk[AgentTool[ApplicationTools.Environment]],
+    availability: ToolAvailability
 )
 
-/** Client-neutral tool availability retained from REPL startup. */
-final case class ReplToolAvailability(
+/** Client-neutral tool availability retained from application startup. */
+final case class ToolAvailability(
     available: Chunk[String],
     unavailable: Chunk[(String, Chunk[String])]
 )
 
-/** REPL tools constrained to the process working directory. */
-object ReplTools {
+/** Shared core tool composition for an explicitly supplied workspace. */
+object ApplicationTools {
   type Environment = WorkspaceFileSystem & BashExecutor & GitClient & ScalaCodeExecutor
 
-  private val workspace = Path.of("").toAbsolutePath.normalize
-  private val readFile: AgentTool[Environment] = new ReadFileTool(workspace)
-  private val listFiles: AgentTool[Environment] = new ListFilesTool(workspace)
-  private val bash: AgentTool[Environment] = new BashTool(workspace)
-  private val repositoryChanges: AgentTool[Environment] = new RepositoryChangesTool(workspace)
-  private val scala: AgentTool[Environment] = new ScalaTool
+  val live: ULayer[Environment] =
+    WorkspaceFileSystem.live ++ BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live
 
-  /** Checks the few requirements of this REPL's fixed tool set once at startup and logs availability at DEBUG. */
-  def evaluate: URIO[Environment, ReplStartupTools] =
+  /** Probes requirements without executing tools and logs availability once at startup. */
+  def evaluate(workspace: Path): URIO[Environment, StartupTools] =
     for {
       hasWorkspace <- WorkspaceFileSystem.isDirectory(workspace)
       hasBash <- ZIO.serviceWithZIO[BashExecutor](_.isAvailable)
-      hasScala <- ZIO.serviceWithZIO[ScalaCodeExecutor](_.isAvailable)
       gitStatus <- ZIO.serviceWithZIO[GitClient] { git =>
         git.isAvailable.flatMap {
           case false => ZIO.succeed(Left("git is not available on PATH"))
@@ -46,6 +41,7 @@ object ReplTools {
             git.isWorkTree(workspace).map(isWorkTree => Either.cond(isWorkTree, (), "workspace is not a Git work tree"))
         }
       }
+      hasScala <- ZIO.serviceWithZIO[ScalaCodeExecutor](_.isAvailable)
       unavailable = Chunk.fromIterable(
         List(
           Option.unless(hasWorkspace)("readFile" -> Chunk("workspace is not an accessible directory")),
@@ -56,15 +52,15 @@ object ReplTools {
         ).flatten
       )
       available = Chunk.fromIterable(
-        List(
-          Option.when(hasWorkspace)(readFile),
-          Option.when(hasWorkspace)(listFiles),
-          Option.when(hasBash)(bash),
-          gitStatus.toOption.map(_ => repositoryChanges),
-          Option.when(hasScala)(scala)
+        List[Option[AgentTool[Environment]]](
+          Option.when(hasWorkspace)(new ReadFileTool(workspace)),
+          Option.when(hasWorkspace)(new ListFilesTool(workspace)),
+          Option.when(hasBash)(new BashTool(workspace)),
+          gitStatus.toOption.map(_ => new RepositoryChangesTool(workspace)),
+          Option.when(hasScala)(new ScalaTool)
         ).flatten
       )
-      startupTools = ReplStartupTools(available, ReplToolAvailability(available.map(_.definition.key), unavailable))
+      startupTools = StartupTools(available, ToolAvailability(available.map(_.definition.key), unavailable))
       _ <- ZIO.logDebug(s"Startup tool availability: ${startupTools.availability}")
       _ <- ZIO.logInfo(
         s"Available tools (${available.size}): ${available.map(_.definition.key).mkString(", ")}"

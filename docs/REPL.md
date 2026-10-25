@@ -2,31 +2,108 @@
 
 > The source package is `fmgp.yallmo.repl`. This file is named `REPL.md` to retain the project’s historical spelling.
 
-The interactive client keeps an in-memory snapshot of the conversation and a fixed `StaticContext` for the selected
+Without `--server`, the local interactive client keeps an in-memory snapshot of the conversation and a fixed `StaticContext` for the selected
 agent. `Orchestrator.submit` owns prompt acceptance, execution and response persistence, using the stored session as
 conversation history. `ReplApplication` and `ReplSession` adapt input, diagnostics and presentation; `AgentRunner` remains
 the only model/tool execution loop.
 
 ## Start the terminal client
 
-`--config <file>` is required. Missing files are initialized privately with the JVM user name, empty catalogs and no
-selected agent. See [setup](HOW_TO_RUN.md) and the sanitized [example](examples/repl-config.json).
+`--user-name <id>` is required for local human authorship. The embedded server owns loading `yallmo.json` from
+the working directory; the REPL has no `--config` option or config-file access. Missing files initialize privately
+with empty catalogs and no selection. See [setup](HOW_TO_RUN.md) and the sanitized [example](examples/yallmo.json).
 
 ```bash
 # Keep sbt attached to this terminal so JLine can use its TTY.
-sbt --server -no-server "repl/run --config ./yallmo.json"
-sbt --server -no-server "repl/run --config ./yallmo.json --agent bob --storage ./zzz"
-sbt --server -no-server "repl/run --config ./yallmo.json --log-level debug"
+sbt --server -no-server "repl/run --user-name operator"
+sbt --server -no-server "repl/run --user-name operator --agent bob"
+sbt --server -no-server "repl/run --user-name operator --log-level debug"
 ```
 
-`--agent` overrides `defaultAgentId`; absent both, startup stays unselected and prompts are rejected without an agent
+`--agent <id>` is optional; absent it, startup stays unselected and prompts are rejected without an agent
 or tool call. Commands remain available. Press `Esc`, `a` to choose an agent from the loaded configuration.
 The old `--provider`/`--model` flags are removed. Models, prompts and
-optional thinking settings belong in each agent's `config` object. `userName` supplies the human message-author ID.
+optional thinking settings belong in each agent's `config` object. `--user-name` supplies the human message-author ID.
 
-The REPL always uses the JLine client, with editable input, history, completion, menus, status and voice support.
+**Migration:** old `userName`, `defaultAgentId` and `transcriberAgent` JSON preferences no longer apply; use CLI flags.
+Unknown JSON fields survive catalog edits but are not active preferences. No OS-name/default-agent fallback exists.
+`--transcriber-agent <id>` is independently optional; absent means no transcription.
+The supplied human is registered before assembly in the local server runtime; supplied identity is sufficient
+persisted authorship for now, not authentication. This local path remains in-process; explicit connected execution/viewer
+modes are described below. Provider-login/voice transport remains pending; configured trusted-local prompts now execute remotely.
+Standalone server `--config` chooses only its own file; local REPL server startup uses default `yallmo.json`.
+Only the standalone server accepts `--storage`. Normal embedded REPL sessions and blobs are in memory and do not
+survive restart; no durable REPL lifecycle logger is installed. Debug exports/captures remain explicit local UI features.
+Local mode does not consume a standalone server's sessions; explicit connected mode can read and submit to them when permitted.
+
+The REPL always uses the JLine client, with editable input, history, completion, menus and status. Voice is local-only.
 An interactive terminal is required; dumb terminals and redirected streams fail without fallback. There is no
 `--ui` option or alternate terminal implementation.
+
+## Explicit connected mode
+
+```bash
+# Server owns private configuration (including bob) and a separate existing storage root:
+mkdir -p ./server-storage
+sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace .'
+# Another interactive terminal:
+sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
+```
+
+**Trusted local, unauthenticated:** authentication is explicitly deferred for this prompt path, not for public hosting.
+Configured server + actual loopback peer + absent Origin + claimed human enables Operator with `sessions.create` and
+`turn.submit`. Required `--user-name` supplies an impersonable claimed author, **not an authenticated identity**.
+Keep loopback/Host/Origin checks; never expose/proxy publicly. Anonymous and Origin-bearing browser viewers stay read-only.
+A server started without `--config` remains read-only; the client notice/help/completions reflect negotiated capabilities.
+
+The endpoint must be an explicit `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local
+fallback or automatic reconnect/replay exists. Connection failure exits. Without `--server`, local mode remains unchanged.
+Connected startup does not load local `yallmo.json`, construct local runtime/tools/providers, or acquire recorder/browser/
+login/transcription/TTS services, **even when prompts are enabled**. `--config`/`--storage` remain server-only;
+`--transcriber-agent` with `--server` fails before connection. The existing recorder-free terminal runner is used.
+
+Connected commands: `/help`, `/session list`, `/session resume <id>`, `/history`, `/log <level>`, `/exit`; permitted
+Operators also get **prompts and `/new [name]`**. `/tools`, `/debug`, provider catalog/login, voice/TTS, fork and upload
+remain unavailable; no remote capability silently activates a local service. NORMAL `a` chooses a per-client agent
+preference. Use initialize's configured assistant IDs when supplied, not mixed human/presence `agents.list` IDs.
+Server selection validation is independent. Provider/model metadata is unknown and no active local runtime is invented.
+The cached initialization result determines capability; reading it does not issue a second initialize.
+
+### Prompt and session state
+
+Select `--agent <id>` or `Esc a` **before prompting**: no selection means explicit guidance and zero writes/session
+creation. The first prompt calls `sessions.create` once, immediately retains the returned ID in its resulting state,
+then calls `turn.submit` once. Later prompts reuse that ID. `/new [name]` explicitly creates a remote session when
+permitted and clears last-known head/reset intent. Failed create preserves the previous session. No client `Session`,
+`MessageData`, core persistence, duplicate prompt preappend, transcript fabrication or private provider state is used.
+Remote runContext remains empty. Success renders the actual durable delta, not the whole conversation repeatedly.
+
+Fresh `/history`/resume/outcomes track the last-known head. A known head is sent as `expectedHead`; absent knowledge
+omits the condition (not a made-up empty-head requirement). Busy/stale-head leaves client state intact and directs a
+refresh before manual retry. Resume requests `resetContinuation` on the next turn; selection change also requests reset,
+and the server independently detects binding changes. No client continuation offset crosses the wire. Visible history
+is preserved; server restart derives fresh opaque-continuation boundaries. Local continuation semantics are unchanged.
+
+Accepted execution failure retains the prompt, returned snapshot/head/session, and shows safe failure text. An Unknown
+outcome (including lost transport reply, defect or shutdown) is **not proof of nonacceptance**: work may still complete.
+The created/known session ID is retained; refresh `/history`, or reconnect and `/session resume <id>` plus `/history`,
+before **manual resend**. No automatic create/submit retry, replay, deduplication, exactly-once, run registry, status or
+cancel API exists. Lost create response can leave an unknown empty session: inspect `/session list` before deciding.
+Closing/Ctrl+C only abandons the local wait; accepted application-owned work survives disconnect. Restart the client
+and resume to observe durable completion. Server shutdown stops work/finalizers before releasing storage/tools/lease;
+a terminal Unknown outcome may carry the best safe snapshot, never a rollback guarantee.
+
+Public snapshots/deltas render original role/content/author/tool/blob references with unsafe display controls removed.
+Bodies retain multiline text/tabs and normalize carriage returns; metadata stays single-line. Failed reads retain
+session/preferences. `/log` respects actual CLI log level initially and the current preference for later remote calls.
+
+Initialize sends `clientName: "yallmo-repl"` and `humanId` once; clientName is not privilege. Human presence is cleaned on
+disconnect, while submitted dynamically registered authors may remain in the registry for process lifetime. Same-name
+viewers are deduplicated; neither registration nor presence is identity verification. Independent sessions execute
+concurrently. Short filesystem mutation coordination is separate from nonwaiting same-session turn exclusion; provider/
+tool execution is never held under a storage mutex. Legacy/separate root owners still must not write the same root.
+
+The remaining guide describes **local mode**, including its provider/voice features; these are not enabled remotely.
 
 ## ChatGPT subscription generation
 
@@ -39,7 +116,7 @@ See [setup and credential limitations](HOW_TO_RUN.md#chatgpt-subscription-profil
 
 ## Conversation labels
 
-The input prompt uses the configured human `userName`, e.g. `yallmo(fabio)>`. Replies use the actual responding agent
+The input prompt uses the supplied `--user-name`, e.g. `yallmo(fabio)>`. Replies use the actual responding agent
 ID, e.g. `assistant(bob)>`. Selecting Eve changes subsequent replies to `assistant(eve)>` without changing the session.
 `/history` loads the current session's stored messages and labels user messages and assistant replies with their
 original authors, including after an agent switch or session resume. Output starts with `### Session history '<session_name>'`
@@ -90,7 +167,7 @@ with `/session resume <id>` regardless of the selected agent, without changing t
 never creates or resumes a session; the usual first-turn session creation and explicit session commands are unchanged.
 Opaque provider continuation data from before a switch or resume is retained in the transcript but excluded from
 requests to the new binding; ordinary conversation messages are preserved. Selecting the current agent is a no-op. Resolution failures keep the previous agent and conversation and show an error
-inside the picker. Selection is process-local; it does not rewrite `defaultAgentId` or reload the config. Empty catalogs
+inside the picker. Selection is process-local; it does not edit or reload the server config. Empty catalogs
 show setup guidance. Agent creation/deletion is not implemented.
 
 `/login` is not a REPL command: it is treated like any unknown command and excluded from help and Tab completion.
@@ -98,7 +175,7 @@ Login is available only inside the selected ChatGPT provider’s details; there 
 
 ## Provider catalog
 
-`Esc p` opens every configured provider in the explicit `--config` file, even with no selected agent. Arrow keys and
+`Esc p` opens every configured provider through the server-owned provider catalog, even with no selected agent. Arrow keys and
 `Enter` open configuration details: ID, type, sanitized endpoint and credential presence. Presence is **not** a validity
 or successful-authentication check. Listing, inspection and creation do not initialize providers, perform OAuth or
 contact endpoints. `r` rereads the file. AGENTS selects the active agent; PROVIDER does not select or assign a provider.
@@ -150,19 +227,19 @@ another process racing between read and replace can lose updates. Do not edit co
 | `/debug print` | Print the current transcript as Pi-style JSONL. |
 | `/debug export` | Replace `~/.yallmo/yallmo-debug.log` with the current snapshot. |
 | `/debug request` | Print the latest provider-request capture for the current session; audio uses blob references, not its exact wire body. |
-| `/log <trace\|debug\|info\|warning\|error\|fatal\|off>` | Set only the terminal log level for subsequent REPL turns (default `warning`). `info`/`debug`/`trace` can lower it, and `off` suppresses terminal logs. File logging independently remains INFO and above. |
-| `/new [name]` | Start a fresh session. With `--storage`, persist it immediately; provide `name` to choose its ID. |
-| `/session list` | List sessions held by the configured storage; the active session is marked with `*`. |
-| `/session resume <id>` | Restore a stored session by ID. Use `--storage <directory>` to retain it across REPL processes. |
+| `/log <trace\|debug\|info\|warning\|error\|fatal\|off>` | Set only the terminal log level for subsequent REPL turns (default `warning`). `info`/`debug`/`trace` can lower it, and `off` suppresses terminal logs. |
+| `/new [name]` | Start a fresh in-memory session; provide `name` to choose its ID. |
+| `/session list` | List sessions held in memory; the active session is marked with `*`. |
+| `/session resume <id>` | Restore an in-memory session by ID within this process. |
 | `/exit` | Exit the client. |
 
-A REPL starts with no selected session. Without `--storage`, sessions use process-local in-memory storage. `/new`
+A REPL starts with no selected session. Sessions use process-local in-memory storage. `/new`
 creates an empty session named `main-YYYYMMDD-HHMMSS` (UTC), or `/new <name>` creates the requested safe name. If a
 prompt is submitted before `/new`, the REPL creates the same timestamped session automatically. Session IDs are shown
 by `/session list`; use `/session resume <id>` to restore one.
 
-For a selected agent, each submitted user prompt is saved before the agent runner starts. With `--storage`, the
-`objects.jsonl` write is flushed to disk before any model request or tool execution; a failed save prevents inference.
+For a selected agent, each submitted user prompt is saved in memory before the agent runner starts; a failed save
+prevents inference.
 The prompt remains in session history after an agent error, timeout or cancellation. Generated assistant/tool messages
 are still saved only after a successful run. Prompts rejected because no agent is selected are not saved.
 
@@ -176,14 +253,13 @@ prompt and tool-result content; `/debug request` displays only the most recent c
 are not automatically cleaned up. Use `/debug request` only in an appropriate local terminal. Provider continuations are
 redacted before capture.
 
-## Log files and terminal filtering
+## Terminal logging and debug exports
 
-With `--storage <directory>`, general lifecycle events are appended to `<directory>/logs/repl.log`; agent-runner events use
-`<directory>/logs/agent-runners/`. Terminal output defaults to WARNING. Use `--log-level <trace|debug|info|warning|error|fatal|off>`
+Terminal output defaults to WARNING. Use `--log-level <trace|debug|info|warning|error|fatal|off>`
 to set the initial threshold for startup (including tool availability logs) and subsequent REPL turns. Values are
 case-insensitive; both `--log-level debug` and `--log-level=debug` work. `/log` can change the terminal level later.
-File output independently defaults to INFO and above: neither `--log-level` nor `/log` changes its threshold, including
-`/log off`. DEBUG/TRACE events are excluded from files by default. Without `--storage`, durable log files are not enabled.
+The REPL does not install durable lifecycle or agent-runner log files. Explicit `/debug export` and provider-request
+captures described above remain available and can contain sensitive content.
 
 Browser audio logs record service start/stop and port, startup failure, browser connect/reconnect, and disconnect reasons
 (`explicit`, `heartbeat_timeout`, `service_shutdown`). Ordinary heartbeat polls are not logged. Setup URL tokens, client IDs,
@@ -194,14 +270,14 @@ recording bytes and spoken assistant text are not included in these lifecycle me
 Voice input is a local input feature, not an agent tool. It is not advertised in `StaticContext`, cannot be requested by
 the model, and does not appear in `/tools`.
 
-Voice requires an explicit top-level `transcriberAgent` reference to a configured audio-capable agent (currently
+Voice requires an explicit `--transcriber-agent <id>` selection to a configured audio-capable agent (currently
 `OAIAgent` with an OAI provider). Its `config.model` and `config.systemPrompt` must be explicit and nonblank.
 Its effective tools/retrievers/skills/extensions must all be empty; set all four `capabilities` allowlists to `[]`.
-Missing references disable voice with a local message before recording; invalid explicit settings fail startup locally.
+An absent flag disables voice before recording; missing IDs or invalid explicit settings fail startup locally.
 There is no selected-chat/provider fallback. Voice works with text-only or no selected chat agent, and switching chat
 agents never rebinds it. The transcriber remains selectable in the normal AGENTS menu.
 
-See the secret-free [configuration example](examples/repl-config.json). Replace its placeholder models with models
+See the secret-free [configuration example](examples/yallmo.json). Replace its placeholder models with models
 supported by your endpoint. Startup validates local adapter/configuration only, not authentication, endpoint health or
 remote model audio compatibility; those remain unverified until a successful invocation.
 
@@ -220,8 +296,8 @@ is retained separately before draft insertion, even if the draft is later discar
 session contains a human-authored audio reference as root and the transcriber-authored assistant transcript as its child.
 Audio is stored before inference; an inference failure leaves the audio message/blob without an assistant transcript.
 No user-supplied session name is needed. These sessions appear in normal listings, but are never implicitly resumed or
-imported into ordinary chat or later voice requests. Without `--storage`, messages and blobs are process-local; with it they
-survive restart. A storage failure is reported explicitly and leaves the draft unchanged.
+imported into ordinary chat or later voice requests. Messages and blobs are process-local and do not survive restart.
+A storage failure is reported explicitly and leaves the draft unchanged.
 In NORMAL, `q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL;
 press `i` to edit. Cancellation, failure and empty transcripts preserve the exact draft and NORMAL cursor. Capture completion/error/deadline
 returns without requiring another key.
@@ -295,8 +371,10 @@ frontend installation or external encoder. See [browser audio details and manual
 
 At REPL startup, `ReplMain` builds these components:
 
-1. `ConfigFile` loads/initializes the required config; `RuntimeInstances` owns lazy connections and named agents.
-   The explicit/default chat selection and the independently referenced `transcriberAgent` are resolved locally.
+1. `ReplMain` parses CLI options only. `ReplStartup` creates the supplied local human and calls the server-owned
+   `ApplicationRuntime.load(Chunk(human))`; no config or credentials are returned. The runtime owns lazy connections
+   and agent registration. Only explicit chat/transcriber flags are resolved. Safe summaries and `browserAudioPort`
+   reach the UI, not the raw config.
 2. `ReplStartup.application` validates all capability IDs against the available catalogs and checks that the
    transcriber's effective capabilities are empty. Core `ConfiguredAgentSettings` provides shared model/prompt decoding.
 3. `AudioRecorder`, a local Java Sound implementation, does **not** open the microphone at startup.
@@ -331,9 +409,10 @@ A voice request proceeds only when all of the following hold:
 
 ### Privacy and SSH boundary
 
-Audio messages contain a `BlobId`, never WAV bytes. With `--storage <directory>`, each recording is stored in
-`<directory>/blobs/<uuid>` as raw bytes, without metadata or framing. `objects.jsonl` stores only message envelopes
-and references. Without `--storage`, blobs are held in memory. `readBlob(id)` returns the stored bytes; missing blobs
+Audio messages contain a `BlobId`, never WAV bytes. Normal REPL recordings and messages are held in memory.
+For server-owned filesystem storage (standalone `--storage <directory>`), blobs use `<directory>/blobs/<uuid>` as raw
+bytes without metadata or framing; `objects.jsonl` stores only message envelopes and references. This filesystem
+mode is not a local REPL launch option; explicit `--server` uses the server's chosen storage. `readBlob(id)` returns the stored bytes; missing blobs
 are reported explicitly. No lifecycle or integrity status is tracked. Failed/cancelled producers retain bytes collected
 so far, and those bytes remain readable even though the ingestion operation reports its failure or interruption.
 Orchestrator buffers stream/writer input in memory and appends the full blob to Storage after production; the message
@@ -341,13 +420,14 @@ is visible first. Storage accepts blobs and messages separately. Provider adapte
 Provider HTTP requests resolve audio to base64; debug captures instead contain blob references and format. They are
 not exact wire bodies for audio. Terminal/history rendering does not load bytes. Existing credential and continuation
 protection remains unchanged. Normal loading supports only the current `MessagePayload.AudioAttachment` schema.
-If startup reports a legacy `AudioInput` record, stop all writers and recover into a **new** directory:
+For a server-owned filesystem store with legacy `AudioInput` records, stop all writers and recover into a **new** directory:
 
 ```sh
 sbt "core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio ./zzz ./zzz-recovered"
 ```
 
-Restart the REPL with `--storage ./zzz-recovered`. Recovery leaves the source unchanged and preserves sessions,
+Open the recovered store with standalone `server/run --storage ./zzz-recovered` (viewer unless also configured). Connect the REPL with explicit `--server` for history.
+Recovery leaves the source unchanged and preserves sessions,
 transcripts, forks and existing blobs. Previously redacted recordings become explicit unavailable-audio context
 notices: the old format discarded their bytes, so playback/transcription cannot be restored. Message IDs and
 references are updated together. Current-schema hashes are checked; redacted legacy audio hashes cannot be verified.
@@ -394,5 +474,5 @@ and retry:
 
 ```bash
 rm -rf target
-sbt "repl/run --config ./yallmo.json"
+sbt "repl/run --user-name operator"
 ```

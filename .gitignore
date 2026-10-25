@@ -24,7 +24,7 @@ debug/
 lixo/
 
 # Yallmo Storage
-zzz/
+server-storage/
 
 # Frontend build dependencies and output
 visualization/node_modules/

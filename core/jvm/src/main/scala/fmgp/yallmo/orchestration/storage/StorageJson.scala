@@ -17,9 +17,10 @@ private[storage] object StorageJson {
 
   def decodeEnvelope(json: String): Either[String, DecodedArtifact] =
     for {
-      envelope <- json.fromJson[RawEnvelope]
+      // Decoder errors may quote untrusted input; report schema stages without exposing stored content.
+      envelope <- json.fromJson[RawEnvelope].left.map(_ => "invalid envelope JSON; expected id, kind and value fields")
       id <- MessageId.from(envelope.id)
-      kind <- ArtifactKind.from(envelope.kind)
+      kind <- ArtifactKind.from(envelope.kind).left.map(_ => "unsupported artifact kind; expected 'msg'")
       artifact <- kind match
         case ArtifactKind.Msg =>
           if envelope.value.asObject.flatMap(_.get("payload")).flatMap(_.asObject).exists(_.contains("AudioInput")) then
@@ -28,6 +29,13 @@ private[storage] object StorageJson {
                 "sbt \"core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio <source> <new-destination>\". " +
                 "Redacted recordings become unavailable-audio notices; the source is unchanged."
             )
-          else envelope.value.toJson.fromJson[MessageData].map(value => DecodedArtifact.Msg(StoredArtifact(id, value)))
+          else
+            envelope.value.toJson
+              .fromJson[MessageData]
+              .left
+              .map(_ =>
+                s"message ${MessageId.value(id)}: invalid message data; check agentId, parentId, timestamp and payload schema"
+              )
+              .map(value => DecodedArtifact.Msg(StoredArtifact(id, value)))
     } yield artifact
 }

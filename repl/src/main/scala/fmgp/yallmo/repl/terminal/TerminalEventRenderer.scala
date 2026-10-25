@@ -16,7 +16,7 @@ private[terminal] object TerminalEventRenderer {
       // Interactive requests are handled by the terminal client, never by this output-only renderer.
       case ReplEvent.Help(entries) =>
         val lines = entries.map(entry => f"  ${entry.usage}%-26s ${entry.description}")
-        printLines(Chunk("Commands:") ++ lines ++ Chunk("Use // to send a prompt beginning with /."))
+        printLines(Chunk("Commands:") ++ lines)
       case ReplEvent.DebugSnapshot(DebugTarget.Display, snapshot)  => printDebugSnapshot(snapshot)
       case ReplEvent.DebugSnapshot(DebugTarget.Export, snapshot)   => writeDebugLog(snapshot)
       case ReplEvent.DebugSnapshot(DebugTarget.ProviderRequest, _) => printProviderRequest(None)
@@ -27,6 +27,14 @@ private[terminal] object TerminalEventRenderer {
           Chunk(s"### Session history '$name'") ++
             TerminalMessageRenderer.render(messages) ++ Chunk("### END OF SESSION")
         )
+      case ReplEvent.SnapshotTranscript(messages, sessionId) =>
+        printLines(
+          Chunk(s"### Session history '${TerminalStatusLayout.sanitize(sessionId.getOrElse("no session"))}'")
+            ++ messages.map(TerminalMessageRenderer.renderSnapshot)
+            ++ Chunk("### END OF SESSION")
+        )
+      case ReplEvent.SnapshotDelta(messages) => printLines(messages.map(TerminalMessageRenderer.renderSnapshot))
+      case ReplEvent.Unavailable(message)    => Console.printLine(message).orDie
       case ReplEvent.ToolAvailability(value) =>
         printLines(
           value.available.map(key => s"available[$key]") ++
@@ -36,7 +44,10 @@ private[terminal] object TerminalEventRenderer {
       case ReplEvent.SessionReset               => Console.printLine("Session reset.").orDie
       case ReplEvent.SessionList(ids, activeId) =>
         if ids.isEmpty then Console.printLine("No durable sessions.").orDie
-        else printLines(ids.map(id => s"${if activeId.contains(id) then "*" else " "} $id"))
+        else
+          printLines(
+            ids.map(id => s"${if activeId.contains(id) then "*" else " "} ${TerminalStatusLayout.sanitize(id)}")
+          )
       case ReplEvent.SessionResumed(id)             => Console.printLine(s"Resumed session $id.").orDie
       case ReplEvent.SessionFailed(message)         => Console.printLineError(s"Session command failed: $message").orDie
       case ReplEvent.AgentTurn(result, newMessages) =>

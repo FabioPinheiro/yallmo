@@ -84,10 +84,11 @@ Do not imply that this storage change alone adds provider audio-streaming suppor
 
 ## Filesystem concurrency contract
 
-- Exactly one Storage service owns each root; no other process writes to it. There is no internal append semaphore or shared lock registry.
-- Callers serialize message appends and session-metadata mutations across the entire root, including different sessions. One service instance does not prevent overlapping fiber calls.
-- Overlapping mutations can lose session-head/membership updates or overwrite/interleave `objects.jsonl` records. Atomic session-file replacement does not make the read/modify/write sequence transactional or provide rollback.
-- If concurrent writers are introduced, coordinate all message/session mutations at the storage boundary and add overlapping-write tests. Cross-process writers additionally need filesystem locking or a transactional backend.
+- Exactly one Storage service owns each root; no other process writes to it. There is no shared lock registry.
+- One root-local semaphore coordinates all session/object read-modify-write operations, complete object batches and head publication, and actual blob writes. Session/list reads acquire coherent snapshots; historical traversal can release the permit because indexed objects are immutable and append-only. Blob reads coordinate with byte writes.
+- Provider/tool execution and blob producer callbacks do not hold the storage permit. Independent sessions may execute concurrently; only their storage operations coordinate.
+- Committed message batches finish publication before honoring interruption. Failures still need not roll back objects or partial blobs; atomic session replacement and the semaphore are not crash transactions.
+- The standalone root lease coordinates only cooperating processes. Legacy owners and other services/processes writing the same root remain unsupported; this semaphore does not add cross-process ownership or locking.
 
 ## Transcription flow
 

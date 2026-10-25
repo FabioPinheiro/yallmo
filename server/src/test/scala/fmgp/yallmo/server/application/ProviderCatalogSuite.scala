@@ -1,4 +1,4 @@
-package fmgp.yallmo.repl
+package fmgp.yallmo.server.application
 
 import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
@@ -13,11 +13,12 @@ import java.nio.file.{FileSystems, Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
 import scala.jdk.CollectionConverters.*
 
-final class ReplProviderCatalogSuite extends FunSuite {
-  import ReplProviderCatalog.*
+final class ProviderCatalogSuite extends FunSuite {
+  import ProviderCatalog.*
 
   private val fixture = """{
-    "userName": "synthetic-user",
+    "metadata": "synthetic-metadata",
+    "userName": "legacy-user",
     "defaultAgentId": "bob",
     "agents": {"bob": {"agentType": "OAIAgent", "providerIds": ["local"], "config": {"model": "synthetic"}}},
     "providers": {
@@ -34,12 +35,12 @@ final class ReplProviderCatalogSuite extends FunSuite {
     Runtime.default.unsafe.run(effect).getOrThrowFiberFailure()
   }
 
-  private def withFile(body: (Path, ReplProviderCatalog) => Unit): Unit = {
+  private def withFile(body: (Path, ProviderCatalog) => Unit): Unit = {
     val directory = Files.createTempDirectory("provider-catalog-suite-")
     val path = directory.resolve("synthetic.json")
     try {
       Files.writeString(path, fixture, UTF_8)
-      body(path, run(ReplProviderCatalog.make(path)))
+      body(path, run(ProviderCatalog.make(path)))
     } finally {
       Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
       val paths = Files.walk(directory)
@@ -75,7 +76,6 @@ final class ReplProviderCatalogSuite extends FunSuite {
   test("details sanitize endpoint userinfo, query, fragment and terminal control characters") {
     withFile { (path, catalog) =>
       val synthetic = Config(
-        "test",
         providers = Map(
           id("unsafe\u001b[31m\n\u202e") -> ProviderConfig.OAI(
             "https://user:synthetic-password@example.com:8443/v1?key=synthetic-query#synthetic-fragment"
@@ -253,8 +253,8 @@ final class ReplProviderCatalogSuite extends FunSuite {
       List(
         "{ malformed synthetic-secret",
         """{"userName":"test","providers":[]}""",
-        """{"userName":"  "}""",
-        """{"userName":"test","defaultAgentId":"missing"}""",
+        """{"browserAudioPort":0}""",
+        """{"agents":{"bad":{"agentType":"FolderStructureAgent","filesystem":{"root":" "}}}}""",
         """{"userName":"test","providers":{"same":{"providerType":"ChatGPT"},"same":{"providerType":"ChatGPT"}}}""",
         """{"userName":"test","providers":{"x":{"providerType":"Unknown","secret":"synthetic-secret"}}}"""
       ).foreach { input =>
@@ -271,12 +271,39 @@ final class ReplProviderCatalogSuite extends FunSuite {
     withFile { (path, catalog) =>
       run(catalog.list)
       val otherWriter = fixture
-        .replace("synthetic-user", "updated-user")
+        .replace("synthetic-metadata", "updated-metadata")
         .replace("\"unrelated\":", "\"anotherField\": 42, \"unrelated\":")
       Files.writeString(path, otherWriter, UTF_8)
       run(catalog.add("new", Creation.ChatGPT))
-      assertEquals(config(path).userName, "updated-user")
+      assert(tree(path).asInstanceOf[Json.Obj].fields.contains("metadata" -> Json.Str("updated-metadata")))
       assert(tree(path).asInstanceOf[Json.Obj].fields.contains("anotherField" -> Json.Num(42)))
+    }
+  }
+
+  test("removed preferences remain inactive unknown JSON even with legacy invalid values and are preserved on edits") {
+    withFile { (path, catalog) =>
+      val input = """{"userName":[],"defaultAgentId":"missing","transcriberAgent":false,"metadata":{"keep":true}}"""
+      Files.writeString(path, input, UTF_8)
+      val before = tree(path).asInstanceOf[Json.Obj]
+      assertEquals(run(catalog.list), Vector.empty)
+      run(catalog.add("new", Creation.ChatGPT))
+      val after = tree(path).asInstanceOf[Json.Obj]
+      assertEquals(after.fields.filterNot(_._1 == "providers"), before.fields)
+      assertEquals(config(path).agents, Map.empty)
+    }
+  }
+
+  test("current schema validation rejects dangling providers and invalid ports without changing the file") {
+    withFile { (path, catalog) =>
+      List(
+        """{"browserAudioPort":65536}""",
+        """{"agents":{"bad":{"agentType":"OAIAgent","providerIds":["missing"]}}}"""
+      ).foreach { input =>
+        Files.writeString(path, input, UTF_8)
+        assertEquals(run(catalog.list.either), Left(Error.InvalidConfig))
+        assertEquals(run(catalog.add("new", Creation.ChatGPT).either), Left(Error.InvalidConfig))
+        assertEquals(Files.readString(path, UTF_8), input)
+      }
     }
   }
 
@@ -321,7 +348,7 @@ final class ReplProviderCatalogSuite extends FunSuite {
       try {
         val target = fileSystem.getPath("/synthetic.json")
         Files.writeString(target, fixture, UTF_8)
-        val catalog = run(ReplProviderCatalog.make(target))
+        val catalog = run(ProviderCatalog.make(target))
         assertEquals(run(catalog.list).size, 3)
         assertEquals(run(catalog.add("new", Creation.ChatGPT).either), Left(Error.SaveFailed))
         assertEquals(Files.readString(target, UTF_8), fixture)

@@ -1,8 +1,8 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.orchestration.config.ProviderId
-import fmgp.yallmo.repl.ReplProviderCatalog
-import fmgp.yallmo.repl.ReplProviderCatalog.*
+import fmgp.yallmo.server.application.ProviderCatalog
+import fmgp.yallmo.server.application.ProviderCatalog.*
 import fmgp.yallmo.repl.LoginMethod
 import munit.FunSuite
 import zio.*
@@ -278,7 +278,7 @@ final class TerminalProviderMenuSuite extends FunSuite {
     val fixture = """{"userName":"synthetic","providers":{}}"""
     try {
       Files.writeString(path, fixture)
-      val client = TerminalProviderMenu.client(run(ReplProviderCatalog.make(path)))
+      val client = TerminalProviderMenu.client(run(ProviderCatalog.make(path)))
       val save = client.execute(Operation.Save("new", Creation.ChatGPT))
       assertEquals(Files.readString(path), fixture)
       assertEquals(run(client.execute(Operation.Refresh)), Reply.Listed(Vector.empty))

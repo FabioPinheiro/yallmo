@@ -1,7 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.repl.ProviderLoginService
-import fmgp.yallmo.repl.ReplProviderCatalog.Error
+import fmgp.yallmo.server.application.ProviderCatalog.Error
 import org.jline.keymap.KeyMap
 import org.jline.reader.{Binding, Buffer, EndOfFileException, LineReader, Reference, Widget}
 import org.jline.utils.AttributedString

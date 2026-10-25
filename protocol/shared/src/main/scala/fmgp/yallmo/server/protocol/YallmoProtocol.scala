@@ -76,14 +76,17 @@ object YallmoProtocol {
 
   object Initialize {
     val method: String = "initialize"
-    final case class Params(protocolVersion: Int, clientName: String) derives JsonCodec
+
+    /** Claimed local author, not an authenticated identity. Transport/server policy determines capabilities. */
+    final case class Params(protocolVersion: Int, clientName: String, humanId: Option[AgentId] = None) derives JsonCodec
     final case class Result(
         protocolVersion: Int,
         serverInstanceId: String,
         identity: Identity,
         methods: List[String],
         notifications: List[String],
-        maxBlobChunkBytes: Int
+        maxBlobChunkBytes: Int,
+        configuredAgentIds: Option[Chunk[AgentId]] = None
     ) derives JsonCodec
   }
 
@@ -109,7 +112,11 @@ object YallmoProtocol {
     val method: String = "sessions.fork"
 
     /** Fork the current head only; name is an ID/name, never a filesystem path. */
-    final case class Params(sourceSessionId: SessionId, name: Option[SessionId] = None) derives JsonCodec
+    final case class Params(
+        sourceSessionId: SessionId,
+        name: Option[SessionId] = None,
+        expectedHead: Option[MessageId] = None
+    ) derives JsonCodec
     type Result = SessionSnapshot
   }
 
@@ -149,49 +156,48 @@ object YallmoProtocol {
   object TurnSubmit {
     val method: String = "turn.submit"
 
-    /** The human author is obtained from the authorized identity, never supplied in these params. Omitted expectedHead
-      * means no head precondition. A supplied head must match when write admission is granted.
+    /** The session must already exist; the human author comes from the authorized identity. A supplied expectedHead
+      * must match under write admission; None skips the check. resetContinuation discards old opaque continuation,
+      * never visible stored transcript; binding changes also reset it server-side. No replay or deduplication.
       */
     final case class Params(
-        commandId: String,
         sessionId: SessionId,
         agentId: AgentId,
         task: AgentTask,
-        expectedHead: Option[MessageId] = None
+        expectedHead: Option[MessageId] = None,
+        resetContinuation: Boolean = false
     ) derives JsonCodec
     type Result = TurnOutcome
   }
 
-  /** Accepted-run failures are results, not malformed requests. accepted means that the prompt was durably saved;
-    * headMessageId is the last durable head observed when settling the run, not a promise to roll back tool effects.
-    */
+  /** Authoritative prompt persistence, not run admission. Unknown is required when acceptance cannot be established. */
+  enum PromptAcceptance derives JsonCodec {
+    @jsonHint("notAccepted") case NotAccepted
+    @jsonHint("accepted") case Accepted
+    @jsonHint("unknown") case Unknown
+  }
+
+  /** Terminal execution results. Rejections before execution use JSON-RPC errors. No run registry or replay API. */
   @jsonDiscriminator("status")
   sealed trait TurnOutcome derives JsonCodec
 
   object TurnOutcome {
     @jsonHint("succeeded")
     final case class Succeeded(
-        runId: String,
-        sessionId: SessionId,
-        headMessageId: MessageId,
+        session: SessionSnapshot,
         result: AgentResult,
         newMessages: Chunk[MessageSnapshot]
     ) extends TurnOutcome
 
     @jsonHint("failed")
     final case class Failed(
-        runId: String,
-        sessionId: SessionId,
-        accepted: Boolean,
-        headMessageId: Option[MessageId],
+        acceptance: PromptAcceptance,
+        session: Option[SessionSnapshot],
         error: ApplicationError
     ) extends TurnOutcome
-
-    @jsonHint("cancelled")
-    final case class Cancelled(runId: String, sessionId: SessionId, accepted: Boolean, headMessageId: Option[MessageId])
-        extends TurnOutcome
   }
 
+  // Disabled future drafts below: not advertised, implemented, or part of active turn submission semantics.
   enum RunStatus derives JsonCodec {
     @jsonHint("queued") case Queued
     @jsonHint("running") case Running
@@ -219,8 +225,20 @@ object YallmoProtocol {
     val method: String = "runs.cancel"
     type Params = RunsGet.Params
 
-    /** requested means cancellation was requested, not that the run has stopped or its side effects were undone. */
+    /** True acknowledges recorded/already-pending cancellation, not termination or undo; terminal runs return false.
+      * Missing/expired runs are NotFound. Control must remain responsive independently of a long turn.
+      */
     final case class Result(runId: String, requested: Boolean) derives JsonCodec
+  }
+
+  object CommandsGet {
+    val method: String = "commands.get"
+    final case class Params(commandId: String) derives JsonCodec
+
+    /** Identity-scoped lookup within serverInstanceId. Absent run is a retained dedup tombstone after detail expiry,
+      * not an unknown command or permission to re-execute. New commands are Busy when the bounded ledger is full.
+      */
+    final case class Result(runId: String, run: Option[RunsGet.Result]) derives JsonCodec
   }
 
   object DiagnosticsMessage {

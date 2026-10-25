@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.server.application.ProviderCatalog
+import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.config.ProviderId
@@ -149,7 +151,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       def completeBrowserLogin(login: OpenAiCodexBrowserLogin, redirect: String) =
         ZIO.dieMessage("unexpected exchange")
     }
-    val service = new ProviderLoginService(runZIO(ReplProviderCatalog.make(path)), flow, 150.millis)
+    val service = new ProviderLoginService(runZIO(ProviderCatalog.make(path)), flow, 150.millis)
     val input = new TerminalProviderLoginInput(terminal, Some(reader))
     try {
       writer.write("\u0003".getBytes(UTF_8))
@@ -196,7 +198,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
         def startBrowserLogin = start[OpenAiCodexBrowserLogin]
         def completeBrowserLogin(login: OpenAiCodexBrowserLogin, redirect: String) = ZIO.never
       }
-      val service = new ProviderLoginService(runZIO(ReplProviderCatalog.make(path)), flow, 1.second)
+      val service = new ProviderLoginService(runZIO(ProviderCatalog.make(path)), flow, 1.second)
       try {
         fixture.send("partial-private")
         runZIO {
@@ -615,7 +617,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
         }),
         StaticContext[Any]("test")
       ),
-      ReplToolAvailability(Chunk.empty, Chunk.empty),
+      ToolAvailability(Chunk.empty, Chunk.empty),
       ReplOrchestratorLive.make(orchestrator, user, Some(agent))
     )
   }

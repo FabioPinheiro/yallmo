@@ -228,4 +228,4 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 - [`ReplStartupSuite`](../repl/src/test/scala/fmgp/yallmo/repl/ReplStartupSuite.scala): application-specific voice validation, inherited policies, ordinary selection and isolated retention.
 - [`TranscriberSuite`](../repl/src/test/scala/fmgp/yallmo/repl/voice/TranscriberSuite.scala): fresh tool-free turns, unexpected response rejection and retention failures.
 - [Agent/provider configuration](CONFIG_AGENT_PROVIDER.md) — its opening section describes the current implementation; later sections include historical designs.
-- [REPL usage](REPL.md) and [secret-free configuration example](examples/repl-config.json).
+- [REPL usage](REPL.md) and [secret-free configuration example](examples/yallmo.json).

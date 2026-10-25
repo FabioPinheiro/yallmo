@@ -12,31 +12,20 @@ import zio.*
 
 /** Filesystem-backed [[Storage]] implementation.
   *
-  * It persists agent identifiers as session metadata but has no agent definitions, runtime bindings, or execution
-  * knowledge. [[Orchestrator]] is responsible for resolving those identifiers. Each blob is one raw-byte file at
-  * `blobs/<BlobId>`, with no metadata or framing. Files are written directly; overlapping reads or failed writes can
-  * expose partial bytes. Callers requiring all supplied bytes must wait for the blob append to finish successfully.
-  * Blob files and their directory use filesystem-default permissions; root permissions are initialized by the object
-  * store.
+  * Exactly one Storage service must own each root, with no other process writing to it. Its root-local semaphore
+  * serializes session/object mutations and snapshot acquisition across fibers, not provider/tool execution or blob
+  * producers. Published histories use immutable, append-only objects and can be traversed after releasing the permit.
+  * This is not cross-process coordination, a crash transaction, or rollback on failure.
   *
-  * Concurrency assumption: exactly one Storage service owns a storage root, with no other process writing to it.
-  * Callers must serialize message appends and session-metadata mutations across that root, including different
-  * sessions. A single service instance can still receive concurrent calls from multiple fibers; this class provides no
-  * internal writer lock.
-  *
-  * Violating that contract can lose session-head or agent-membership updates and overwrite/interleave `objects.jsonl`
-  * records. Atomic session-file replacement prevents torn files, not lost updates. Appends are not rollback
-  * transactions.
-  *
-  * If concurrent writers are needed, introduce storage-level coordination covering all message/session mutations, not
-  * just appends, and test overlapping writes. Multiple processes additionally require filesystem locking or a
-  * transactional storage backend.
+  * Each blob is one raw-byte file at `blobs/<BlobId>`, with no metadata or framing. Reads coordinate with byte writes,
+  * but failed writes may leave partial files. Blob files use filesystem-default permissions; the object store
+  * initializes private root permissions.
   */
-private[orchestration] final class StorageFS(val root: Path, store: StorageStore) extends Storage {
+private[orchestration] final class StorageFS(val root: Path, store: StorageStore, lock: Semaphore) extends Storage {
 
-  override def listMessages: IO[YallmoError, Chunk[Message]] = store.listMessages
+  override def listMessages: IO[YallmoError, Chunk[Message]] = lock.withPermit(store.listMessages)
 
-  override def listBlobIds: IO[YallmoError, Chunk[BlobId]] =
+  override def listBlobIds: IO[YallmoError, Chunk[BlobId]] = lock.withPermit {
     ZIO
       .attemptBlocking {
         val files = Files.list(root.resolve("blobs"))
@@ -51,35 +40,41 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
         finally files.close()
       }
       .mapError(error => YallmoError.StorageFailure("list blobs", error))
+  }
 
   override def listSessions: IO[YallmoError, Chunk[SessionSummary]] =
-    StorageFiles.list(root).flatMap { ids =>
-      ZIO.foreach(ids) { id =>
-        readState(id).flatMap(state => messageCount(state.head).map(SessionSummary(id, _, state.agentIds)))
+    lock
+      .withPermit {
+        StorageFiles.list(root).flatMap(ids => ZIO.foreach(ids)(id => readState(id).map(id -> _)))
       }
-    }
+      .flatMap { states =>
+        ZIO.foreach(states) { case (id, state) =>
+          messageCount(state.head).map(SessionSummary(id, _, state.agentIds))
+        }
+      }
 
   override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
-    validateAgentIds(id, agentIds) *>
-      StorageFiles.exists(root, id).flatMap {
-        case true  => ZIO.fail(YallmoError.SessionAlreadyExists(id))
-        case false => StorageFiles.write(root, id, agentIds, None).as(Session(id, agentIds, Chunk.empty))
-      }
+    lock.withPermit {
+      validateAgentIds(id, agentIds) *>
+        StorageFiles.exists(root, id).flatMap {
+          case true  => ZIO.fail(YallmoError.SessionAlreadyExists(id))
+          case false => StorageFiles.write(root, id, agentIds, None).as(Session(id, agentIds, Chunk.empty))
+        }
+    }
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
-    for {
-      state <- readState(id)
-      messages <- messagesFrom(state.head)
-    } yield Session(id, state.agentIds, messages)
+    lock.withPermit(readState(id)).flatMap(sessionFrom(id, _))
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
-    for {
-      state <- readState(id)
-      _ <-
-        if state.agentIds.contains(agentId) then ZIO.unit
-        else StorageFiles.write(root, id, state.agentIds :+ agentId, state.head)
-      session <- loadSession(id)
-    } yield session
+    lock
+      .withPermit {
+        for {
+          state <- readState(id)
+          updated = if state.agentIds.contains(agentId) then state else state.copy(agentIds = state.agentIds :+ agentId)
+          _ <- StorageFiles.write(root, id, updated.agentIds, updated.head).unless(updated == state)
+        } yield updated
+      }
+      .flatMap(sessionFrom(id, _))
 
   override def append(
       id: SessionId,
@@ -88,23 +83,26 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
   ): IO[YallmoError, Session] =
     if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
     else
-      for {
-        state <- readState(id)
-        _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(state.agentIds.contains(agentId))
-        // Once object writes start, finish the batch and publish its head before honoring cancellation.
-        // Keep the final history read outside this region; masking is not locking or rollback/crash recovery.
-        _ <- (for {
-          head <- ZIO.foldLeft(messages)(state.head) { (parent, message) =>
-            store.put(MessageData(agentId, parent, Instant.now(), message)).map(stored => Some(stored.id))
-          }
-          _ <- StorageFiles.write(root, id, state.agentIds, head)
-        } yield ()).uninterruptible
-        session <- loadSession(id)
-      } yield session
+      lock
+        .withPermit {
+          for {
+            state <- readState(id)
+            _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(state.agentIds.contains(agentId))
+            // Once object writes start, finish the batch and publish its head before honoring cancellation.
+            // The permit covers the entire batch; masking is not rollback/crash recovery.
+            updated <- (for {
+              head <- ZIO.foldLeft(messages)(state.head) { (parent, message) =>
+                store.put(MessageData(agentId, parent, Instant.now(), message)).map(stored => Some(stored.id))
+              }
+              _ <- StorageFiles.write(root, id, state.agentIds, head)
+            } yield state.copy(head = head)).uninterruptible
+          } yield updated
+        }
+        .flatMap(sessionFrom(id, _))
 
   private def blobPath(blobId: BlobId): Path = root.resolve("blobs").resolve(blobId.value)
 
-  override def append(blob: Blob): IO[YallmoError, Unit] =
+  override def append(blob: Blob): IO[YallmoError, Unit] = lock.withPermit {
     ZIO
       .attemptBlocking {
         val path = blobPath(blob.id)
@@ -121,25 +119,34 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
         case error                         => YallmoError.StorageFailure("append blob", error)
       }
       .uninterruptible
+  }
 
-  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] =
+  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = lock.withPermit {
     ZIO
       .attemptBlocking(Blob(blobId, Chunk.fromArray(Files.readAllBytes(blobPath(blobId)))))
       .mapError {
         case _: NoSuchFileException => YallmoError.BlobMissing(blobId)
         case error                  => YallmoError.StorageFailure("read blob", error)
       }
+  }
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
-    StorageFiles.exists(root, target).flatMap {
-      case true  => ZIO.fail(YallmoError.SessionAlreadyExists(target))
-      case false =>
-        readState(source).flatMap { state =>
-          StorageFiles.write(root, target, state.agentIds, state.head) *> loadSession(target)
+    lock
+      .withPermit {
+        StorageFiles.exists(root, target).flatMap {
+          case true  => ZIO.fail(YallmoError.SessionAlreadyExists(target))
+          case false =>
+            readState(source).flatMap { state =>
+              StorageFiles.write(root, target, state.agentIds, state.head).as(state)
+            }
         }
-    }
+      }
+      .flatMap(sessionFrom(target, _))
 
   private final case class SessionState(agentIds: Chunk[AgentId], head: Option[MessageId])
+
+  private def sessionFrom(id: SessionId, state: SessionState): IO[YallmoError, Session] =
+    messagesFrom(state.head).map(Session(id, state.agentIds, _))
 
   private def readState(id: SessionId): IO[YallmoError, SessionState] =
     StorageFiles.read(root, id).map(ref => SessionState(ref.agentIds, ref.head))
@@ -175,10 +182,11 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
 private[orchestration] object StorageFS {
   def open(root: Path): IO[YallmoError, StorageFS] =
     for {
+      lock <- Semaphore.make(1)
       store <- StorageStore.open(root)
       _ <- StorageFiles.ensureDirectories(root)
       _ <- ZIO
         .attemptBlocking(Files.createDirectories(root.resolve("blobs")))
         .mapError(error => YallmoError.StorageFailure("create blob directory", error))
-    } yield StorageFS(root, store)
+    } yield StorageFS(root, store, lock)
 }

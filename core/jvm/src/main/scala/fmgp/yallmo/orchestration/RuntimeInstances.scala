@@ -48,9 +48,45 @@ final class RuntimeInstances[-R] private (
   /** Connections constructed lazily from config.providers and shared by agents referencing the same provider ID. */
   private var initializedProviders = Map.empty[ProviderId, LlmProvider | SOMProvider]
 
-  /** All configured and caller-supplied IDs. Does not initialize agents, inspect their workspaces or expose config. */
+  /** Trusted user identities retained for this registry's lifetime, independently of connection presence. */
+  private var users = Set.empty[AgentId]
+
+  /** All configured, supplied and user IDs; does not initialize agents or inspect their workspaces. */
   def listAgentIds: UIO[Chunk[AgentId]] =
-    ZIO.succeed(Chunk.fromIterable((config.agents.keySet ++ registeredAgents.keySet).toList.sortBy(AgentId.value)))
+    initializationLock.withPermit {
+      ZIO.succeed(
+        Chunk.fromIterable(
+          (config.agents.keySet ++ registeredAgents.keySet ++ users).toList.sortBy(AgentId.value)
+        )
+      )
+    }
+
+  /** Registers a trusted user identity for authorship, not an executable agent or an authenticated account.
+    *
+    * Idempotent for users registered by this operation. Configured and caller-supplied IDs cannot be overwritten.
+    * Registration survives connection cleanup but does not create a turn implementation.
+    */
+  def registerUser(id: AgentId): IO[YallmoError, Unit] =
+    initializationLock.withPermit {
+      ZIO.suspendSucceed {
+        if config.agents.contains(id) || registeredAgents.contains(id) then
+          ZIO.fail(
+            YallmoError.InvalidConfig(s"User id '${AgentId.value(id)}' conflicts with an existing agent")
+          )
+        else ZIO.succeed { users = users + id }
+      }
+    }
+
+  /** True only for identities registered by registerUser, not configured or caller-supplied agents. */
+  def isUser(id: AgentId): UIO[Boolean] =
+    initializationLock.withPermit(ZIO.succeed(users.contains(id)))
+
+  /** Accepts registered users as authors without an agent; executable agents retain normal lookup validation. */
+  def validateAuthor(id: AgentId): IO[YallmoError, Unit] =
+    isUser(id).flatMap {
+      case true  => ZIO.unit
+      case false => getAgent(id).unit
+    }
 
   /** Resolves one connection, without authenticating or contacting its endpoint.
     *
@@ -60,10 +96,12 @@ final class RuntimeInstances[-R] private (
   def getProvider(id: ProviderId): IO[YallmoError, LlmProvider | SOMProvider] =
     initializationLock.withPermit(getProviderNow(id))
 
-  /** Returns a caller-supplied or cached agent; otherwise initializes the configured agent and its dependencies lazily.
+  /** Returns a supplied or cached agent; otherwise initializes the configured agent lazily.
+    *
+    * Registered users have no executable agent and fail with UnknownAgent.
     *
     * @param id
-    *   ID of either an already-initialized caller-supplied agent or a definition in config.agents
+    *   ID of a supplied agent or definition in config.agents
     */
   def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
     initializationLock.withPermit {
@@ -243,7 +281,7 @@ object RuntimeInstances {
     *   already-initialized instances to register as-is; duplicate IDs are rejected
     */
   def fromAgents[R](agents: Chunk[Agent[R]]): IO[YallmoError, RuntimeInstances[R]] =
-    create(Config(userName = ""), None, agents)
+    create(Config(), None, agents)
 
   private def create[R](
       config: Config,

@@ -12,7 +12,8 @@ import scala.jdk.CollectionConverters.*
 private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extends TerminalMode {
   private val name = TerminalMenus.AgentsKeyMap
   private var entries = Vector.empty[ReplAgentChoice]
-  private var active: Option[ReplActiveAgent] = None
+  private var active: Option[AgentId] = None
+  private var remoteConnection = false // FIXME REVIEW
   private var index = 0
   private var error: Option[String] = None
   private var pending: Option[AgentId] = None
@@ -63,9 +64,14 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
   }
 
   def open(choices: Vector[ReplAgentChoice], selected: Option[ReplActiveAgent]): Unit = {
+    openSelection(choices, selected.map(value => AgentId(value.agentId)))
+  }
+
+  def openSelection(choices: Vector[ReplAgentChoice], selected: Option[AgentId], remote: Boolean = false): Unit = {
+    remoteConnection = remote
     entries = choices
     active = selected
-    index = entries.indexWhere(entry => active.exists(_.agentId == AgentId.value(entry.id))).max(0)
+    index = entries.indexWhere(entry => active.contains(entry.id)).max(0)
     error = None
     reader.setKeyMap(name)
     render()
@@ -121,13 +127,16 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
 
   private def render(): Unit = reader.showPost(() => {
     def clean(value: String): String = TerminalStatusLayout.sanitize(value)
-    val selected = active.map(value => clean(value.agentId)).getOrElse("none")
+    val selected = active.map(value => clean(AgentId.value(value))).getOrElse("none")
     val lines = Vector(s"AGENTS — selected: $selected") ++
-      (if entries.isEmpty then Vector("No configured agents. Add agents to the config and restart.")
+      (if entries.isEmpty then
+         Vector(if remoteConnection then "No agent IDs available."
+         else "No configured agents. Add agents to the config and restart.")
        else
          entries.zipWithIndex.flatMap { case (entry, row) =>
            val marker = if row == index then ">" else " "
-           val current = if active.exists(_.agentId == AgentId.value(entry.id)) then " [active]" else ""
+           val current =
+             if active.contains(entry.id) then (if remoteConnection then " [preferred]" else " [active]") else ""
            Vector(
              s"$marker ${clean(AgentId.value(entry.id))} [${clean(entry.agentType)}] ${clean(entry.providers.mkString(", "))} · ${clean(entry.model)}$current"
            ) ++

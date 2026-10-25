@@ -48,6 +48,7 @@ private[storage] object StorageFiles {
           stream.iterator.asScala.toList
             .filter(Files.isRegularFile(_))
             .map(_.getFileName.toString)
+            .filterNot(name => name.startsWith(".") && name.endsWith(".tmp")) // see writeAtomically
             .sorted
         finally stream.close()
       }

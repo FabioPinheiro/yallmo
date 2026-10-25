@@ -281,13 +281,12 @@ final class AgentCapabilitiesSuite extends FunSuite {
   test("startup catalog validation catches unknown IDs on unselected agents without constructing adapters") {
     import fmgp.yallmo.orchestration.config.{Config as AppConfig, ConfigFile}
     val invalid = AppConfig(
-      "operator",
       agents = Map(id -> AgentConfig("OAIAgent", capabilities = AgentCapabilities(skills = Some(Set("typo")))))
     )
     val error = ConfigFile.validateCapabilities(invalid, available).swap.toOption.get
     assert(error.getMessage.contains("policy-test") && error.getMessage.contains("capabilities.skills"))
     assertEquals(
-      ConfigFile.validateCapabilities(AppConfig("operator", agents = Map(id -> AgentConfig("OAIAgent"))), available),
+      ConfigFile.validateCapabilities(AppConfig(agents = Map(id -> AgentConfig("OAIAgent"))), available),
       Right(())
     )
   }

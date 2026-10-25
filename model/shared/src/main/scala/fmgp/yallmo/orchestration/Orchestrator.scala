@@ -11,6 +11,8 @@ import zio.stream.ZStream
   * storage directly.
   */
 trait Orchestrator[-R] {
+
+  /** Resolves executable behavior; a registered user identity alone is not an agent. */
   def getAgent(id: AgentId): IO[YallmoError, Agent[R]]
 
   /** Invokes one provider turn without saving a prompt or response and without running the agent/tool loop.

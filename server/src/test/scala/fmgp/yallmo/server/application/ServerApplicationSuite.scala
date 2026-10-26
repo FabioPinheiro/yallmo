@@ -355,7 +355,7 @@ final class ServerApplicationSuite extends FunSuite {
             port <- new OrchestratorWSServer(application.master).start(0)
             endpoint = s"ws://127.0.0.1:$port/rpc"
             failures <- ZIO.foreach(List(first, second))(id =>
-              OrchestratorWSClient.connect(endpoint, humanId = Some(id)).either
+              OrchestratorWSClient.connect(endpoint, userId = Some(id)).either
             )
             observer <- OrchestratorWSClient.connect(endpoint)
             ids <- observer.listAgentIds

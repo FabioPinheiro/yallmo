@@ -1,12 +1,18 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.model.{Agent, AgentId, MessageId, YallmoError}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.orchestration.config.ConfigFile
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.channels.{FileChannel, OverlappingFileLockException}
-import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
+import java.nio.file.{Files, LinkOption, NoSuchFileException, Path, StandardOpenOption}
+import scala.collection.immutable.VectorMap
+import zio.json.*
+import zio.json.ast.Json
 import java.util.concurrent.ConcurrentHashMap
 import zio.*
 import zio.http.Client
@@ -22,6 +28,7 @@ object ServerApplication {
   type Environment = Client & ToolEnvironment
 
   private val ownedRoots = ConcurrentHashMap.newKeySet[Path]()
+  private val MaxCapturedSessions = 128
 
   /** Process-lifetime trusted user registration is separate from ephemeral connection presence. The scope owns
     * execution; callers own only interruptible waits. No results or run IDs are retained here.
@@ -32,7 +39,8 @@ object ServerApplication {
       val workspace: Path,
       scope: Scope,
       inFlight: Ref[Set[SessionId]],
-      continuations: Ref[Map[SessionId, (AgentId, Int)]]
+      continuations: Ref[Map[SessionId, (AgentId, Int)]],
+      requestCaptures: Ref[VectorMap[SessionId, Path]]
   ) {
     def create(author: AgentId, name: Option[SessionId]): IO[JsonRpc.Error, SessionSnapshot] =
       owned {
@@ -68,23 +76,26 @@ object ServerApplication {
                 case _                                                        => previous.messages.size
               }
               _ <- continuations.update(_.updated(sessionId, (agentId, boundary)))
-              outcome <- assembly
-                .submission(author, Some(binding))
-                .submit(Some(sessionId.value), prompt, boundary)
-                .fold(
-                  failure =>
-                    TurnOutcome.Failed(
-                      if failure.acceptedSession.nonEmpty then PromptAcceptance.Accepted else PromptAcceptance.Unknown,
-                      failure.acceptedSession.map(SessionSnapshot.from),
-                      ApplicationError("execution_failed", "Execution failed; refresh session before continuing")
-                    ),
-                  turn =>
-                    TurnOutcome.Succeeded(
-                      SessionSnapshot.from(turn.session),
-                      turn.result,
-                      turn.session.messages.drop(previous.messages.size).map(MessageSnapshot.from)
-                    )
-                )
+              outcome <- captureRequest(sessionId)(
+                assembly
+                  .submission(author, Some(binding))
+                  .submit(Some(sessionId.value), prompt, boundary)
+                  .fold(
+                    failure =>
+                      TurnOutcome.Failed(
+                        if failure.acceptedSession.nonEmpty then PromptAcceptance.Accepted
+                        else PromptAcceptance.Unknown,
+                        failure.acceptedSession.map(SessionSnapshot.from),
+                        ApplicationError("execution_failed", "Execution failed; refresh session before continuing")
+                      ),
+                    turn =>
+                      TurnOutcome.Succeeded(
+                        SessionSnapshot.from(turn.session),
+                        turn.result,
+                        turn.session.messages.drop(previous.messages.size).map(MessageSnapshot.from)
+                      )
+                  )
+              )
             } yield outcome)).ensuring(inFlight.update(_ - sessionId))
           } yield outcome
         }
@@ -101,6 +112,58 @@ object ServerApplication {
             }
         }
       }
+
+    /** Explicit read-only diagnostic; session lookup prevents unknown IDs from becoming a path lookup. */
+    def providerRequest(sessionId: SessionId): IO[JsonRpc.Error, DiagnosticsRequest.Result] =
+      for {
+        _ <- checked(assembly.orchestrator.loadSession(sessionId))
+        captures <- requestCaptures.get
+        document <- ZIO.foreach(captures.get(sessionId))(readCapture)
+      } yield DiagnosticsRequest.Result(document.flatten)
+
+    /** Runs inside application-owned work, so capture association survives loss of the caller's connection/wait. Clear
+      * before a new execution: a turn without a capture must never present a stale earlier request as its own.
+      */
+    private def captureRequest[A](sessionId: SessionId)(effect: UIO[A]): UIO[A] =
+      ZIO.uninterruptibleMask { restore =>
+        for {
+          _ <- requestCaptures.update(_ - sessionId)
+          captured <- LlmProviderPayloadDebug.withRequestCapture(restore(effect).exit)
+          (outcome, path) = captured
+          _ <- ZIO.foreachDiscard(path)(value =>
+            requestCaptures.update { previous =>
+              val updated = previous.updated(sessionId, value.toAbsolutePath.normalize)
+              if updated.size > MaxCapturedSessions then updated.tail else updated
+            }
+          )
+          value <- ZIO.suspendSucceed(outcome)
+        } yield value
+      }
+
+    private def readCapture(path: Path): IO[JsonRpc.Error, Option[Json.Obj]] =
+      ZIO
+        .attemptBlocking[Either[JsonRpc.Error, Option[Json.Obj]]] {
+          val stream = Files.newInputStream(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
+          val bytes = try stream.readNBytes(DiagnosticsRequest.MaxCaptureBytes + 1)
+          finally stream.close()
+          if bytes.length > DiagnosticsRequest.MaxCaptureBytes then
+            Left(JsonRpc.Error(ErrorCode.Rejected, "Provider request capture exceeds the diagnostic limit"))
+          else {
+            val text = UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString
+            text
+              .fromJson[Json.Obj]
+              .left
+              .map(_ => JsonRpc.Error(ErrorCode.Rejected, "Provider request capture is unavailable"))
+              .flatMap { document =>
+                if document.toJson.getBytes(UTF_8).length > DiagnosticsRequest.MaxCaptureBytes then
+                  Left(JsonRpc.Error(ErrorCode.Rejected, "Provider request capture exceeds the diagnostic limit"))
+                else Right(Some(document))
+              }
+          }
+        }
+        .catchSome { case _: NoSuchFileException => ZIO.succeed(Right(None)) }
+        .mapError(_ => JsonRpc.Error(ErrorCode.Rejected, "Provider request capture is unavailable"))
+        .flatMap(ZIO.fromEither(_))
 
     private def owned[A](effect: IO[JsonRpc.Error, A])(
         onFailure: Cause[JsonRpc.Error] => IO[JsonRpc.Error, A] = cause =>
@@ -213,9 +276,10 @@ object ServerApplication {
             scope <- ZIO.service[Scope].flatMap(_.fork)
             inFlight <- Ref.make(Set.empty[SessionId])
             continuations <- Ref.make(Map.empty[SessionId, (AgentId, Int)])
+            captures <- Ref.make(VectorMap.empty[SessionId, Path])
           } yield new ServerApplication(
             assembly.orchestrator,
-            Some(new Configured(runtime, assembly, selectedWorkspace, scope, inFlight, continuations))
+            Some(new Configured(runtime, assembly, selectedWorkspace, scope, inFlight, continuations, captures))
           )
       }
     } yield application

@@ -10,14 +10,15 @@ import java.nio.file.Path
 import zio.*
 import zio.http.Client
 
-/** Configured startup and lazy agent selection, sharing runtime caches and session storage across selections. */
+/** Retained embedded application adapter for feature integration and tests; not a terminal startup path. */
 private[repl] final class ReplStartup private (
     runtime: ApplicationRuntime,
     val userAgent: Agent[Any],
     val selected: Option[ReplSelectedAgent],
     val providerCatalog: ProviderCatalog,
     val providerLogin: ProviderLoginService,
-    options: ReplLaunchOptions
+    options: ReplLaunchOptions,
+    transcriberAgentId: Option[AgentId]
 ) {
   val browserAudioPort: Int = runtime.browserAudioPort
 
@@ -30,7 +31,7 @@ private[repl] final class ReplStartup private (
       (assembled, availability) = opened
       context = assembled.context(None)
       orchestrator = assembled.orchestrator
-      voice <- ReplStartup.voice(runtime, options.transcriberAgentId, context, orchestrator, userAgent.id)
+      voice <- ReplStartup.voice(runtime, transcriberAgentId, context, orchestrator, userAgent.id)
       application <- {
         val choices = runtime.agentSummaries.map(summary =>
           ReplAgentChoice(summary.id, summary.agentType, summary.providerIds, summary.model)
@@ -71,24 +72,13 @@ private[repl] object ReplStartup {
       transcriberAgentId: Option[AgentId],
       available: StaticContext[R],
       orchestrator: Orchestrator[Any],
-      humanId: AgentId
+      userId: AgentId
   ): IO[YallmoError, Option[Transcriber]] =
     ZIO.foreach(transcriberAgentId)(id =>
       runtime.resolveTranscriber(id, available).map { case (agent, settings) =>
-        Transcriber.make(agent, settings, orchestrator, humanId)
+        Transcriber.make(agent, settings, orchestrator, userId)
       }
     )
-
-  /** The server loader owns the default file. Register the supplied local human before any assembly. */
-  def make(options: ReplLaunchOptions): ZIO[Client, YallmoError, ReplStartup] =
-    for {
-      humanId <- identity(options)
-      channel <- HumanTurnChannel.make
-      human = HumanAgent.make(humanId, channel)
-      loaded <- ApplicationRuntime.load(Chunk(human))
-      (runtime, catalog) = loaded
-      startup <- fromRuntime(runtime, catalog, human, options)
-    } yield startup
 
   private def identity(options: ReplLaunchOptions): IO[YallmoError, AgentId] =
     ZIO.fromEither(
@@ -100,13 +90,14 @@ private[repl] object ReplStartup {
       runtime: ApplicationRuntime,
       catalog: ProviderCatalog,
       human: Agent[Any],
-      options: ReplLaunchOptions
+      options: ReplLaunchOptions,
+      transcriberAgentId: Option[AgentId] = None
   ): ZIO[Client, YallmoError, ReplStartup] =
     for {
-      humanId <- identity(options)
-      _ <- ZIO.fail(YallmoError.InvalidConfig("Local human identity mismatch")).unless(human.id == humanId)
+      userId <- identity(options)
+      _ <- ZIO.fail(YallmoError.InvalidConfig("Local human identity mismatch")).unless(human.id == userId)
       selected <- ZIO.foreach(options.agentId)(id => runtime.resolve(id).map(ReplSelectedAgent(_)))
       client <- ZIO.service[Client]
       login = new ProviderLoginService(catalog, OpenAiCodexAuth.oauthFlow(client))
-    } yield new ReplStartup(runtime, human, selected, catalog, login, options)
+    } yield new ReplStartup(runtime, human, selected, catalog, login, options, transcriberAgentId)
 }

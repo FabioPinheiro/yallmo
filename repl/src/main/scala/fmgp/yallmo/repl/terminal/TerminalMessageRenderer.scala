@@ -14,7 +14,7 @@ private[terminal] object TerminalMessageRenderer {
     s"${clean(message.role)}[${clean(AgentId.value(message.agentId))}]$tool> ${sanitizeBody(message.content)}$blobs"
   }
 
-  private def sanitizeBody(text: String): String = {
+  private[terminal] def sanitizeBody(text: String): String = {
     val plain = AttributedString.stripAnsi(text).replace("\r\n", "\n").replace('\r', '\n')
     val result = new java.lang.StringBuilder
     plain.codePoints().forEach { code =>

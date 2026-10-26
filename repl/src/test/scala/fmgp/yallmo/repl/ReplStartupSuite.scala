@@ -98,12 +98,13 @@ final class ReplStartupSuite extends FunSuite {
   private def fixture(
       definition: Config,
       launch: ReplLaunchOptions,
-      storageRoot: Option[Path] = None
+      storageRoot: Option[Path] = None,
+      transcriberAgentId: Option[AgentId] = None
   ): ZIO[Client, YallmoError, ReplStartup] =
     for {
-      humanId <- ZIO.fromEither(AgentId.from(launch.userName).left.map(YallmoError.InvalidConfig(_)))
+      userId <- ZIO.fromEither(AgentId.from(launch.userName).left.map(YallmoError.InvalidConfig(_)))
       channel <- HumanTurnChannel.make
-      human = HumanAgent.make(humanId, channel)
+      human = HumanAgent.make(userId, channel)
       loaded <- storageRoot match {
         case Some(root) =>
           val path = root.resolve("server-config.json")
@@ -120,11 +121,17 @@ final class ReplStartupSuite extends FunSuite {
           } yield (runtime, catalog)
       }
       (runtime, catalog) = loaded
-      current <- ReplStartup.fromRuntime(runtime, catalog, human, launch)
+      current <- ReplStartup.fromRuntime(runtime, catalog, human, launch, transcriberAgentId)
     } yield current
 
-  private def startup(definition: Config = config, launch: ReplLaunchOptions = options)(using Scope): ReplStartup =
-    run(fixture(definition, launch).provideEnvironment(ZEnvironment(noNetwork)))
+  private def startup(
+      definition: Config = config,
+      launch: ReplLaunchOptions = options,
+      transcriberAgentId: Option[AgentId] = None
+  )(using Scope): ReplStartup =
+    run(
+      fixture(definition, launch, transcriberAgentId = transcriberAgentId).provideEnvironment(ZEnvironment(noNetwork))
+    )
 
   private def submit(
       app: ReplApplication[Any],
@@ -431,13 +438,6 @@ final class ReplStartupSuite extends FunSuite {
     }
   }
 
-  scopedTest("startup rejects an invalid direct username before server file loading") {
-    for name <- List("", " ", "\t\n") do {
-      val result = run(ReplStartup.make(ReplLaunchOptions(name)).provideEnvironment(ZEnvironment(noNetwork)).either)
-      assert(result.left.toOption.exists(_.getMessage.contains("--user-name")))
-    }
-  }
-
   private val voiceId = AgentId("Transcriber")
   private val voiceDefinition = AgentConfig(
     "OAIAgent",
@@ -515,7 +515,7 @@ final class ReplStartupSuite extends FunSuite {
 
   scopedTest("tracked secret-free example loads and resolves its explicit transcriber locally") {
     val example = run(ConfigFile.loadOrInitialize(Paths.get("docs/examples/yallmo.json")))
-    val app = run(startup(example, options.copy(transcriberAgentId = Some(voiceId))).application)
+    val app = run(startup(example, transcriberAgentId = Some(voiceId)).application)
     assert(app.transcriber.nonEmpty)
     assertEquals(example.browserAudioPort, 5180)
     assert(app.agentChoices.exists(_.id == voiceId))
@@ -532,7 +532,7 @@ final class ReplStartupSuite extends FunSuite {
       ) -> voiceId
     )
     invalid.foreach { case (definition, selectedVoice) =>
-      val result = run(startup(definition, options.copy(transcriberAgentId = Some(selectedVoice))).application.either)
+      val result = run(startup(definition, transcriberAgentId = Some(selectedVoice)).application.either)
       assert(result.left.toOption.exists(_.getMessage.contains("Transcriber")))
     }
     val invalidSelected = voiceConfig.copy(
@@ -555,7 +555,7 @@ final class ReplStartupSuite extends FunSuite {
     val inherited = voiceConfig.copy(agents =
       voiceConfig.agents.updated(voiceId, voiceDefinition.copy(capabilities = AgentCapabilities()))
     )
-    val rejected = run(startup(inherited, options.copy(transcriberAgentId = Some(voiceId))).application.either)
+    val rejected = run(startup(inherited, transcriberAgentId = Some(voiceId)).application.either)
     assert(rejected.left.toOption.exists(_.getMessage.contains("capabilities")))
     val typo = config.copy(agents =
       config.agents
@@ -577,7 +577,7 @@ final class ReplStartupSuite extends FunSuite {
     )
     try {
       val current = run(
-        fixture(voiceConfig, options.copy(agentId = None, transcriberAgentId = Some(voiceId)), storageRoot = Some(root))
+        fixture(voiceConfig, options.copy(agentId = None), storageRoot = Some(root), transcriberAgentId = Some(voiceId))
           .provideEnvironment(ZEnvironment(client))
       )
       val first = run(current.application)

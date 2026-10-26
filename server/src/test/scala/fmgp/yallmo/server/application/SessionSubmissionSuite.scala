@@ -9,7 +9,7 @@ import scala.concurrent.Future
 import zio.*
 
 final class SessionSubmissionSuite extends FunSuite {
-  private val humanId = AgentId("operator")
+  private val userId = AgentId("operator")
   private val assistantId = AgentId("assistant")
   private val runner = new AgentRunner[Any](Map.empty, Map.empty)
   private val context = StaticContext[Any]("System")
@@ -20,11 +20,11 @@ final class SessionSubmissionSuite extends FunSuite {
         master <- orchestrator
         configured <- Ref.make(false)
         agent = program(_ => ZIO.dieMessage("Rejected submissions must not run"), configured.set(true))
-        selected = SessionSubmission.configured(master, humanId, runner, Some(agent), context)
-        unselected = SessionSubmission.configured(master, humanId, runner, None, context)
+        selected = SessionSubmission.configured(master, userId, runner, Some(agent), context)
+        unselected = SessionSubmission.configured(master, userId, runner, None, context)
         missing <- unselected.submit(None, "no selection").either
         mismatch <- SessionSubmission
-          .make(master, humanId, None)
+          .make(master, userId, None)
           .submitExecution(None, "mismatch", runner.execution(agent, context))
           .either
         invalid <- selected.submit(Some("invalid/session"), "invalid").either
@@ -46,7 +46,7 @@ final class SessionSubmissionSuite extends FunSuite {
       for {
         master <- orchestrator
         agent = program(current => ZIO.succeed(answer(s"messages=${current.messages.size}")))
-        sessions = SessionSubmission.configured(master, humanId, runner, Some(agent), context)
+        sessions = SessionSubmission.configured(master, userId, runner, Some(agent), context)
         first <- sessions.submit(None, "first")
         second <- sessions.submit(Some(first.session.id.value), "second")
         loaded <- sessions.load(first.session.id.value)
@@ -55,7 +55,7 @@ final class SessionSubmissionSuite extends FunSuite {
         assertEquals(second.result, AgentResult(assistantId, "messages=3"))
         assertEquals(second.newMessages, Chunk(MessagePayload.User("second"), MessagePayload.Assistant("messages=3")))
         assertEquals(loaded, second.session)
-        assertEquals(loaded.messages.map(_.agentId), Chunk(humanId, assistantId, humanId, assistantId))
+        assertEquals(loaded.messages.map(_.agentId), Chunk(userId, assistantId, userId, assistantId))
         assertEquals(loaded.messages.count(_.payload == MessagePayload.User("first")), 1)
         assertEquals(loaded.messages.count(_.payload == MessagePayload.User("second")), 1)
       }
@@ -68,14 +68,14 @@ final class SessionSubmissionSuite extends FunSuite {
         master <- orchestrator
         failing = program(_ => ZIO.dieMessage("Configuration fails first"), ZIO.fail(YallmoError.InvalidConfig("bad")))
         failed <- SessionSubmission
-          .configured(master, humanId, runner, Some(failing), context)
+          .configured(master, userId, runner, Some(failing), context)
           .submit(None, "keep")
           .either
         accepted <- ZIO.fromOption(failed.swap.toOption.flatMap(_.acceptedSession))
         recovered <- SessionSubmission
           .configured(
             master,
-            humanId,
+            userId,
             runner,
             Some(program(_ => ZIO.succeed(answer("ok")))),
             context
@@ -102,7 +102,7 @@ final class SessionSubmissionSuite extends FunSuite {
         master <- orchestrator
         started <- Promise.make[Nothing, Unit]
         agent = program(_ => started.succeed(()) *> ZIO.never)
-        sessions = SessionSubmission.configured(master, humanId, runner, Some(agent), context)
+        sessions = SessionSubmission.configured(master, userId, runner, Some(agent), context)
         fiber <- sessions.submit(None, "keep on cancellation").fork
         _ <- started.await
         exit <- fiber.interrupt
@@ -140,7 +140,7 @@ final class SessionSubmissionSuite extends FunSuite {
         }
         sessions = SessionSubmission.configured(
           master,
-          humanId,
+          userId,
           runner,
           Some(agent),
           context.copy(
@@ -173,7 +173,7 @@ final class SessionSubmissionSuite extends FunSuite {
         ZIO.dieMessage("Only the configured program should run")
     }
     RuntimeInstances
-      .fromAgents(Chunk(participant(humanId), participant(assistantId)))
+      .fromAgents(Chunk(participant(userId), participant(assistantId)))
       .flatMap(OrchestratorLive.inMemory(_))
   }
 

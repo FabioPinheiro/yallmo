@@ -43,7 +43,7 @@ private[server] final class OrchestratorRpc(
       ZIO
         .succeed(humans.remove(connection.id))
         .flatMap { removed =>
-          ZIO.foreachDiscard(removed)(id => ZIO.logInfo(s"Viewer identity removed humanId=${escapedHumanId(id)}"))
+          ZIO.foreachDiscard(removed)(id => ZIO.logInfo(s"Viewer identity removed userId=${escapedHumanId(id)}"))
         }
         .as(((), ConnectionState.Closed))
     }.uninterruptible
@@ -117,26 +117,27 @@ private[server] final class OrchestratorRpc(
               .unless(request.protocolVersion == Version)
             _ <- current match {
               case ConnectionState.Closed => ZIO.fail(JsonRpc.Error(ErrorCode.Unauthorized, "Connection closed"))
-              case ConnectionState.Initialized(id) if id != request.humanId =>
+              case ConnectionState.Initialized(id) if id != request.userId =>
                 ZIO.fail(JsonRpc.Error(ErrorCode.Conflict, "Initialized identity cannot change"))
               case _ => ZIO.unit
             }
             registered <- domain(master.listAgentIds)
-            knownUser <- request.humanId.fold[UIO[Boolean]](ZIO.succeed(false)) { id =>
+            knownUser <- request.userId.fold[UIO[Boolean]](ZIO.succeed(false)) { id =>
               configured.fold[UIO[Boolean]](ZIO.succeed(false))(_.runtime.isUser(id))
             }
             _ <- ZIO
               .fail(JsonRpc.Error(ErrorCode.Conflict, "Human identity conflicts with a runtime agent"))
-              .when(request.humanId.exists(registered.contains) && !knownUser)
+              .when(request.userId.exists(registered.contains) && !knownUser)
             result <- encode(
               Initialize.Result(
                 Version,
                 instanceId,
                 Identity(
-                  request.humanId.getOrElse(AgentId("local-viewer")),
-                  if permitted(connection, request.humanId) then Role.Operator else Role.Viewer
+                  request.userId.getOrElse(AgentId("local-viewer")),
+                  if permitted(connection, request.userId) then Role.Operator else Role.Viewer
                 ),
-                if permitted(connection, request.humanId) then methods ++ List(SessionsCreate.method, TurnSubmit.method)
+                if permitted(connection, request.userId) then
+                  methods ++ List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
                 else methods,
                 Nil,
                 MaxBlobChunkBytes,
@@ -144,12 +145,12 @@ private[server] final class OrchestratorRpc(
               )
             )
             _ <- ZIO.when(current == ConnectionState.Uninitialized) {
-              ZIO.foreachDiscard(request.humanId) { id =>
+              ZIO.foreachDiscard(request.userId) { id =>
                 ZIO.succeed(humans.put(connection.id, id)) *>
-                  ZIO.logInfo(s"Viewer identity registered humanId=${escapedHumanId(id)}")
+                  ZIO.logInfo(s"Viewer identity registered userId=${escapedHumanId(id)}")
               }
             }
-          } yield (result, ConnectionState.Initialized(request.humanId))
+          } yield (result, ConnectionState.Initialized(request.userId))
         }.uninterruptible
       }
     else
@@ -198,6 +199,12 @@ private[server] final class OrchestratorRpc(
               )
               result <- encode(outcome)
             } yield result
+          case DiagnosticsRequest.method if configured.nonEmpty =>
+            for {
+              _ <- operator(connection, state)
+              request <- decode[DiagnosticsRequest.Params](params)
+              result <- configured.get.providerRequest(request.sessionId).flatMap(encode(_))
+            } yield result
           case _ => ZIO.fail(JsonRpc.Error.MethodNotFound)
         }
       } yield result
@@ -207,7 +214,7 @@ private[server] final class OrchestratorRpc(
 
   private def operator(connection: Connection, state: ConnectionState): IO[JsonRpc.Error, AgentId] = state match {
     case ConnectionState.Initialized(Some(id)) if permitted(connection, Some(id)) => ZIO.succeed(id)
-    case _ => ZIO.fail(JsonRpc.Error(ErrorCode.Forbidden, "Execution unavailable for this connection"))
+    case _ => ZIO.fail(JsonRpc.Error(ErrorCode.Forbidden, "Operator permission unavailable for this connection"))
   }
 
   private def escapedHumanId(id: AgentId): String =
@@ -261,7 +268,7 @@ private[server] final class OrchestratorRpc(
 private[server] object OrchestratorRpc {
   enum ConnectionState {
     case Uninitialized
-    case Initialized(humanId: Option[AgentId])
+    case Initialized(userId: Option[AgentId])
     case Closed
   }
 

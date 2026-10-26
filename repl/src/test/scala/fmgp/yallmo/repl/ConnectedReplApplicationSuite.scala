@@ -6,6 +6,7 @@ import fmgp.yallmo.server.OrchestratorClient
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
 import zio.*
+import zio.json.ast.Json
 
 final class ConnectedReplApplicationSuite extends FunSuite {
   private val user = AgentId("human")
@@ -172,6 +173,14 @@ final class ConnectedReplApplicationSuite extends FunSuite {
     )
     var creates = Vector.empty[Option[SessionId]]
     var turns = Vector.empty[(SessionId, AgentId, AgentTask, Option[MessageId], Boolean)]
+    var diagnostic = DiagnosticsRequest.Result(None)
+    var diagnosticError: Option[OrchestratorClient.Error] = None
+    override def providerRequest(sessionId: SessionId) = ZIO.suspendSucceed {
+      calls :+= s"diagnostics.request:${sessionId.value}"
+      diagnosticError.fold[IO[OrchestratorClient.Error, DiagnosticsRequest.Result]](ZIO.succeed(diagnostic))(
+        ZIO.fail(_)
+      )
+    }
     var createError: Option[OrchestratorClient.Error] = None
     var turnError: Option[OrchestratorClient.Error] = None
     val empty = SessionSnapshot(id, Chunk(user), Chunk.empty)
@@ -372,6 +381,86 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assertEquals(client.turns.map(_._5), Vector(true, false))
       assertEquals(submitted.state.continuationStart, 42); assertEquals(submitted.state.runContext, RunContext())
       assertEquals(client.creates, Vector.empty)
+    })
+  }
+
+  test("debug request is a fresh server read, never a client-local capture or a session mutation") {
+    val client = new Writes
+    client.info = client.info.copy(methods = client.info.methods :+ DiagnosticsRequest.method)
+    val document = Json.Obj("turnId" -> Json.Str("provider-turn"), "payload" -> Json.Obj("model" -> Json.Str("actual")))
+    client.diagnostic = DiagnosticsRequest.Result(Some(document))
+    val state = ReplState(
+      sessionId = Some("one"),
+      logLevel = LogLevel.Debug,
+      lastProviderRequest = Some(java.nio.file.Path.of("client-file-must-not-be-read")),
+      remoteResetContinuation = true
+    )
+    run(for {
+      app <- ConnectedReplApplication.make(client, user, Some(agent))
+      beforeSession <- app.submit(app.initialState, "/debug request")
+      first <- app.submit(state, "/debug request")
+      _ <- ZIO.succeed { client.diagnostic = DiagnosticsRequest.Result(None) }
+      fresh <- app.submit(state, "/debug request")
+      help <- app.submit(state, "/help")
+      unavailable <- app.submit(state, "/debug print")
+    } yield {
+      assert(app.canReadRequests)
+      assertEquals(beforeSession.events, Chunk(ReplEvent.ProviderRequestDocument(None)))
+      assertEquals(first.events, Chunk(ReplEvent.ProviderRequestDocument(Some(document))))
+      assertEquals(fresh.events, Chunk(ReplEvent.ProviderRequestDocument(None)))
+      List(first, fresh, help, unavailable).foreach(result => assertEquals(result.state, state))
+      val entries = help.events.head.asInstanceOf[ReplEvent.Help].entries
+      assert(entries.exists(_.usage == "/debug request"))
+      assert(!entries.exists(_.usage.contains("export")))
+      assertEquals(client.calls, Vector.fill(2)("diagnostics.request:one"))
+      assertEquals(client.creates, Vector.empty); assertEquals(client.turns, Vector.empty)
+      assert(unavailable.events.head.isInstanceOf[ReplEvent.Unavailable])
+    })
+  }
+
+  test("debug request requires its negotiated capability and an operator role") {
+    run(ZIO.foreach(List(false, true)) { viewer =>
+      val client = new Writes
+      if viewer then
+        client.info = client.info
+          .copy(identity = Identity(user, Role.Viewer), methods = client.info.methods :+ DiagnosticsRequest.method)
+      for {
+        app <- ConnectedReplApplication.make(client, user)
+        blocked <- app.submit(ReplState(sessionId = Some("one")), "/debug request")
+        help <- app.submit(app.initialState, "/help")
+      } yield {
+        assert(!app.canReadRequests)
+        assert(blocked.events.head.isInstanceOf[ReplEvent.Unavailable])
+        assert(!help.events.head.toString.contains("/debug"))
+        assertEquals(client.calls, Vector.empty)
+      }
+    })
+  }
+
+  test("debug read errors and invalid session IDs keep state and never expose remote exception details") {
+    val client = new Writes
+    client.info = client.info.copy(methods = client.info.methods :+ DiagnosticsRequest.method)
+    val state = ReplState(sessionId = Some("one"), remoteHeadMessageId = Some(message.id))
+    run(for {
+      app <- ConnectedReplApplication.make(client, user)
+      _ <- ZIO.succeed {
+        client.diagnosticError = Some(OrchestratorClient.Error.Transport(new Exception("PRIVATE /path")))
+      }
+      failed <- app.submit(state, "/debug request")
+      _ <- ZIO.succeed {
+        client.diagnosticError = Some(
+          OrchestratorClient.Error.Remote(fmgp.yallmo.server.jsonrpc.JsonRpc.Error(ErrorCode.Rejected, "PRIVATE /path"))
+        )
+      }
+      rejected <- app.submit(state, "/debug request")
+      invalid <- app.submit(state.copy(sessionId = Some("../invalid")), "/debug request")
+    } yield {
+      assertEquals(failed.state, state); assertEquals(rejected.state, state)
+      assert(failed.events.head.isInstanceOf[ReplEvent.Unavailable])
+      assert(rejected.events.toString.contains("diagnostic limit"))
+      assert(!failed.events.toString.contains("PRIVATE")); assert(!rejected.events.toString.contains("PRIVATE"))
+      assertEquals(invalid.state.sessionId, Some("../invalid"))
+      assertEquals(client.calls, Vector.fill(2)("diagnostics.request:one"))
     })
   }
 

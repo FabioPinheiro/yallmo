@@ -7,7 +7,7 @@
 # Private configuration defines bob and its provider; server owns config, tools and filesystem.
 mkdir -p ./server-storage ./server-odin-workspace
 sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace ./server-odin-workspace'
-# Separate interactive terminal (both --server forms accepted):
+# Separate interactive terminal (--server is optional at ws://127.0.0.1:8080/rpc):
 sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```
 
@@ -22,43 +22,30 @@ refresh `/history` (or reconnect/resume the known session) before manual resend.
 Busy/head conflict preserves state and requires refresh. No automatic retry/replay, status/cancel or exactly-once claim.
 
 No client-local config/storage/runtime/tools/audio/browser/login is initialized, even when prompts are enabled.
-`/tools`, `/debug`, provider catalog/login, voice/TTS and uploads remain unavailable remotely. `--transcriber-agent`
-with `--server` is rejected before networking. `--config`/`--storage` remain server-only; credentials/query/fragment in
-`--server` are rejected. Connection failure exits without local fallback or autodiscovery. Without `--server`, local
-mode is unchanged. See [connected REPL semantics](REPL.md#explicit-connected-mode).
+`/debug request` reads the selected session's latest provider capture when the server advertises diagnostic permission.
+`/tools`, `/debug print|export`, provider catalog/login, voice/TTS and uploads remain unavailable remotely. `--transcriber-agent`
+is rejected before networking, even without `--server`. `--config`/`--storage` remain server-only; credentials/query/fragment in
+`--server` are rejected. Connection failure exits without local fallback or autodiscovery. Without `--server`, the client connects to
+`ws://127.0.0.1:8080/rpc`; it never starts an embedded application. See [REPL semantics](REPL.md#server-connection).
 
-## Initialize a configuration and start the local REPL
+## Initialize server configuration
 
-`--user-name <id>` is required and supplies local persisted authorship.
-The embedded server independently loads `yallmo.json` in the working directory; the REPL has no `--config` option or config-file access.
-A missing server file is initialized with empty agent/provider catalogs and no selection.
-On POSIX filesystems the new file is owner-readable/writable only.
-Publication is atomic and never overwrites another process's file; the filesystem must support hard links. Existing files are loaded, not rewritten.
-
-```bash
-sbt --server -no-server 'repl/run --user-name operator'
-```
-
-An unselected REPL accepts commands but rejects prompts without sending anything to a provider. Press `Esc`, `a` to
-open AGENTS, highlight a configured agent with Up/Down and press Enter to activate it. Switching keeps the current
-session, conversation and typed draft, and updates the chat footer. The independent `--transcriber-agent` selection do not change. Session commands are independent of agent selection.
-Selection does not edit configuration. Edit the file and restart to load new definitions; live config reload
-is not implemented.
-
-The browser microphone/TTS server port is the top-level `"browserAudioPort": 5180` setting. New config files include 5180;
-older files without the setting also use 5180. Change the file and restart to apply a new port.
+Only the server loads configuration. Start it with `--config ./yallmo.json` as above; a missing file initializes
+with empty agent/provider catalogs. On POSIX filesystems it is owner-readable/writable only. Publication is atomic
+and never overwrites another process's file; the filesystem must support hard links. Existing files are loaded,
+not rewritten. Configure agents/providers and restart the server before selecting an agent in the client.
 
 The repository-root `yallmo.json` is gitignored. Keep other config paths private and excluded from version control too.
 The file may contain OAuth secrets: do not print or share it. Credential values are literal; `${NAME}` references are not resolved.
 
-Without `--server`, the supplied human is registered in the local server runtime before assembly and used as the
-persisted author, without authentication. Explicit WebSocket mode above supports configured trusted-local prompts;
-provider-login/voice/human-interaction transport remains pending. This is not full remote parity or a public-auth boundary.
+`--user-name <id>` is required by the client and sent as claimed human ID `user-<id>`, not authentication.
+The server alone owns tools, providers and durable storage. Provider-login/voice/human-interaction transport remains
+pending; there is no legacy in-process REPL fallback.
 
 ## Configure agents
 
 Use the sanitized [example yallmo.json](examples/yallmo.json) as a structural starting point. Copy/edit it into your **private**
-server-owned `yallmo.json`, not into a committed file containing credentials. The supplied `--user-name` must
+server-owned `yallmo.json`, not into a committed file containing credentials. The claimed human ID `user-<user-name>` must
 not collide with a configured agent ID. Agent/provider catalogs are JSON objects keyed by ID.
 
 Settings requirements depend on the agent type. Native LLM agents (`OAIAgent` and `ChatGPTAgent`) need exactly one matching provider. In their `config`:
@@ -83,15 +70,15 @@ is inherited from the endpoint or environment.
 sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080/rpc'
 
 
-sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080/rpc --agent Gemma --transcriber-agent Transcriber'
+sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080/rpc --agent Gemma'
 ```
 
 `--agent` is optional. Without it, startup stays unselected—there is no first-agent/default fallback.
-Voice is independently opt-in with `--transcriber-agent Transcriber`; absent means no transcription.
+Voice/TTS is unavailable; `--transcriber-agent` is rejected.
 Unknown CLI options are named in the error, followed by valid usage; missing values and duplicate options report their specific cause.
 
 The REPL always uses the JLine client and requires an interactive terminal.
-See the [REPL guide](REPL.md) for commands, storage and voice behavior.
+See the [REPL guide](REPL.md) for commands, server storage and unavailable features.
 
 For server-owned filesystem stores, protect raw recordings and backups. The current audio schema does not decode/migrate
 old inline/redacted audio records. Filesystem message/session writes require one owner and serialization across the root.
@@ -99,11 +86,10 @@ See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PL
 
 ## ChatGPT subscription profiles
 
-A configured `ChatGPTAgent` can start logged out, but inference then fails locally. Profiles use literal private
-credentials in the selected configuration profile. In the line UI, press `Esc`, `p`, select the ChatGPT profile, and choose login
-inside its details. Restart after saving credentials. There is no global `/login` command.
-Refreshed credentials currently remain **only in the cached connection's memory**;
-restarting from stale rotating credentials may require reauthentication. See [REPL profile behavior](REPL.md#chatgpt-subscription-generation).
+A configured `ChatGPTAgent` can start logged out, but inference then fails server-side. Profiles use literal private
+credentials in the selected server configuration profile. The client has no provider-login menu or `/login` command;
+provider administration/login transport remains pending. Refreshed credentials currently remain **only in the cached
+server connection's memory**; restarting from stale rotating credentials may require reauthentication.
 
 ## Other demos
 

@@ -1,48 +1,25 @@
-# REPL / server prompt-submission milestone
+# Client-only REPL startup
 
-## Completed scope
+`ReplMain` always connects to the server, defaulting to `ws://127.0.0.1:8080/rpc`. `--server` overrides the endpoint;
+connection failure never starts the embedded application or acquires local recorder/browser/provider/login services.
+`ReplLaunchOptions.server` is a concrete endpoint, not an optional choice between execution modes.
 
-- Core A: one-owner filesystem mutation/snapshot coordination and idempotent `registerHuman`/`isHuman`.
-  No provider/tool execution under the storage mutex; legacy/uncooperative same-root owners remain unsafe.
-- Server B: configured backend + actual loopback + absent Origin + claimed human enables trusted-local Operator.
-  Authentication is explicitly deferred for this local path; names are impersonable, never authenticated identities.
-  Keep Host/Origin/loopback safeguards and do not publicly proxy/expose. Anonymous/browser-Origin clients remain viewers.
-- Exactly two mutations: `sessions.create`, `turn.submit`. Core persist–run–persist saves prompt/output, not RPC preappend.
-  Nonwaiting same-session exclusion returns Busy; independent sessions/agents execute concurrently, no global run gate.
-  Application-owned scoped work/Promise terminal delivery survives disconnect; shutdown finalizes before lease release.
-- JVM client uses approved public JDK WebSocket without synthetic Origin. No dependency/module additions.
-- Component C: cached capability negotiation, configured assistant picker, real create-once/submit-once connected prompts,
-  session/head retention on failure/uncertainty, safe actual durable deltas, fresh history/resume and reset intent.
-  Remote runContext stays empty. No configured selection means zero prompt writes/create. `/new` explicitly creates.
-- `remoteConnection` is separate from `canSubmit`/`connectedReadOnly`: all local provider/login/audio/browser/voice widgets
-  remain gated off remotely even for Operator. Legacy local mode and its continuation semantics remain unchanged.
+The server retains persist–run–persist, capability-negotiated submission, same-session exclusion, independent-session
+concurrency and application-owned work surviving disconnect. Lost replies require history/resume and manual action,
+never automatic mutation retries. Trusted-local authentication remains deferred; loopback/Host/Origin checks are unchanged.
 
-## Deliberate limits
+## Preserve features for later integration
 
-No production ServerSubmission/startup wrapper, run registry/status/cancel, ledger, deduplication, replay, exactly-once,
-tombstones, automatic mutation retry, fork/tools/upload/login/voice/diagnostic activation or public-auth project.
-Existing reserved protocol draft codecs remain disabled, not prerequisites. After a lost reply, refresh/history or
-reconnect/resume the known session before manual resend. Lost create response requires session-list inspection.
-Accepted failures retain prompt/snapshot; absent acceptance evidence is Unknown, not rollback. Submitted human authors
-may remain process-lifetime registered separately from active viewer cleanup. Provider/login/voice/human transport
-remains pending, not implicitly completed by remote prompts.
+Audio/voice/browser components, debug snapshots/exports/request captures, their supporting embedded adapters and tests
+are retained. Their removal during the cleanup was undone. Debug was working; audio/voice fixes are deferred.
+Do not delete working features or tests because they are not yet connected to remote capabilities.
 
-## Validation / handoff
+`ConnectedReplApplication` remains the client-only application. Existing `ReplApplication`/`ReplStartup.fromRuntime`
+code supports retained feature work/tests but is not a CLI startup path. No implicit local loader or fallback remains.
+Connected `/debug request` now uses the negotiated operator-only `diagnostics.request` read. Capture association
+lives inside server-owned work and survives client reconnects, not server restart. Voice, debug print/export, provider
+administration and other feature wiring remain pending; preservation does not claim parity.
 
-Run separate explicit testOnly commands, check nonzero counts; do not rely on multi-task/testQuick wrapper behavior.
-Focused connected application, terminal no-local-service, renderer/CLI tests and actual temporary configured server with
-fake provider validate create/submit, persistence, same-socket reads and disconnect/reconnect history. Recheck REPL compile,
-protocol JVM/JS and server suites from final checkout. Format touched exact Scala paths only, then recheck.
-
-Known unrelated residuals: six local REPL voice failures and two deprecated core `OrchestratorLive.turn = ???` failures
-remain outside this milestone; report actual counts rather than manufacturing a full green claim. Authoritative component
-handoffs and `/tmp/prompt-submission-stage-{a,b,c}.diff` contain exact incremental preservation/validation evidence.
-Independent high-thinking storage and REPL reviews found no issues. Server review found one mixed-backend P1;
-the shared dispatcher now rejects a configured backend whose orchestrator is not the supplied read master. The
-regression fails against the old code and passes with the guard; targeted independent recheck found no issues.
-
-Final measured gates: server 114/114 after the fix and scoped formatting; protocol JVM/JS 21/21 each; focused REPL
-85/85 and compilation pass. Latest full REPL sweep (before the two-file guard) was 226/232, retaining six voice failures;
-aggregated core was 248/252 with two accepted deprecated-turn failures and two existing opt-in CLI skips. No full-green
-or manual real-provider/microphone/OAuth claim. Reviews inspected source/diffs/logs without rerunning tests.
-The milestone is accepted; no final cutover or full remote parity claim.
+Validate client startup/default/override/failure behavior and retained debug tests explicitly. Report existing audio
+failures rather than deleting or disabling tests. Format touched Scala files and recheck. See `docs/REPL.md` and
+`docs/orchestration/REPL_CLIENT_SERVER_NEXT_PROMPT.md` for the current boundary.

@@ -28,8 +28,8 @@ final class OrchestratorLive[-R] private (
     storage.listSessions.mapError(YallmoError.StorageFailed.apply)
 
   @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
-  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] = ???
-  // getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
+  override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
+    getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
 
   override def submit[R1](
       id: SessionId,

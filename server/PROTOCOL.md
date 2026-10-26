@@ -7,7 +7,8 @@ do not expose it through a public proxy. Claimed user names are impersonable.
 DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
 and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
 The browser shares protocol/model sources but remains a read-only viewer. HTTP serves static assets and the WebSocket
-upgrade only; no conversation/blob REST endpoint, upload, login, voice, diagnostics or tool-control API was enabled.
+upgrade only; no conversation/blob REST endpoint, upload, login, voice or tool-control API is enabled. Operator-only
+`diagnostics.request` reads existing provider-request captures without executing a turn.
 
 ## Connection and capabilities
 
@@ -15,16 +16,16 @@ Send `initialize` first. Protocol `1` is independent of JSON-RPC `"2.0"`. Initia
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Operator additionally advertises **only** `sessions.create` and `turn.submit`. Notifications are empty.
+Operator additionally advertises `sessions.create`, `turn.submit` and the read-only `diagnostics.request`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
 Operator requires all of: configured backend, actual loopback transport peer, **absent Origin**, and a nonempty initialized
-claimed `humanId`. Anonymous connections and Origin-bearing browsers remain Viewer. `clientName` is never authority;
+claimed `userId`. Anonymous connections and Origin-bearing browsers remain Viewer. `clientName` is never authority;
 a browser cannot gain permission by naming itself a REPL or calling a mutation method. Host/Origin validation and the
 loopback listener remain in force. Authenticated public deployment requires separate authentication and security review.
 
 Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
-also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed.
+also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed by this catalog; explicit operator diagnostics may show the request model.
 The server independently resolves configured assistants; it never accepts executable code, author IDs or provider state
 from a turn request. Identity rebinding is rejected. Configured/caller-supplied agent ID collisions are rejected;
 known dynamically registered human authors can reconnect.
@@ -64,7 +65,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 
 | Method | `params` | `result` |
 | --- | --- | --- |
-| `initialize` | `{protocolVersion: Int, clientName: String, humanId?: AgentId}` | `{protocolVersion: Int, serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int, configuredAgentIds?: [AgentId]}` |
+| `initialize` | `{protocolVersion: Int, clientName: String, userId?: AgentId}` | `{protocolVersion: Int, serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int, configuredAgentIds?: [AgentId]}` |
 | `sessions.list` | `{}` | `[SessionSummary]` |
 | `sessions.get` | `{sessionId: SessionId}` | `SessionSnapshot` |
 | `sessions.create` | `{name?: SessionId}` | `SessionSnapshot` |
@@ -72,6 +73,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `agents.list` | `{}` | `[AgentId]` |
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
+| `diagnostics.request` | `{sessionId: SessionId}` | `{providerRequest?: JsonObject}` |
 | `turn.submit` | `{sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
 Existing domain types/codecs are reused. IDs encode as strings: safe path-segment `SessionId`, `sha256:` plus
@@ -94,6 +96,28 @@ then ID; session messages are in transcript order.
 `blobs.read`: offset must be nonnegative and no greater than size; maxBytes is 1..65536 decoded bytes. At EOF, data
 is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. No upload or binary frames.
 Core full-blob reads and partial-failure storage limitations remain; this is not a blob lifecycle/status service.
+
+## Provider-request diagnostics
+
+`diagnostics.request` requires initialization and the same trusted-local Operator policy as configured execution;
+it is not advertised to viewers or unconfigured servers. It accepts only a session ID, never a filesystem path.
+The result's optional document includes existing capture metadata (`turnId`, `capturedAt`, provider/model) and the
+actual diagnostic request payload. It never returns a server file path, HTTP headers or transport credentials.
+
+Capture follows application-owned execution, including typed failures and defects, and survives caller disconnect.
+For a multi-request turn it is the last captured provider request. A new execution clears its session's older capture;
+while running, or if no capture was produced, the result is absent. A rejected admission/head/selection check does not
+replace the earlier completed capture. Unknown sessions return NotFound.
+
+Only the latest paths for 128 captured sessions are indexed in memory (oldest capture association evicted first).
+Reconnect can resume/read the capture; server restart loses the index even if existing debug files remain. Deleted
+files are absent; symlinks and corrupt/unreadable captures are rejected with sanitized errors. Reads are bounded to
+256 KiB before JSON parsing; oversized input or encoded documents return Rejected without closing the socket.
+There is no pagination, persistence index or arbitrary-file read API.
+
+Existing capture redaction protects encrypted provider continuations and refuses inline audio. **This is not a general
+secret scrubber:** conversation/tool text and model details remain sensitive. Never expose this unauthenticated
+trusted-local listener publicly. The REPL displays documents only on explicit `/debug request`.
 
 ## Submission, continuation and failure semantics
 
@@ -154,17 +178,17 @@ Standard JSON-RPC codes: -32700 Parse error, -32600 Invalid Request, -32601 Meth
 | --- | --- |
 | -32001 | Unsupported protocol version |
 | -32002 | Unauthorized / initialization required |
-| -32003 | Forbidden / configured viewer mutation |
+| -32003 | Forbidden / operator operation unavailable |
 | -32004 | Not found |
 | -32005 | Conflict / head mismatch, explicit name or identity collision |
 | -32006 | Busy / same-session turn already active |
-| -32007 | Rejected / invalid author or configured assistant selection |
+| -32007 | Rejected / invalid selection or unavailable/oversized diagnostic capture |
 
 Pre-execution rejections are JSON-RPC errors; execution failures use `TurnOutcome`. Provider causes/stacks are not sent.
 Unconfigured mutation endpoints return MethodNotFound. Malformed unidentifiable requests use null ID; notifications
 receive no reply. Connection overload is a close, not a run-capacity/ledger API.
 
-Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, diagnostics and
+Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
 `TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.
 They are not advertised, prerequisites for active submission, implemented controls or a promised roadmap.
 Provider/login/voice/human-interaction transport and public authentication remain separate pending work.
@@ -174,6 +198,7 @@ Provider/login/voice/human-interaction transport and public authentication remai
 `YallmoProtocolSuite` freezes enabled shapes, optional fields/defaults and shared JVM/JS decoding.
 `OrchestratorWebSocketSuite` retains initialization/correlation/pending/deadline/disconnect/framing gates;
 `ServerSubmissionSuite` covers actual durable execution, concurrent sessions, Busy/head checks, viewer denial,
-disconnect, shutdown/lease ordering, closed scope, overload and continuation/restart policy. Connected REPL suites
+disconnect, shutdown/lease ordering, closed scope, overload, continuation/restart policy and session-isolated
+provider-request diagnostics (failure/reconnect/redaction/permissions/limits). Connected REPL suites
 exercise negotiated capabilities, state retention/no replay and actual terminal submission to temporary configured
 server storage with fake providers and no client-local bootstrap. See component handoffs for exact run counts/logs.

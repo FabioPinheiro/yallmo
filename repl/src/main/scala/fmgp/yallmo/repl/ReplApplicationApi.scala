@@ -17,6 +17,7 @@ trait ReplApplicationApi[R] {
   def transcriber: Option[Transcriber]
   def remoteConnection: Boolean = false
   def canSubmit: Boolean = true
+  def canReadRequests: Boolean = false
   def connectedReadOnly: Boolean = remoteConnection && !canSubmit
   def submit(state: ReplState, line: String): ZIO[R, Nothing, ReplTransition]
   def selectAgent(id: AgentId): IO[YallmoError, ReplApplicationApi[R]]

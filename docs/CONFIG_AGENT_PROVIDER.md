@@ -1,29 +1,30 @@
 # Agent-first configuration and selection
 
-The server owns credential-bearing configuration. The embedded/local server loads `yallmo.json` in the process
-working directory; standalone server `--config <path>` chooses that standalone instance's file. The REPL neither
-reads the file nor accepts `--config`.
+The server owns credential-bearing configuration and loads its file via `--config <path>`. The REPL is client-only:
+it neither reads configuration nor starts an embedded runtime. Start the server separately, then connect:
 
 ```sh
-sbt --server -no-server 'repl/run --user-name operator --agent bob --transcriber-agent Transcriber'
+mkdir -p ./server-storage
+sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
+sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
-`--user-name` is required and validated as an `AgentId`. `--agent` and `--transcriber-agent` are independent optional
-selections: absent means no chat selection and no transcription, respectively. `--log-level` remains a local flag.
-`--storage` belongs only to the standalone server and is rejected by the REPL. Normal embedded sessions/blobs are
-in memory; no durable REPL lifecycle logger is installed. Explicit debug exports/captures remain local UI features.
-Explicit `--server` consumes standalone sessions without client-local config/provider/audio bootstrap. There is no OS-name, first-agent or default-selection fallback.
+`--user-name` is required and validated as an `AgentId`; the client sends claimed human ID `user-<id>`.
+`--agent` is optional; absent means no selection. `--log-level` remains a local display flag. The default server
+is `ws://127.0.0.1:8080/rpc`; `--server` overrides it. Connection failure exits without local fallback.
+`--config`/`--storage` belong only to the server. `--transcriber-agent` is rejected; remote voice/login transport is pending.
+There is no OS-name, first-agent or default-selection fallback, nor client-local config/provider/audio bootstrap.
 
 **Migration:** top-level `userName`, `defaultAgentId` and `transcriberAgent` no longer apply. Loading legacy fields
-emits a sanitized warning; use the CLI flags instead. Raw catalog edits preserve arbitrary unknown file fields,
-including old preferences, without making them active server settings.
+emits a sanitized warning; use `--user-name` and `--agent` for client preferences. There is no current CLI transcription
+selection. Raw catalog edits preserve arbitrary unknown file fields without making them active server settings.
 
-Without `--server`, the local `HumanAgent` is registered before assembly. With explicit `--server`, configured
-trusted-local prompt execution is enabled: the server alone owns providers, tools, config and durable storage.
+Configured trusted-local prompt execution is enabled: the server alone owns providers, tools, config and durable storage.
 Authentication is **explicitly deferred** for actual loopback peers with absent Origin and a claimed human. Usernames
 are impersonable authorship, not authentication; retain loopback/Host/Origin checks and never publicly expose/proxy.
-Anonymous and Origin-bearing browser connections remain viewers. Only `sessions.create` and `turn.submit` supplement
-the seven viewer methods; provider-login/voice/human-interaction transport and diagnostics remain pending remotely.
+Anonymous and Origin-bearing browser connections remain viewers. Operators additionally receive `sessions.create`,
+`turn.submit` and the read-only `diagnostics.request` used by `/debug request`. Provider-login/voice/human-interaction
+transport and other diagnostics remain pending remotely.
 
 ```sh
 mkdir -p ./server-storage
@@ -34,26 +35,26 @@ sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080
 Choose among initialize's `configuredAgentIds` when supplied, not human/presence `agents.list`. Remote model/provider
 metadata stays unknown. No selected agent means no prompt-induced create/write; the server independently validates
 selection. First prompt creates once and submits once; subsequent prompts reuse that session. Lost responses require
-history/refresh before manual resend, never automatic replay. See [REPL](REPL.md#explicit-connected-mode).
+history/refresh before manual resend, never automatic replay. See [REPL](REPL.md#server-connection).
 
 ## Current implementation boundary
 
 - `core/.../orchestration/config/Config.scala` is data only: ID-keyed **maps** of agents and providers, and `browserAudioPort` (default 5180, valid 1–65535). Newly initialized config files serialize the port; older files missing it retain the default without being rewritten. JSON catalogs are objects, not arrays.
 - The native `AgentConfig.agentType` values `OAIAgent` and `ChatGPTAgent` each require exactly one matching provider. Server runtime selection decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback. The chat default system prompt lives in server `ApplicationRuntime`, not core. Generic `ConfiguredAgentSettings.decode` requires a configured prompt unless its caller supplies `defaultSystemPrompt = Some(...)`; the server supplies its fallback for chat, but not for transcription.
-- `FolderStructureAgent` is a provider-free configured agent requiring `filesystem.root`; its first lookup validates that existing directory and binds the filesystem once. Its turns need no extra environment. REPL startup and in-session selection use its direct execution binding, without decoding native model/prompt/generation settings or requiring a provider. The agent menu and footer show `n/a` for its model.
+- `FolderStructureAgent` is a provider-free configured agent requiring `filesystem.root`; its first lookup validates that existing directory and binds the filesystem once. Its turns need no extra environment. Server-side selection uses its direct execution binding, without decoding native model/prompt/generation settings or requiring a provider. The connected client displays no provider/model metadata.
 - `RuntimeInstances.make(config)` captures a shared HTTP client, but initializes connections and agents only on lookup. Caches and the initialization semaphore belong to this runtime registry, not to `Config`.
 - `RuntimeInstances.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.
 - `RuntimeInstances.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
 - `OrchestratorLive` delegates resolution to the registry. Its only factories are `inMemory(instances)` and `filesystem(root, instances)`; callers must construct `RuntimeInstances` explicitly. Already-created agents go through `RuntimeInstances.fromAgents(agents)` first.
 - Lookups do not contact providers or authenticate. ChatGPT profiles use independent literal credentials; refresh is deferred until inference, shared by agents using the same connection, and retained **only in memory**.
 - A registry uses a fixed configuration snapshot. Creating another registry from the same Config creates independent caches. No automatic reload/rebuild/save policy is implied.
-- `ReplStartup.make(options)` constructs the local human and calls `ApplicationRuntime.load(Chunk(human))` with the
-  server's default path. It consumes only runtime, `ProviderCatalog`, safe agent summaries and the browser-audio port.
-  `openWorkspace` retains scoped tool services and `Assembly[Any]`; immutable agent switches share assembly/storage/context.
-  `SessionSubmission` retains core persist–run–persist. AGENTS changes process-local selection, preserving session and
-  conversation. New authors are enrolled on persistence; old authors remain unchanged. Old opaque provider continuation
-  is excluded from the new binding's requests, not removed from stored history. No live config reload is implemented.
-- Profile login persists credentials only to the selected private configuration profile; there is no global `/login` command. Voice uses only the explicit `--transcriber-agent` selection and its configured model/prompt, independently of chat selection, with no fallback. An absent flag disables voice; missing IDs or invalid explicit settings fail local startup. All four effective capability sets must be empty (use explicit `[]` allowlists). See [setup](HOW_TO_RUN.md).
+- `ReplMain` always connects to the selected/default endpoint and builds `ConnectedReplApplication`. It never calls
+  `ApplicationRuntime.load` or opens an embedded workspace. Existing embedded adapters remain for feature integration
+  and tests, but are not startup paths. `ReplStartup.fromRuntime` requires an explicitly supplied runtime.
+- The server retains core persist–run–persist and session storage. Client agent selection preserves session/history,
+  with continuation reset intent sent on the next turn. No live config reload is implemented.
+- Provider administration/login, voice and debug transport remain pending. Their existing local implementations and
+  tests are preserved for follow-up integration; absence from the connected client is not a reason to delete them.
 
 - Audio payloads contain a `BlobId`, not bytes. `Orchestrator.turn` and REPL native bindings supply the blob reader;
   direct audio adapter calls must supply it themselves. Voice persists audio before inference, independently of active chat.
@@ -135,6 +136,8 @@ leave an updated structure without an updated counter. Filesystem failures are s
 errors, without silently resetting state. Configured registry construction and provider-free REPL selection are wired.
 
 ## Provider profiles and persistence
+
+The following describes the retained embedded provider UI, not a connected-client capability.
 
 `ProviderCatalog` lives in `server.application`, including private locked atomic raw-tree edits. The terminal still
 renders provider menus and runs `ProviderLoginService` in-process against this catalog. Profile creation/login does

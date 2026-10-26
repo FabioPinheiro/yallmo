@@ -26,7 +26,7 @@ final class OrchestratorWSClient private (
     state: Ref[OrchestratorWSClient.State],
     writes: Semaphore,
     timeout: Duration,
-    humanId: Option[AgentId],
+    userId: Option[AgentId],
     negotiated: Ref[Option[Initialize.Result]]
 ) extends OrchestratorClient {
   import OrchestratorWSClient.*
@@ -35,13 +35,13 @@ final class OrchestratorWSClient private (
     for {
       result <- request[Initialize.Params, Initialize.Result](
         Initialize.method,
-        Initialize.Params(Version, clientName, humanId)
+        Initialize.Params(Version, clientName, userId)
       )
       _ <- ZIO
         .fail(Error.InvalidResponse)
         .unless(
           result.protocolVersion == Version && result.maxBlobChunkBytes > 0 && result.maxBlobChunkBytes <= MaxBlobChunkBytes &&
-            humanId.fold(result.identity.role == Role.Viewer)(id =>
+            userId.fold(result.identity.role == Role.Viewer)(id =>
               result.identity.id == id && (result.identity.role == Role.Viewer ||
                 (result.identity.role == Role.Operator &&
                   result.methods.contains(SessionsCreate.method) && result.methods.contains(TurnSubmit.method)))
@@ -61,6 +61,8 @@ final class OrchestratorWSClient private (
   ): IO[Error, TurnOutcome] =
     request(TurnSubmit.method, TurnSubmit.Params(sessionId, agentId, task, expectedHead, resetContinuation))
 
+  override def providerRequest(sessionId: SessionId): IO[Error, DiagnosticsRequest.Result] =
+    request(DiagnosticsRequest.method, DiagnosticsRequest.Params(sessionId))
   override def listSessions: IO[Error, Chunk[SessionSummary]] = request(SessionsList.method, Empty())
   override def loadSession(id: SessionId): IO[Error, SessionSnapshot] =
     request(SessionsGet.method, SessionsGet.Params(id))
@@ -120,17 +122,17 @@ object OrchestratorWSClient {
   )
 
   /** Opens and initializes one connection. Scope exit closes it and fails all pending requests. A deadline abandons the
-    * local wait only; it never cancels server execution. Turn waits have no read deadline. humanId is an impersonable
+    * local wait only; it never cancels server execution. Turn waits have no read deadline. userId is an impersonable
     * local claim, not authentication; configured loopback non-browser hosts may grant operator capabilities.
     */
   def connect(
       endpoint: String,
       requestTimeout: Duration = 15.seconds,
-      humanId: Option[AgentId] = None,
+      userId: Option[AgentId] = None,
       clientName: String = "yallmo-jvm"
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     ZIO.acquireRelease(Scope.make)(_.close(Exit.unit)).flatMap { scope =>
-      connectInScope(endpoint, requestTimeout, humanId, clientName)
+      connectInScope(endpoint, requestTimeout, userId, clientName)
         .provideEnvironment(ZEnvironment(scope))
         .onError(_ => scope.close(Exit.unit))
     }
@@ -138,7 +140,7 @@ object OrchestratorWSClient {
   private def connectInScope(
       endpoint: String,
       requestTimeout: Duration,
-      humanId: Option[AgentId],
+      userId: Option[AgentId],
       clientName: String
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     for {
@@ -237,7 +239,7 @@ object OrchestratorWSClient {
           .timeoutFail(Error.RequestTimedOut)(requestTimeout)
       )(socket => ZIO.succeed(socket.abort()))
       negotiated <- Ref.make(Option.empty[Initialize.Result])
-      client = new OrchestratorWSClient(endpoint, channel, state, writes, requestTimeout, humanId, negotiated)
+      client = new OrchestratorWSClient(endpoint, channel, state, writes, requestTimeout, userId, negotiated)
       _ <- ZIO.addFinalizer(client.close)
       _ <- client.initialize(clientName)
     } yield client

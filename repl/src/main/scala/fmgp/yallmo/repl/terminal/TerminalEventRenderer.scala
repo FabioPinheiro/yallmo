@@ -5,6 +5,7 @@ import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.debug.ReplDebug
 import fmgp.yallmo.repl.grammar.DebugTarget
 import zio.*
+import zio.json.*
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
@@ -21,6 +22,7 @@ private[terminal] object TerminalEventRenderer {
       case ReplEvent.DebugSnapshot(DebugTarget.Export, snapshot)   => writeDebugLog(snapshot)
       case ReplEvent.DebugSnapshot(DebugTarget.ProviderRequest, _) => printProviderRequest(None)
       case ReplEvent.ProviderRequest(capture)                      => printProviderRequest(capture)
+      case ReplEvent.ProviderRequestDocument(capture)              => printLines(providerRequestLines(capture))
       case ReplEvent.Transcript(messages, sessionId)               =>
         val name = TerminalStatusLayout.sanitize(sessionId.getOrElse("no session"))
         printLines(
@@ -68,6 +70,14 @@ private[terminal] object TerminalEventRenderer {
       }
       case ReplEvent.AgentFailed(message) => Console.printLineError(s"Agent failed: $message").orDie
       case ReplEvent.ExitRequested        => Console.printLine("Bye.").orDie
+    }
+
+  private[terminal] def providerRequestLines(capture: Option[zio.json.ast.Json.Obj]): Chunk[String] =
+    capture.fold(Chunk("No provider request has been captured for this session on this server.")) { document =>
+      Chunk(
+        "Provider request (sensitive conversation/tool data):",
+        TerminalMessageRenderer.sanitizeBody(document.toJsonPretty)
+      )
     }
 
   private def printDebugSnapshot(snapshot: fmgp.yallmo.repl.debug.ReplDebugSnapshot): UIO[Unit] = {

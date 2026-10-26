@@ -131,6 +131,39 @@ final class ConnectedTerminalSuite extends FunSuite {
     assert(!operatorHint.contains("voice")); assert(!operatorHint.contains("provider"))
   }
 
+  test("diagnostic completion exposes only request, and only with the negotiated permission") {
+    val parser = new org.jline.reader.impl.DefaultParser()
+    def complete(input: String, allowed: Boolean): Set[String] = {
+      val candidates = new java.util.ArrayList[org.jline.reader.Candidate]()
+      new TerminalRepl.ReplCompleter(true, true, allowed)
+        .complete(null, parser.parse(input, input.length), candidates)
+      import scala.jdk.CollectionConverters.*
+      candidates.asScala.map(_.value()).toSet
+    }
+    assert(complete("/", true).contains("/debug"))
+    assert(!complete("/", false).contains("/debug"))
+    assertEquals(complete("/deb", true), Set("/debug"))
+    for input <- List("/debug ", " /debug ", "\t/debug ", "/debug re") do {
+      assertEquals(complete(input, true), Set("request"))
+      assertEquals(complete(input, false), Set.empty[String])
+    }
+    assertEquals(complete("/debug p", true), Set.empty[String])
+    assertEquals(complete("/debug e", true), Set.empty[String])
+  }
+
+  test("diagnostic rendering prints the document safely as data, never as a local file path") {
+    val document = zio.json.ast.Json.Obj(
+      "payload" -> zio.json.ast.Json.Obj("text" -> zio.json.ast.Json.Str("hello\u202e\u001b[2J")),
+      "literal" -> zio.json.ast.Json.Str("/file-that-must-not-be-read")
+    )
+    val lines = TerminalEventRenderer.providerRequestLines(Some(document))
+    assert(lines.head.contains("sensitive"))
+    assert(lines.last.contains("payload")); assert(lines.last.contains("hello"))
+    assert(lines.last.contains("/file-that-must-not-be-read"))
+    assert(!lines.last.contains('\u202e')); assert(!lines.last.contains('\u001b'))
+    assert(TerminalEventRenderer.providerRequestLines(None).head.contains("No provider request"))
+  }
+
   private def operatorReads: OrchestratorClient = new Reads {
     override def capabilities = ZIO.some(
       Initialize.Result(

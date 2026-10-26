@@ -2,45 +2,30 @@
 
 > The source package is `fmgp.yallmo.repl`. This file is named `REPL.md` to retain the project’s historical spelling.
 
-Without `--server`, the local interactive client keeps an in-memory snapshot of the conversation and a fixed `StaticContext` for the selected
-agent. `Orchestrator.submit` owns prompt acceptance, execution and response persistence, using the stored session as
-conversation history. `ReplApplication` and `ReplSession` adapt input, diagnostics and presentation; `AgentRunner` remains
-the only model/tool execution loop.
+The REPL entry point is client-only. It connects to `ws://127.0.0.1:8080/rpc` by default; `--server` overrides
+that endpoint. Configuration, providers, tools, storage and prompt execution belong to a separately running server.
+No embedded application, recorder or browser bridge starts as a fallback.
 
 ## Start the terminal client
 
-`--user-name <id>` is required for local human authorship. The embedded server owns loading `yallmo.json` from
-the working directory; the REPL has no `--config` option or config-file access. Missing files initialize privately
-with empty catalogs and no selection. See [setup](HOW_TO_RUN.md) and the sanitized [example](examples/yallmo.json).
-
 ```bash
-# Keep sbt attached to this terminal so JLine can use its TTY.
-sbt --server -no-server "repl/run --user-name operator"
-sbt --server -no-server "repl/run --user-name operator --agent bob"
-sbt --server -no-server "repl/run --user-name operator --log-level debug"
+mkdir -p ./server-storage
+sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
+# Separate interactive terminal; --server is optional for the default loopback endpoint:
+sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
-`--agent <id>` is optional; absent it, startup stays unselected and prompts are rejected without an agent
-or tool call. Commands remain available. Press `Esc`, `a` to choose an agent from the loaded configuration.
-The old `--provider`/`--model` flags are removed. Models, prompts and
-optional thinking settings belong in each agent's `config` object. `--user-name` supplies the human message-author ID.
+`--user-name <id>` is required; the claimed human ID sent to the server is `user-<id>`, not authentication.
+`--agent <id>` is optional. Without a selection prompts cause no writes/session creation; press `Esc`, `a` to choose.
+`--log-level` defaults to `warning`. `--config`/`--storage` are server-only. `--transcriber-agent` is rejected while
+connected voice integration is pending; it never activates a local fallback.
 
-**Migration:** old `userName`, `defaultAgentId` and `transcriberAgent` JSON preferences no longer apply; use CLI flags.
-Unknown JSON fields survive catalog edits but are not active preferences. No OS-name/default-agent fallback exists.
-`--transcriber-agent <id>` is independently optional; absent means no transcription.
-The supplied human is registered before assembly in the local server runtime; supplied identity is sufficient
-persisted authorship for now, not authentication. This local path remains in-process; explicit connected execution/viewer
-modes are described below. Provider-login/voice transport remains pending; configured trusted-local prompts now execute remotely.
-Standalone server `--config` chooses only its own file; local REPL server startup uses default `yallmo.json`.
-Only the standalone server accepts `--storage`. Normal embedded REPL sessions and blobs are in memory and do not
-survive restart; no durable REPL lifecycle logger is installed. Debug exports/captures remain explicit local UI features.
-Local mode does not consume a standalone server's sessions; explicit connected mode can read and submit to them when permitted.
+**Feature preservation:** audio/voice, browser audio, debug snapshots/exports/request captures and their tests are
+retained. Their former embedded-terminal workflow is documented later in this guide. They are not removed or claimed
+broken merely because connected wiring is pending. `/debug request` is now connected as described below;
+audio/voice and `/debug print|export` retain their existing implementations but are not enabled remotely.
 
-The REPL always uses the JLine client, with editable input, history, completion, menus and status. Voice is local-only.
-An interactive terminal is required; dumb terminals and redirected streams fail without fallback. There is no
-`--ui` option or alternate terminal implementation.
-
-## Explicit connected mode
+## Server connection
 
 ```bash
 # Server owns private configuration (including bob) and a separate existing storage root:
@@ -56,18 +41,34 @@ Configured server + actual loopback peer + absent Origin + claimed human enables
 Keep loopback/Host/Origin checks; never expose/proxy publicly. Anonymous and Origin-bearing browser viewers stay read-only.
 A server started without `--config` remains read-only; the client notice/help/completions reflect negotiated capabilities.
 
-The endpoint must be an explicit `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local
-fallback or automatic reconnect/replay exists. Connection failure exits. Without `--server`, local mode remains unchanged.
+An override endpoint must be a `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local
+fallback or automatic reconnect/replay exists. Connection failure exits, including at the default endpoint.
 Connected startup does not load local `yallmo.json`, construct local runtime/tools/providers, or acquire recorder/browser/
 login/transcription/TTS services, **even when prompts are enabled**. `--config`/`--storage` remain server-only;
-`--transcriber-agent` with `--server` fails before connection. The existing recorder-free terminal runner is used.
+`--transcriber-agent` fails before connection, including when the default endpoint is used. The existing recorder-free terminal runner is used.
 
 Connected commands: `/help`, `/session list`, `/session resume <id>`, `/history`, `/log <level>`, `/exit`; permitted
-Operators also get **prompts and `/new [name]`**. `/tools`, `/debug`, provider catalog/login, voice/TTS, fork and upload
+Operators also get **prompts and `/new [name]`**. When `diagnostics.request` is advertised, `/debug request` is also
+available in help/completion. `/tools`, `/debug print|export`, provider catalog/login, voice/TTS, fork and upload
 remain unavailable; no remote capability silently activates a local service. NORMAL `a` chooses a per-client agent
 preference. Use initialize's configured assistant IDs when supplied, not mixed human/presence `agents.list` IDs.
 Server selection validation is independent. Provider/model metadata is unknown and no active local runtime is invented.
 The cached initialization result determines capability; reading it does not issue a second initialize.
+
+### `/debug request`
+
+After a prompt, run `/debug request` to display the server's latest captured provider request for the selected session.
+This reads the actual capture, not a request reconstructed from public history, and does not run an agent or read a
+client-local file. Failed provider turns retain their captures; a tool loop exposes its last captured request.
+No session/capture means an explicit absence message. Read failures leave the selected session and preferences unchanged.
+
+Reconnect and `/session resume <id>` can read a retained capture without resubmitting. The index is process-local and
+bounded to 128 captured sessions; restart/eviction/deletion may make older captures unavailable. A new execution clears
+the previous association until it completes. Captures over 256 KiB are rejected safely. Viewers/older servers without
+the advertised diagnostic capability do not expose this command.
+
+**Sensitive data:** encrypted continuations remain redacted, but conversation/tool text is not generally scrubbed.
+Output carries a warning and terminal controls are sanitized. No server filesystem path or HTTP credentials are returned.
 
 ### Prompt and session state
 
@@ -97,13 +98,17 @@ Public snapshots/deltas render original role/content/author/tool/blob references
 Bodies retain multiline text/tabs and normalize carriage returns; metadata stays single-line. Failed reads retain
 session/preferences. `/log` respects actual CLI log level initially and the current preference for later remote calls.
 
-Initialize sends `clientName: "yallmo-repl"` and `humanId` once; clientName is not privilege. Human presence is cleaned on
+Initialize sends `clientName: "yallmo-repl"` and `userId` once; clientName is not privilege. Human presence is cleaned on
 disconnect, while submitted dynamically registered authors may remain in the registry for process lifetime. Same-name
 viewers are deduplicated; neither registration nor presence is identity verification. Independent sessions execute
 concurrently. Short filesystem mutation coordination is separate from nonwaiting same-session turn exclusion; provider/
 tool execution is never held under a storage mutex. Legacy/separate root owners still must not write the same root.
 
-The remaining guide describes **local mode**, including its provider/voice features; these are not enabled remotely.
+## Retained embedded feature reference
+
+The remaining sections describe existing audio/voice, debug and other embedded feature implementations. Their code
+and tests are retained for follow-up integration, but `ReplMain` never enters this path. Connected startup and its
+currently enabled commands above are authoritative; there is no CLI local-mode flag or fallback.
 
 ## ChatGPT subscription generation
 
@@ -371,7 +376,7 @@ frontend installation or external encoder. See [browser audio details and manual
 
 At REPL startup, `ReplMain` builds these components:
 
-1. `ReplMain` parses CLI options only. `ReplStartup` creates the supplied local human and calls the server-owned
+1. For the retained embedded adapter, tests/callers supply a human and runtime to `ReplStartup.fromRuntime`. The server-owned
    `ApplicationRuntime.load(Chunk(human))`; no config or credentials are returned. The runtime owns lazy connections
    and agent registration. Only explicit chat/transcriber flags are resolved. Safe summaries and `browserAudioPort`
    reach the UI, not the raw config.

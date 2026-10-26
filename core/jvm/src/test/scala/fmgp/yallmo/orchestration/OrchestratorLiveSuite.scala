@@ -112,6 +112,22 @@ final class OrchestratorLiveSuite extends FunSuite {
     assertEquals(result._3.bytes, bytes)
   }
 
+  test("single-turn compatibility API rejects unknown agents with a typed error") {
+    val unknown = AgentId("unknown")
+    val result = runZIO {
+      for {
+        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
+        result <- (orchestrator.turn(
+          unknown,
+          AgentTurnRequest("model", Chunk(MessagePayload.User("hello")))
+        ): @scala.annotation.nowarn("cat=deprecation")).either
+      } yield result
+    }
+
+    assertEquals(result, Left(YallmoError.UnknownAgent(unknown)))
+  }
+
   private val agentId = AgentId("agent")
   private val agent = new Agent[Any] {
     override val id: AgentId = agentId

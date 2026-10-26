@@ -27,9 +27,16 @@ Initialize's optional `configuredAgentIds` supplies assistant choices, not the m
 Remote provider/model metadata remains unknown; selection is per-client, never a global execution preference.
 
 Without server `--config`, the same client is a read-only viewer; prompts and `/new` are omitted from help/completions.
-Without client `--server`, legacy local mode is unchanged. A failed explicit connection never falls back locally.
-`--transcriber-agent` with `--server` is rejected before networking. `/tools`, `/debug`, provider catalog/login,
+Without client `--server`, the REPL connects to `ws://127.0.0.1:8080/rpc`. It is client-only; connection failure
+never starts a local application.
+`--transcriber-agent` is rejected before networking, with or without an endpoint override. `/tools`, `/debug print|export`, provider catalog/login,
 voice/TTS and attachment upload remain unavailable remotely, even for Operator. See [REPL](../docs/REPL.md).
+
+`/debug request` is enabled only when `diagnostics.request` is negotiated for a trusted-local Operator. It returns the
+latest actual request capture for the selected session, including failed turns, without inference or client-local file
+access. Captures retain metadata and existing continuation redaction; conversation/tool text remains sensitive.
+The index retains 128 sessions in memory, survives client reconnect, and is lost on server restart. Reads reject captures
+over 256 KiB, symlinks and corrupt data without exposing server paths. See [protocol](PROTOCOL.md#provider-request-diagnostics).
 
 Initialized human presence is connection-owned and deduplicated. Dynamically registered submitted authors remain for
 runtime/process lifetime after disconnect, independently of viewer cleanup. Configured/supplied ID collisions and
@@ -121,29 +128,22 @@ only, without a fake local human, OS-name lookup, selection, login or inference.
 `transcriberAgent` were removed from Config; old terminal preferences no longer apply. Unknown raw fields survive
 catalog edits but do not become active server preferences.
 
-The legacy in-process REPL requires `--user-name <id>` and supports independent optional `--agent <id>` and
-`--transcriber-agent <id>` selections; absent means no selection/no transcription. It has no `--config` option or
-config-file access: `ApplicationRuntime.load(Chunk(human))` owns default `yallmo.json` loading and returns runtime plus
-server `ProviderCatalog`, never raw Config. Standalone `--config` does not change this embedded default.
-Only standalone startup accepts `--storage`; the REPL rejects it. Normal embedded workspace opening uses the server
-runtime's in-memory default and installs no durable REPL lifecycle logger. Explicit local debug exports/captures remain.
-Trusted server factories may choose filesystem storage; existing explicit storage APIs are unchanged. This does not
-change legacy local storage; explicit `--server` instead reads/submits to standalone storage. Safe agent
-summaries and the server's `browserAudioPort` scalar reach the UI. The supplied human is registered before assembly
-and is sufficient persisted authorship for this milestone, not authentication or WebSocket connection registration.
-Provider menus/login and voice remain functional locally; their remote transport and interactive human transport remain
-pending. Trusted-local remote prompts are enabled, but login/voice/diagnostic handlers are not.
+The client-only REPL requires `--user-name <id>` and accepts optional `--agent <id>`, `--log-level` and `--server`.
+The default endpoint is `ws://127.0.0.1:8080/rpc`; there is no embedded application or local execution fallback.
+It never loads `yallmo.json`, probes tools, constructs providers or acquires local audio/login services.
+`--config`/`--storage` belong to server startup; the REPL rejects them and `--transcriber-agent`.
+Claimed human IDs use `user-<user-name>` and are sufficient authorship for this trusted-local milestone, not authentication.
+Provider menus/login, voice and interactive human transport remain pending; configured prompts and session/history
+commands use standalone server storage. Existing embedded adapters, audio/voice and debug implementations and their tests are retained for follow-up
+integration; none is entered by the client-only startup path.
 
 `--workspace` requires `--config` and defaults to the server process working directory. It must be an existing directory
 and is canonicalized once. It roots the core readFile/listFiles/bash/repositoryChanges tools; the Scala tool reuses
 the existing core implementation. Startup only probes directory access, Bash/Scala CLI availability and Git worktree
 membership, then validates configured capabilities against the available catalog. It does not execute tools or agents.
 Tool composition, availability models/probes and service layers live in server-module `ApplicationTools`.
-For legacy REPL startup, `ApplicationRuntime.openWorkspace` opens those services in the application scope and binds
-execution to them, returning an assembly with no caller tool-environment requirement. `ReplMain` does not construct
-or probe tools; its startup API returns `ReplApplication[Any]`. Agent switches reuse the same assembly and services.
-Core tool implementations are unchanged. This separates ownership, not processes: legacy REPL mode still executes
-server-module services locally, and its application must remain within the owning scope.
+`ApplicationRuntime.openWorkspace` owns scoped tool services and execution assembly on the server. The REPL
+connects over WebSocket and has no local tool probing or execution path. Core tool implementations are unchanged.
 
 These workspace roots are **not a sandbox**. Configured agent filesystem roots retain core's existing cwd-relative
 semantics; `--workspace` does not silently rewrite them.

@@ -13,8 +13,8 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId, assistantId))
-          _ <- orchestrator.append(sessionId, humanId, Chunk(MessagePayload.User("earlier")))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId, assistantId))
+          _ <- orchestrator.append(sessionId, userId, Chunk(MessagePayload.User("earlier")))
           _ <- orchestrator.append(sessionId, assistantId, Chunk(MessagePayload.Assistant("previous answer")))
           expected = Chunk(
             MessagePayload.User("earlier"),
@@ -38,13 +38,13 @@ final class OrchestratorSubmitSuite extends FunSuite {
                 AgentTurn(Some(MessagePayload.Assistant("answer")), AgentDecision.FinalAnswer("answer"))
               }
           }
-          turn <- orchestrator.submit(sessionId, humanId, AgentTask("now"), runner.execution(program, context))
+          turn <- orchestrator.submit(sessionId, userId, AgentTask("now"), runner.execution(program, context))
           reopened <- open(root)
           stored <- reopened.loadSession(sessionId)
         } yield {
           assertEquals(turn.session, stored)
           assertEquals(stored.messages.map(_.payload), expected :+ MessagePayload.Assistant("answer"))
-          assertEquals(stored.messages.map(_.agentId), Chunk(humanId, assistantId, humanId, assistantId))
+          assertEquals(stored.messages.map(_.agentId), Chunk(userId, assistantId, userId, assistantId))
           assertEquals(turn.newMessages, Chunk(MessagePayload.User("now"), MessagePayload.Assistant("answer")))
           assertEquals(Files.readAllLines(root.resolve("objects.jsonl")).size(), 4)
         }
@@ -57,9 +57,9 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           execution = runner.execution(program(_ => ZIO.never), context, AgentBudget.default.copy(timeout = 25.millis))
-          failed <- orchestrator.submit(sessionId, humanId, AgentTask("keep me"), execution).either
+          failed <- orchestrator.submit(sessionId, userId, AgentTask("keep me"), execution).either
           reopened <- open(root)
           stored <- reopened.loadSession(sessionId)
         } yield {
@@ -67,7 +67,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
           assert(failure.error.isInstanceOf[YallmoError.AgentTimedOut])
           assertEquals(failure.acceptedSession, Some(stored))
           assertEquals(stored.messages.map(_.payload), Chunk(MessagePayload.User("keep me")))
-          assertEquals(stored.agentIds, Chunk(humanId))
+          assertEquals(stored.agentIds, Chunk(userId))
         }
       }
     }
@@ -78,14 +78,14 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           called <- Ref.make(false)
           _ <- ZIO.attempt {
             Files.delete(root.resolve("objects.jsonl"))
             Files.createDirectory(root.resolve("objects.jsonl"))
           }
           execution = runner.execution(program(_ => called.set(true).as(answer)), context)
-          failed <- orchestrator.submit(sessionId, humanId, AgentTask("cannot save"), execution).either
+          failed <- orchestrator.submit(sessionId, userId, AgentTask("cannot save"), execution).either
           wasCalled <- called.get
         } yield {
           assert(!wasCalled)
@@ -101,10 +101,10 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           started <- Promise.make[Nothing, Unit]
           execution = runner.execution(program(_ => started.succeed(()) *> ZIO.never), context)
-          fiber <- orchestrator.submit(sessionId, humanId, AgentTask("cancelled"), execution).fork
+          fiber <- orchestrator.submit(sessionId, userId, AgentTask("cancelled"), execution).fork
           _ <- started.await
           _ <- fiber.interrupt
           stored <- orchestrator.loadSession(sessionId)
@@ -118,13 +118,13 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           invalid = new AgentExecution[Any] {
             override val agentId: AgentId = AgentId("unknown")
             override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
               ZIO.dieMessage("Unknown execution must not run")
           }
-          failed <- orchestrator.submit(sessionId, humanId, AgentTask("reject"), invalid).either
+          failed <- orchestrator.submit(sessionId, userId, AgentTask("reject"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
         } yield {
           assertEquals(failed, Left(SessionSubmitFailure(YallmoError.UnknownAgent(AgentId("unknown")), None)))
@@ -139,16 +139,16 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           invalid = new AgentExecution[Any] {
-            override val agentId: AgentId = humanId
+            override val agentId: AgentId = userId
             override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
               ZIO.dieMessage("A user has no executable agent")
           }
-          failed <- orchestrator.submit(sessionId, humanId, AgentTask("reject"), invalid).either
+          failed <- orchestrator.submit(sessionId, userId, AgentTask("reject"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
         } yield {
-          assertEquals(failed, Left(SessionSubmitFailure(YallmoError.UnknownAgent(humanId), None)))
+          assertEquals(failed, Left(SessionSubmitFailure(YallmoError.UnknownAgent(userId), None)))
           assertEquals(stored.messages, Chunk.empty)
         }
       }
@@ -160,13 +160,13 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           invalid = new AgentExecution[Any] {
             override val agentId: AgentId = assistantId
             override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
               ZIO.succeed(AgentTurnResult(AgentResult(assistantId, "bad"), RunContext()))
           }
-          failed <- orchestrator.submit(sessionId, humanId, AgentTask("preserve"), invalid).either
+          failed <- orchestrator.submit(sessionId, userId, AgentTask("preserve"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
         } yield {
           assert(failed.swap.toOption.get.error.isInstanceOf[YallmoError.InvalidAgentDecision])
@@ -181,20 +181,20 @@ final class OrchestratorSubmitSuite extends FunSuite {
       run {
         for {
           orchestrator <- open(root)
-          _ <- orchestrator.createSession(sessionId, Chunk(humanId))
+          _ <- orchestrator.createSession(sessionId, Chunk(userId))
           execution = new AgentExecution[Any] {
             override val agentId: AgentId = assistantId
             override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
               ZIO.succeed(AgentTurnResult(AgentResult(assistantId, "done"), acceptedContext))
           }
-          result <- orchestrator.submit(sessionId, humanId, AgentTask("no response message"), execution)
+          result <- orchestrator.submit(sessionId, userId, AgentTask("no response message"), execution)
         } yield assertEquals(result.newMessages, result.session.messages.map(_.payload))
       }
     }
   }
 
   private val sessionId = SessionId.unsafe("main")
-  private val humanId = AgentId("human")
+  private val userId = AgentId("human")
   private val assistantId = AgentId("assistant")
   private val context = StaticContext[Any]("Test")
   private def runner = new AgentRunner[Any](Map.empty, Map.empty)
@@ -215,7 +215,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
     }
     for {
       instances <- RuntimeInstances.fromAgents(Chunk(participant(assistantId)))
-      _ <- instances.registerUser(humanId)
+      _ <- instances.registerUser(userId)
       orchestrator <- OrchestratorLive.filesystem(root, instances)
     } yield orchestrator
   }

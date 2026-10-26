@@ -11,8 +11,8 @@ final class ReplLaunchOptionsSuite extends FunSuite {
     assert(ReplLaunchOptions.parse(Chunk.empty).isLeft)
     assertEquals(ReplLaunchOptions.parse(Chunk("--user-name=operator")), Right(options))
     assertEquals(
-      ReplLaunchOptions.parse(Chunk("--agent", "eve", "--transcriber-agent=voice", "--user-name", "operator")),
-      Right(options.copy(agentId = Some(AgentId("eve")), transcriberAgentId = Some(AgentId("voice"))))
+      ReplLaunchOptions.parse(Chunk("--agent", "eve", "--user-name", "operator")),
+      Right(options.copy(agentId = Some(AgentId("eve"))))
     )
   }
 
@@ -113,12 +113,12 @@ final class ReplLaunchOptionsSuite extends FunSuite {
     ).foreach(args => assert(ReplLaunchOptions.parse(args).isLeft, args.toString))
   }
 
-  test("identity and both selections are validated; config is not a REPL option") {
+  test("identity and agent selection are validated; config is not a REPL option") {
     assertEquals(
-      ReplLaunchOptions.parse(Chunk("--user-name=operator", "--agent=bob", "--transcriber-agent", "voice")),
-      Right(options.copy(agentId = Some(AgentId("bob")), transcriberAgentId = Some(AgentId("voice"))))
+      ReplLaunchOptions.parse(Chunk("--user-name=operator", "--agent=bob")),
+      Right(options.copy(agentId = Some(AgentId("bob"))))
     )
-    for key <- List("--user-name", "--agent", "--transcriber-agent") do {
+    for key <- List("--user-name", "--agent") do {
       val prefix = if key == "--user-name" then Chunk.empty else Chunk("--user-name=operator")
       for value <- List("", " ", "\t\n") do assert(ReplLaunchOptions.parse(prefix ++ Chunk(s"$key=$value")).isLeft)
       assert(ReplLaunchOptions.parse(prefix ++ Chunk(s"$key=a", s"$key=b")).isLeft)
@@ -131,14 +131,15 @@ final class ReplLaunchOptionsSuite extends FunSuite {
     assert(!ReplLaunchOptions.Usage.contains("--config"))
   }
 
-  test("--server accepts explicit ws/wss endpoints in both syntaxes without changing local defaults") {
+  test("--server overrides the default endpoint in both syntaxes") {
     for endpoint <- List("ws://127.0.0.1:8080/rpc", "wss://localhost:8443/rpc") do
       for flag <- List(Chunk("--server", endpoint), Chunk(s"--server=$endpoint")) do
         assertEquals(
           ReplLaunchOptions.parse(Chunk("--user-name=operator") ++ flag),
-          Right(options.copy(server = Some(endpoint)))
+          Right(options.copy(server = endpoint))
         )
-    assertEquals(options.server, None)
+    assertEquals(options.server, "ws://127.0.0.1:8080/rpc")
+    assertEquals(ReplLaunchOptions.parse(Chunk("--user-name=operator")), Right(options))
     assert(ReplLaunchOptions.parse(Chunk("--server=ws://localhost/rpc")).isLeft)
   }
 
@@ -162,26 +163,15 @@ final class ReplLaunchOptionsSuite extends FunSuite {
         )
   }
 
-  test("connected transcriber selection and config/storage are rejected before launch") {
-    for arguments <- List(
-        Chunk("--server=ws://localhost/rpc", "--transcriber-agent=voice"),
-        Chunk("--transcriber-agent", "voice", "--server", "ws://localhost/rpc")
-      )
-    do
-      assert(
-        ReplLaunchOptions
-          .parse(Chunk("--user-name=operator") ++ arguments)
-          .left
-          .toOption
-          .get
-          .contains("--transcriber-agent is unavailable")
-      )
-    for key <- List("--config", "--storage") do
-      for flag <- List(Chunk(key, "secret"), Chunk(s"$key=secret")) do
-        assertEquals(
-          ReplLaunchOptions.parse(Chunk("--user-name=operator", "--server=ws://localhost/rpc") ++ flag),
-          Left(s"Unknown option '$key'.\n${ReplLaunchOptions.Usage}")
-        )
+  test("local-only flags are rejected with both default and explicit server endpoints") {
+    for endpoint <- List(Chunk.empty[String], Chunk("--server=ws://localhost/rpc")) do
+      for key <- List("--transcriber-agent", "--config", "--storage") do
+        for flag <- List(Chunk(key, "secret"), Chunk(s"$key=secret")) do
+          assertEquals(
+            ReplLaunchOptions.parse(Chunk("--user-name=operator") ++ endpoint ++ flag),
+            Left(s"Unknown option '$key'.\n${ReplLaunchOptions.Usage}")
+          )
+    assert(!ReplLaunchOptions.Usage.contains("--transcriber-agent"))
     assert(ReplLaunchOptions.parse(Chunk("--user-name=operator", "--server")).isLeft)
     assert(
       ReplLaunchOptions

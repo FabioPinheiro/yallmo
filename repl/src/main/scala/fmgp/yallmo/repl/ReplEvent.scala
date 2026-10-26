@@ -14,6 +14,9 @@ enum ReplEvent {
   case DebugSnapshot(target: DebugTarget, snapshot: ReplDebugSnapshot)
   case ProviderRequest(capture: Option[Path])
 
+  /** A server-supplied diagnostic document; never interpreted as a local filesystem path. */
+  case ProviderRequestDocument(capture: Option[zio.json.ast.Json.Obj])
+
   /** Stored conversation messages, including their original authors and optional session name. */
   case Transcript(messages: Chunk[Message], sessionId: Option[String])
   case SnapshotTranscript(

@@ -28,17 +28,17 @@ final class YallmoProtocolSuite extends FunSuite {
   test("initialize optional human label roundtrips and absent/null fields preserve anonymous clients") {
     assertWire(
       Initialize.Params(Version, "repl", Some(agentId)),
-      """{"protocolVersion":1,"clientName":"repl","humanId":"agent1"}"""
+      """{"protocolVersion":1,"clientName":"repl","userId":"agent1"}"""
     )
     assertEquals(
       """{"protocolVersion":1,"clientName":"browser"}""".fromJson[Initialize.Params],
       Right(Initialize.Params(Version, "browser"))
     )
     assertEquals(
-      """{"protocolVersion":1,"clientName":"browser","humanId":null}""".fromJson[Initialize.Params],
+      """{"protocolVersion":1,"clientName":"browser","userId":null}""".fromJson[Initialize.Params],
       Right(Initialize.Params(Version, "browser"))
     )
-    assert("""{"protocolVersion":1,"clientName":"repl","humanId":" "}""".fromJson[Initialize.Params].isLeft)
+    assert("""{"protocolVersion":1,"clientName":"repl","userId":" "}""".fromJson[Initialize.Params].isLeft)
   }
 
   test("parameterless queries use an empty object, not an invented tagged command") {
@@ -200,6 +200,20 @@ final class YallmoProtocolSuite extends FunSuite {
     )
     val session = Session(sessionId, Chunk(AgentId("human")), Chunk.empty)
     assertWire(SessionSnapshot.from(session), """{"id":"s1","agentIds":["human"],"messages":[]}""")
+  }
+
+  test("diagnostics.request accepts a session ID and returns an optional document, never a file path") {
+    assertWire(
+      JsonRpc.Request(Json.Str("debug"), DiagnosticsRequest.method, DiagnosticsRequest.Params(sessionId)),
+      """{"id":"debug","method":"diagnostics.request","params":{"sessionId":"s1"},"jsonrpc":"2.0"}"""
+    )
+    assertWire(DiagnosticsRequest.Result(None), "{}")
+    assertWire(
+      DiagnosticsRequest.Result(Some(Json.Obj("turnId" -> Json.Str("turn"), "payload" -> Json.Obj()))),
+      """{"providerRequest":{"turnId":"turn","payload":{}}}"""
+    )
+    assert("""{"sessionId":"../file"}""".fromJson[DiagnosticsRequest.Params].isLeft)
+    assert("{}".fromJson[DiagnosticsRequest.Params].isLeft)
   }
 
   test("blob reads are bounded named requests and base64 chunk results") {

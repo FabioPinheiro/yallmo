@@ -78,7 +78,7 @@ object YallmoProtocol {
     val method: String = "initialize"
 
     /** Claimed local author, not an authenticated identity. Transport/server policy determines capabilities. */
-    final case class Params(protocolVersion: Int, clientName: String, humanId: Option[AgentId] = None) derives JsonCodec
+    final case class Params(protocolVersion: Int, clientName: String, userId: Option[AgentId] = None) derives JsonCodec
     final case class Result(
         protocolVersion: Int,
         serverInstanceId: String,
@@ -239,6 +239,18 @@ object YallmoProtocol {
       * not an unknown command or permission to re-execute. New commands are Busy when the bounded ledger is full.
       */
     final case class Result(runId: String, run: Option[RunsGet.Result]) derives JsonCodec
+  }
+
+  /** Explicit operator-only access to the latest captured provider request for a session, not a new inference. */
+  object DiagnosticsRequest {
+    val method: String = "diagnostics.request"
+    val MaxCaptureBytes: Int = 256 * 1024
+    final case class Params(sessionId: SessionId) derives JsonCodec
+
+    /** Capture metadata and redacted request body, never a server path or transport credentials. Absence means no
+      * retained capture (including restart/eviction). Conversation/tool text remains sensitive.
+      */
+    final case class Result(providerRequest: Option[Json.Obj]) derives JsonCodec
   }
 
   object DiagnosticsMessage {

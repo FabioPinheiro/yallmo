@@ -1,5 +1,8 @@
 # Capabilities architecture
 
+> REPL startup is client-only. The embedded audio/voice and debug implementations and tests remain available for
+> follow-up work; references below to embedded startup describe the retained adapter, not `ReplMain`.
+
 This document describes the implemented configuration and enforcement flow, not a future permission system.
 
 The central rule is: **configuration restricts what trusted application code makes available; the model may propose actions, but does not authorize or execute them.** Prompt instructions alone are not an authorization boundary.

@@ -24,6 +24,11 @@ trait OrchestratorClient {
       resetContinuation: Boolean = false
   ): IO[OrchestratorClient.Error, TurnOutcome] =
     ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+
+  /** Optional operator diagnostic; reads a captured document, never a client-local/server-supplied file path. */
+  @scala.annotation.nowarn("msg=unused explicit parameter")
+  def providerRequest(sessionId: SessionId): IO[OrchestratorClient.Error, DiagnosticsRequest.Result] =
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
   def listSessions: IO[OrchestratorClient.Error, Chunk[SessionSummary]]
   def loadSession(id: SessionId): IO[OrchestratorClient.Error, SessionSnapshot]
   def listMessages: IO[OrchestratorClient.Error, Chunk[MessageSnapshot]]

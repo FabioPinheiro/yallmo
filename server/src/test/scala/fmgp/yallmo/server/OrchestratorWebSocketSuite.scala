@@ -91,8 +91,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         initial <- observer.listAgentIds
         alice = AgentId("alice")
         bob = AgentId("bob")
-        pair <- ZIO.foreachPar(1 to 2)(_ => OrchestratorWSClient.connect(endpoint, humanId = Some(alice)))
-        other <- OrchestratorWSClient.connect(endpoint, humanId = Some(bob), clientName = "connected-repl")
+        pair <- ZIO.foreachPar(1 to 2)(_ => OrchestratorWSClient.connect(endpoint, userId = Some(alice)))
+        other <- OrchestratorWSClient.connect(endpoint, userId = Some(bob), clientName = "connected-repl")
         bound <- other.initialize("different-client-metadata")
         all <- observer.listAgentIds
         _ <- pair.head.close
@@ -373,7 +373,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                 .Result(
                   Version,
                   "peer",
-                  Identity(params.humanId.getOrElse(author), Role.Viewer),
+                  Identity(params.userId.getOrElse(author), Role.Viewer),
                   Nil,
                   Nil,
                   MaxBlobChunkBytes
@@ -383,7 +383,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           }
         )
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(alice), clientName = "repl")
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(alice), clientName = "repl")
         repeated <- client.initialize("renamed")
         requests <- seen.get
       } yield {
@@ -439,7 +439,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             },
             onClose = closed.succeed(()).unit
           )
-          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(AgentId("alice"))).either
+          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(AgentId("alice"))).either
           _ <- closed.await.timeoutFail(new AssertionError("Failed initialize leaked its socket"))(3.seconds)
         } yield {
           if mode == "rejected" then

@@ -20,14 +20,14 @@ object Transcriber {
       agent: AudioAgent[Any],
       settings: ConfiguredAgentSettings,
       orchestrator: Orchestrator[Any],
-      humanId: AgentId
+      userId: AgentId
   ): Transcriber = new Transcriber {
     def transcribe(audio: CapturedAudio): IO[YallmoError, String] =
       for {
         uuid <- Random.nextUUID
         id = SessionId.unsafe(s"transcription-$uuid")
-        _ <- (orchestrator.createSession(id, Chunk(humanId, agent.id)) *>
-          orchestrator.appendWithBlobBytes(id, humanId, audio.input, audio.bytes))
+        _ <- (orchestrator.createSession(id, Chunk(userId, agent.id)) *>
+          orchestrator.appendWithBlobBytes(id, userId, audio.input, audio.bytes))
           .mapError(_ =>
             YallmoError.InvalidConfig("Voice audio could not be stored; draft was not changed. Check session storage.")
           )

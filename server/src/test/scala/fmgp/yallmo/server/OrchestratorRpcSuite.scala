@@ -34,7 +34,7 @@ final class OrchestratorRpcSuite extends FunSuite {
       version <- init(rpc, connection, Some(alice), 99)
       invalid <- rpc
         .handle(
-          """{"jsonrpc":"2.0","id":"bad","method":"initialize","params":{"protocolVersion":1,"clientName":"test","humanId":" "}}""",
+          """{"jsonrpc":"2.0","id":"bad","method":"initialize","params":{"protocolVersion":1,"clientName":"test","userId":" "}}""",
           connection
         )
         .map(_.get)

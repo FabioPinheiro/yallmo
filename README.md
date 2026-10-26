@@ -54,20 +54,18 @@ The project aims to keep the important boundaries small and explicit: transcript
 ## WIP
 
 Remaining work:
-- Make the REPL client-only. Without --server, it still starts the legacy in-process application.
 - Add remote /tools and richer agent information.
 - Migrate provider administration/login, voice execution, human interactions and diagnostics.
 - Perform a real-provider, separate-process smoke test.
 - Retire local compatibility code only after deciding feature parity.
 - Authentication, cancellation/status APIs and richer run-management machinery.
 
-Recommendation: make ReplMain connect to the server by default next, with no local fallback. Then migrate the remaining features individually. That finishes the startup boundary
- rather than adding more intermediate abstractions.
+The REPL connects to `ws://127.0.0.1:8080/rpc` by default; `--server` overrides it. Startup is client-only, with no
+local fallback. Existing audio/voice, debug and other local feature implementations/tests are retained pending integration.
 
 ### TODO other
 
 - Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
-- ReplLaunchOptions.server Should not be Option!
 - TerminalVoiceModeStatus.remoteConnection Remove! 
 
 ### TODO - Agent Comands

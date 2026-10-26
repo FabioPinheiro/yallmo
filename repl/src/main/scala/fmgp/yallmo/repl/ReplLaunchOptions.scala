@@ -3,25 +3,25 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.AgentId
 import zio.{Chunk, LogLevel}
 
-/** CLI-only local identity and explicit selections; server configuration is not a REPL option. */
+/** Client identity, selection and endpoint; no server configuration or local execution options. */
 private[repl] final case class ReplLaunchOptions(
     userName: String,
     agentId: Option[AgentId] = None,
-    transcriberAgentId: Option[AgentId] = None,
     logLevel: LogLevel = LogLevel.Warning,
-    server: Option[String] = None
+    server: String = ReplLaunchOptions.DefaultServer
 )
 
 private[repl] object ReplLaunchOptions {
+  val DefaultServer = "ws://127.0.0.1:8080/rpc"
+
   val Usage =
-    "Usage: yallmo --user-name <id> [--server <ws(s)://host:port/path>] [--agent <id>] [--transcriber-agent <id>] [--log-level <trace|debug|info|warning|error|fatal|off>]"
+    s"Usage: yallmo --user-name <id> [--server <ws(s)://host:port/path>] [--agent <id>] [--log-level <trace|debug|info|warning|error|fatal|off>] (default server: $DefaultServer)"
 
   private final case class Parsed(
       userName: Option[String] = None,
       agentId: Option[AgentId] = None,
-      transcriberAgentId: Option[AgentId] = None,
       logLevel: LogLevel = LogLevel.Warning,
-      server: Option[String] = None
+      server: String = ReplLaunchOptions.DefaultServer
   )
 
   private def validateServer(value: String): Either[String, String] = {
@@ -54,19 +54,13 @@ private[repl] object ReplLaunchOptions {
             .left
             .map(error => s"Invalid --user-name value: $error")
             .map(id => options.copy(userName = Some(AgentId.value(id))))
-        case "--transcriber-agent" =>
-          AgentId
-            .from(value)
-            .left
-            .map(error => s"Invalid --transcriber-agent value: $error")
-            .map(id => options.copy(transcriberAgentId = Some(id)))
         case "--agent" =>
           AgentId
             .from(value)
             .left
             .map(error => s"Invalid --agent value: $error")
             .map(id => options.copy(agentId = Some(id)))
-        case "--server"    => validateServer(value).map(endpoint => options.copy(server = Some(endpoint)))
+        case "--server"    => validateServer(value).map(endpoint => options.copy(server = endpoint))
         case "--log-level" => logLevel(value).map(level => options.copy(logLevel = level))
         case _             => Left(s"Unknown option '$key'.")
       }
@@ -74,25 +68,9 @@ private[repl] object ReplLaunchOptions {
     def loop(rest: List[String], seen: Set[String], options: Parsed): Either[String, ReplLaunchOptions] =
       rest match {
         case Nil =>
-          Either
-            .cond(
-              options.server.isEmpty || options.transcriberAgentId.isEmpty,
-              (),
-              "--transcriber-agent is unavailable with --server (connected mode is read-only)."
-            )
-            .flatMap(_ =>
-              options.userName
-                .toRight("--user-name is required.")
-                .map(name =>
-                  ReplLaunchOptions(
-                    name,
-                    options.agentId,
-                    options.transcriberAgentId,
-                    options.logLevel,
-                    options.server
-                  )
-                )
-            )
+          options.userName
+            .toRight("--user-name is required.")
+            .map(name => ReplLaunchOptions(name, options.agentId, options.logLevel, options.server))
         case argument :: tail =>
           val (key, value, remaining) = argument.split("=", 2).toList match {
             case key :: value :: Nil => (key, Some(value), tail)
@@ -104,7 +82,7 @@ private[repl] object ReplLaunchOptions {
           }
           for {
             _ <- Either.cond(
-              Set("--user-name", "--agent", "--transcriber-agent", "--log-level", "--server").contains(key),
+              Set("--user-name", "--agent", "--log-level", "--server").contains(key),
               (),
               if key.startsWith("-") then s"Unknown option '$key'."
               else s"Unexpected argument '$key'. Expected an option starting with --."

@@ -2,7 +2,14 @@ package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.orchestration.config.{AgentCapabilities, AgentConfig, Config, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{
+  AgentCapabilities,
+  AgentConfig,
+  Config,
+  FileSystemConfig,
+  ProviderConfig,
+  ProviderId
+}
 import fmgp.yallmo.server.*
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -68,6 +75,16 @@ final class ServerSubmissionSuite extends FunSuite {
           JsonRpc.Request(Json.Str("create"), SessionsCreate.method, SessionsCreate.Params()).toJson,
           connection
         )
+        diagnostic <- viewer.handle(
+          JsonRpc
+            .Request(
+              Json.Str("diagnostic"),
+              DiagnosticsRequest.method,
+              DiagnosticsRequest.Params(SessionId.unsafe("missing"))
+            )
+            .toJson,
+          connection
+        )
         _ <- viewer.disconnect(connection)
         sessions <- ZIO.foreach(List(appA, appB))(_.master.listSessions)
         agents <- ZIO.foreach(List(appA, appB))(_.master.listAgentIds)
@@ -77,6 +94,7 @@ final class ServerSubmissionSuite extends FunSuite {
         assertEquals(info.identity, Identity(human, Role.Viewer))
         assertEquals(info.methods.size, 7)
         assertEquals(decode[JsonRpc.Failure](rejected.get).error, JsonRpc.Error.MethodNotFound)
+        assertEquals(decode[JsonRpc.Failure](diagnostic.get).error, JsonRpc.Error.MethodNotFound)
         assert(sessions.forall(_.isEmpty))
         assert(agents.forall(_.toSet == Set(first, second)))
         assertEquals(count, 0)
@@ -90,18 +108,18 @@ final class ServerSubmissionSuite extends FunSuite {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(human))
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
         info <- client.capabilities
         created <- client.createSession(Some(SessionId.unsafe("created")))
         outcome <- client.submitTurn(created.id, first, AgentTask("prompt"))
         stored <- app.master.loadSession(created.id)
         count <- calls.get
         _ <- client.close
-        again <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(human))
+        again <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
         reloaded <- again.loadSession(created.id)
       } yield {
         assertEquals(info.get.identity, Identity(human, Role.Operator))
-        assertEquals(info.get.methods.size, 9)
+        assertEquals(info.get.methods.size, 10)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -247,20 +265,24 @@ final class ServerSubmissionSuite extends FunSuite {
         app <- application(_ => (entered.succeed(()) *> release.await.as(answer)).ensuring(finished.succeed(()).unit))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(endpoint, humanId = Some(human))
+        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
         session <- client.createSession(Some(SessionId.unsafe("disconnect")))
         wait <- client.submitTurn(session.id, first, AgentTask("keep")).fork
         _ <- entered.await
         during <- client.loadSession(session.id)
+        pendingCapture <- client.providerRequest(session.id)
         _ <- client.close
         lost <- wait.await
-        observer <- OrchestratorWSClient.connect(endpoint, humanId = Some(human))
+        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
         busy <- observer.submitTurn(session.id, first, AgentTask("not retried")).either
         _ <- release.succeed(())
         _ <- finished.await
         after <- (ZIO.yieldNow *> observer.loadSession(session.id)).repeatUntil(_.messages.size == 2)
+        diagnostic <- (ZIO.yieldNow *> observer.providerRequest(session.id)).repeatUntil(_.providerRequest.nonEmpty)
       } yield {
         assertEquals(during.messages.map(_.content), Chunk("keep"))
+        assertEquals(pendingCapture.providerRequest, None)
+        assert(diagnostic.toJson.contains("keep"))
         assertEquals(lost.causeOption.flatMap(_.failureOption), Some(OrchestratorClient.Error.Disconnected))
         assertEquals(
           busy.left.toOption.collect { case OrchestratorClient.Error.Remote(error) => error.code },
@@ -362,7 +384,10 @@ final class ServerSubmissionSuite extends FunSuite {
         _ <- rpc.disconnect(connection)
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
-        assertEquals(info.methods.takeRight(2), List(SessionsCreate.method, TurnSubmit.method))
+        assertEquals(
+          info.methods.takeRight(3),
+          List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
+        )
         assertEquals(info.notifications, Nil)
         assertEquals(decode[JsonRpc.Failure](changed.get).error.code, ErrorCode.Conflict)
         assertEquals(decode[JsonRpc.Failure](forbidden.get).error, JsonRpc.Error.MethodNotFound)
@@ -382,7 +407,7 @@ final class ServerSubmissionSuite extends FunSuite {
         release <- Promise.make[Nothing, Unit]
         app <- application(_ => entered.succeed(()) *> release.await.as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(human))
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
         session <- client.createSession(Some(SessionId.unsafe("deadline")))
         wait <- client.submitTurn(session.id, first, AgentTask("long")).withClock(noDeadline).fork
         _ <- entered.await
@@ -527,7 +552,7 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(endpoint, humanId = Some(human))
+        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
         sessions <- ZIO.foreach(1 to OrchestratorWSServer.MaxConnectionWorkers)(n =>
           client.createSession(Some(SessionId.unsafe(s"overload-$n")))
         )
@@ -536,7 +561,7 @@ final class ServerSubmissionSuite extends FunSuite {
         overflow <- client.listSessions.either
         stopped <- ZIO.foreach(waits)(_.await)
         _ <- release.succeed(())
-        observer <- OrchestratorWSClient.connect(endpoint, humanId = Some(human))
+        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
         stored <- ZIO.foreach(sessions)(session =>
           (ZIO.yieldNow *> observer.loadSession(session.id))
             .repeatUntil(_.messages.size == 2)
@@ -593,6 +618,7 @@ final class ServerSubmissionSuite extends FunSuite {
         session <- backend.create(human, Some(SessionId.unsafe("continuation")))
         _ <- backend.submit(human, session.id, first, "first")
         _ <- backend.submit(human, session.id, first, "same")
+        diagnostic <- backend.providerRequest(session.id)
         _ <- backend.submit(human, session.id, first, "reset", resetContinuation = true)
         _ <- backend.submit(human, session.id, first, "after reset")
         _ <- backend.submit(human, session.id, second, "switch")
@@ -621,9 +647,238 @@ final class ServerSubmissionSuite extends FunSuite {
           )
         )
         assert(requests.forall(body => ujson.read(body).obj.get("tools").forall(_.arr.isEmpty)))
+        assert(diagnostic.toJson.contains("<redacted>"))
+        assert(!diagnostic.toJson.contains("private-1"))
+        assert(!diagnostic.toJson.contains("fake-refresh"))
+        assert(!diagnostic.toJson.contains("header."))
         assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.Reasoning]), 7)
         assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.User]), 7)
         assert(!SessionSnapshot.from(stored).toJson.contains("private-"))
+      }
+    })
+  }
+
+  test("request diagnostics return actual provider bodies, isolate concurrent sessions and survive reconnect") {
+    run(ZIO.scoped {
+      for {
+        seen <- Ref.make(Set.empty[Json.Obj])
+        app <- application(request =>
+          request.body.asString.flatMap(body =>
+            ZIO
+              .fromEither(body.fromJson[Json.Obj])
+              .mapError(new Exception(_))
+              .flatMap(value => seen.update(_ + value))
+              .as(answer)
+          )
+        )
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        endpoint = s"ws://127.0.0.1:$port/rpc"
+        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
+        one <- client.createSession(Some(SessionId.unsafe("debug-one")))
+        two <- client.createSession(Some(SessionId.unsafe("debug-two")))
+        empty <- client.providerRequest(one.id)
+        _ <- client
+          .submitTurn(one.id, first, AgentTask("only-one"))
+          .zipPar(client.submitTurn(two.id, second, AgentTask("only-two")))
+        firstCapture <- client.providerRequest(one.id)
+        secondCapture <- client.providerRequest(two.id)
+        bodies <- seen.get
+        _ <- client.close
+        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
+        retained <- observer.providerRequest(one.id)
+        sessions <- observer.listSessions
+      } yield {
+        assertEquals(empty.providerRequest, None)
+        val documents = List(firstCapture.providerRequest.get, secondCapture.providerRequest.get)
+        assertEquals(
+          documents.map(document => document.fields.toMap.apply("payload").asInstanceOf[Json.Obj]).toSet,
+          bodies
+        )
+        assert(firstCapture.toJson.contains("only-one")); assert(!firstCapture.toJson.contains("only-two"))
+        assert(secondCapture.toJson.contains("only-two")); assert(!secondCapture.toJson.contains("only-one"))
+        assertEquals(retained, firstCapture)
+        assertEquals(sessions.size, 2)
+        assert(!retained.toJson.contains("-request.json"))
+        assert(!retained.toJson.contains(app.configured.get.workspace.toString))
+      }
+    })
+  }
+
+  test("typed failures and defects retain the latest attempted request instead of the earlier successful capture") {
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ =>
+          calls.updateAndGet(_ + 1).flatMap {
+            case 1 => ZIO.succeed(answer)
+            case 2 => ZIO.succeed(Response.text("PRIVATE provider error").status(Status.InternalServerError))
+            case _ => ZIO.dieMessage("PRIVATE provider defect")
+          }
+        )
+        backend = app.configured.get
+        session <- backend.create(human, Some(SessionId.unsafe("diagnostic-failures")))
+        _ <- backend.submit(human, session.id, first, "success")
+        before <- backend.providerRequest(session.id)
+        failed <- backend.submit(human, session.id, first, "typed-failure")
+        typed <- backend.providerRequest(session.id)
+        defect <- backend.submit(human, session.id, first, "defect-failure")
+        after <- backend.providerRequest(session.id)
+      } yield {
+        assert(failed.isInstanceOf[TurnOutcome.Failed]); assert(defect.isInstanceOf[TurnOutcome.Failed])
+        assert(typed.toJson.contains("typed-failure")); assert(after.toJson.contains("defect-failure"))
+        assertNotEquals(before, typed); assertNotEquals(typed, after)
+        assert(!typed.toJson.contains("PRIVATE")); assert(!after.toJson.contains("PRIVATE"))
+      }
+    })
+  }
+
+  test("a turn without provider work clears the earlier capture and new server instances have no capture index") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        configuration = config.copy(agents =
+          config.agents
+            .updated(second, AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(root.toString))))
+        )
+        path <- ZIO.attemptBlocking(Files.writeString(root.resolve("config.json"), configuration.toJson))
+        owner <- Scope.make
+        app <- ServerApplication
+          .open(root, Some(path), Some(root))
+          .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(_ => ZIO.succeed(answer))) ++ tools)
+          .provideEnvironment(ZEnvironment(owner))
+        session <- app.configured.get.create(human, Some(SessionId.unsafe("no-stale-capture")))
+        _ <- app.configured.get.submit(human, session.id, first, "captured")
+        before <- app.configured.get.providerRequest(session.id)
+        _ <- app.configured.get.submit(human, session.id, second, "no-provider")
+        cleared <- app.configured.get.providerRequest(session.id)
+        _ <- app.configured.get.submit(human, session.id, first, "captured-again")
+        _ <- owner.close(Exit.unit)
+        restarted <- ServerApplication
+          .open(root, Some(path), Some(root))
+          .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(_ => ZIO.succeed(answer))) ++ tools)
+        absent <- restarted.configured.get.providerRequest(session.id)
+      } yield {
+        assert(before.providerRequest.nonEmpty)
+        assertEquals(cleared.providerRequest, None)
+        assertEquals(absent.providerRequest, None)
+      }
+    })
+  }
+
+  test("diagnostic reads bound files, reject corrupt data and symlinks, and tolerate a deleted capture") {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.succeed(answer))
+        backend = app.configured.get
+        session <- backend.create(human, Some(SessionId.unsafe("capture-limits")))
+        _ <- backend.submit(human, session.id, first, "small")
+        valid <- backend.providerRequest(session.id)
+        turnId = ujson.read(valid.toJson)("providerRequest")("turnId").str
+        path = Path.of("debug", s"$turnId-request.json")
+        _ <- ZIO.attemptBlocking(Files.writeString(path, "x" * (DiagnosticsRequest.MaxCaptureBytes + 1)))
+        large <- backend.providerRequest(session.id).either
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+        oversizedReply <- client.providerRequest(session.id).either
+        stillConnected <- client.listSessions
+        _ <- ZIO.attemptBlocking(Files.writeString(path, "{broken json"))
+        corrupt <- backend.providerRequest(session.id).either
+        _ <- ZIO.attemptBlocking(Files.delete(path))
+        missing <- backend.providerRequest(session.id)
+        secret <- ZIO.attemptBlocking(
+          Files.writeString(backend.workspace.resolve("private.json"), "{\"secret\":\"PRIVATE\"}")
+        )
+        _ <- ZIO.acquireRelease(ZIO.attemptBlocking(Files.createSymbolicLink(path, secret)))(_ =>
+          ZIO.attemptBlocking(Files.deleteIfExists(path)).orDie
+        )
+        symlink <- backend.providerRequest(session.id).either
+        unknown <- backend.providerRequest(SessionId.unsafe("unknown")).either
+      } yield {
+        assertEquals(large.left.toOption.map(_.code), Some(ErrorCode.Rejected))
+        assertEquals(
+          oversizedReply.left.toOption.collect { case OrchestratorClient.Error.Remote(error) =>
+            error.code
+          },
+          Some(ErrorCode.Rejected)
+        )
+        assertEquals(stillConnected.map(_.id), Chunk(session.id))
+        assertEquals(corrupt.left.toOption.map(_.code), Some(ErrorCode.Rejected))
+        assertEquals(missing.providerRequest, None)
+        assertEquals(symlink.left.toOption.map(_.code), Some(ErrorCode.Rejected))
+        assertEquals(unknown.left.toOption.map(_.code), Some(ErrorCode.NotFound))
+        assert(!symlink.toString.contains("PRIVATE")); assert(!symlink.toString.contains(secret.toString))
+      }
+    })
+  }
+
+  test("diagnostics require initialization and operator permission, not clientName or a submitted file path") {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("diagnostics must not execute"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        connection <- rpc.openConnection(true)
+        uninitialized <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("read"),
+              DiagnosticsRequest.method,
+              DiagnosticsRequest.Params(SessionId.unsafe("missing"))
+            )
+            .toJson,
+          connection
+        )
+        replies <- ZIO.foreach(List((true, None), (false, Some(human)))) { case (trusted, author) =>
+          for {
+            viewer <- rpc.openConnection(trusted)
+            initialized <- rpc.handle(
+              JsonRpc
+                .Request(
+                  Json.Str("init"),
+                  Initialize.method,
+                  Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "operator-debug", author)
+                )
+                .toJson,
+              viewer
+            )
+            result <- rpc.handle(
+              JsonRpc
+                .Request(
+                  Json.Str("read"),
+                  DiagnosticsRequest.method,
+                  DiagnosticsRequest.Params(SessionId.unsafe("missing"))
+                )
+                .toJson,
+              viewer
+            )
+            _ <- rpc.disconnect(viewer)
+          } yield (
+            decode[JsonRpc.Success[Initialize.Result]](initialized.get).result,
+            decode[JsonRpc.Failure](result.get).error.code
+          )
+        }
+        _ <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("init"),
+              Initialize.method,
+              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "operator", Some(human))
+            )
+            .toJson,
+          connection
+        )
+        invalid <- rpc.handle(
+          JsonRpc
+            .Request(Json.Str("bad"), DiagnosticsRequest.method, Json.Obj("sessionId" -> Json.Str("../private")))
+            .toJson,
+          connection
+        )
+        _ <- rpc.disconnect(connection)
+      } yield {
+        assertEquals(decode[JsonRpc.Failure](uninitialized.get).error.code, ErrorCode.Unauthorized)
+        replies.foreach { case (info, code) =>
+          assert(!info.methods.contains(DiagnosticsRequest.method)); assertEquals(code, ErrorCode.Forbidden)
+        }
+        assertEquals(decode[JsonRpc.Failure](invalid.get).error, JsonRpc.Error.InvalidParams)
       }
     })
   }

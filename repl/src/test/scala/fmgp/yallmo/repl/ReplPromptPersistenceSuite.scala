@@ -144,7 +144,7 @@ final class ReplPromptPersistenceSuite extends FunSuite {
     }
   }
 
-  private val humanId = AgentId("operator")
+  private val userId = AgentId("operator")
   private val assistantId = AgentId("assistant")
 
   private def answer(text: String): AgentTurn =
@@ -160,7 +160,7 @@ final class ReplPromptPersistenceSuite extends FunSuite {
       override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
         ZIO.dieMessage("Only the runner program should be invoked")
     }
-    val human = participant(humanId)
+    val human = participant(userId)
     val assistant = participant(assistantId)
     val program = new AgentInstance[Any] {
       override val id: AgentId = assistantId

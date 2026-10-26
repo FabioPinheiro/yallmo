@@ -348,7 +348,7 @@ object TerminalRepl {
         .attemptBlocking(
           new TerminalRepl(
             application,
-            buildReader(terminal, application.remoteConnection, application.canSubmit),
+            buildReader(terminal, application.remoteConnection, application.canSubmit, application.canReadRequests),
             recorder,
             BrowserAudioBridge.make(browserAudioPort)
           )
@@ -366,13 +366,24 @@ object TerminalRepl {
       ZIO.fail(IllegalStateException("The REPL requires an interactive terminal with line-editing support."))
     else
       ZIO
-        .attemptBlocking(new TerminalRepl(application, buildReader(terminal, true, application.canSubmit), None))
+        .attemptBlocking(
+          new TerminalRepl(
+            application,
+            buildReader(terminal, true, application.canSubmit, application.canReadRequests),
+            None
+          )
+        )
         .flatMap(_.run)
 
   private def closeTerminal(terminal: Terminal): UIO[Unit] =
     ZIO.attemptBlocking(terminal.close()).ignore
 
-  private def buildReader(terminal: Terminal, remoteConnection: Boolean, canSubmit: Boolean): StatusLineReader = {
+  private def buildReader(
+      terminal: Terminal,
+      remoteConnection: Boolean,
+      canSubmit: Boolean,
+      canReadRequests: Boolean
+  ): StatusLineReader = {
     Option(historyPath.getParent).foreach(parent => Files.createDirectories(parent))
     // Equivalent to LineReaderBuilder's defaults, with a bounded status resize hook.
     val variables = new java.util.HashMap[String, Object]()
@@ -381,21 +392,28 @@ object TerminalRepl {
     variables.put(LineReader.HISTORY_FILE, historyPath)
     val reader = new StatusLineReader(terminal, variables)
     reader.setHistory(new org.jline.reader.impl.history.DefaultHistory())
-    reader.setCompleter(new ReplCompleter(remoteConnection, canSubmit))
+    reader.setCompleter(new ReplCompleter(remoteConnection, canSubmit, canReadRequests))
 
     // Default subsequent prompts to INSERT; installStartupMode selects NORMAL for the first prompt only.
     reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
     reader
   }
 
-  private[terminal] final class ReplCompleter(remoteConnection: Boolean, canSubmit: Boolean = false) extends Completer {
+  private[terminal] final class ReplCompleter(
+      remoteConnection: Boolean,
+      canSubmit: Boolean = false,
+      canReadRequests: Boolean = false
+  ) extends Completer {
     override def complete(reader: LineReader, line: ParsedLine, candidates: List[Candidate]): Unit = {
       val result = ReplGrammar.complete(CompletionRequest(line.line(), line.cursor()))
       result.candidates
         .filter(candidate =>
           !remoteConnection ||
-            (!candidate.value.startsWith("/") && !line.line().trim.startsWith("/debug")) ||
-            ConnectedReplApplication.commands(canSubmit).contains(candidate.value)
+            (if line.line().trim.startsWith("/debug") && !candidate.value.startsWith("/") then
+               canReadRequests && candidate.value == "request"
+             else
+               !candidate.value.startsWith("/") ||
+               ConnectedReplApplication.commands(canSubmit, canReadRequests).contains(candidate.value))
         )
         .foreach { candidate =>
           candidates.add(

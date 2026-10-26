@@ -20,7 +20,7 @@ import zio.{Config as _, *}
 
 final class ConnectedReplIntegrationSuite extends FunSuite {
   private val agentId = AgentId("server-agent")
-  private val human = AgentId("claimed-human")
+  private val human = AgentId("user-claimed-human")
   private val id = SessionId.unsafe("server-session")
   private val agent = new Agent[Any] {
     val id = agentId
@@ -28,8 +28,6 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
       ZIO.dieMessage("read-only REPL executed an agent")
   }
   private def master = RuntimeInstances.fromAgents(Chunk(agent)).flatMap(OrchestratorLive.inMemory(_))
-  private def localTrap: Task[Unit] =
-    ZIO.dieMessage("connected mode entered local config/storage/runtime/tools/audio bootstrap")
 
   test("actual launch reads a separate WS master freshly, publishes human metadata and cleans presence on scope exit") {
     run(ZIO.scoped {
@@ -54,7 +52,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             ReplLaunchOptions.parse(
               Chunk(
                 "--user-name",
-                AgentId.value(human),
+                "claimed-human",
                 "--server",
                 s"ws://127.0.0.1:$port/rpc",
                 "--log-level",
@@ -66,11 +64,10 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         _ <- ZIO.scoped {
           ReplMain.launch(
             options,
-            localTrap,
             app =>
               for {
                 _ <- ZIO.succeed {
-                  assert(app.connectedReadOnly)
+                  assert(!app.canSubmit)
                   assert(app.agentChoices.exists(_.id == human))
                   assertEquals(app.userId, human)
                   assertEquals(app.initialState.logLevel, LogLevel.Debug)
@@ -82,7 +79,6 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
                 _ <- ZIO.succeed {
                   val snapshot = refreshed.events.head.asInstanceOf[ReplEvent.SnapshotTranscript]
                   assertEquals(snapshot.messages.map(_.content), Chunk("before", "after"))
-                  assertEquals(refreshed.state.runContext.messages, Chunk.empty)
                   assertEquals(selected.initialState.logLevel, LogLevel.Debug)
                   assertEquals(refreshed.state.logLevel, LogLevel.Debug)
                 }
@@ -98,15 +94,14 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     })
   }
 
-  test("unavailable server exits with a fixed error and never falls back to the injected local bootstrap") {
+  test("unavailable server exits with a fixed error without starting the terminal") {
     val socket = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress)
     val port = socket.getLocalPort
     socket.close()
     run(ZIO.scoped {
       ReplMain
         .launch(
-          ReplLaunchOptions("human", server = Some(s"ws://127.0.0.1:$port/rpc")),
-          localTrap,
+          ReplLaunchOptions("human", server = s"ws://127.0.0.1:$port/rpc"),
           _ => ZIO.dieMessage("terminal must not start")
         )
         .either
@@ -119,31 +114,72 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     })
   }
 
-  test("explicit transcriber incompatibility is checked before connection or local bootstrap") {
+  test("unavailable default server fails without retry or terminal startup") {
     run(ZIO.scoped {
-      ReplMain
-        .launch(
-          ReplLaunchOptions("human", transcriberAgentId = Some(agentId), server = Some("not-an-endpoint")),
-          localTrap,
-          _ => ZIO.dieMessage("terminal must not start")
-        )
-        .either
-        .map { result =>
-          assertEquals(
-            result.left.toOption.map(_.getMessage),
-            Some("--transcriber-agent is unavailable with --server.")
+      for {
+        calls <- Ref.make(0)
+        result <- ReplMain
+          .launch(
+            ReplLaunchOptions("human"),
+            _ => ZIO.dieMessage("terminal must not start"),
+            connect = (endpoint, user) => {
+              assertEquals(endpoint, "ws://127.0.0.1:8080/rpc")
+              assertEquals(user, AgentId("user-human"))
+              calls.update(_ + 1) *> ZIO.fail(fmgp.yallmo.server.OrchestratorClient.Error.Disconnected)
+            }
           )
-        }
+          .either
+        attempts <- calls.get
+      } yield {
+        assertEquals(attempts, 1)
+        assertEquals(
+          result.left.toOption.map(_.getMessage),
+          Some("Connected REPL connection failed; no local fallback.")
+        )
+      }
     })
   }
 
-  test("absent --server retains the lazy local entry") {
-    run(ZIO.scoped {
-      Ref.make(false).flatMap { entered =>
+  test("invalid direct username is rejected before connecting") {
+    for name <- List("", " ", "\t\n") do
+      run(ZIO.scoped {
         ReplMain
-          .launch(ReplLaunchOptions("human"), entered.set(true), _ => ZIO.dieMessage("connected terminal entered")) *>
-          entered.get.map(value => assert(value))
-      }
+          .launch(
+            ReplLaunchOptions(name, server = "not-an-endpoint"),
+            _ => ZIO.dieMessage("terminal must not start")
+          )
+          .either
+          .map(result => assertEquals(result.left.toOption.map(_.getMessage), Some("Invalid --user-name.")))
+      })
+  }
+
+  test("absent --server connects to the default server rather than bootstrapping locally") {
+    run(ZIO.scoped {
+      for {
+        service <- master
+        port <- new OrchestratorWSServer(service).start(0)
+        options <- ZIO
+          .fromEither(ReplLaunchOptions.parse(Chunk("--user-name=claimed-human")))
+          .mapError(new IllegalArgumentException(_))
+        entered <- Ref.make(false)
+        _ <- ReplMain.launch(
+          options,
+          app =>
+            ZIO.succeed {
+              assert(!app.canSubmit)
+              assertEquals(app.userId, human)
+            } *> entered.set(true),
+          connect = (endpoint, user) => {
+            assertEquals(endpoint, "ws://127.0.0.1:8080/rpc")
+            OrchestratorWSClient.connect(
+              s"ws://127.0.0.1:$port/rpc",
+              userId = Some(user),
+              clientName = "yallmo-repl"
+            )
+          }
+        )
+        connected <- entered.get
+      } yield assert(connected)
     })
   }
 
@@ -165,8 +201,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           terminal
         })(terminal => ZIO.attempt(terminal.close()).ignore)
         _ <- ReplMain.launch(
-          ReplLaunchOptions("human", server = Some(s"ws://127.0.0.1:$port/rpc")),
-          localTrap,
+          ReplLaunchOptions("human", server = s"ws://127.0.0.1:$port/rpc"),
           app => TerminalRepl.runConnectedWithTerminal(app, terminal)
         )
       } yield {
@@ -188,7 +223,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           val terminal = new DumbTerminal(
             "operator-test",
             "xterm",
-            new ByteArrayInputStream("ihello\n/history\n/exit\n".getBytes(UTF_8)),
+            new ByteArrayInputStream("ihello\n/debug request\n/history\n/exit\n".getBytes(UTF_8)),
             output,
             UTF_8
           )
@@ -199,15 +234,14 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           ReplLaunchOptions(
             "claimed-human",
             agentId = Some(AgentId("bob")),
-            server = Some(s"ws://127.0.0.1:$port/rpc"),
+            server = s"ws://127.0.0.1:$port/rpc",
             logLevel = LogLevel.Debug
           ),
-          localTrap,
           connected => {
-            assert(connected.canSubmit); assert(connected.remoteConnection); assert(!connected.connectedReadOnly)
-            assertEquals(connected.agentChoices.map(_.id), Vector(AgentId("bob")))
-            assertEquals(connected.activeAgent, None); assertEquals(connected.providerLogin, None)
-            assertEquals(connected.transcriber, None); assertEquals(connected.initialState.logLevel, LogLevel.Debug)
+            assert(connected.canSubmit)
+            assert(connected.canReadRequests)
+            assertEquals(connected.agentChoices.map(_.id), Vector(AgentId("bob")));
+            assertEquals(connected.initialState.logLevel, LogLevel.Debug)
             TerminalRepl.runConnectedWithTerminal(connected, terminal)
           }
         )
@@ -235,7 +269,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         app <- configured(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(providerAnswer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         client <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(human))
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
           .mapError(error => new Exception(error.toString))
         connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
         created <- connected.submit(connected.initialState, "/new detached")
@@ -248,7 +282,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         lost <- wait.join
         _ <- release.succeed(())
         observer <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", humanId = Some(human))
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
           .mapError(error => new Exception(error.toString))
         reconnected <- ConnectedReplApplication.make(observer, human, Some(AgentId("bob")))
         resumed <- reconnected.submit(reconnected.initialState, "/session resume detached")
@@ -270,8 +304,8 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         assertEquals(
           complete.events.head.asInstanceOf[ReplEvent.SnapshotTranscript].messages.map(_.content),
           Chunk("keep running", "server answer")
-        )
-        assertEquals(complete.state.runContext, RunContext()); assert(complete.state.remoteResetContinuation)
+        );
+        assert(complete.state.remoteResetContinuation)
         assert(complete.state.remoteHeadMessageId.nonEmpty)
         assert(forbidden.forall(_.state == complete.state))
         assert(

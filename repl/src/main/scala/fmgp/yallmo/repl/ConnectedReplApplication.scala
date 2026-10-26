@@ -14,6 +14,7 @@ final class ConnectedReplApplication private (
     override val selectedAgentId: Option[AgentId],
     val agentChoices: Vector[ReplAgentChoice],
     override val canSubmit: Boolean,
+    override val canReadRequests: Boolean,
     logLevel: LogLevel
 ) extends ReplApplicationApi[Any] {
   val initialState = ReplState(logLevel = logLevel)
@@ -139,6 +140,25 @@ final class ConnectedReplApplication private (
     def emit(event: ReplEvent) = ZIO.succeed(ReplTransition(state, Chunk(event)))
     def unsupported = emit(ReplEvent.Unavailable(if canSubmit then ConnectedReplApplication.OperatorUnsupported
     else ConnectedReplApplication.Unsupported))
+    def requestCapture: UIO[ReplTransition] =
+      state.sessionId match {
+        case None     => emit(ReplEvent.ProviderRequestDocument(None))
+        case Some(id) =>
+          ZIO
+            .fromEither(SessionId.from(id))
+            .mapError(_ => "Invalid session ID.")
+            .flatMap(sessionId =>
+              client.providerRequest(sessionId).mapError {
+                case OrchestratorClient.Error.Remote(error) if error.code == ErrorCode.Rejected =>
+                  "Provider request capture is unavailable or exceeds the server diagnostic limit."
+                case _ => "Could not read provider request from server. Check the connection and diagnostic permission."
+              }
+            )
+            .fold(
+              message => ReplTransition(state, Chunk(ReplEvent.Unavailable(message))),
+              result => ReplTransition(state, Chunk(ReplEvent.ProviderRequestDocument(result.providerRequest)))
+            )
+      }
     def snapshot(id: String, resume: Boolean): UIO[ReplTransition] =
       ZIO
         .fromEither(SessionId.from(id))
@@ -158,9 +178,10 @@ final class ConnectedReplApplication private (
         case Right(ReplInput.Empty)            => ZIO.succeed(ReplTransition(state, Chunk.empty))
         case Right(ReplInput.Command(command)) =>
           command match {
-            case ReplCommand.Help       => emit(ReplEvent.Help(ConnectedReplApplication.help(canSubmit)))
-            case ReplCommand.Exit       => emit(ReplEvent.ExitRequested)
-            case ReplCommand.Log(level) =>
+            case ReplCommand.Help => emit(ReplEvent.Help(ConnectedReplApplication.help(canSubmit, canReadRequests)))
+            case ReplCommand.Exit => emit(ReplEvent.ExitRequested)
+            case ReplCommand.Debug(DebugTarget.ProviderRequest) if canReadRequests => requestCapture
+            case ReplCommand.Log(level)                                            =>
               ZIO.succeed(ReplTransition(state.copy(logLevel = level), Chunk(ReplEvent.LogLevelChanged(level))))
             case ReplCommand.Session(SessionCommand.List) =>
               client.listSessions.fold(
@@ -188,13 +209,22 @@ object ConnectedReplApplication {
     "Connected trusted local, unauthenticated: prompts and /new execute on the configured server. Claimed user names are impersonable; never expose publicly. No local providers, login or voice."
   val Unsupported =
     "Unavailable in connected read-only mode: prompts, /new, /tools, /debug, providers/login and voice/TTS."
-  val OperatorUnsupported = "Unavailable remotely: /tools, /debug, providers/login and voice/TTS."
+  val OperatorUnsupported =
+    "Unavailable remotely: /tools, /debug print|export, providers/login and voice/TTS. /debug request requires server diagnostic permission."
   val Uncertain =
     "Remote outcome is unknown; work may still complete. Refresh /history (or reconnect and resume the known session) before any manual resend. No automatic retry or cancellation."
   private[repl] val Commands = Set("/help", "/history", "/session", "/log", "/exit")
-  private[repl] def commands(canSubmit: Boolean): Set[String] = if canSubmit then Commands + "/new" else Commands
-  def help(canSubmit: Boolean = false): Chunk[CommandHelp] =
-    ReplGrammar.help().filter(entry => commands(canSubmit).contains(entry.usage.takeWhile(!_.isWhitespace)))
+  private[repl] def commands(canSubmit: Boolean, canReadRequests: Boolean = false): Set[String] =
+    Commands ++ Option.when(canSubmit)("/new") ++ Option.when(canReadRequests)("/debug")
+  def help(canSubmit: Boolean = false, canReadRequests: Boolean = false): Chunk[CommandHelp] =
+    ReplGrammar
+      .help()
+      .filter(entry => commands(canSubmit, canReadRequests).contains(entry.usage.takeWhile(!_.isWhitespace)))
+      .map(entry =>
+        if entry.usage.startsWith("/debug") then
+          CommandHelp("/debug request", "Show the server's latest captured provider request (sensitive data).")
+        else entry
+      )
 
   def make(
       client: OrchestratorClient,
@@ -211,6 +241,9 @@ object ConnectedReplApplication {
       _ <- ZIO
         .fail(YallmoError.InvalidConfig("Selected agent ID is not in the server configured agent list."))
         .when(selected.exists(id => !ids.contains(id)))
+      diagnostic = capabilities.exists(info =>
+        info.identity.role == Role.Operator && info.methods.contains(DiagnosticsRequest.method)
+      )
       executable = capabilities.exists(info =>
         info.identity.role == Role.Operator &&
           info.methods.contains(SessionsCreate.method) && info.methods.contains(TurnSubmit.method)
@@ -221,6 +254,7 @@ object ConnectedReplApplication {
       selected,
       ids.map(id => ReplAgentChoice(id, "remote ID (model/provider unknown)", Vector.empty, "unknown")).toVector,
       executable,
+      diagnostic,
       logLevel
     )
 }

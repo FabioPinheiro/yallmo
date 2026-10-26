@@ -91,7 +91,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assertEquals(app.selectedAgentId, Some(agent))
       assertEquals(next.selectedAgentId, Some(user))
       assertEquals(next.activeAgent, None)
-      assertEquals(next.agentChoices.map(_.model), Vector("unknown"))
+      assertEquals(next.agentChoices.map(_.model), Vector(None))
       assertEquals(client.calls, Vector.fill(4)("agents.list"))
     })
   }

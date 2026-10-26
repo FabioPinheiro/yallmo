@@ -14,32 +14,46 @@ final case class ConfiguredAgentSettings(
 
 object ConfiguredAgentSettings {
   private final case class Fields(
-      model: String,
+      model: Option[String] = None,
       systemPrompt: Option[String] = None,
       thinkingLevel: Option[String] = None,
       parallelToolCalls: Boolean = false
   ) derives JsonCodec
 
-  /** Uses the configured prompt, or a caller-supplied fallback when absent. Without a fallback, the prompt is required.
-    * An explicitly blank prompt is always invalid. Errors never contain setting values.
+  /** Uses explicit settings first, with caller-supplied prompt/model fallbacks only when absent. Without a fallback,
+    * the corresponding setting is required. Explicit blank or malformed models never silently select a default. Errors
+    * never contain setting values.
     */
   def decode(
       definition: AgentConfig,
-      defaultSystemPrompt: Option[String] = None
+      defaultSystemPrompt: Option[String] = None,
+      defaultModel: Option[String] = None
   ): Either[YallmoError, ConfiguredAgentSettings] =
     for {
+      _ <- Either.cond(
+        definition.config.fields
+          .collectFirst { case ("model", value) => value }
+          .forall(_.isInstanceOf[zio.json.ast.Json.Str]),
+        (),
+        YallmoError.InvalidConfig("Agent config.model must be a string when supplied")
+      )
       fields <- definition.config.toJson
         .fromJson[Fields]
         .left
         .map(_ =>
           YallmoError.InvalidConfig(
-            "Agent settings require an explicit model and valid systemPrompt/thinkingLevel/parallelToolCalls fields"
+            "Agent settings require valid model/systemPrompt/thinkingLevel/parallelToolCalls fields"
           )
         )
+      model <- fields.model
+        .orElse(defaultModel)
+        .toRight(
+          YallmoError.InvalidConfig("Agent config.model is required when the provider has no default model")
+        )
       _ <- Either.cond(
-        fields.model.trim.nonEmpty,
+        model.trim.nonEmpty,
         (),
-        YallmoError.InvalidConfig("Agent config.model must not be blank")
+        YallmoError.InvalidConfig("Agent config.model or provider default model must not be blank")
       )
       prompt <- fields.systemPrompt
         .orElse(defaultSystemPrompt)
@@ -60,5 +74,5 @@ object ConfiguredAgentSettings {
             .left
             .map(_ => YallmoError.InvalidConfig("Agent thinkingLevel must be minimal, low, medium or high"))
       }
-    } yield ConfiguredAgentSettings(fields.model.trim, prompt, thinking, fields.parallelToolCalls)
+    } yield ConfiguredAgentSettings(model.trim, prompt, thinking, fields.parallelToolCalls)
 }

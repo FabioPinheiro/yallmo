@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
-import fmgp.yallmo.model.llm.ProviderGenerateOptions
+import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
 import java.nio.file.Path
@@ -29,11 +29,9 @@ final class ApplicationRuntime private (
         id,
         displayText(definition.agentType),
         definition.providerIds.map(value => displayText(ProviderId.value(value))).toVector,
-        displayText(
-          definition.config.fields
-            .collectFirst { case ("model", Json.Str(value)) => value }
-            .getOrElse(if definition.agentType == "FolderStructureAgent" then "n/a" else "<invalid model>")
-        )
+        definition.config.fields.collectFirst {
+          case ("model", Json.Str(value)) if value.trim.nonEmpty => displayText(value.trim)
+        }
       )
     }
 
@@ -70,13 +68,13 @@ final class ApplicationRuntime private (
   def resolve(id: AgentId): IO[YallmoError, ConfiguredAgentBinding] =
     ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id)).flatMap { definition =>
       definition.agentType match {
-        case "OAIAgent" | "ChatGPTAgent" => resolveNative(definition, id)
-        case "FolderStructureAgent"      =>
+        case "OAIAgent" | "ChatGPTAgent" | "CoachAgent" => resolveNative(definition, id)
+        case "FolderStructureAgent"                     =>
           instances.getAgent(id).map(adapter => ConfiguredAgentBinding.Folder(adapter, definition.capabilities))
         case name =>
           ZIO.fail(
             YallmoError.InvalidConfig(
-              s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent or FolderStructureAgent"
+              s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent, CoachAgent or FolderStructureAgent"
             )
           )
       }
@@ -120,22 +118,43 @@ final class ApplicationRuntime private (
   ): IO[YallmoError, ApplicationRuntime.Assembly[R]] =
     for {
       context = StaticContext[R](ApplicationRuntime.DefaultSystemPrompt, tools = availableTools.map(_.definition))
-      _ <- ZIO.fromEither(ConfigFile.validateCapabilities(config, context))
+      _ <- ZIO.foreachDiscard(config.agents.toList) { case (id, definition) =>
+        val catalog =
+          if definition.agentType == "CoachAgent" then
+            context.copy(tools = context.tools ++ fmgp.yallmo.agents.CoachApplicationTools.Definitions)
+          else context
+        ZIO.fromEither(definition.capabilities.resolve(id, catalog))
+      }
       orchestrator <- storageRoot match {
         case None       => OrchestratorLive.inMemory(instances)
         case Some(root) => OrchestratorLive.filesystem(root, instances)
       }
     } yield new ApplicationRuntime.Assembly(
       orchestrator,
-      new AgentRunner[R](availableTools.map(tool => tool.definition.key -> tool).toMap, Map.empty),
+      availableTools,
       context
     )
 
   private def resolveNative(definition: AgentConfig, id: AgentId): IO[YallmoError, ConfiguredAgentBinding] =
     for {
+      defaultModel <-
+        if definition.agentType == "CoachAgent" && !definition.config.fields.exists(_._1 == "model") then
+          definition.providerIds.toList match {
+            case providerId :: Nil =>
+              instances.getProvider(providerId).flatMap {
+                case provider: LlmProvider => ZIO.succeed(Option(provider.defaultModel).filter(_.trim.nonEmpty))
+                case _                     => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires an LLM provider"))
+              }
+            case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires exactly one provider id"))
+          }
+        else ZIO.succeed(None)
       settings <- ZIO
         .fromEither(
-          ConfiguredAgentSettings.decode(definition, defaultSystemPrompt = Some(ApplicationRuntime.DefaultSystemPrompt))
+          ConfiguredAgentSettings.decode(
+            definition,
+            defaultSystemPrompt = Some(ApplicationRuntime.DefaultSystemPrompt),
+            defaultModel = defaultModel
+          )
         )
         .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}"))
       adapter <- instances.getAgent(id)
@@ -158,8 +177,10 @@ final class ApplicationRuntime private (
 object ApplicationRuntime {
   val DefaultConfigPath: Path = Path.of("yallmo.json")
 
-  /** IDs retain lookup identity; callers must sanitize IDs when rendering, as with catalog entries. */
-  final case class AgentSummary(id: AgentId, agentType: String, providerIds: Vector[String], model: String)
+  /** IDs retain lookup identity; callers must sanitize IDs when rendering, as with catalog entries. Model reports only
+    * a non-blank explicit setting; None does not imply a default, validation result or applicability.
+    */
+  final case class AgentSummary(id: AgentId, agentType: String, providerIds: Vector[String], model: Option[String])
 
   /** Server-owned file boundary. The captured HTTP client must outlive the returned runtime. */
   def load(
@@ -199,18 +220,32 @@ object ApplicationRuntime {
   /** One opened runtime, reused across agent selections. Neither selecting nor deriving context opens storage again. */
   final class Assembly[R] private[application] (
       val orchestrator: OrchestratorLive[Any],
-      runner: AgentRunner[R],
+      availableTools: Chunk[AgentTool[R]],
       availableContext: StaticContext[R]
   ) {
     def context(selection: Option[ConfiguredAgentBinding]): StaticContext[R] =
-      availableContext.copy(systemPrompt = selection.fold(DefaultSystemPrompt)(_.systemPrompt))
+      availableContext.copy(
+        systemPrompt = selection.fold(DefaultSystemPrompt)(_.systemPrompt),
+        tools = availableContext.tools ++ localTools(selection).map(_.definition)
+      )
+
+    private def localTools(selection: Option[ConfiguredAgentBinding]): Chunk[AgentTool[Any]] =
+      selection.fold(Chunk.empty[AgentTool[Any]]) { binding =>
+        binding.adapter match {
+          case scoped: HasLocalAgentTools => scoped.localTools
+          case _                          => Chunk.empty
+        }
+      }
 
     /** Builds an immutable selection over this same registry, storage and tool runner. */
     def submission(authorId: AgentId, selection: Option[ConfiguredAgentBinding]): SessionSubmission[R] =
       SessionSubmission.configured(
         orchestrator,
         authorId,
-        runner,
+        new AgentRunner[R](
+          (availableTools ++ localTools(selection)).map(tool => tool.definition.key -> tool).toMap,
+          Map.empty
+        ),
         selection.map(_.bind[R](orchestrator.readBlob)),
         context(selection)
       )

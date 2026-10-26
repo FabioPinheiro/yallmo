@@ -258,8 +258,8 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
         val prompts = scala.collection.mutable.ListBuffer.empty[String]
         var attempts = 0
         val choices = Vector(
-          ReplAgentChoice(AgentId("fixed-agent"), "OAIAgent", Vector("fixed-provider"), "fixed-model"),
-          ReplAgentChoice(AgentId("broken"), "OAIAgent", Vector("missing"), "invalid")
+          ReplAgentChoice(AgentId("fixed-agent"), "OAIAgent", Vector("fixed-provider"), Some("fixed-model")),
+          ReplAgentChoice(AgentId("broken"), "OAIAgent", Vector("missing"), Some("invalid"))
         )
         val initial = application(
           catalog,

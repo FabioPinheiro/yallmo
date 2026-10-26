@@ -57,5 +57,33 @@ final class LlmProviderPayloadDebugSuite extends FunSuite:
     } finally Files.deleteIfExists(path)
   }
 
+  test("sensitive workflow suppresses request and response capture and restores capture afterwards") {
+    val privateId = LlmProviderPayloadDebug.newTurnId()
+    val publicId = LlmProviderPayloadDebug.newTurnId()
+    val publicPath = Path.of("debug", s"$publicId-request.json")
+    val response = fmgp.yallmo.model.llm.AgentTurnResponse(
+      Chunk(fmgp.yallmo.model.MessagePayload.Assistant("private")),
+      fmgp.yallmo.model.llm.LlmStopReason.Stop
+    )
+    try {
+      val (_, captured) = runZIO(
+        LlmProviderPayloadDebug.withRequestCapture(
+          LlmProviderPayloadDebug
+            .withoutCapture(
+              LlmProviderPayloadDebug.captureRequest(privateId, "test", "model", ujson.Obj("private" -> "evidence")) *>
+                LlmProviderPayloadDebug.captureResponse(privateId, "test", "model", response)
+            )
+            .fork
+            .flatMap(_.join)
+        )
+      )
+      assertEquals(captured, None)
+      assert(!Files.exists(Path.of("debug", s"$privateId-request.json")))
+      assert(!Files.exists(Path.of("debug", s"$privateId-response.json")))
+      runZIO(LlmProviderPayloadDebug.captureRequest(publicId, "test", "model", ujson.Obj()))
+      assert(Files.exists(publicPath))
+    } finally Files.deleteIfExists(publicPath)
+  }
+
   private def runZIO[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }

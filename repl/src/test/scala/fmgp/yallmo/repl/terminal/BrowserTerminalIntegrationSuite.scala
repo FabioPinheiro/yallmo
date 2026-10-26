@@ -82,7 +82,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
     )
 
     val choices =
-      Vector("alpha", "beta", "unavailable").map(id => ReplAgentChoice(AgentId(id), "synthetic", Vector(id), id))
+      Vector("alpha", "beta", "unavailable").map(id => ReplAgentChoice(AgentId(id), "synthetic", Vector(id), Some(id)))
     def application(name: String = "alpha"): ReplApplication[Any] = new ReplApplication[Any](
       new ReplSession[Any](
         new AgentRunner[Any](Map.empty, Map.empty),

@@ -22,8 +22,15 @@ trait AgentTool[-R] {
   def execute(call: ExternalToolCall): ZIO[R, YallmoError, ExternalToolResult]
 }
 
+/** Agent-owned, environment-bound tools. Applications must bind these only to the selected agent's runner/context,
+  * never publish them in the shared catalog: two instances may use identical tool names for different private roots.
+  */
+trait HasLocalAgentTools {
+  def localTools: Chunk[AgentTool[Any]]
+}
+
 /** Validates untrusted provider JSON arguments against the schema advertised to that provider. */
-private[orchestration] object ToolArgumentsValidator {
+private[yallmo] object ToolArgumentsValidator {
   def validate(argumentsJson: String, schema: fmgp.yallmo.model.llm.JsonSchema.ObjectSchema): Either[String, Unit] =
     scala.util
       .Try(ujson.read(argumentsJson))

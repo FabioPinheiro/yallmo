@@ -13,9 +13,9 @@ final case class ReplTransition(state: ReplState, events: Chunk[ReplEvent]) {
   def exitsClient: Boolean = events.contains(ReplEvent.ExitRequested)
 }
 
-/** Display-only metadata from the startup configuration; selecting an entry validates and resolves its runtime lazily.
+/** Display-only metadata. Selection resolves the runtime lazily.
   */
-final case class ReplAgentChoice(id: AgentId, agentType: String, providers: Vector[String], model: String)
+final case class ReplAgentChoice(id: AgentId, agentType: String, providers: Vector[String], model: Option[String])
 
 /** Client-independent REPL application service.
   *

@@ -252,7 +252,7 @@ object ConnectedReplApplication {
       client,
       userId,
       selected,
-      ids.map(id => ReplAgentChoice(id, "remote ID (model/provider unknown)", Vector.empty, "unknown")).toVector,
+      ids.map(id => ReplAgentChoice(id, "remote ID (model/provider unknown)", Vector.empty, None)).toVector,
       executable,
       diagnostic,
       logLevel

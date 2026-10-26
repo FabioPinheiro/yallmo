@@ -1,4 +1,4 @@
-package fmgp.yallmo.orchestration
+package fmgp.yallmo.agents
 
 import fmgp.yallmo.fs.*
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}

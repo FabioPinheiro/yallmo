@@ -8,6 +8,7 @@ import fmgp.yallmo.orchestration.config.{
   AgentConfig,
   Config,
   FileSystemConfig,
+  HasAgentCapabilities,
   OAuthCredentialsConfig,
   ProviderConfig,
   ProviderId
@@ -43,6 +44,112 @@ final class ApplicationRuntimeSuite extends FunSuite {
     agents = Map(first -> definition(Some("First prompt")), second -> definition()),
     providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
   )
+
+  test("coach submits with scoped notebook tools and persists drafts without exposing other roots") {
+    run {
+      ZIO.scoped {
+        for {
+          root <- temporaryRoot
+          _ <- ZIO.attempt {
+            Files.createDirectories(root.resolve("experiences"))
+            Files.writeString(root.resolve("experiences/project.md"), "User-reported Scala experience")
+          }
+          requests <- Ref.make(0)
+          coach = definition().copy(agentType = "CoachAgent", filesystem = Some(FileSystemConfig(root.toString)))
+          otherRoot <- ZIO.attempt(Files.createDirectory(root.resolve("other-coach")))
+          runtime <- ApplicationRuntime
+            .make(
+              config.copy(agents =
+                Map(first -> coach, second -> coach.copy(filesystem = Some(FileSystemConfig(otherRoot.toString))))
+              ),
+              Chunk(human)
+            )
+            .provideEnvironment(
+              ZEnvironment(
+                responseClient(
+                  requests,
+                  Some(
+                    """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"save-call","type":"function","function":{"name":"coach_save_application","arguments":"{\"expectedRevision\":0,\"application\":{\"id\":\"acme-scala\",\"company\":\"Acme\",\"role\":\"Scala engineer\",\"stage\":\"interviewing\",\"replyDraft\":\"Tuesday works.\"}}"}}]},"finish_reason":"tool_calls"}]}"""
+                  )
+                )
+              )
+            )
+          binding <- runtime.resolve(first)
+          before <- requests.get
+          assembled <- runtime.open[Any](None, Chunk.empty)
+          submission = assembled.submission(human.id, Some(binding))
+          session <- submission.create(Some("coach-session"))
+          result <- submission.submit(Some(session.id.value), "Help me plan my next career move")
+          after <- requests.get
+          other <- runtime.resolve(second)
+          otherTools = other.adapter.asInstanceOf[HasLocalAgentTools].localTools
+          otherNotebook <- otherTools
+            .find(_.definition.key == fmgp.yallmo.agents.CoachApplicationTools.ListKey)
+            .get
+            .execute(ExternalToolCall(fmgp.yallmo.agents.CoachApplicationTools.ListKey, "{}"))
+        } yield {
+          assertEquals(otherNotebook.text, "[]")
+          assert(binding.isInstanceOf[ConfiguredAgentBinding.Native])
+          assertEquals(before, 0)
+          assertEquals(after, 2)
+          assertEquals(result.result.agentId, first)
+          assertEquals(
+            binding.adapter.asInstanceOf[HasAgentCapabilities].capabilities.tools,
+            Some(fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.key).toSet)
+          )
+          assert(Files.readString(root.resolve("applications.jsonl")).contains("Tuesday works."))
+          assert(assembled.context(None).tools.isEmpty)
+          assertEquals(
+            assembled.context(Some(binding)).tools.map(_.key).toSet,
+            fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.key).toSet
+          )
+          assert(!Files.exists(root.resolve("state.jsonl")))
+        }
+      }
+    }
+  }
+
+  test("coach can omit model and inherit the ChatGPT provider default without inference or authentication") {
+    run {
+      ZIO.scoped {
+        for {
+          root <- temporaryRoot
+          requests <- Ref.make(0)
+          coach = AgentConfig("CoachAgent", Seq(provider), filesystem = Some(FileSystemConfig(root.toString)))
+          runtime <- ApplicationRuntime
+            .make(
+              config.copy(agents = Map(first -> coach), providers = Map(provider -> ProviderConfig.ChatGPT())),
+              Chunk.empty
+            )
+            .provideEnvironment(ZEnvironment(responseClient(requests)))
+          selected <- runtime.resolve(first)
+          explicitRuntime <- ApplicationRuntime
+            .make(
+              config.copy(
+                agents = Map(first -> coach.copy(config = Json.Obj("model" -> Json.Str("explicit-model")))),
+                providers = Map(provider -> ProviderConfig.ChatGPT())
+              ),
+              Chunk.empty
+            )
+            .provideEnvironment(ZEnvironment(responseClient(requests)))
+          explicit <- explicitRuntime.resolve(first)
+          oaiRuntime <- ApplicationRuntime.make(config.copy(agents = Map(first -> coach)), Chunk.empty)
+          missing <- oaiRuntime.resolve(first).either
+          calls <- requests.get
+        } yield {
+          def model(binding: ConfiguredAgentBinding): String = binding match {
+            case ConfiguredAgentBinding.Native(_, _, program, _) => program.model
+            case _                                               => fail("Coach must use a native program")
+          }
+          assertEquals(model(selected), fmgp.yallmo.provider.openai.OpenAiCodexConfig.Model)
+          assertEquals(model(explicit), "explicit-model")
+          assertEquals(runtime.agentSummaries.head.model, None)
+          assert(missing.swap.toOption.get.getMessage.contains("provider has no default model"))
+          assertEquals(calls, 0)
+        }
+      }
+    }
+  }
 
   test("selection reuses one lazy registry and opened storage without changing existing bindings") {
     run {
@@ -245,9 +352,9 @@ final class ApplicationRuntimeSuite extends FunSuite {
           assertEquals(runtime.agentSummaries.map(_.id), Vector(AgentId("account-agent"), first, folder, second))
           assertEquals(
             runtime.agentSummaries.find(_.id == first).get,
-            ApplicationRuntime.AgentSummary(first, "OAIAgent", Vector("local"), "test-model")
+            ApplicationRuntime.AgentSummary(first, "OAIAgent", Vector("local"), Some("test-model"))
           )
-          assertEquals(runtime.agentSummaries.find(_.id == folder).get.model, "n/a")
+          assertEquals(runtime.agentSummaries.find(_.id == folder).get.model, None)
           val display = runtime.agentSummaries.toString + entries.toString
           List("PRIVATE_ACCESS", "PRIVATE_REFRESH", "PRIVATE_ROOT", "First prompt").foreach(value =>
             assert(!display.contains(value))
@@ -306,9 +413,39 @@ final class ApplicationRuntimeSuite extends FunSuite {
       ApplicationRuntime.make(configured, Chunk.empty).map { runtime =>
         assertEquals(
           runtime.agentSummaries,
-          Vector(ApplicationRuntime.AgentSummary(first, "OAIAgent??", Vector("local"), "display?model"))
+          Vector(ApplicationRuntime.AgentSummary(first, "OAIAgent??", Vector("local"), Some("display?model")))
         )
         assert(!runtime.agentSummaries.toString.contains("PRIVATE_SETTING"))
+      }
+    }
+  }
+
+  test("summary models are optional configuration metadata independent of agent type and validity") {
+    run {
+      val cases = List(
+        ("missing", Json.Obj(), None),
+        ("blank", Json.Obj("model" -> Json.Str("  ")), None),
+        ("null", Json.Obj("model" -> Json.Null), None),
+        ("number", Json.Obj("model" -> Json.Num(42)), None),
+        ("explicit", Json.Obj("model" -> Json.Str(" configured-model ")), Some("configured-model"))
+      )
+      val definitions = for {
+        kind <- List("OAIAgent", "ChatGPTAgent", "CoachAgent", "FolderStructureAgent", "UnknownAgent")
+        (label, settings, expected) <- cases
+      } yield (AgentId(s"$kind-$label"), AgentConfig(kind, config = settings), expected)
+      for {
+        requests <- Ref.make(0)
+        runtime <- ApplicationRuntime
+          .make(
+            Config(agents = definitions.map { case (id, definition, _) => id -> definition }.toMap),
+            Chunk.empty
+          )
+          .provideEnvironment(ZEnvironment(responseClient(requests)))
+        summaries = runtime.agentSummaries.map(summary => summary.id -> summary.model).toMap
+        calls <- requests.get
+      } yield {
+        definitions.foreach { case (id, _, expected) => assertEquals(summaries(id), expected) }
+        assertEquals(calls, 0)
       }
     }
   }
@@ -414,7 +551,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
   }
 
-  private def responseClient(requests: Ref[Int]): Client =
+  private def responseClient(requests: Ref[Int], firstReply: Option[String] = None): Client =
     Client.fromDriver(new ZClient.Driver[Any, Scope, Throwable] {
       override def request(
           version: Version,
@@ -426,13 +563,12 @@ final class ApplicationRuntimeSuite extends FunSuite {
           proxy: Option[Proxy]
       )(using Trace): Task[Response] = {
         val _ = (version, method, url, headers, body, sslConfig, proxy)
-        requests
-          .update(_ + 1)
-          .as(
-            Response.text(
-              """{"choices":[{"message":{"role":"assistant","content":"local answer"},"finish_reason":"stop"}]}"""
-            )
+        requests.updateAndGet(_ + 1).map { count =>
+          Response.text(
+            if count == 1 && firstReply.nonEmpty then firstReply.get
+            else """{"choices":[{"message":{"role":"assistant","content":"local answer"},"finish_reason":"stop"}]}"""
           )
+        }
       }
       override def socket[Env1 <: Any](version: Version, url: URL, headers: Headers, app: WebSocketApp[Env1])(using
           Trace,

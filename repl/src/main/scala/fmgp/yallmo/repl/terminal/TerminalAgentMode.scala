@@ -138,7 +138,7 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
            val current =
              if active.contains(entry.id) then (if remoteConnection then " [preferred]" else " [active]") else ""
            Vector(
-             s"$marker ${clean(AgentId.value(entry.id))} [${clean(entry.agentType)}] ${clean(entry.providers.mkString(", "))} · ${clean(entry.model)}$current"
+             s"$marker ${clean(AgentId.value(entry.id))} [${clean(entry.agentType)}] ${clean(entry.providers.mkString(", "))} · ${entry.model.map(clean).getOrElse("—")}$current"
            ) ++
              (if row == index then error.map(value => s"Selection failed: ${clean(value)}") else None)
          })

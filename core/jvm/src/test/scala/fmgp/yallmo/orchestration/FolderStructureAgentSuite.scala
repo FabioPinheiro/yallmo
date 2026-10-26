@@ -5,7 +5,8 @@ import scala.jdk.CollectionConverters.*
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
-import fmgp.yallmo.orchestration.FolderStructureAgent.{File, Folder, State}
+import fmgp.yallmo.agents.FolderStructureAgent
+import fmgp.yallmo.agents.FolderStructureAgent.{File, Folder, State}
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, FileSystemConfig}
 import munit.FunSuite
 import zio.{Config as _, *}

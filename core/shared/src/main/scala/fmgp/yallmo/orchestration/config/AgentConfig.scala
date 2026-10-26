@@ -3,7 +3,7 @@ package fmgp.yallmo.orchestration.config
 import zio.json.JsonCodec
 import zio.json.ast.Json
 
-/** Definition of one agent: OAIAgent, ChatGPTAgent or FolderStructureAgent.
+/** Definition of one agent.
   *
   * Native adapters require exactly one matching provider; FolderStructureAgent requires filesystem.root and uses no
   * provider. Model, prompt and generation options remain part of the native caller's request; ConfiguredAgentSettings

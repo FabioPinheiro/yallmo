@@ -10,7 +10,12 @@ private[orchestration] class ConfiguredAgent(
     delegate: Agent[Any],
     val capabilities: AgentCapabilities
 ) extends Agent[Any]
-    with HasAgentCapabilities {
+    with HasAgentCapabilities
+    with HasLocalAgentTools {
+  override val localTools: Chunk[AgentTool[Any]] = delegate match {
+    case scoped: HasLocalAgentTools => scoped.localTools.filter(tool => capabilities.allowsTool(tool.definition.key))
+    case _                          => Chunk.empty
+  }
   override val id: AgentId = delegate.id
 
   override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {

@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.agents.{CoachAgent, FolderStructureAgent}
 import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
 import fmgp.yallmo.model.llm.LlmProvider
@@ -112,7 +113,10 @@ final class RuntimeInstances[-R] private (
             for {
               definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
               underlying <- initializeAgent(id, definition)
-              agent = ConfiguredAgent(underlying, definition.capabilities)
+              policy =
+                if definition.agentType == "CoachAgent" then CoachAgent.Capabilities.intersect(definition.capabilities)
+                else definition.capabilities
+              agent = ConfiguredAgent(underlying, policy)
               _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, agent) }
             } yield agent
         }
@@ -198,33 +202,50 @@ final class RuntimeInstances[-R] private (
             case _ => ZIO.fail(YallmoError.InvalidConfig("ChatGPTAgent requires a ChatGPT provider"))
           }
         } yield agent
-      case "FolderStructureAgent" =>
+      case "CoachAgent" =>
         for {
-          settings <- ZIO
-            .fromOption(definition.filesystem)
-            .orElseFail(YallmoError.InvalidConfig("FolderStructureAgent requires filesystem.root"))
-          _ <- ZIO
-            .fail(YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem.root must not be blank"))
-            .when(settings.root.trim.isEmpty)
-          // Resolve trusted configuration once; workspace operations still reject symbolic links.
-          root <- ZIO
-            .attemptBlocking(Path.of(settings.root).toRealPath())
-            .mapError(error =>
-              YallmoError.InvalidConfig(
-                s"Agent '${AgentId.value(id)}' filesystem: Cannot resolve filesystem.root: ${error.getMessage}"
-              )
-            )
-          fs <- FileSystem
-            .open(root.toString)
-            .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem: $error"))
-        } yield FolderStructureAgent.make(id, fs)
+          provider <- definition.providerIds.toList match {
+            case providerId :: Nil => getProviderNow(providerId)
+            case _                 => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires exactly one provider id"))
+          }
+          delegate <- provider match {
+            case connection: OAILlmProvider    => ZIO.succeed(OAIAgent.make(id, connection))
+            case connection: OpenAiCodexClient => ZIO.succeed(new ChatGPTAgent(id, connection))
+            case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires an OAI or ChatGPT provider"))
+          }
+          fs <- openAgentFileSystem(id, definition)
+          agent <- CoachAgent.make(delegate, fs)
+        } yield agent
+      case "FolderStructureAgent" =>
+        openAgentFileSystem(id, definition).map(fs => FolderStructureAgent.make(id, fs))
       case name =>
         ZIO.fail(
           YallmoError.InvalidConfig(
-            s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent or FolderStructureAgent"
+            s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent, CoachAgent or FolderStructureAgent"
           )
         )
     }
+
+  private def openAgentFileSystem(id: AgentId, definition: AgentConfig): IO[YallmoError, FileSystem] =
+    for {
+      settings <- ZIO
+        .fromOption(definition.filesystem)
+        .orElseFail(YallmoError.InvalidConfig(s"${definition.agentType} requires filesystem.root"))
+      _ <- ZIO
+        .fail(YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem.root must not be blank"))
+        .when(settings.root.trim.isEmpty)
+      // Resolve trusted configuration once; workspace operations still reject symbolic links.
+      root <- ZIO
+        .attemptBlocking(Path.of(settings.root).toRealPath())
+        .mapError(error =>
+          YallmoError.InvalidConfig(
+            s"Agent '${AgentId.value(id)}' filesystem: Cannot resolve filesystem.root: ${error.getMessage}"
+          )
+        )
+      fs <- FileSystem
+        .open(root.toString)
+        .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}' filesystem: $error"))
+    } yield fs
 
   private def singleProvider(
       definition: AgentConfig,

@@ -241,6 +241,24 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assert(!bad.getMessage.contains("SECRET_BAD_VALUE"))
   }
 
+  test("settings inherit a supplied provider model only when the agent model is absent") {
+    def definition(json: String) = AgentConfig("CoachAgent", config = json.fromJson[zio.json.ast.Json.Obj].toOption.get)
+    val inherited = ConfiguredAgentSettings
+      .decode(definition("{}"), Some("Coach prompt"), Some(" provider-model "))
+      .toOption
+      .get
+    assertEquals(inherited.model, "provider-model")
+    val explicit = ConfiguredAgentSettings
+      .decode(definition("""{"model":" agent-model "}"""), Some("Coach prompt"), Some("provider-model"))
+      .toOption
+      .get
+    assertEquals(explicit.model, "agent-model")
+    assert(ConfiguredAgentSettings.decode(definition("{}"), Some("Coach prompt")).isLeft)
+    assert(ConfiguredAgentSettings.decode(definition("{}"), Some("Coach prompt"), Some(" ")).isLeft)
+    for json <- List("""{"model":" "}""", """{"model":null}""", """{"model":42}""") do
+      assert(ConfiguredAgentSettings.decode(definition(json), Some("Coach prompt"), Some("provider-model")).isLeft)
+  }
+
   test("binding intersects policies without widening or hiding unknown configured IDs") {
     val delegate = new Agent[Any] {
       val id = AgentCapabilitiesSuite.this.id

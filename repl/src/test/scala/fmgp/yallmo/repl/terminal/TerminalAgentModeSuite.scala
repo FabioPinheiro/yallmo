@@ -11,7 +11,7 @@ import org.jline.terminal.impl.DumbTerminal
 
 final class TerminalAgentModeSuite extends FunSuite {
   private val choices = Vector("alpha", "beta", "gamma").map(id =>
-    ReplAgentChoice(AgentId(id), "OAIAgent", Vector(s"$id-provider"), s"$id-model")
+    ReplAgentChoice(AgentId(id), "OAIAgent", Vector(s"$id-provider"), Some(s"$id-model"))
   )
   private val active = ReplActiveAgent("alpha", "alpha-provider", "alpha-model", None)
 
@@ -54,6 +54,16 @@ final class TerminalAgentModeSuite extends FunSuite {
       }
   }
 
+  test("missing model metadata displays a neutral placeholder") {
+    withMenu("\u001biX\n", choices.map(_.copy(model = None))) { (reader, menu, output) =>
+      assertEquals(reader.readLine("test> "), "drafXt")
+      assertEquals(menu.takeSelection(), None)
+      val text = output.toString(UTF_8)
+      assert(text.contains("alpha [OAIAgent] alpha-provider · — [active]"))
+      assert(!text.contains(" · None"))
+    }
+  }
+
   test("Esc and i leave the picker without selecting or modifying the draft") {
     for leave <- List("\u001bi", "i") do
       withMenu("j" + leave + "X\n") { (reader, menu, _) =>
@@ -87,7 +97,7 @@ final class TerminalAgentModeSuite extends FunSuite {
 
   test("long agent lists keep the highlighted entry visible and reflow after resize") {
     val entries =
-      (0 until 30).map(i => ReplAgentChoice(AgentId(s"agent-$i"), "OAIAgent", Vector("local"), "界" * 30)).toVector
+      (0 until 30).map(i => ReplAgentChoice(AgentId(s"agent-$i"), "OAIAgent", Vector("local"), Some("界" * 30))).toVector
     withMenu(("\u001b[B" * 25) + "!\u001biX\n", entries, new Size(42, 10)) { (reader, menu, _) =>
       var resized = false
       reader.getWidgets.put(

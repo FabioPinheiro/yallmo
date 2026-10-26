@@ -19,6 +19,13 @@ object LlmProviderPayloadDebug {
   private val ScopedRequestCapture: FiberRef[Option[Path]] =
     Unsafe.unsafe { unsafe ?=> FiberRef.unsafe.make(None) }
 
+  private val CaptureEnabled: FiberRef[Boolean] =
+    Unsafe.unsafe { unsafe ?=> FiberRef.unsafe.make(true) }
+
+  /** Suppresses request/response payload files for sensitive workflows, including child fibers. */
+  def withoutCapture[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    CaptureEnabled.locally(false)(effect)
+
   def newTurnId(): String = UUID.randomUUID().toString
 
   /** Runs an operation while retaining its most recent successfully captured provider request. */
@@ -26,12 +33,15 @@ object LlmProviderPayloadDebug {
     ScopedRequestCapture.locally(None)(effect.zip(ScopedRequestCapture.get))
 
   def captureRequest(turnId: String, provider: String, model: String, payload: ujson.Value): UIO[Unit] =
-    if containsInlineAudio(payload) then
-      ZIO.logWarning("provider debug capture skipped: use blob references instead of inline audio")
-    else
-      write(turnId, "request", ujson.Obj("provider" -> provider, "model" -> model, "payload" -> redact(payload)))
-        .flatMap(path => ScopedRequestCapture.set(Some(path)))
-        .catchAll(logFailure)
+    CaptureEnabled.get.flatMap { enabled =>
+      if !enabled then ZIO.unit
+      else if containsInlineAudio(payload) then
+        ZIO.logWarning("provider debug capture skipped: use blob references instead of inline audio")
+      else
+        write(turnId, "request", ujson.Obj("provider" -> provider, "model" -> model, "payload" -> redact(payload)))
+          .flatMap(path => ScopedRequestCapture.set(Some(path)))
+          .catchAll(logFailure)
+    }
 
   def captureResponse(turnId: String, provider: String, model: String, response: AgentTurnResponse): UIO[Unit] =
     write(
@@ -56,7 +66,7 @@ object LlmProviderPayloadDebug {
             )
         )
       )
-    ).unit.catchAll(logFailure)
+    ).unit.catchAll(logFailure).whenZIO(CaptureEnabled.get).unit
 
   private def write(turnId: String, kind: String, document: ujson.Obj): Task[Path] =
     ZIO

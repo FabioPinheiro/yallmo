@@ -234,7 +234,7 @@ final class ReplStartupSuite extends FunSuite {
       val application = run(current.application)
       assertEquals(application.activeAgent.map(_.provider), Some("none"))
       assertEquals(application.activeAgent.map(_.model), Some("n/a"))
-      assertEquals(application.agentChoices.find(_.id == folderId).map(_.model), Some("n/a"))
+      assertEquals(application.agentChoices.find(_.id == folderId).map(_.model), Some(None))
       assert(!Files.exists(root.resolve("state.jsonl")))
       assert(!Files.exists(root.resolve("fs-structure.json")))
 
@@ -645,7 +645,7 @@ final class ReplStartupSuite extends FunSuite {
     val current = startup(config, options.copy(agentId = None))
     val app = run(current.application)
     assertEquals(app.agentChoices.map(_.id), Vector(bob, eve))
-    assertEquals(app.agentChoices.map(_.model), Vector("local-model", "account-model"))
+    assertEquals(app.agentChoices.map(_.model), Vector(Some("local-model"), Some("account-model")))
     val changed = run(app.selectAgent(eve))
     assertEquals(changed.activeAgent.map(_.agentId), Some("eve"))
     assertEquals(changed.activeAgent.map(_.provider), Some("chatgpt-2"))

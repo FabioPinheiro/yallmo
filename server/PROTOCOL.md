@@ -1,12 +1,13 @@
 # Yallmo wire protocol v1
 
-**Implemented: viewer reads and trusted-local configured execution. Authentication is explicitly deferred for this local path.**
-This is not an authenticated identity or public-hosting service. Keep loopback binding and Host/Origin safeguards;
-do not expose it through a public proxy. Claimed user names are impersonable.
+**Implemented: viewer reads and configured execution for trusted browser and REPL clients.**
+Access is assumed already authenticated outside this server; it performs no authentication or Host/Origin checks.
+Keep all direct/proxied access inside a trusted environment, never public. Claimed user names are impersonable.
+The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access.
 
 DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
 and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
-The browser shares protocol/model sources but remains a read-only viewer. HTTP serves static assets and the WebSocket
+The browser shares protocol/model sources and uses the same initialization and methods as the REPL. HTTP serves static assets and the WebSocket
 upgrade only; no conversation/blob REST endpoint, upload, login, voice or tool-control API is enabled. Operator-only
 `diagnostics.request` reads existing provider-request captures without executing a turn.
 
@@ -19,10 +20,10 @@ Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, 
 Operator additionally advertises `sessions.create`, `turn.submit` and the read-only `diagnostics.request`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
-Operator requires all of: configured backend, actual loopback transport peer, **absent Origin**, and a nonempty initialized
-claimed `userId`. Anonymous connections and Origin-bearing browsers remain Viewer. `clientName` is never authority;
-a browser cannot gain permission by naming itself a REPL or calling a mutation method. Host/Origin validation and the
-loopback listener remain in force. Authenticated public deployment requires separate authentication and security review.
+Operator requires a configured backend and a nonempty initialized claimed `userId`, irrespective of Origin or peer
+address. Anonymous connections remain Viewer. `clientName` is never authority; a browser uses its real Origin and
+claims a human ID in the existing `initialize` params. No permission opt-in or Origin allowlist is required. Anyone
+with network access can claim an author and execute configured agents/tools, so public deployment is unsupported.
 
 Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
 also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed by this catalog; explicit operator diagnostics may show the request model.
@@ -99,7 +100,7 @@ Core full-blob reads and partial-failure storage limitations remain; this is not
 
 ## Provider-request diagnostics
 
-`diagnostics.request` requires initialization and the same trusted-local Operator policy as configured execution;
+`diagnostics.request` requires initialization and the same trusted-environment Operator policy as configured execution;
 it is not advertised to viewers or unconfigured servers. It accepts only a session ID, never a filesystem path.
 The result's optional document includes existing capture metadata (`turnId`, `capturedAt`, provider/model) and the
 actual diagnostic request payload. It never returns a server file path, HTTP headers or transport credentials.
@@ -117,7 +118,7 @@ There is no pagination, persistence index or arbitrary-file read API.
 
 Existing capture redaction protects encrypted provider continuations and refuses inline audio. **This is not a general
 secret scrubber:** conversation/tool text and model details remain sensitive. Never expose this unauthenticated
-trusted-local listener publicly. The REPL displays documents only on explicit `/debug request`.
+trusted-environment listener publicly. The REPL displays documents only on explicit `/debug request`.
 
 ## Submission, continuation and failure semantics
 

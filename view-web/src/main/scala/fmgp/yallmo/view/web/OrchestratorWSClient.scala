@@ -25,11 +25,12 @@ final class OrchestratorWSClient private[web] (
     openSocket: (String, OrchestratorWSClient.Events) => OrchestratorWSClient.Socket =
       OrchestratorWSClient.browserSocket,
     timeoutMillis: Int = 15000,
-    maxDownloadBytes: Long = 64L * 1024 * 1024
+    maxDownloadBytes: Long = 64L * 1024 * 1024,
+    onDisconnect: Throwable => Unit = _ => ()
 )(using ExecutionContext) {
   import OrchestratorWSClient.*
 
-  private final case class Pending(result: Promise[Json], timer: SetTimeoutHandle)
+  private final case class Pending(result: Promise[Json], timer: Option[SetTimeoutHandle])
   private val pending = mutable.Map.empty[String, Pending]
   private val objectUrls = mutable.Map.empty[String, SetTimeoutHandle]
   private var socket = Option.empty[Socket]
@@ -40,7 +41,7 @@ final class OrchestratorWSClient private[web] (
   private var openingTimer = Option.empty[SetTimeoutHandle]
 
   /** Completes after initialization. Calling this again while connected reuses the same connection. */
-  def connect(): Future[Initialize.Result] = {
+  def connect(userId: Option[AgentId] = None): Future[Initialize.Result] = {
     if socket.isEmpty then {
       if ready.isCompleted then ready = Promise[Initialize.Result]()
       generation += 1
@@ -51,7 +52,10 @@ final class OrchestratorWSClient private[web] (
           if current == generation then {
             openingTimer.foreach(clearTimeout)
             openingTimer = None
-            send[Initialize.Params, Initialize.Result](Initialize.method, Initialize.Params(Version, "view-web"))
+            send[Initialize.Params, Initialize.Result](
+              Initialize.method,
+              Initialize.Params(Version, "view-web", userId)
+            )
               .onComplete {
                 case Success(info) if current == generation =>
                   if info.protocolVersion != Version || info.maxBlobChunkBytes <= 0 || info.maxBlobChunkBytes > MaxBlobChunkBytes
@@ -85,6 +89,12 @@ final class OrchestratorWSClient private[web] (
     Future
       .fromTry(Try(SessionId.from(id).fold(reason => throw new IllegalArgumentException(reason), identity)))
       .flatMap(id => request(SessionsGet.method, SessionsGet.Params(id)))
+  def createSession(name: Option[SessionId] = None): Future[SessionSnapshot] =
+    request(SessionsCreate.method, SessionsCreate.Params(name))
+  def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
+  def diagnostic(id: SessionId): Future[DiagnosticsRequest.Result] =
+    request(DiagnosticsRequest.method, DiagnosticsRequest.Params(id))
+
   def messages(): Future[List[MessageSnapshot]] =
     request[Empty, MessagesList.Result](MessagesList.method, Empty()).map(_.toList)
   def agents(): Future[List[String]] =
@@ -162,9 +172,10 @@ final class OrchestratorWSClient private[web] (
       nextId += 1
       val id = nextId.toString
       val result = Promise[Json]()
-      val timer = setTimeout(timeoutMillis) {
+      // Execution is terminal-response only and may legitimately outlast a read deadline.
+      val timer = Option.when(method != TurnSubmit.method)(setTimeout(timeoutMillis) {
         pending.remove(id).foreach(_.result.tryFailure(new RuntimeException("Request timed out")))
-      }
+      })
       pending(id) = Pending(result, timer)
       try connection.send(JsonRpc.Request(Json.Str(id), method, params).toJson)
       catch { case NonFatal(error) => terminate(error) }
@@ -189,7 +200,7 @@ final class OrchestratorWSClient private[web] (
       id <- fields.get("id").collect { case Json.Str(value) => value }.toRight("Invalid response ID")
       outcome <- (fields.get("result"), fields.get("error")) match {
         case (Some(value), None) => Right(Right(value))
-        case (None, Some(error)) => error.as[JsonRpc.Error].map(value => Left(new RuntimeException(value.message)))
+        case (None, Some(error)) => error.as[JsonRpc.Error].map(value => Left(new RpcException(value)))
         case _                   => Left("Invalid result/error response")
       }
     } yield (id, outcome)
@@ -197,7 +208,7 @@ final class OrchestratorWSClient private[web] (
       case Left(error)          => terminate(new RuntimeException(error))
       case Right((id, outcome)) =>
         pending.remove(id).foreach { entry =>
-          clearTimeout(entry.timer)
+          entry.timer.foreach(clearTimeout)
           entry.result.tryComplete(outcome.toTry)
         }
     }
@@ -211,15 +222,24 @@ final class OrchestratorWSClient private[web] (
     socket = None
     ready.tryFailure(error)
     pending.values.foreach { entry =>
-      clearTimeout(entry.timer)
+      entry.timer.foreach(clearTimeout)
       entry.result.tryFailure(error)
     }
     pending.clear()
     previous.foreach(_.close())
+    onDisconnect(error)
   }
 }
 
 object OrchestratorWSClient {
+  final class RpcException(val error: JsonRpc.Error) extends RuntimeException(error.message)
+
+  def canChat(info: Initialize.Result): Boolean =
+    List(SessionsCreate.method, TurnSubmit.method).forall(info.methods.contains)
+
+  def claimedUser(name: String): Option[AgentId] =
+    Option.when(name.trim.nonEmpty)(AgentId("user-" + name.trim))
+
   private[web] trait Socket {
     def send(text: String): Unit
     def close(): Unit

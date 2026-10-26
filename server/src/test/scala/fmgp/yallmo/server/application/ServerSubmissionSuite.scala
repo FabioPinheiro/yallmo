@@ -60,7 +60,7 @@ final class ServerSubmissionSuite extends FunSuite {
         _ <- ZIO.attempt(new OrchestratorWSServer(appA.master, appA.configured))
         _ <- ZIO.attempt(new OrchestratorWSServer(appA.master, None))
         viewer = new OrchestratorRpc(appA.master, None)
-        connection <- viewer.openConnection(true)
+        connection <- viewer.openConnection
         initialized <- viewer.handle(
           JsonRpc
             .Request(
@@ -315,21 +315,21 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
-  test("anonymous, browser-origin and nonloopback policies cannot gain authority from clientName") {
+  test("anonymous clients cannot gain authority from clientName") {
     run(ZIO.scoped {
       for {
         app <- application(_ => ZIO.dieMessage("no execution"))
         rpc = new OrchestratorRpc(app.master, app.configured)
-        results <- ZIO.foreach(List((true, None), (false, Some(human)))) { case (trusted, author) =>
+        results <- ZIO.foreach(List("connected-repl-operator", "browser")) { clientName =>
           for {
-            connection <- rpc.openConnection(trusted)
+            connection <- rpc.openConnection
             response <- rpc.handle(
               JsonRpc
                 .Request(
                   Json.Str("init"),
                   Initialize.method,
                   Initialize
-                    .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "connected-repl-operator", author)
+                    .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, clientName, None)
                 )
                 .toJson,
               connection
@@ -355,7 +355,7 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         app <- application(_ => ZIO.dieMessage("no execution"))
         rpc = new OrchestratorRpc(app.master, app.configured)
-        connection <- rpc.openConnection(true)
+        connection <- rpc.openConnection
         response <- rpc.handle(
           JsonRpc
             .Request(
@@ -476,63 +476,84 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
-  test("actual Origin-bearing configured socket is a viewer regardless of claimed human and clientName") {
+  test("Origin-bearing browser can create, submit and read diagnostics with its claimed author") {
     run(ZIO.scoped {
       for {
-        app <- application(_ => ZIO.dieMessage("Browser must not execute"))
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1).as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         environment <- (ZLayer.succeed(Client.Config.default.webSocketConfig(RpcWire.webSocketConfig)) ++
           ZLayer.succeed(
             zio.http.netty.NettyConfig.defaultWithFastShutdown
           ) ++ DnsResolver.default >>> Client.live).build
         replies <- zio.Queue.bounded[String](4)
+        sessionId = SessionId.unsafe("browser-created")
+        requests = List(
+          JsonRpc
+            .Request(
+              Json.Str("init"),
+              Initialize.method,
+              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "browser", Some(human))
+            )
+            .toJson,
+          JsonRpc.Request(Json.Str("create"), SessionsCreate.method, SessionsCreate.Params(Some(sessionId))).toJson,
+          JsonRpc
+            .Request(
+              Json.Str("submit"),
+              TurnSubmit.method,
+              TurnSubmit.Params(sessionId, first, AgentTask("browser prompt"))
+            )
+            .toJson,
+          JsonRpc
+            .Request(Json.Str("diagnostic"), DiagnosticsRequest.method, DiagnosticsRequest.Params(sessionId))
+            .toJson
+        )
         socket = Handler
           .webSocket { channel =>
-            channel.receiveAll {
-              case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
-                channel.send(
-                  ChannelEvent.Read(
-                    WebSocketFrame.Text(
-                      JsonRpc
-                        .Request(
-                          Json.Str("init"),
-                          Initialize.method,
-                          Initialize.Params(
-                            fmgp.yallmo.server.protocol.YallmoProtocol.Version,
-                            "connected-repl-operator",
-                            Some(human)
-                          )
-                        )
-                        .toJson
-                    )
-                  )
-                )
-              case ChannelEvent.Read(WebSocketFrame.Text(text)) =>
-                replies.offer(
-                  text
-                ) *> (if text.contains("\"id\":\"init\"") then
-                        channel.send(
-                          ChannelEvent.Read(
-                            WebSocketFrame.Text(
-                              JsonRpc.Request(Json.Str("write"), SessionsCreate.method, SessionsCreate.Params()).toJson
-                            )
-                          )
-                        )
-                      else channel.shutdown)
-              case _ => ZIO.unit
-            }
+            for {
+              remaining <- Ref.make(requests)
+              sendNext = remaining
+                .modify {
+                  case head :: tail => (Some(head), tail)
+                  case Nil          => (None, Nil)
+                }
+                .flatMap {
+                  case Some(text) => channel.send(ChannelEvent.Read(WebSocketFrame.Text(text)))
+                  case None       => channel.shutdown
+                }
+              _ <- channel.receiveAll {
+                case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) => sendNext
+                case ChannelEvent.Read(WebSocketFrame.Text(text)) => replies.offer(text) *> sendNext
+                case _                                            => ZIO.unit
+              }
+            } yield ()
           }
           .withConfig(RpcWire.webSocketConfig)
         _ <- socket
-          .connect(s"ws://127.0.0.1:$port/rpc", Headers(Header.Custom("Origin", s"http://127.0.0.1:$port")))
+          .connect(s"ws://127.0.0.1:$port/rpc", Headers(Header.Custom("Origin", "https://browser.internal:9443")))
           .provideSomeEnvironment[Scope](_.add(environment.get[Client]))
         initialized <- replies.take
-        rejected <- replies.take
+        created <- replies.take
+        submitted <- replies.take
+        diagnostic <- replies.take
+        stored <- app.master.loadSession(sessionId)
+        count <- calls.get
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](initialized).result
-        assertEquals(info.identity, Identity(human, Role.Viewer))
-        assertEquals(info.methods.size, 7)
-        assertEquals(decode[JsonRpc.Failure](rejected).error.code, ErrorCode.Forbidden)
+        assertEquals(info.identity, Identity(human, Role.Operator))
+        assertEquals(
+          info.methods.takeRight(3),
+          List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
+        )
+        assertEquals(decode[JsonRpc.Success[SessionSnapshot]](created).result.id, sessionId)
+        assert(decode[JsonRpc.Success[TurnOutcome]](submitted).result.isInstanceOf[TurnOutcome.Succeeded])
+        assert(decode[JsonRpc.Success[DiagnosticsRequest.Result]](diagnostic).result.providerRequest.nonEmpty)
+        assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
+        assertEquals(
+          stored.messages.map(_.payload),
+          Chunk(MessagePayload.User("browser prompt"), MessagePayload.Assistant("answer"))
+        )
+        assertEquals(count, 1)
       }
     })
   }
@@ -816,7 +837,7 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         app <- application(_ => ZIO.dieMessage("diagnostics must not execute"))
         rpc = new OrchestratorRpc(app.master, app.configured)
-        connection <- rpc.openConnection(true)
+        connection <- rpc.openConnection
         uninitialized <- rpc.handle(
           JsonRpc
             .Request(
@@ -827,15 +848,15 @@ final class ServerSubmissionSuite extends FunSuite {
             .toJson,
           connection
         )
-        replies <- ZIO.foreach(List((true, None), (false, Some(human)))) { case (trusted, author) =>
+        replies <- ZIO.foreach(List("operator-debug", "browser")) { clientName =>
           for {
-            viewer <- rpc.openConnection(trusted)
+            viewer <- rpc.openConnection
             initialized <- rpc.handle(
               JsonRpc
                 .Request(
                   Json.Str("init"),
                   Initialize.method,
-                  Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "operator-debug", author)
+                  Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, clientName, None)
                 )
                 .toJson,
               viewer

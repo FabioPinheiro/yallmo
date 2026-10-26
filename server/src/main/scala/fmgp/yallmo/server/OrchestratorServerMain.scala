@@ -6,8 +6,8 @@ import scala.util.Try
 import fmgp.yallmo.server.application.ServerApplication
 import zio.*
 
-/** Standalone loopback WebSocket/SPA host; execution requires configured trusted-local capability. Embedded
-  * applications should supply their existing master instead.
+/** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
+  * Embedded applications should supply their existing master instead.
   */
 object OrchestratorServerMain extends ZIOAppDefault {
   private val Levels = "trace|debug|info|warning|error|fatal|off"
@@ -39,8 +39,9 @@ object OrchestratorServerMain extends ZIOAppDefault {
       _ <- ZIO
         .scoped(for {
           application <- ServerApplication.open(options.storage, options.config, options.workspace)
-          bound <- new OrchestratorWSServer(application.master, application.configured).start(options.port)
-          _ <- ZIO.logInfo(s"Orchestrator listening at http://127.0.0.1:$bound (JSON-RPC WebSocket: /rpc)")
+          bound <- new OrchestratorWSServer(application.master, application.configured)
+            .start(options.port)
+          _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)")
           _ <- ZIO.never
         } yield ())
         .provideLayer(ServerApplication.live)

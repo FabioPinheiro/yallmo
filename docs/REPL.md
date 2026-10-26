@@ -35,10 +35,12 @@ sbt 'server/run --storage ./server-storage --config ./private/server.json --work
 sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```
 
-**Trusted local, unauthenticated:** authentication is explicitly deferred for this prompt path, not for public hosting.
-Configured server + actual loopback peer + absent Origin + claimed human enables Operator with `sessions.create` and
-`turn.submit`. Required `--user-name` supplies an impersonable claimed author, **not an authenticated identity**.
-Keep loopback/Host/Origin checks; never expose/proxy publicly. Anonymous and Origin-bearing browser viewers stay read-only.
+**Trusted environment only:** access is assumed already authenticated outside the server; there is no server authentication.
+Configured server + initialized claimed human enables Operator with `sessions.create`, `turn.submit` and
+`diagnostics.request`, for REPL and browser clients regardless of Origin or peer address. Required `--user-name` supplies
+an impersonable claimed author, **not an authenticated identity**. Host/Origin are unrestricted; anonymous clients stay
+read-only. Keep all access paths trusted and never expose/proxy publicly. The listener always binds to `0.0.0.0`
+for trusted Docker/multi-machine access (see [server deployment](../server/README.md#production)).
 A server started without `--config` remains read-only; the client notice/help/completions reflect negotiated capabilities.
 
 An override endpoint must be a `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local

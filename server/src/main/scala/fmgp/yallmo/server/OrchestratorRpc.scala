@@ -12,7 +12,7 @@ import zio.*
 import zio.json.*
 import zio.json.ast.Json
 
-/** Shared read and configured trusted-local submission handler. It owns neither transports nor an additional
+/** Shared read and configured trusted-client submission handler. It owns neither transports nor an additional
   * runtime/storage service. Initialization state belongs to each connection; a future Unix adapter can use the same
   * handler unchanged.
   */
@@ -31,12 +31,10 @@ private[server] final class OrchestratorRpc(
   // Presence only: never inserted into the executable runtime registry or storage.
   private val humans = TrieMap.empty[UUID, AgentId]
 
-  def openConnection: UIO[Connection] = openConnection(false)
-
-  def openConnection(trustedLocal: Boolean): UIO[Connection] =
+  def openConnection: UIO[Connection] =
     Ref.Synchronized
       .make[ConnectionState](ConnectionState.Uninitialized)
-      .map(new Connection(UUID.randomUUID(), _, trustedLocal))
+      .map(new Connection(UUID.randomUUID(), _))
 
   def disconnect(connection: Connection): UIO[Unit] =
     connection.state.modifyZIO { _ =>
@@ -134,9 +132,9 @@ private[server] final class OrchestratorRpc(
                 instanceId,
                 Identity(
                   request.userId.getOrElse(AgentId("local-viewer")),
-                  if permitted(connection, request.userId) then Role.Operator else Role.Viewer
+                  if permitted(request.userId) then Role.Operator else Role.Viewer
                 ),
-                if permitted(connection, request.userId) then
+                if permitted(request.userId) then
                   methods ++ List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
                 else methods,
                 Nil,
@@ -181,13 +179,13 @@ private[server] final class OrchestratorRpc(
           case BlobsRead.method                             => readBlob(params)
           case SessionsCreate.method if configured.nonEmpty =>
             for {
-              author <- operator(connection, state)
+              author <- operator(state)
               request <- decode[SessionsCreate.Params](params)
               result <- configured.get.create(author, request.name).flatMap(encode(_))
             } yield result
           case TurnSubmit.method if configured.nonEmpty =>
             for {
-              author <- operator(connection, state)
+              author <- operator(state)
               request <- decode[TurnSubmit.Params](params)
               outcome <- configured.get.submit(
                 author,
@@ -201,7 +199,7 @@ private[server] final class OrchestratorRpc(
             } yield result
           case DiagnosticsRequest.method if configured.nonEmpty =>
             for {
-              _ <- operator(connection, state)
+              _ <- operator(state)
               request <- decode[DiagnosticsRequest.Params](params)
               result <- configured.get.providerRequest(request.sessionId).flatMap(encode(_))
             } yield result
@@ -209,11 +207,11 @@ private[server] final class OrchestratorRpc(
         }
       } yield result
 
-  private def permitted(connection: Connection, human: Option[AgentId]): Boolean =
-    configured.nonEmpty && connection.trustedLocal && human.exists(id => AgentId.value(id).trim.nonEmpty)
+  private def permitted(human: Option[AgentId]): Boolean =
+    configured.nonEmpty && human.exists(id => AgentId.value(id).trim.nonEmpty)
 
-  private def operator(connection: Connection, state: ConnectionState): IO[JsonRpc.Error, AgentId] = state match {
-    case ConnectionState.Initialized(Some(id)) if permitted(connection, Some(id)) => ZIO.succeed(id)
+  private def operator(state: ConnectionState): IO[JsonRpc.Error, AgentId] = state match {
+    case ConnectionState.Initialized(Some(id)) if permitted(Some(id)) => ZIO.succeed(id)
     case _ => ZIO.fail(JsonRpc.Error(ErrorCode.Forbidden, "Operator permission unavailable for this connection"))
   }
 
@@ -274,7 +272,6 @@ private[server] object OrchestratorRpc {
 
   final class Connection private[OrchestratorRpc] (
       val id: UUID,
-      private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState],
-      val trustedLocal: Boolean
+      private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState]
   )
 }

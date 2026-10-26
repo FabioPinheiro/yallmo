@@ -337,7 +337,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
-  test("fragmented text is assembled and foreign browser origins are rejected") {
+  test("fragmented text is assembled and arbitrary browser origins are accepted") {
     run(ZIO.scoped {
       for {
         master <- live
@@ -349,10 +349,10 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         )
         _ <- socket.send("日本🙂\"}}", true)
         reply <- socket.read
-        rejected <- raw(port, Some("https://evil.invalid")).either
+        browser <- raw(port, Some("https://browser.internal:9443"))
+        _ <- initialize(browser)
       } yield {
         assertEquals(decode[JsonRpc.Success[Initialize.Result]](reply).id, Json.Str("utf8"))
-        assert(rejected.isLeft)
       }
     })
   }

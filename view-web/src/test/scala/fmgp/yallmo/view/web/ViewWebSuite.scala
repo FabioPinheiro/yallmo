@@ -21,6 +21,8 @@ final class ViewWebSuite extends FunSuite {
     (ViewRoute.tabs :+ ViewRoute.Sessions(Some("my-session"))).foreach { page =>
       assertEquals(ViewRoute.parse(page.href), page)
     }
+    assertEquals(ViewRoute.parse("#/chat"), ViewRoute.Chat)
+    assertEquals(ViewRoute.Chat.href, "#/chat")
     assertEquals(ViewRoute.parse("#/unknown"), ViewRoute.Sessions(None))
     assertEquals(ViewRoute.parse("#/sessions/%ZZ"), ViewRoute.Sessions(None))
   }

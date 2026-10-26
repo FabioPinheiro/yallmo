@@ -65,11 +65,11 @@ final class OrchestratorWebHostSuite extends FunSuite {
     })
   }
 
-  test("host/origin validation protects static assets as well as WebSocket upgrades") {
+  test("trusted host accepts arbitrary Host and Origin without an allowlist") {
     run(ZIO.scoped {
       for {
         port <- start
-        foreign <- get(port, "/", List("Origin" -> "https://evil.invalid"))
+        foreign <- get(port, "/", List("Origin" -> "https://browser.internal:9443"))
         nullOrigin <- get(port, "/assets/test.js", List("Origin" -> "null"))
         vite <- get(port, "/assets/test.js", List("Origin" -> "http://127.0.0.1:5173"))
         wrongHost <- ZIO.attemptBlocking {
@@ -77,16 +77,16 @@ final class OrchestratorWebHostSuite extends FunSuite {
           try {
             socket.setSoTimeout(3000)
             socket.getOutputStream.write(
-              "GET / HTTP/1.1\r\nHost: evil.invalid:8080\r\nConnection: close\r\n\r\n".getBytes(UTF_8)
+              "GET / HTTP/1.1\r\nHost: server.internal:8080\r\nConnection: close\r\n\r\n".getBytes(UTF_8)
             )
             new String(socket.getInputStream.readAllBytes(), UTF_8)
           } finally socket.close()
         }
       } yield {
-        assertEquals(foreign.statusCode(), 403)
-        assertEquals(nullOrigin.statusCode(), 403)
+        assertEquals(foreign.statusCode(), 200)
+        assertEquals(nullOrigin.statusCode(), 200)
         assertEquals(vite.statusCode(), 200)
-        assert(wrongHost.startsWith("HTTP/1.1 403"))
+        assert(wrongHost.startsWith("HTTP/1.1 200"))
       }
     })
   }

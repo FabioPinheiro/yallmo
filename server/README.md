@@ -1,14 +1,16 @@
 # Orchestrator WebSocket server and website
 
-`OrchestratorWSServer(master, configured = None)` hosts static assets and JSON-RPC `/rpc` on the same loopback
-listener using one supplied runtime/storage owner. A supplied master alone is read-only. Standalone `--config`
+`OrchestratorWSServer(master, configured = None)` hosts static assets and JSON-RPC `/rpc` on the same listener
+(fixed to `0.0.0.0`) using one supplied runtime/storage owner. A supplied master alone is read-only. Standalone `--config`
 provides the existing configured backend for server-owned prompt execution; no additional runner/service is created.
 HTTP serves static assets and upgrade only, not conversation/blob REST endpoints.
 
-**Authentication is explicitly deferred for trusted local execution.** A configured backend, actual loopback peer,
-absent Origin and initialized claimed human enable Operator with `sessions.create` and `turn.submit`. Anonymous
-connections and Origin-bearing browsers remain read-only. Keep Host/Origin checks and loopback binding; never publicly
-proxy/expose this listener. User names are impersonable metadata/authorship, **not authenticated identities**.
+**Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
+initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit` and `diagnostics.request`,
+including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
+`clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
+reach the listener (including through a browser or proxy) can claim an author and execute configured agents/tools.
+User names are impersonable metadata/authorship, **not authenticated identities**. Never expose it publicly.
 
 ## Connected terminal prompts or viewer
 
@@ -32,7 +34,7 @@ never starts a local application.
 `--transcriber-agent` is rejected before networking, with or without an endpoint override. `/tools`, `/debug print|export`, provider catalog/login,
 voice/TTS and attachment upload remain unavailable remotely, even for Operator. See [REPL](../docs/REPL.md).
 
-`/debug request` is enabled only when `diagnostics.request` is negotiated for a trusted-local Operator. It returns the
+`/debug request` is enabled only when `diagnostics.request` is negotiated for a trusted-environment Operator. It returns the
 latest actual request capture for the selected session, including failed turns, without inference or client-local file
 access. Captures retain metadata and existing continuation redaction; conversation/tool text remains sensitive.
 The index retains 128 sessions in memory, survives client reconnect, and is lost on server restart. Reads reject captures
@@ -79,13 +81,13 @@ npm --prefix view-web run dev
 ```
 
 Open **http://127.0.0.1:5173**. Vite uses `host: true`, listening on all interfaces, including the Docker network.
-It proxies WebSocket `/rpc` to `127.0.0.1:8080` with `ws: true`, preserving the browser Origin for backend validation.
+It proxies WebSocket `/rpc` to `127.0.0.1:8080` with `ws: true`, preserving the real browser Origin.
 If the backend uses another port, update `view-web/vite.config.js`. Vite's development/HMR socket is separate from the
 website's single application socket.
 
-The development server/proxy is network-reachable; the backend's loopback binding does not make Vite private.
+Both the development server/proxy and backend listen on all interfaces.
 For Docker, publish the Vite port on host loopback only (for example `127.0.0.1:5173:5173`), or use a trusted network.
-Browser Origin checks still apply; `host: true` does not authorize arbitrary browser origins.
+The backend accepts arbitrary browser Origins; network access must be restricted to trusted users.
 
 For continuous Scala.js linking, run `sbt '~viewWeb/fastLinkJS'`. Vite bundles already-linked JavaScript; it does not
 launch sbt or compile Scala.
@@ -108,6 +110,16 @@ The entry point is `fmgp.yallmo.server.OrchestratorServerMain`:
 --storage <existing-directory> [--config <path> [--workspace <existing-directory>]]
   [--port <1-65535>] [--log-level <trace|debug|info|warning|error|fatal|off>]
 ```
+
+The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access; the bind address is not configurable:
+
+```sh
+sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace . --port 8080'
+```
+
+Publish/map port 8080 only onto the trusted network and connect to `ws://<docker-host>:8080/rpc` (or open
+`http://<docker-host>:8080` for packaged assets). Do not publish it to the public internet. Embedded callers can use
+`start(port = 8080)`; it also binds to `0.0.0.0`. No Origin rewriting or stripping is needed. FIXME
 
 ### Viewer and configured startup
 
@@ -132,7 +144,7 @@ The client-only REPL requires `--user-name <id>` and accepts optional `--agent <
 The default endpoint is `ws://127.0.0.1:8080/rpc`; there is no embedded application or local execution fallback.
 It never loads `yallmo.json`, probes tools, constructs providers or acquires local audio/login services.
 `--config`/`--storage` belong to server startup; the REPL rejects them and `--transcriber-agent`.
-Claimed human IDs use `user-<user-name>` and are sufficient authorship for this trusted-local milestone, not authentication.
+Claimed human IDs use `user-<user-name>` and are sufficient authorship for this trusted-environment deployment, not authentication.
 Provider menus/login, voice and interactive human transport remain pending; configured prompts and session/history
 commands use standalone server storage. Existing embedded adapters, audio/voice and debug implementations and their tests are retained for follow-up
 integration; none is entered by the client-only startup path.
@@ -150,7 +162,7 @@ semantics; `--workspace` does not silently rewrite them.
 
 Configured mode retains one `ApplicationRuntime` and its opened assembly, with exactly one filesystem master supplied
 to the same WebSocket host. Client and core tool-service layers surround the entire host scope, so captured HTTP
-services outlive application work. Configured trusted-local connections can execute; other connections remain viewers.
+services outlive application work. Configured connections with a claimed human ID can execute; anonymous connections remain viewers.
 Authentication is explicitly deferred; a claimed human ID is author metadata, not an authenticated principal.
 
 ### Startup validation failures
@@ -214,7 +226,7 @@ import zio.*
 
 ZIO.scoped {
   for {
-    port <- new OrchestratorWSServer(master).start(0) // loopback, ephemeral port
+    port <- new OrchestratorWSServer(master).start(0) // all interfaces, ephemeral port
     client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
     sessions <- client.listSessions
   } yield sessions
@@ -238,7 +250,7 @@ Enabled methods:
 - `messages.list`, `agents.list`
 - `blobs.list`, `blobs.read`
 
-Configured trusted-local Operators additionally enable `sessions.create` and `turn.submit`. Other mutation/control/
+Configured trusted-environment Operators additionally enable `sessions.create` and `turn.submit`. Other mutation/control/
 diagnostic definitions remain disabled; no progress notifications are advertised. Unix-domain sockets remain deferred.
 The JVM client uses dependency-free public JDK WebSocket (JDK 21+ resource lifecycle), not a synthetic-Origin transport;
 it never bypasses server policy. Read `capabilities` from cached initialization, not a second initialize.
@@ -278,8 +290,8 @@ up. Other tab queries can interleave with chunk requests.
 
 ## Security and transport limits
 
-- Standalone binding: **127.0.0.1 only**. No operator authentication or public/remote-hosting mode.
-- Host validation rejects DNS-rebinding hosts; Origin checks allow same origin and loopback Vite origins only.
+- The listener always binds to **0.0.0.0** for trusted-network access. No operator authentication.
+- Host and Origin are unrestricted, including browser WebSocket upgrades. Network reachability is the trust boundary.
 - `local-viewer` / `viewer` is a local marker, not an authenticated OS principal.
 - Static responses use no-store, nosniff, no-referrer, frame denial and a restrictive CSP allowing the same-host WebSocket.
 - HTTP writes are rejected. Filesystem paths, agent objects and private provider continuations are not normal RPC values.
@@ -291,7 +303,7 @@ up. Other tab queries can interleave with chunk requests.
   1007 rather than silently corrupted. Splits across continuation frames are decoded together.
 - ZIO HTTP's own inbound event queue is unbounded. These limits do not make the listener a hardened public server.
 
-Do not publicly proxy/tunnel this listener without adding authentication and reviewing the deployment/origin policy.
+Do not publicly proxy/tunnel this listener. Keep every direct/proxied access path inside the trusted environment.
 
 ## Validation
 
@@ -306,8 +318,8 @@ sbt 'server/bundle'
 ```
 
 Server tests cover real WebSocket reads/errors, shared-master visibility, blob chunks, request correlation, timeout,
-close/scope cleanup, protocol/fragment bounds, SPA asset boundaries, Host/Origin checks, removed REST routes, CLI
-options, configured composition/tool availability, service lifetime, viewer guards and configured trusted-local execution, concurrent independent turns, Busy/head conflict, detached
+close/scope cleanup, protocol/fragment bounds, SPA asset boundaries, unrestricted trusted Host/Origin access, removed REST routes, CLI
+options, configured composition/tool availability, service lifetime, viewer guards and configured REPL/browser execution, concurrent independent turns, Busy/head conflict, detached
 completion, shutdown/closed-scope delivery and overload, standalone root
 lease contention/cleanup/aliases, connection-ID logging and INFO/DEBUG/TRACE/OFF filtering. Frontend tests cover shared-domain wire decoding, hash navigation, text/tool formatting, socket lifecycle,
 reconnect without replay, deadlines, out-of-order replies and partial-download validation.

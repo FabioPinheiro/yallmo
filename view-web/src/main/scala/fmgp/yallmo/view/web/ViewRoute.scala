@@ -3,6 +3,7 @@ package fmgp.yallmo.view.web
 /** Small hash router: ordinary links provide bookmarks and back/forward without a routing dependency. */
 enum ViewRoute(val title: String) {
   case Sessions(id: Option[String]) extends ViewRoute("Sessions")
+  case Chat extends ViewRoute("Chat")
   case Messages extends ViewRoute("All messages")
   case Graph extends ViewRoute("Conversation graph")
   case Agents extends ViewRoute("Agents")
@@ -11,6 +12,7 @@ enum ViewRoute(val title: String) {
   def href: String = this match {
     case Sessions(Some(id)) => SessionRoute.href(id)
     case Sessions(None)     => "#/sessions"
+    case Chat               => "#/chat"
     case Messages           => "#/messages"
     case Graph              => "#/graph"
     case Agents             => "#/agents"
@@ -20,9 +22,17 @@ enum ViewRoute(val title: String) {
 
 object ViewRoute {
   val tabs: List[ViewRoute] =
-    List(ViewRoute.Sessions(None), ViewRoute.Messages, ViewRoute.Graph, ViewRoute.Agents, ViewRoute.Blobs)
+    List(
+      ViewRoute.Chat,
+      ViewRoute.Sessions(None),
+      ViewRoute.Messages,
+      ViewRoute.Graph,
+      ViewRoute.Agents,
+      ViewRoute.Blobs
+    )
 
   def parse(hash: String): ViewRoute = hash match {
+    case "#/chat"     => ViewRoute.Chat
     case "#/messages" => ViewRoute.Messages
     case "#/graph"    => ViewRoute.Graph
     case "#/agents"   => ViewRoute.Agents

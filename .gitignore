@@ -32,3 +32,7 @@ visualization/dist/
 visualization/src/generated/
 view-web/node_modules/
 view-web/dist/
+
+# Other
+.playwright-mcp
+.pi

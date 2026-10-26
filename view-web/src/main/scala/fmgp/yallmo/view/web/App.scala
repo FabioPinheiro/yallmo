@@ -30,15 +30,70 @@ object App {
       .startWith(LoadState.Loading)
 
   private def application(): HtmlElement = {
-    val client = new OrchestratorWSClient(OrchestratorWSClient.defaultEndpoint)
+    val notifications = new UiNotifications
+    val disconnected = new EventBus[Throwable]
+    val client = new OrchestratorWSClient(OrchestratorWSClient.defaultEndpoint, onDisconnect = disconnected.emit)
+    val chat = new ChatModel(client, notifications.publish)
+    val humanName = Var("fabio")
+    val connection = Var("Connecting…")
+    val connecting = Var(false)
+    val sidebarOpen = Var(false)
     val refresh = new EventBus[Unit]
     val refreshes = refresh.events.startWith(())
+    var claimedUser = OrchestratorWSClient.claimedUser("fabio")
+    var intentionalClose = false
+    var mounted = false
+    def close(): Unit = {
+      intentionalClose = true
+      client.close()
+      intentionalClose = false
+    }
+    def connect(): Unit = {
+      val requestedUser = OrchestratorWSClient.claimedUser(humanName.now())
+      if requestedUser.nonEmpty && !connecting.now() && chat.state.now().pending.isEmpty && !chat.state.now().creating
+      then {
+        connecting.set(true)
+        connection.set("Connecting…")
+        if requestedUser != claimedUser then {
+          chat.disable()
+          close()
+          claimedUser = requestedUser
+        }
+        client.connect(claimedUser).onComplete {
+          case scala.util.Success(info) if mounted =>
+            connecting.set(false)
+            chat.configure(info)
+            chat.reload()
+            refresh.emit(())
+            connection.set(if OrchestratorWSClient.canChat(info) then
+              s"Trusted operator · ${AgentId.value(info.identity.id)}"
+            else "Read only")
+          case scala.util.Failure(error) if mounted =>
+            connecting.set(false)
+            chat.disable()
+            connection.set(s"Disconnected: ${error.getMessage}")
+            notifications.publish(UiNotice(s"Connection failed: ${error.getMessage}", "error"))
+          case _ => ()
+        }
+      }
+    }
     val route = Var(ViewRoute.parse(dom.window.location.hash))
+    def openChat(): Unit = {
+      dom.window.location.hash = ViewRoute.Chat.href
+      sidebarOpen.set(false)
+    }
     div(
       cls := "app",
-      onMountCallback(_ => { val _ = client.connect() }),
-      onUnmountCallback(_ => client.close()),
-      windowEvents(_.onBeforeUnload) --> (_ => client.close()),
+      disconnected.events --> { error =>
+        if mounted && !intentionalClose then {
+          chat.disable()
+          connection.set(s"Disconnected: ${error.getMessage}")
+          if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
+        }
+      },
+      onMountCallback { _ => mounted = true; connect() },
+      onUnmountCallback { _ => mounted = false; close() },
+      windowEvents(_.onBeforeUnload) --> (_ => close()),
       windowEvents(_.onHashChange).map(_ => ViewRoute.parse(dom.window.location.hash)) --> route.writer,
       button(
         cls := "skip-link",
@@ -46,64 +101,111 @@ object App {
         "Skip to content",
         onClick --> (_ => dom.document.getElementById("content").asInstanceOf[dom.HTMLElement].focus())
       ),
-      headerTag(
-        div(p(cls := "eyebrow", "YALLMO"), h1("Orchestrator view")),
+      asideTag(
+        cls <-- sidebarOpen.signal.map(if _ then "app-sidebar expanded" else "app-sidebar"),
         div(
-          cls := "header-actions",
-          span(cls := "read-only", "Read only"),
-          button(typ := "button", "Refresh", onClick --> (_ => client.connect().onComplete(_ => refresh.emit(()))))
+          cls := "sidebar-brand",
+          h1("YALLMO"),
+          button(
+            typ := "button",
+            cls := "sidebar-toggle",
+            "Menu",
+            aria.label := "Toggle navigation and conversations",
+            aria.expanded <-- sidebarOpen.signal,
+            aria.controls := "sidebar-content",
+            onClick --> (_ => sidebarOpen.update(!_))
+          )
+        ),
+        div(
+          idAttr := "sidebar-content",
+          cls := "sidebar-content",
+          navTag(
+            cls := "tabs",
+            aria.label := "Views",
+            ViewRoute.tabs.map { tab =>
+              a(
+                href := tab.href,
+                tab.title,
+                cls <-- route.signal.map(current => if current.title == tab.title then "tab selected" else "tab"),
+                aria.current <-- route.signal.map(current => if current.title == tab.title then "page" else "false"),
+                onClick --> (_ => sidebarOpen.set(false))
+              )
+            }
+          ),
+          ChatView.sidebar(chat, () => openChat())
         )
       ),
-      navTag(
-        cls := "tabs",
-        aria.label := "Views",
-        ViewRoute.tabs.map { tab =>
-          a(
-            href := tab.href,
-            tab.title,
-            cls <-- route.signal.map(current => if current.title == tab.title then "tab selected" else "tab"),
-            aria.current <-- route.signal.map(current => if current.title == tab.title then "page" else "false")
+      div(
+        cls := "main-column",
+        div(
+          cls := "toolbar",
+          input(
+            cls := "username",
+            aria.label := "Username",
+            title := "Claimed author name (not authentication). Reconnect to apply.",
+            value <-- humanName.signal,
+            onInput.mapToValue --> humanName.writer
+          ),
+          span(cls := "connection-status", role := "status", child.text <-- connection.signal),
+          ChatView.agentSelect(chat),
+          button(
+            typ := "button",
+            "Reconnect",
+            disabled <-- humanName.signal.combineWith(connecting.signal, chat.state.signal).map {
+              case (name, busy, state) =>
+                OrchestratorWSClient.claimedUser(name).isEmpty || busy || state.pending.nonEmpty || state.creating
+            },
+            title <-- humanName.signal.map(name =>
+              if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
+              else "Apply username and refresh connection state."
+            ),
+            onClick --> (_ => connect())
           )
-        }
-      ),
-      mainTag(
-        idAttr := "content",
-        tabIndex := -1,
-        child <-- route.signal.map {
-          case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client)
-          case ViewRoute.Messages     =>
-            listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>
-              messageList(messages, client)
-            )
-          case ViewRoute.Graph =>
-            listPage("Conversation graph", "No messages.", () => client.messages(), refreshes) { messages =>
-              div(
-                p(
-                  cls := "muted",
-                  "Expand a node to inspect its message. Shared history appears once. Up to 32 levels are shown."
-                ),
-                child <-- messages.map(messages => conversationTree(messages, client))
-              )
-            }
-          case ViewRoute.Agents =>
-            listPage(
-              "Agents",
-              "No registered agents. This lists the runtime registry, not historical message authors.",
-              () => client.agents(),
-              refreshes
-            ) { ids =>
-              ul(cls := "id-list", children <-- ids.split(identity) { (id, _, _) => li(code(id)) })
-            }
-          case ViewRoute.Blobs =>
-            listPage("Blobs", "No stored blobs.", () => client.blobs(), refreshes) { ids =>
-              ul(
-                cls := "id-list",
-                children <-- ids.split(identity) { (id, _, _) =>
-                  li(downloadLink(id, id.value, client))
+        ),
+        div(
+          cls := "content-area",
+          notifications.view(),
+          mainTag(
+            idAttr := "content",
+            tabIndex := -1,
+            child <-- route.signal.map {
+              case ViewRoute.Chat         => ChatView(chat, client)
+              case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client)
+              case ViewRoute.Messages     =>
+                listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>
+                  messageList(messages, client)
+                )
+              case ViewRoute.Graph =>
+                listPage("Conversation graph", "No messages.", () => client.messages(), refreshes) { messages =>
+                  div(
+                    p(
+                      cls := "muted",
+                      "Expand a node to inspect its message. Shared history appears once. Up to 32 levels are shown."
+                    ),
+                    child <-- messages.map(messages => conversationTree(messages, client))
+                  )
                 }
-              )
+              case ViewRoute.Agents =>
+                listPage(
+                  "Agents",
+                  "No registered agents. This lists the runtime registry, not historical message authors.",
+                  () => client.agents(),
+                  refreshes
+                ) { ids =>
+                  ul(cls := "id-list", children <-- ids.split(identity) { (id, _, _) => li(code(id)) })
+                }
+              case ViewRoute.Blobs =>
+                listPage("Blobs", "No stored blobs.", () => client.blobs(), refreshes) { ids =>
+                  ul(
+                    cls := "id-list",
+                    children <-- ids.split(identity) { (id, _, _) =>
+                      li(downloadLink(id, id.value, client))
+                    }
+                  )
+                }
             }
-        }
+          )
+        )
       )
     )
   }
@@ -219,7 +321,7 @@ object App {
       }
     )
 
-  private def messageList(messages: Signal[List[MessageSnapshot]], client: OrchestratorWSClient): HtmlElement =
+  private[web] def messageList(messages: Signal[List[MessageSnapshot]], client: OrchestratorWSClient): HtmlElement =
     div(
       cls := "messages",
       children <-- messages.split(_.id) { (_, _, message) => messageCard(message, client) }
@@ -227,7 +329,13 @@ object App {
 
   private def messageCard(message: Signal[MessageSnapshot], client: OrchestratorWSClient): HtmlElement =
     articleTag(
-      cls := "message",
+      cls <-- message.map(value =>
+        value.role match {
+          case "user"      => "message message-user"
+          case "assistant" => "message message-assistant"
+          case _           => "message"
+        }
+      ),
       div(
         cls := "message-meta",
         span(cls := "role", child.text <-- message.map(_.role)),

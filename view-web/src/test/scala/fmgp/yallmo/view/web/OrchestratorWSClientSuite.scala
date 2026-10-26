@@ -1,6 +1,8 @@
 package fmgp.yallmo.view.web
 
 import fmgp.yallmo.model.{AgentId, BlobId}
+import fmgp.yallmo.orchestration.{AgentTask, SessionId}
+import zio.Chunk
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
@@ -12,6 +14,7 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class OrchestratorWSClientSuite extends FunSuite {
+  import OrchestratorWSClientSuite.*
   private val blob = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
 
   test("mount initialization gates queries and repeated connect reuses one socket") {
@@ -184,14 +187,58 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
-  private final class FakeSocket(val events: OrchestratorWSClient.Events, sent: String => Unit)
+  test(
+    "claimed identity, advertised capabilities, create and diagnostic share protocol DTOs; turn has no read deadline"
+  ) {
+    val h = new Harness(timeout = 40)
+    val user = OrchestratorWSClient.claimedUser(" Alice ")
+    val sessionId = SessionId.unsafe("chat")
+    val snapshot = SessionSnapshot(sessionId, Chunk.empty, Chunk.empty)
+    for {
+      info <- h.initialize(user, List(SessionsCreate.method, TurnSubmit.method), Some(Chunk(AgentId("assistant"))))
+      _ = assertEquals(decode[Initialize.Params](h.sent.head.params.toJson).userId, user)
+      _ = assert(OrchestratorWSClient.canChat(info))
+      _ <- h.client.connect(OrchestratorWSClient.claimedUser("Ignored until reconnect"))
+      create = h.client.createSession(Some(sessionId))
+      createRequest <- h.awaitRequest(SessionsCreate.method)
+      _ = assertEquals(decode[SessionsCreate.Params](createRequest.params.toJson).name, Some(sessionId))
+      _ = h.reply(createRequest, snapshot)
+      _ <- create
+      diagnostic = h.client.diagnostic(sessionId)
+      diagnosticRequest <- h.awaitRequest(DiagnosticsRequest.method)
+      _ = h.reply(diagnosticRequest, DiagnosticsRequest.Result(None))
+      _ <- diagnostic
+      turn = h.client.submitTurn(TurnSubmit.Params(sessionId, AgentId("assistant"), AgentTask("hello")))
+      turnRequest <- h.awaitRequest(TurnSubmit.method)
+      read = h.client.agents()
+      _ <- h.awaitRequest(AgentsList.method)
+      _ <- read.failed
+      _ = assert(!turn.isCompleted, "turn must remain pending beyond a read timeout")
+      _ = h.reply(
+        turnRequest,
+        TurnOutcome.Failed(PromptAcceptance.NotAccepted, Some(snapshot), ApplicationError("test", "test")): TurnOutcome
+      )
+      _ <- turn
+    } yield {
+      assertEquals(h.sent.count(_.method == Initialize.method), 1)
+      assertEquals(info.configuredAgentIds, Some(Chunk(AgentId("assistant"))))
+      assertEquals(OrchestratorWSClient.claimedUser("  "), None)
+      h.client.close()
+    }
+  }
+
+  private def decode[A: JsonDecoder](text: String): A = text.fromJson[A].fold(fail(_), identity)
+}
+
+private[web] object OrchestratorWSClientSuite {
+  final class FakeSocket(val events: OrchestratorWSClient.Events, sent: String => Unit)
       extends OrchestratorWSClient.Socket {
     var closed = false
     def send(text: String): Unit = sent(text)
     def close(): Unit = { closed = true; events.closed() }
   }
 
-  private final class Harness(timeout: Int = 1000, maxBytes: Long = 1024, chunkSize: Int = MaxBlobChunkBytes) {
+  final class Harness(timeout: Int = 1000, maxBytes: Long = 1024, chunkSize: Int = MaxBlobChunkBytes) {
     val sockets = mutable.ArrayBuffer.empty[FakeSocket]
     val sent = mutable.ArrayBuffer.empty[JsonRpc.Request[Json.Obj]]
     var onRequest: JsonRpc.Request[Json.Obj] => Unit = _ => ()
@@ -213,22 +260,34 @@ final class OrchestratorWSClientSuite extends FunSuite {
       maxBytes
     )
 
-    def initialize(): Future[Unit] = {
-      val connected = client.connect()
+    def initialize(
+        userId: Option[AgentId] = None,
+        methods: List[String] = Nil,
+        configured: Option[Chunk[AgentId]] = None
+    ): Future[Initialize.Result] = {
+      val connected = client.connect(userId)
       sockets.last.events.opened()
       reply(
         sent.last,
-        Initialize.Result(Version, "test", Identity(AgentId("viewer"), Role.Viewer), Nil, Nil, chunkSize)
+        Initialize.Result(
+          Version,
+          "test",
+          Identity(AgentId("viewer"), Role.Viewer),
+          methods,
+          Nil,
+          chunkSize,
+          configured
+        )
       )
-      connected.map(_ => ())
+      connected
     }
 
     def reply[A: JsonCodec](request: JsonRpc.Request[Json.Obj], result: A): Unit =
       sockets.last.events.message(JsonRpc.Success(request.id, result).toJson)
 
-    def awaitRequest(method: String): Future[JsonRpc.Request[Json.Obj]] = {
+    def awaitRequest(method: String, skip: Int = 0): Future[JsonRpc.Request[Json.Obj]] = {
       val result = Promise[JsonRpc.Request[Json.Obj]]()
-      def poll(remaining: Int): Unit = sent.find(_.method == method) match {
+      def poll(remaining: Int): Unit = sent.filter(_.method == method).drop(skip).headOption match {
         case Some(request)         => result.trySuccess(request); ()
         case None if remaining > 0 => setTimeout(2)(poll(remaining - 1)); ()
         case _                     => result.tryFailure(new AssertionError(s"No request for $method")); ()
@@ -238,5 +297,6 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
-  private def decode[A: JsonDecoder](text: String): A = text.fromJson[A].fold(fail(_), identity)
+  private def decode[A: JsonDecoder](text: String): A =
+    text.fromJson[A].fold(error => throw new AssertionError(error), identity)
 }

@@ -6,10 +6,10 @@ import zio.*
 import zio.http.*
 import zio.json.*
 
-/** JSON-RPC WebSocket adapter and SPA host over the supplied master. Construction starts nothing. start binds loopback;
-  * routes may also be installed in an existing host. No second storage/runtime is created. Configured loopback peers
-  * without Origin may claim local authorship; browser and anonymous peers remain viewers. Host/Origin checks do not
-  * authenticate identities or support public hosting.
+/** JSON-RPC WebSocket adapter and SPA host over the supplied master. Construction starts nothing. start binds to
+  * 0.0.0.0; routes may also be installed in an existing trusted host. Configured clients claiming a human ID can
+  * execute regardless of Origin or peer address. No authentication or Host/Origin restrictions: deploy only in a
+  * trusted environment.
   */
 final class OrchestratorWSServer(
     master: OrchestratorLive[?],
@@ -20,8 +20,7 @@ final class OrchestratorWSServer(
   val routes: Routes[Any, Nothing] = Routes(
     RoutePattern.any -> handler { (_: Path, request: Request) =>
       val response =
-        if !trustedSite(request) then ZIO.succeed(Response.status(Status.Forbidden))
-        else if request.method != Method.GET then
+        if request.method != Method.GET then
           ZIO.succeed(Response.status(Status.MethodNotAllowed).addHeader("Allow", "GET"))
         else if request.path.encode == "/rpc" then socket(request).toResponse
         else WebAssets.response(request)
@@ -34,7 +33,7 @@ final class OrchestratorWSServer(
       _ <- ZIO.fail(new IllegalArgumentException("Port must be between 0 and 65535")).unless(port >= 0 && port <= 65535)
       server <- Server
         .defaultWith(
-          _.binding("127.0.0.1", port)
+          _.binding("0.0.0.0", port)
             .disableRequestStreaming(1024)
             .maxHeaderSize(8192)
             .gracefulShutdownTimeout(1.second)
@@ -46,11 +45,7 @@ final class OrchestratorWSServer(
   private def socket(request: Request): WebSocketApp[Any] = Handler
     .webSocket { channel =>
       ZIO.scoped {
-        rpc
-          .openConnection(
-            request.remoteAddress.exists(_.isLoopbackAddress) &&
-              !request.headers.iterator.exists(_.headerName.equalsIgnoreCase("Origin"))
-          )
+        rpc.openConnection
           .flatMap { connection =>
             ZIO.logAnnotate("connectionId", connection.id.toString) {
               for {
@@ -132,21 +127,6 @@ final class OrchestratorWSServer(
       }
     }
     .withConfig(RpcWire.webSocketConfig)
-
-  private def trustedSite(request: Request): Boolean = {
-    def values(name: String): List[String] =
-      request.headers.iterator.filter(_.headerName.equalsIgnoreCase(name)).map(_.renderedValue).toList
-    values("Host") match {
-      case List(host) if host.matches("(localhost|127\\.0\\.0\\.1):[0-9]{1,5}") =>
-        values("Origin") match {
-          case Nil          => true
-          case List(origin) =>
-            origin == s"http://$host" || origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173"
-          case _ => false
-        }
-      case _ => false
-    }
-  }
 }
 
 object OrchestratorWSServer {

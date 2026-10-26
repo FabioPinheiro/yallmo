@@ -28,6 +28,12 @@ is rejected before networking, even without `--server`. `--config`/`--storage` r
 `--server` are rejected. Connection failure exits without local fallback or autodiscovery. Without `--server`, the client connects to
 `ws://127.0.0.1:8080/rpc`; it never starts an embedded application. See [REPL semantics](REPL.md#server-connection).
 
+## Trusted Docker or multi-machine access FIXME
+
+Access is assumed already authenticated externally: the server has no authentication or Host/Origin restrictions.
+Anyone who can reach it can claim a user and execute configured agents/tools. Never expose it publicly; trust every
+client, browser origin and proxy with access. Preserve the real browser Origin; no rewriting or permission opt-in is needed.
+
 ## Initialize server configuration
 
 Only the server loads configuration. Start it with `--config ./yallmo.json` as above; a missing file initializes

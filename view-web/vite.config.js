@@ -21,7 +21,7 @@ export default defineConfig(({ command }) => ({
         target: "ws://127.0.0.1:8080",
         ws: true,
         changeOrigin: true,
-        rewriteWsOrigin: false, // Preserve browser Origin for backend validation.
+        rewriteWsOrigin: false, // Forward the browser's real Origin unchanged.
       },
     },
   },

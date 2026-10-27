@@ -19,8 +19,13 @@ Yallmo is now a personal laboratory for learning how to manage context and knowl
 - Experimenting with Scala's new capture-checking feature, different technologies, and model types beyond LLMs—such as System One decision models.
 - Orchestrating across multiple providers, including local ones.
 - Defining code and architectural ownership between humans and agents.
+  - as a developer, I want to be able to work on different levels of abstraction on different parts of the code.
 - Capturing intent, requirements, and assumptions.
 - Reviewing, measuring, and inspecting agent flows.
+  - Like spans between agents, iterations and tasks/flows.
+  - Tasks fail in the first interaction many times because of the same reason. We should be able to analyze and detect those deficient. 
+- Live collaboration working space.
+  - Can two/multiple people work on a project among side automated agents?
 
 The project aims to keep the important boundaries small and explicit: transcripts, providers, capabilities, approval, orchestration, and storage. It is exploratory software; APIs and experiments may change.
 
@@ -28,7 +33,6 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
-- [Future UserId identity model](docs/future-plan/UserId-future_identity_model.md) — one user connection with multiple acting AgentIds.
 - [Setup and running](docs/HOW_TO_RUN.md)
 - [Interactive REPL](docs/REPL.md) — startup, connections, commands and retained feature details.
 - [Client controls — quick reference](docs/CLIENT_CONTROLS.md) — keyboard/mode tables for the website and REPL, dictation and ClientHarness.
@@ -47,18 +51,44 @@ The project aims to keep the important boundaries small and explicit: transcript
 - `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
 - `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG.
 - `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
+- `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
 - `repl/` — the JVM interactive terminal client and lazy scoped browser audio bridge.
 - `server/` — JVM-only JSON-RPC WebSocket host and packaged SPA over an existing orchestrator.
 - `view-web/` — Scala.js/Laminar session inspector and Chat UI, with Vite for development and bundling.
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
 
+### Module dependencies
+
+Arrows point from a module to its direct build dependencies. JVM/JS labels select the matching cross-project variant;
+the root project only aggregates these modules.
+
+```mermaid
+flowchart BT
+    repl["repl · JVM"] --> server["server · JVM"]
+    repl -->|JVM| core["core · JVM / JS"]
+    repl -->|JVM| harness["ClientHarness · JVM / JS<br/>client-harness/"]
+    web["view-web · Scala.js"] -->|JS| harness
+    web -->|JS| protocol["protocol · JVM / JS"]
+    server -->|JVM| core
+    server -->|JVM| protocol
+    core --> model["model · JVM / JS"]
+    core --> filesystem["filesystem · JVM / JS"]
+    protocol --> model
+```
+
+This is a build graph, not a deployment diagram: the connected REPL and website communicate with a separately running
+server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
+`browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.
 
 ## WIP & TODO & IDEAS
+
+- [Future UserId identity model](docs/future-plan/UserId-future_identity_model.md) — one user connection with multiple acting AgentIds.
+- [Add metadata to Blob and Preview](docs/future-plan/Blob-metadata-and-media-preview.md)
 
 ### WIP
 
 Remaining work:
-- The Message shound ne part of the YallmoProtocol!!!
+- 
 - Add remote /tools and richer agent information.
 - Migrate provider administration/login, voice execution, human interactions and diagnostics.
 - Perform a real-provider, separate-process smoke test.

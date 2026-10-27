@@ -1,8 +1,9 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.repl.ReplActiveAgent
 import org.jline.keymap.KeyMap
-import org.jline.reader.{Binding, LineReader, Reference, Widget}
+import org.jline.reader.{Binding, LineReader, Reference}
 import org.jline.utils.InfoCmp.Capability
 
 /** Local menus never interpret or submit the editable draft as a menu command. */
@@ -21,15 +22,17 @@ private[terminal] final class TerminalMenus(
     installMenu(AgentsKeyMap)
     if openAgents.isEmpty then fallbackAgents.foreach(_.install())
     if !remoteConnection then
-      bind(LineReader.VICMD, "p", "open-provider") {
+      bind(LineReader.VICMD, ControlAction.Providers) {
         openProvider match {
           case Some(open) => open()
           case None       =>
             reader.setKeyMap(ProviderKeyMap)
-            reader.printAbove("PROVIDER: catalog unavailable · Esc: NORMAL · i: edit")
+            reader.printAbove(
+              s"PROVIDER: catalog unavailable · ${ControlAction.Normal.terminalHint} · ${ControlAction.Edit.terminalHint}"
+            )
         }
       }
-    bind(LineReader.VICMD, "a", "open-agents") {
+    bind(LineReader.VICMD, ControlAction.Agents) {
       openAgents match {
         case Some(open) => open()
         case None       => fallbackAgents.foreach(_.open(Vector.empty, activeAgent))
@@ -48,13 +51,14 @@ private[terminal] final class TerminalMenus(
     val keys = new KeyMap[Binding]()
     keys.setAmbiguousTimeout(50L)
     reader.getKeyMaps.put(LineReader.VICMD, keys)
-    bind(LineReader.VICMD, "\u001b", "normal-ignore") { () }
-    keys.setNomatch(new Reference("normal-ignore"))
-    keys.setUnicode(new Reference("normal-ignore"))
+    bind(LineReader.VICMD, ControlAction.Normal) { () }
+    keys.setNomatch(TerminalControlBindings.reference(LineReader.VICMD, ControlAction.Normal))
+    keys.setUnicode(TerminalControlBindings.reference(LineReader.VICMD, ControlAction.Normal))
 
     // Keep non-editing navigation and line/interrupt controls, but no Vi operators or Meta bindings.
-    for key <- List("h", "j", "k", "l", "b", "B", "w", "W", "e", "E", "0", "^", "$", "\r", "\n", "\u0003") do
-      Option(previous.getBound(key)).foreach(binding => keys.bind(binding, key))
+    for key <- List("h", "l", "b", "B", "w", "W", "e", "E", "0", "^", "$", "\r", "\n", "\u0003") ++
+        List(ControlAction.Next, ControlAction.Previous).flatMap(_.terminalKey)
+    do Option(previous.getBound(key)).foreach(binding => keys.bind(binding, key))
     for (capability, widget, sequences) <- List(
         (Capability.key_left, LineReader.BACKWARD_CHAR, List("\u001b[D", "\u001bOD")),
         (Capability.key_right, LineReader.FORWARD_CHAR, List("\u001b[C", "\u001bOC")),
@@ -66,7 +70,7 @@ private[terminal] final class TerminalMenus(
     do
       (sequences ++ Option(KeyMap.key(reader.getTerminal, capability)).filter(_.nonEmpty))
         .foreach(key => keys.bind(new Reference(widget), key))
-    bind(LineReader.VICMD, "i", "normal-insert")(reader.setKeyMap(LineReader.VIINS))
+    bind(LineReader.VICMD, ControlAction.Edit)(reader.setKeyMap(LineReader.VIINS))
   }
 
   private def installMenu(name: String): Unit = {
@@ -75,46 +79,46 @@ private[terminal] final class TerminalMenus(
     keys.setUnicode(new Reference(LineReader.UNDEFINED_KEY))
     keys.bind(new Reference(LineReader.SEND_BREAK), "\u0003")
     reader.getKeyMaps.put(name, keys)
-    bind(name, "\u001b", s"$name-normal")(reader.setKeyMap(LineReader.VICMD))
-    bind(name, "i", s"$name-insert")(reader.setKeyMap(LineReader.VIINS))
+    bind(name, ControlAction.Normal)(reader.setKeyMap(LineReader.VICMD))
+    bind(name, ControlAction.Edit)(reader.setKeyMap(LineReader.VIINS))
   }
 
-  private def bind(keyMap: String, key: String, name: String)(action: => Unit): Unit = {
-    reader.getWidgets.put(
-      name,
-      new Widget {
-        override def apply(): Boolean = { action; true }
-      }
-    )
-    reader.getKeyMaps.get(keyMap).bind(new Reference(name), key)
-  }
+  private def bind(keyMap: String, control: ControlAction)(action: => Unit): Unit =
+    TerminalControlBindings.bind(reader, keyMap, control)(action)
 }
 
 private[terminal] object TerminalMenus {
   val ProviderKeyMap = "provider"
   val AgentsKeyMap = "agents"
 
-  def hintForKeyMap(keyMap: String, remoteConnection: Boolean = false, canSubmit: Boolean = false): String =
+  def hintForKeyMap(keyMap: String, remoteConnection: Boolean = false, canSubmit: Boolean = false): String = {
+    import ControlAction.*
     if remoteConnection && canSubmit then
       keyMap match {
-        case LineReader.VICMD => "[TRUSTED LOCAL · UNAUTHENTICATED]  a: configured agent · i: prompts · q: exit"
-        case AgentsKeyMap     => "[AGENTS]  Model/provider unknown · Enter: select · Esc: NORMAL"
+        case LineReader.VICMD =>
+          s"[TRUSTED LOCAL · UNAUTHENTICATED]  ${Agents.terminalHint} (configured agent) · ${Edit.terminalHint} (prompts) · ${Exit.terminalHint}"
+        case AgentsKeyMap => s"[AGENTS]  Model/provider unknown · Enter: select · ${Normal.terminalHint}"
         case _ => "[CONNECTED]  Enter: submit · /new [name] · /history · /session list|resume <id> · /log · /exit"
       }
     else if remoteConnection then
       keyMap match {
-        case LineReader.VICMD => "[READ-ONLY]  a: agent preference · i: commands · q: exit"
-        case AgentsKeyMap     => "[AGENTS]  IDs only; capability unknown · Enter: prefer · Esc: NORMAL"
-        case _                => "[READ-ONLY]  /help · /session list|resume <id> · /history · /log · /exit"
+        case LineReader.VICMD =>
+          s"[READ-ONLY]  ${Agents.terminalHint} (agent preference) · ${Edit.terminalHint} (commands) · ${Exit.terminalHint}"
+        case AgentsKeyMap => s"[AGENTS]  IDs only; capability unknown · Enter: prefer · ${Normal.terminalHint}"
+        case _            => "[READ-ONLY]  /help · /session list|resume <id> · /history · /log · /exit"
       }
     else
       keyMap match {
         case LineReader.VICMD =>
-          "[NORMAL]  p: provider · a: agents · i: edit · v: voice input · m: browser mic · t: speak reply · q: exit"
+          "[NORMAL]  " + List(Providers, Agents, Edit, Voice, Dictation, Speak, Exit)
+            .map(_.terminalHint)
+            .mkString(" · ")
         case TerminalProviderMode.KeyMapName =>
-          "[PROVIDER]  Up/Down: select · Enter: open/save · Esc: back/NORMAL · ChatGPT details: login"
-        case ProviderKeyMap => "[PROVIDER]  Catalog unavailable · Esc: NORMAL · i: edit"
-        case AgentsKeyMap   => "[AGENTS]  Up/Down: select · Enter: activate · Esc: NORMAL · i: edit"
-        case _              => "[INSERT]  Esc: NORMAL · Enter: submit"
+          s"[PROVIDER]  Up/Down: select · Enter: open/save · Esc: back/${Normal.terminalLabel} · ChatGPT details: login"
+        case ProviderKeyMap => s"[PROVIDER]  Catalog unavailable · ${Normal.terminalHint} · ${Edit.terminalHint}"
+        case AgentsKeyMap   =>
+          s"[AGENTS]  Up/Down: select · Enter: activate · ${Normal.terminalHint} · ${Edit.terminalHint}"
+        case _ => s"[INSERT]  ${Normal.terminalHint} · Enter: submit"
       }
+  }
 }

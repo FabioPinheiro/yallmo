@@ -1,5 +1,7 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.clientharness.ControlAction
+
 /** Small hash router: ordinary links provide bookmarks and back/forward without a routing dependency. */
 enum ViewRoute(val title: String) {
   case Sessions(id: Option[String]) extends ViewRoute("Sessions")
@@ -8,6 +10,15 @@ enum ViewRoute(val title: String) {
   case Graph extends ViewRoute("Conversation graph")
   case Agents extends ViewRoute("Agents")
   case Blobs extends ViewRoute("Blobs")
+
+  def command: ControlAction = this match {
+    case Sessions(_) => ControlAction.Sessions
+    case Chat        => ControlAction.Chat
+    case Messages    => ControlAction.Messages
+    case Graph       => ControlAction.Graph
+    case Agents      => ControlAction.AgentRegistry
+    case Blobs       => ControlAction.Blobs
+  }
 
   def href: String = this match {
     case Sessions(Some(id)) => SessionRoute.href(id)

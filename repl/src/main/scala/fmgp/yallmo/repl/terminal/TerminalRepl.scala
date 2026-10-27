@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
+
 import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.grammar.{CompletionRequest, ReplGrammar}
@@ -11,7 +13,6 @@ import org.jline.reader.{
   EndOfFileException,
   LineReader,
   ParsedLine,
-  Reference,
   UserInterruptException,
   Widget
 }
@@ -99,7 +100,7 @@ final class TerminalRepl[R] private[terminal] (
                   browser.recorder,
                   transcriber,
                   terminalStatus,
-                  "m",
+                  ControlAction.Dictation,
                   browser.recordingStarted,
                   runtime
                 )
@@ -271,42 +272,24 @@ final class TerminalRepl[R] private[terminal] (
       browser: TerminalBrowserAudio,
       scope: Scope,
       runtime: Runtime[Any]
-  ): Unit = {
-    val name = "browser-speak"
-    reader.getWidgets.put(
-      name,
-      new Widget {
-        override def apply(): Boolean = {
-          Unsafe.unsafe { unsafe ?=>
-            val current = runtime.unsafe.run(state.get).getOrThrowFiberFailure()
-            val speak = browser
-              .speak(current)
-              .catchAll(error => ZIO.attempt(reader.printAbove(s"Browser speech failed: ${error.getMessage}")).ignore)
-            runtime.unsafe.run(speak.forkIn(scope)).getOrThrowFiberFailure()
-          }
-          true
-        }
+  ): Unit =
+    TerminalControlBindings.bind(reader, LineReader.VICMD, ControlAction.Speak) {
+      Unsafe.unsafe { unsafe ?=>
+        val current = runtime.unsafe.run(state.get).getOrThrowFiberFailure()
+        val speak = browser
+          .speak(current)
+          .catchAll(error => ZIO.attempt(reader.printAbove(s"Browser speech failed: ${error.getMessage}")).ignore)
+        val _ = runtime.unsafe.run(speak.forkIn(scope)).getOrThrowFiberFailure()
       }
-    )
-    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(name), "t")
-  }
+    }
 
   /** Binds NORMAL `q` to the existing typed `/exit` command rather than exiting the JVM from the widget. */
-  private def installQuitBinding(): Unit = {
-    val widgetName = "quit-repl"
-    reader.getWidgets.put(
-      widgetName,
-      new Widget {
-        override def apply(): Boolean = {
-          reader.getBuffer.clear()
-          reader.getBuffer.write("/exit")
-          reader.callWidget(LineReader.ACCEPT_LINE)
-          true
-        }
-      }
-    )
-    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(widgetName), "q")
-  }
+  private def installQuitBinding(): Unit =
+    TerminalControlBindings.bind(reader, LineReader.VICMD, ControlAction.Exit) {
+      reader.getBuffer.clear()
+      reader.getBuffer.write("/exit")
+      val _ = reader.callWidget(LineReader.ACCEPT_LINE)
+    }
 }
 
 object TerminalRepl {

@@ -25,7 +25,7 @@ sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080
 
 Type a prompt: the client creates once if necessary, retains that ID, then submits once. Later prompts reuse it.
 `/new [name]` creates explicitly; `/session list`, `/session resume <id>` and `/history` read server storage freshly.
-No selected configured agent means guidance with **zero prompt writes/session creation**; choose `--agent` or `Esc a`.
+No selected configured agent means guidance with **zero prompt writes/session creation**; choose `--agent` or use the agent picker from the [client controls guide](../docs/CLIENT_CONTROLS.md#connected-repl-keys).
 Initialize's optional `configuredAgentIds` supplies assistant choices, not the mixed human/presence `agents.list`.
 Remote provider/model metadata remains unknown; selection is per-client, never a global execution preference.
 

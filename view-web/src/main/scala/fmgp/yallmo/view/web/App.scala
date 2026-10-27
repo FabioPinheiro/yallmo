@@ -1,6 +1,7 @@
 package fmgp.yallmo.view.web
 
 import com.raquo.laminar.api.L.*
+import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.model.{AgentId, BlobId, MessageId}
 import fmgp.yallmo.server.protocol.YallmoProtocol.{MessageSnapshot, SessionSnapshot}
 import org.scalajs.dom
@@ -91,9 +92,63 @@ object App {
     }
     val route = Var(ViewRoute.parse(dom.window.location.hash))
     def openChat(): Unit = {
+      route.set(ViewRoute.Chat)
       dom.window.location.hash = ViewRoute.Chat.href
       sidebarOpen.set(false)
     }
+    def unavailable(): Unit =
+      notifications.publish(UiNotice("This control is not available right now.", "warn"))
+    def focus(selector: String): Unit = if !WebKeyboard.focus(selector) then unavailable()
+    def activate(selector: String): Unit = if !WebKeyboard.activate(selector) then unavailable()
+    def focusChat(selector: String): Unit = {
+      openChat()
+      // Hash routing mounts the composer before focus is applied; never steal focus after leaving Chat.
+      val _ = dom.window.requestAnimationFrame { _ =>
+        if mounted && ViewRoute.parse(dom.window.location.hash) == ViewRoute.Chat then focus(selector)
+      }
+    }
+    val keyboard = new WebKeyboard(
+      ViewRoute.tabs.map { tab =>
+        WebCommand(
+          tab.command,
+          () => {
+            dom.window.location.hash = tab.href
+            sidebarOpen.set(false)
+          }
+        )
+      } ++ List(
+        WebCommand(ControlAction.Edit, () => focusChat("#chat-composer")),
+        WebCommand(ControlAction.Agents, () => focus("#configured-agent")),
+        WebCommand(
+          ControlAction.Conversations,
+          () => {
+            sidebarOpen.set(true)
+            val _ = dom.window.requestAnimationFrame(_ => focus(".conversation-list button"))
+          }
+        ),
+        WebCommand(
+          ControlAction.NewConversation,
+          () => {
+            sidebarOpen.set(true)
+            val _ = dom.window.requestAnimationFrame(_ => activate("#new-conversation"))
+          }
+        ),
+        WebCommand(
+          ControlAction.Reload,
+          () => {
+            if route.now() == ViewRoute.Chat then activate("#reload-history") else refresh.emit(())
+          }
+        ),
+        WebCommand(ControlAction.ReloadConversations, () => chat.refresh()),
+        WebCommand(ControlAction.Username, () => focus("#username")),
+        WebCommand(ControlAction.Reconnect, () => activate("#reconnect")),
+        WebCommand(ControlAction.Dictation, () => focusChat(".voice-record")),
+        WebCommand(ControlAction.StopSpeech, () => speech.stop()),
+        WebCommand(ControlAction.Content, () => focus("#content"))
+      ),
+      () => sidebarOpen.set(false),
+      voice
+    )
     div(
       cls := "app",
       voice.state.signal
@@ -158,6 +213,7 @@ object App {
           cls := "toolbar",
           input(
             cls := "username",
+            idAttr := "username",
             aria.label := "Username",
             title := "Claimed author name (not authentication). Reconnect to apply.",
             value <-- humanName.signal,
@@ -168,6 +224,7 @@ object App {
           button(
             typ := "button",
             "Reconnect",
+            idAttr := "reconnect",
             disabled <-- humanName.signal.combineWith(connecting.signal, chat.state.signal).map {
               case (name, busy, state) =>
                 OrchestratorWSClient
@@ -179,7 +236,8 @@ object App {
               else "Apply username and refresh connection state."
             ),
             onClick --> (_ => connect())
-          )
+          ),
+          keyboard.view()
         ),
         div(
           cls := "content-area",
@@ -187,7 +245,7 @@ object App {
           mainTag(
             idAttr := "content",
             tabIndex := -1,
-            child <-- route.signal.map {
+            child <-- route.signal.distinct.map {
               case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
               case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
               case ViewRoute.Messages     =>

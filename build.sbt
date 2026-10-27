@@ -39,6 +39,8 @@ lazy val root = project
     coreJS,
     protocolJVM,
     protocolJS,
+    clientHarnessJVM,
+    clientHarnessJS,
     repl,
     server,
     viewWeb
@@ -150,9 +152,20 @@ lazy val protocol = crossProject(JSPlatform, JVMPlatform)
 lazy val protocolJVM = protocol.jvm
 lazy val protocolJS = protocol.js
 
+/** ClientHarness: shared client interaction policy, independent of transports and server runtime. */
+lazy val clientHarness = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Full)
+  .in(file("client-harness"))
+  .settings(
+    name := "yallmo-client-harness",
+    libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
+  )
+lazy val clientHarnessJVM = clientHarness.jvm
+lazy val clientHarnessJS = clientHarness.js
+
 lazy val repl = project
   .in(file("repl"))
-  .dependsOn(coreJVM, server)
+  .dependsOn(coreJVM, server, clientHarnessJVM)
   .settings(jvmSettings)
   .settings(
     name := "yallmo-repl",
@@ -199,7 +212,7 @@ lazy val bundle = taskKey[Unit]("Package the view server with the production SPA
 lazy val viewWeb = project
   .in(file("view-web"))
   .enablePlugins(ScalaJSPlugin)
-  .dependsOn(protocolJS)
+  .dependsOn(protocolJS, clientHarnessJS)
   .settings(
     name := "yallmo-view-web",
     scalaJSUseMainModuleInitializer := true,

@@ -1,6 +1,7 @@
 package fmgp.yallmo.view.web
 
 import com.raquo.laminar.api.L.*
+import fmgp.yallmo.clientharness.{KeyInput, KeyboardControls}
 import fmgp.yallmo.model.AgentId
 import org.scalajs.dom
 
@@ -46,6 +47,7 @@ private[web] object ChatView {
       button(
         typ := "button",
         "New conversation",
+        idAttr := "new-conversation",
         disabled <-- state.map(s => !s.enabled || s.creating || s.pending.nonEmpty || s.voiceBusy),
         onClick --> (_ => { model.newConversation(name.now()); openChat() })
       ),
@@ -102,6 +104,7 @@ private[web] object ChatView {
     val choices = state.map(s => (s.agents, s.current.agent.filter(s.agents.contains))).distinct
     select(
       cls := "agent-select",
+      idAttr := "configured-agent",
       aria.label := "Configured agent",
       title := "Changing agent resets provider continuation, not history.",
       disabled <-- state.map(s => s.creating || s.currentPending.nonEmpty),
@@ -123,7 +126,7 @@ private[web] object ChatView {
       alt: Boolean,
       composing: Boolean
   ): Boolean =
-    key == "Enter" && !shift && !ctrl && !meta && !alt && !composing
+    KeyboardControls.shouldSubmit(KeyInput(key, shift, ctrl, meta, alt, composing))
 
   private def voiceControls(model: ChatModel, voice: VoiceModel, target: () => VoiceDraftTarget): HtmlElement = {
     val state = voice.state.signal
@@ -149,7 +152,7 @@ private[web] object ChatView {
           case VoicePhase.Uploading    => "Uploading…"
           case VoicePhase.Transcribing => "Transcribing…"
         }),
-        title := (if voice.supported then "Record up to 30 seconds; insert a transcript without sending"
+        title := (if voice.supported then "Record up to 30 seconds; Space: stop and transcribe · Esc: discard"
                   else "Microphone capture requires HTTPS or localhost and AudioWorklet support"),
         disabled <-- state.combineWith(model.state.signal).map { (v, c) =>
           !voice.supported || !v.available || c.creating || c.pending.nonEmpty ||
@@ -227,6 +230,7 @@ private[web] object ChatView {
         button(
           typ := "button",
           "Reload history",
+          idAttr := "reload-history",
           disabled <-- state.map(s => s.active.isEmpty || s.creating || s.currentPending.nonEmpty),
           onClick --> (_ => model.reload())
         )
@@ -287,6 +291,7 @@ private[web] object ChatView {
         label(
           "Message",
           textArea(
+            idAttr := "chat-composer",
             rows := 3,
             value <-- current.map(_.draft),
             placeholder := "Write a message… (Enter to send · Shift+Enter for newline)",

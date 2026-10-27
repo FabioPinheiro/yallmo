@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.{AudioFormat, YallmoError}
 import fmgp.yallmo.repl.voice.Transcriber
@@ -14,6 +15,8 @@ import org.jline.terminal.impl.DumbTerminal
 import zio.*
 
 final class VoiceInsertSuite extends FunSuite {
+  private def control(command: String): ControlAction =
+    if command == "v" then ControlAction.Voice else ControlAction.Dictation
   test("disabled voice reports configuration before either recorder starts and preserves draft and cursor") {
     for command <- List("v", "m") do {
       val output = new ByteArrayOutputStream()
@@ -34,7 +37,7 @@ final class VoiceInsertSuite extends FunSuite {
           ZIO.dieMessage("Disabled voice must not record")
       }
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, None, status, command).install()
+      new VoiceInsert(reader, recorder, None, status, control(command)).install()
       try {
         assertEquals(reader.readLine("test> "), "drXaft")
         assert(output.toString(UTF_8).contains("--transcriber-agent"))
@@ -79,7 +82,7 @@ final class VoiceInsertSuite extends FunSuite {
       var observedMode: Option[String] = None
       status.install()
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, control(command)).install()
       reader.getWidgets.put(
         "test-after-voice",
         new Widget {
@@ -122,11 +125,12 @@ final class VoiceInsertSuite extends FunSuite {
                                     else ZIO.fail(new IllegalStateException(result)))
       }
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, control(command)).install()
       val completed = new CountDownLatch(1)
-      val original = reader.getWidgets.get(s"voice-insert-$command")
+      val widgetName = TerminalControlBindings.widgetName(LineReader.VICMD, control(command))
+      val original = reader.getWidgets.get(widgetName)
       reader.getWidgets.put(
-        s"voice-insert-$command",
+        widgetName,
         new Widget {
           def apply(): Boolean = try original.apply()
           finally completed.countDown()
@@ -184,7 +188,7 @@ final class VoiceInsertSuite extends FunSuite {
           else ZIO.succeed(" ")
       }
       new TerminalMenus(reader, None).install()
-      new VoiceInsert(reader, recorder, Some(transcriber), status, command).install()
+      new VoiceInsert(reader, recorder, Some(transcriber), status, control(command)).install()
       var snapshots = List.empty[(String, Int, String)]
       reader.getWidgets.put(
         "test-preservation",
@@ -204,7 +208,7 @@ final class VoiceInsertSuite extends FunSuite {
   }
 
   test("voice insertion uses the single-key NORMAL binding") {
-    assertEquals(VoiceInsert.VoiceCommand, "v")
+    assertEquals(ControlAction.Voice.terminalKey, Some("v"))
   }
 
   test("voice insertion resumes at the logical text position after NORMAL") {

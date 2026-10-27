@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.model.AgentId
 import fmgp.yallmo.repl.{ReplActiveAgent, ReplAgentChoice}
 import org.jline.keymap.KeyMap
@@ -24,18 +25,24 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
     val keys = new KeyMap[Binding]()
     keys.setAmbiguousTimeout(50L)
     reader.getKeyMaps.put(name, keys)
-    bind("ignore", Vector.empty) { () }
+    bindNative("ignore", Vector.empty) { () }
     keys.setNomatch(new Reference(s"$name-ignore"))
     keys.setUnicode(new Reference(s"$name-ignore"))
-    bind("up", Vector("k", "\u001b[A", "\u001bOA") ++ capability(Capability.key_up)) {
+    bind(
+      ControlAction.Previous,
+      ControlAction.Previous.terminalKey.toVector ++ Vector("\u001b[A", "\u001bOA") ++ capability(Capability.key_up)
+    ) {
       index = (index - 1).max(0); error = None; render()
     }
-    bind("down", Vector("j", "\u001b[B", "\u001bOB") ++ capability(Capability.key_down)) {
+    bind(
+      ControlAction.Next,
+      ControlAction.Next.terminalKey.toVector ++ Vector("\u001b[B", "\u001bOB") ++ capability(Capability.key_down)
+    ) {
       index = (index + 1).min((entries.size - 1).max(0)); error = None; render()
     }
-    bind("back", Vector("\u001b", "\u0003"))(leave(LineReader.VICMD))
-    bind("insert", Vector("i"))(leave(LineReader.VIINS))
-    bind("enter", Vector("\r", "\n")) {
+    bind(ControlAction.Normal, ControlAction.Normal.terminalKey.toVector ++ Vector("\u0003"))(leave(LineReader.VICMD))
+    bind(ControlAction.Edit, ControlAction.Edit.terminalKey.toVector)(leave(LineReader.VIINS))
+    bindNative("enter", Vector("\r", "\n")) {
       entries.lift(index).foreach { entry =>
         pending = Some(entry.id)
         suspended = Some(reader.getBuffer.copy())
@@ -44,7 +51,7 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
         reader.yieldWithoutNewline()
       }
     }
-    bind("paste", Vector("\u001b[200~"))(discardPaste())
+    bindNative("paste", Vector("\u001b[200~"))(discardPaste())
     val existing = Option(reader.getWidgets.get(LineReader.CALLBACK_INIT))
     reader.getWidgets.put(
       LineReader.CALLBACK_INIT,
@@ -103,7 +110,10 @@ private[terminal] final class TerminalAgentMode(reader: StatusLineReader) extend
   private def capability(value: Capability): Vector[String] =
     Option(KeyMap.key(reader.getTerminal, value)).filter(_.nonEmpty).toVector
 
-  private def bind(suffix: String, keys: Vector[String])(action: => Unit): Unit = {
+  private def bind(control: ControlAction, keys: Vector[String])(action: => Unit): Unit =
+    TerminalControlBindings.bindKeys(reader, name, control, keys)(action)
+
+  private def bindNative(suffix: String, keys: Vector[String])(action: => Unit): Unit = {
     val widgetName = s"$name-$suffix"
     reader.getWidgets.put(
       widgetName,

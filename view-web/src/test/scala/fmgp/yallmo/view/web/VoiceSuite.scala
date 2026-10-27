@@ -1,5 +1,6 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.clientharness.{DictationKeyboard, KeyInput}
 import fmgp.yallmo.model.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
@@ -288,6 +289,32 @@ final class VoiceSuite extends FunSuite {
       assert(notices.exists(_.message.contains("30-second limit")))
       assert(!chat.state.now().voiceBusy)
     }
+  }
+
+  test("Space stops once and Escape discards the recording without uploads or draft changes") {
+    val chat = chatModel()
+    chat.draft("keep this")
+    val rpc = new Rpc
+    val recorder = new Recorder
+    val voice = model(chat, rpc, recorder, mutable.ArrayBuffer.empty)
+    val keys = new DictationKeyboard(() => voice.keyboardMode, () => voice.stop(), () => voice.cancel())
+    voice.configure(info)
+    voice.start(chat.voiceTarget(None))
+    val capture = recorder.sessions.last
+    capture.started()
+    assert(keys.keyDown(KeyInput(" ")))
+    assert(capture.stopped)
+    assertEquals(voice.state.now().phase, VoicePhase.Stopping)
+    assert(keys.keyDown(KeyInput(" ", repeat = true)))
+    assert(keys.keyUp(" "))
+    assert(keys.keyDown(KeyInput("Escape")))
+    assert(capture.cancelled)
+    capture.completed(Array.fill[Byte](46)(0), false)
+    assert(rpc.uploads.isEmpty)
+    assert(rpc.invocations.isEmpty)
+    assertEquals(chat.state.now().current.draft, "keep this")
+    assertEquals(voice.state.now().phase, VoicePhase.Idle)
+    assert(!chat.state.now().voiceBusy)
   }
 
   test("capture and transfer callbacks after discard, disconnect or reconfigure cannot change any draft") {

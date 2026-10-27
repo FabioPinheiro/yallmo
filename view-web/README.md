@@ -2,6 +2,7 @@
 
 Scala.js / Laminar session inspector and trusted-browser chat. See [the server guide](../server/README.md) for development,
 production bundling, embedding, API documentation and security boundaries.
+For keyboard shortcuts, modes and dictation keys, use the [client controls quick reference](../docs/CLIENT_CONTROLS.md).
 
 ## Layout
 
@@ -74,9 +75,9 @@ late permission grants after cancellation are immediately released. Tracks close
 The elapsed timer highlights the last five seconds. At **30 seconds**, recording stops automatically, a visible
 notification announces the limit, and transcription starts once. There is no beep or automatic restart. Repeat with a
 new explicit click. Starting capture stops browser speech; Read buttons are disabled only while microphone capture is
-active to avoid recording synthesized speech. No new keyboard shortcuts are added; Send/session creation/reconnect are blocked during dictation,
-while the draft stays editable. Leaving Chat, switching conversations, page exit/freeze or disconnect discards capture
-and prevents stale results from changing any draft.
+active to avoid recording synthesized speech.
+Send/session creation/reconnect are blocked during dictation, while the draft stays editable.
+Leaving Chat, switching conversations, page exit/freeze or disconnect discards capture and prevents stale results from changing any draft.
 
 The resampler/WAV encoder (`vite/audio-core.js`), browser adapters (`vite/browser-audio.js`) and AudioWorklet
 (`vite/capture-worklet.js`) live in this project and are also imported by the REPL's `browser-STT-TTS/` page. One bounded mono 16 kHz PCM16 WAV (at most 960044 bytes) is uploaded through ordinary
@@ -110,8 +111,8 @@ creation, pending turns and connection setup also block it. Claimed authorship i
 client can claim a name and execute configured agents/tools. Keep the backend and Vite proxy on trusted networks.
 
 Choose an agent in the shared toolbar from the configured IDs advertised by `initialize` (not the mixed runtime
-registry in Agents). **Enter sends; Shift+Enter inserts a newline.** IME composition and Ctrl/Cmd+Enter do not send.
-A blocked Enter attempt shows a small temporary notification (also logged to the browser console); with text but no
+registry in Agents). Send behavior and shortcuts are defined in the [client controls guide](../docs/CLIENT_CONTROLS.md#website-keys).
+A blocked send attempt shows a small temporary notification (also logged to the browser console); with text but no
 agent, a warning appears beside the disabled Send button. Failures also notify, while important recovery instructions
 remain in the conversation. Notifications expire after five seconds and never retry requests.
 

@@ -2,6 +2,9 @@
 
 > Planning document only. This directory deliberately contains no TUI implementation yet.
 
+Implemented keys and modes are documented only in the
+[client controls quick reference](../../../../../../../../docs/CLIENT_CONTROLS.md); this plan does not define active bindings.
+
 ## Purpose
 
 Provide a full-screen, local terminal client for the existing typed `fmgp.yallmo.repl` application, plus an explicitly opt-in local PTY workspace and a multi-agent orchestration console. The ordinary conversation view remains a presentation adapter; PTY processes and agent workers are separately governed capabilities, never incidental UI features.
@@ -56,9 +59,9 @@ The first usable screen should retain the conversation while offering an editabl
 │ [conversation scrolls; PgUp/PgDn or wheel if supported]           │
 ├────────────────────────────────────────────────────────────────────┤
 │ > How is `bash` constrained?                                      │
-│   Tab: command completion  Enter: submit  Esc: cancel/edit menu   │
+│   Draft editing · command completion · action menu               │
 ├────────────────────────────────────────────────────────────────────┤
-│ ready · 12 messages · Ctrl+K help · Ctrl+C interrupt/exit         │
+│ ready · 12 messages · current mode and action hints              │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -71,7 +74,7 @@ The first usable screen should retain the conversation while offering an editabl
    - Support scrolling, jump to latest, and an unread/new-output indicator when the user is inspecting earlier output.
 
 2. **Multi-line prompt composer**
-   - Insert newlines without submitting (for example, `Alt+Enter`); submit with `Enter` when the input is complete.
+   - Support multiline editing and explicit submission. Preserve documented current bindings until a shared-policy change is implemented.
    - Maintain in-memory prompt history for the session; persistent history is a later, opt-in decision and must not replace JLine's existing history format without migration.
    - Use `ReplGrammar.complete` for `/` command completion and show a selectable completion popup.
    - Treat `//` exactly as the core grammar does: it sends a literal prompt that begins with `/`.
@@ -85,7 +88,7 @@ The first usable screen should retain the conversation while offering an editabl
 4. **Run lifecycle**
    - Display an unambiguous busy state from submission until the turn completes or fails.
    - Disable duplicate submission while a turn is active; still allow transcript scrolling and the planned interrupt action.
-   - Add a visible interrupt affordance only after a core cancellation contract exists. Until then, `Ctrl+C` keeps the established terminal-client behavior (a second consecutive interrupt exits).
+   - Add a visible interrupt affordance only after a core cancellation contract exists. Until then, preserve the terminal-client interruption behavior in the central controls guide.
    - Render failures without clearing the draft or transcript.
 
 5. **Terminal behavior**
@@ -108,7 +111,7 @@ The first usable screen should retain the conversation while offering an editabl
    - Present approval requests and conflicts in a dedicated queue; an agent must never approve its own privileged action.
 
 8. **Keyboard help and accessibility**
-   - Provide an always-reachable keybinding overlay (`Ctrl+K` proposed) and a visible status hint.
+   - Provide an always-reachable keybinding overlay and visible status hint, derived from ClientHarness. Document new bindings only in the central controls guide when implemented.
    - Keep a predictable focus model: transcript, composer, completion popup, modal/overlay, agent graph, and PTY pane.
    - Avoid mouse-only operations. Mouse scrolling may be optional and never required.
 

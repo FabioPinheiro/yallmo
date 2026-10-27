@@ -6,17 +6,20 @@ Shared audio code lives in `view-web/vite/`: `audio-core.js`, `browser-audio.js`
 This page imports those modules directly; sbt packages them alongside the page, and the bridge serves only those
 three shared files under `/view-web/vite/`. No Vite build or frontend dependency installation is needed for the REPL.
 
+Keyboard shortcuts and modes live in the [client controls quick reference](../docs/CLIENT_CONTROLS.md).
+This bridge is a retained embedded feature, not enabled by the current connected REPL entry point.
+
 ## Setup
 
 Configure the REPL's explicit `transcriberAgent` first: an audio-capable agent with a nonblank model/prompt and empty
 `tools`, `retrievers`, `skills` and `extensions` allowlists. See [the configuration example](../docs/examples/yallmo.json).
-Missing references disable `m`/`v` before capture; invalid explicit configuration fails startup locally. Chat selection
+Missing references disable voice before capture; invalid explicit configuration fails startup locally. Chat selection
 (including no selection) and chat-agent switches do not change the voice agent. Local adapter checks do not prove remote
 endpoint/model audio compatibility.
 
-1. Use the REPL's browser audio action (`m`/`t`) and open its exact `http://127.0.0.1:5180/#token=…` URL. The REPL prints this setup link only when the page is disconnected, not on every connected audio action.
+1. Use a REPL browser audio action from the [retained controls reference](../docs/CLIENT_CONTROLS.md#retained-terminal-audio-and-provider-controls) and open its exact `http://127.0.0.1:5180/#token=…` URL. The REPL prints this setup link only when the page is disconnected, not on every connected audio action.
 2. Click **Enable audio** in a focused desktop browser supporting AudioWorklet, Web Audio, microphone access and `speechSynthesis`. Accept microphone permission. The click resumes Web Audio and requests an “Audio enabled.” speech test before awaiting permission. Setup is bounded to 20 seconds (speech test: 4.5 seconds). No claim of audible output is made from enqueueing or even browser events.
-3. Keep the tab open. Back in the REPL, `m` starts capture, Space stops/transcribes, Esc discards; `t` speaks explicitly selected assistant text once. Nothing records or speaks automatically, apart from the user-clicked setup test. The microphone stream stays open/indicated while enabled, but capture buffers/processing exist only during a record command.
+3. Keep the tab open. Back in the REPL, use the central controls reference to record, finish/discard capture or explicitly speak the selected assistant text. Nothing records or speaks automatically, apart from the user-clicked setup test. The microphone stream stays open/indicated while enabled, but capture buffers/processing exist only during a record command.
 4. **Disable audio**, page exit, freezing, connection loss, ended tracks or a suspended/closed audio context stop tracks and speech. Reopen the original setup URL after reload: its token fragment is immediately removed from browser history/address bar and kept only in memory. Failed operations never replay. Re-enable creates a fresh client/operation context; if the previous disconnect is uncertain, wait five seconds before retrying.
 
 The server binds to `0.0.0.0` on the config file’s top-level `browserAudioPort` (default `5180`) for Docker compatibility; if that port is occupied, startup fails locally without switching ports. Newly created config files include `"browserAudioPort": 5180`; older files without it use the same default without being rewritten. Valid ports are 1–65535. Edit the config and restart the REPL to change it; the browser uses the printed `127.0.0.1` URL with that port. The listener accepts connections on all IPv4 interfaces: protect it with host firewall rules and publish Docker only on host loopback. For an optional SSH tunnel, preserve the *same port and canonical host* on both sides, e.g. `ssh -N -L 127.0.0.1:5180:127.0.0.1:5180 user@host`. Open the unchanged setup URL locally. An occupied local port, `localhost`, or a different forwarded port will not satisfy the bridge's exact Host/Origin checks. This is not remote network exposure/support.
@@ -76,6 +79,6 @@ Tests cover canonical WAV/bounds/clipping, native rates including 44.1/48 kHz, b
 
 - Through the actual REPL server, verify page/modules/styles/worklet load under its CSP; no CORS/console errors, external requests, or token in request URLs; token disappears from address bar. Reload without the original fragment must require reopening the URL. A second active tab must be rejected without evicting the first.
 - Enable: grant/deny/ignore permission, then Disable while permission is pending and grant it late. Late tracks must stop and no connection/recording may appear. Confirm the explicit speech test is actually audible; lack of audibility is not contradicted by a browser event.
-- Record intelligible speech on 44.1/48 kHz devices: Space produces a valid transcript in the saved draft, never submission; Esc before/after actual start discards without upload/transcription. Run to 30 seconds; confirm one bounded WAV, no feedback, responsive terminal, and no restart on repeated polls. Check quick stop, device unplug, permission revocation and context suspension.
+- Record intelligible speech on 44.1/48 kHz devices: finishing capture produces a valid transcript in the saved draft, never submission; discarding before/after actual start produces no upload/transcription. Run to 30 seconds; confirm one bounded WAV, no feedback, responsive terminal, and no restart on repeated polls. Check quick stop, device unplug, permission revocation and context suspension.
 - Speak requested assistant text only; check real audible output, completion and replacement. Deny/stall speech or move to a background tab: errors/timeouts must return to a recoverable disabled state, not report enqueue as completion. OS/network voice behavior is browser-dependent.
 - During start acknowledgement and upload, cancel/close/kill the server, go offline, sleep or freeze the tab. Tracks/speech must stop on reconciliation/failure; no late/cancelled upload can become a transcript. Re-enable must not replay any prior operation. Pagehide disconnect is best effort; the backend heartbeat is authoritative when a browser cannot deliver it.

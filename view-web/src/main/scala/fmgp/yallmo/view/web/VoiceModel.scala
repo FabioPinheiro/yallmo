@@ -1,6 +1,7 @@
 package fmgp.yallmo.view.web
 
 import com.raquo.laminar.api.L.Var
+import fmgp.yallmo.clientharness.DictationMode
 import fmgp.yallmo.model.{AgentId, MessagePayload}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import scala.concurrent.ExecutionContext
@@ -42,6 +43,10 @@ private[web] final class VoiceModel(
   import VoicePhase.*
   val state = Var(VoiceState())
   def supported: Boolean = recorder.available
+  def keyboardMode: DictationMode =
+    if state.now().phase == Recording then DictationMode.Recording
+    else if state.now().busy then DictationMode.Busy
+    else DictationMode.Inactive
   private var identity = Option.empty[AgentId]
   private var generation = 0L
   private var capture = Option.empty[VoiceRecorder.Handle]

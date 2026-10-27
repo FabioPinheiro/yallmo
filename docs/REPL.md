@@ -2,6 +2,8 @@
 
 > The source package is `fmgp.yallmo.repl`. This file is named `REPL.md` to retain the project’s historical spelling.
 
+For keyboard shortcuts and modes, use the [client controls quick reference](CLIENT_CONTROLS.md).
+
 The REPL entry point is client-only. It connects to `ws://127.0.0.1:8080/rpc` by default; `--server` overrides
 that endpoint. Configuration, providers, tools, storage and prompt execution belong to a separately running server.
 No embedded application, recorder or browser bridge starts as a fallback.
@@ -16,7 +18,7 @@ sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
 `--user-name <id>` is required; the claimed human ID sent to the server is `user-<id>`, not authentication.
-`--agent <id>` is optional. Without a selection prompts cause no writes/session creation; press `Esc`, `a` to choose.
+`--agent <id>` is optional. Without a selection prompts cause no writes/session creation; use the agent picker to choose.
 `--log-level` defaults to `warning`. `--config`/`--storage` are server-only. `--transcriber-agent` is rejected while
 connected voice integration is pending; it never activates a local fallback.
 
@@ -52,7 +54,7 @@ login/transcription/TTS services, **even when prompts are enabled**. `--config`/
 Connected commands: `/help`, `/session list`, `/session resume <id>`, `/history`, `/log <level>`, `/exit`; permitted
 Operators also get **prompts and `/new [name]`**. When `diagnostics.request` is advertised, `/debug request` is also
 available in help/completion. `/tools`, `/debug print|export`, provider catalog/login, voice/TTS, fork and upload
-remain unavailable; no remote capability silently activates a local service. NORMAL `a` chooses a per-client agent
+remain unavailable; no remote capability silently activates a local service. The agent picker chooses a per-client agent
 preference. Use initialize's configured assistant IDs when supplied, not mixed human/presence `agents.list` IDs.
 Server selection validation is independent. Provider/model metadata is unknown and no active local runtime is invented.
 The cached initialization result determines capability; reading it does not issue a second initialize.
@@ -74,7 +76,7 @@ Output carries a warning and terminal controls are sanitized. No server filesyst
 
 ### Prompt and session state
 
-Select `--agent <id>` or `Esc a` **before prompting**: no selection means explicit guidance and zero writes/session
+Select `--agent <id>` or choose an agent in the picker **before prompting**: no selection means explicit guidance and zero writes/session
 creation. The first prompt calls `sessions.create` once, immediately retains the returned ID in its resulting state,
 then calls `turn.submit` once. Later prompts reuse that ID. `/new [name]` explicitly creates a remote session when
 permitted and clears last-known head/reset intent. Failed create preserves the previous session. No client `Session`,
@@ -133,7 +135,7 @@ stored author IDs are not rewritten.
 
 ## Active-agent footer
 
-Capable terminals show one bottom status line: local INSERT/NORMAL/PROVIDER/AGENTS/voice hints on the left and
+Capable terminals show one bottom status line: current-mode/action hints on the left and
 `<agent-id> (<provider> - <model> • <thinking-level>)` on the right. Provider labels are configured instance IDs,
 such as `local` or `chatgpt-2`, not just adapter types. All values come from the selected native agent's configuration;
 unselected startup has no invented agent/model footer. Unspecified thinking
@@ -145,27 +147,10 @@ The footer reflows on terminal resize using display-column widths. On narrow ter
 local hints and is truncated with an ellipsis as needed. Configured labels have ANSI/control characters removed.
 Terminals without status-bar support omit the footer.
 
-## Line-editor modes
+## Agent selection and login
 
-The REPL starts in `[NORMAL]`. Press `i` to enter `[INSERT]` and type a draft; `Esc` returns to NORMAL.
-After ordinary submissions, subsequent prompts retain the INSERT default. Menu handoffs restore their own mode and draft.
-NORMAL is an explicit command/navigation map rather than the full Vi editor.
-
-| Mode | Keys |
-| --- | --- |
-| `[INSERT]` | Type a draft, `Enter` to submit, `Esc` for NORMAL. `p` and `a` are ordinary text. |
-| `[NORMAL]` | `p`: PROVIDER, `a`: AGENTS, `i`: edit, `v`: JVM voice input, `m`: browser microphone, `t`: speak latest assistant reply, `q`: exit. Only `i` enters INSERT. `Esc` and unrecognized keys do nothing. Non-editing Vi movement and arrow keys remain available. |
-| `[PROVIDER]` | `Up`/`Down` (or `j`/`k`): select; `Enter`: inspect/New/confirm; `r`: refresh list; ChatGPT details only: `Enter` or `l` for browser login; `Esc`: back, then NORMAL; `Ctrl+C`: cancel form. |
-| `[AGENTS]` | Lists configured agents, types, provider IDs and models; marks the active agent. `Up`/`Down` or `j`/`k`: highlight, `Enter`: activate, `Esc`/`Ctrl+C`: cancel to NORMAL, `i`: edit. |
-
-The footer displays controls for the active mode; AGENTS does not repeat that hint in its list. Navigation does not submit or change the chat draft or
-cursor; `Enter` in menus/forms never submits a chat prompt. Catalog actions erase their transient prompt and redraw in place,
-without adding `yallmo>` lines to scrollback. The chat cursor is hidden while either picker is open and restored on return,
-login handoff, interruption or exit. From PROVIDER, press `Esc` back to its list, then `Esc` to
-NORMAL and `i` to edit the original draft. AGENTS also supports `i` directly. Profile login bypasses command parsing,
-chat buffers and history. The managed menu is cleared during private auth input and restored to the **same profile's
-details** after success, cancellation, timeout or failure, with credential presence reloaded from disk. The exact chat
-draft and cursor remain unchanged; no global credentials are read or modified.
+Keyboard shortcuts, mode tables, picker behavior and retained terminal audio controls are documented only in the
+[client controls quick reference](CLIENT_CONTROLS.md). This section covers session and credential behavior.
 
 Agent selection is **independent of sessions**: selecting a different agent keeps the current session ID, complete
 conversation, editable draft, log level and last provider-request capture. Subsequent replies use the newly selected
@@ -179,15 +164,18 @@ show setup guidance. Agent creation/deletion is not implemented.
 
 `/login` is not a REPL command: it is treated like any unknown command and excluded from help and Tab completion.
 Login is available only inside the selected ChatGPT provider’s details; there is no global login action.
+The managed catalog is cleared during private authentication input and restored to the same profile's details after
+success, cancellation, timeout or failure, with credential presence reloaded from disk. The exact chat draft/cursor
+remain unchanged; no global credentials are read or modified.
 
 ## Provider catalog
 
-`Esc p` opens every configured provider through the server-owned provider catalog, even with no selected agent. Arrow keys and
-`Enter` open configuration details: ID, type, sanitized endpoint and credential presence. Presence is **not** a validity
+The provider catalog exposes every configured provider, even with no selected agent. Inspecting a profile shows
+its ID, type, sanitized endpoint and credential presence. Presence is **not** a validity
 or successful-authentication check. Listing, inspection and creation do not initialize providers, perform OAuth or
-contact endpoints. `r` rereads the file. AGENTS selects the active agent; PROVIDER does not select or assign a provider.
+contact endpoints. Refresh rereads the file. Agent selection is separate; the provider catalog does not select or assign a provider.
 
-Select **New provider**, choose a type with arrows and `Enter`, and enter an exact, case-sensitive ID:
+Select **New provider**, choose a type, and enter an exact, case-sensitive ID:
 
 - **OAI**: also enter an absolute HTTP(S) base URL with a host, for example ID `local-extra` and URL
   `http://localhost:12434/v1`. The URL is hidden while typing; review omits userinfo, query and fragment.
@@ -195,17 +183,16 @@ Select **New provider**, choose a type with arrows and `Enter`, and enter an exa
   endpoint is shown, and the saved profile is logged out. Inspect it to log in, even without a selected agent.
 
 Only **ChatGPT details** offer selectable **Login (browser)** (or **Re-login** when credentials
-are present). Use `Enter`, or `l` scoped to those details. OAI details have no login actions; the provider
-list has no global login entries or `l` actions. Bracketed pastes cannot trigger menu actions. No browser is opened
-automatically. Paste a browser callback only at the private hidden redirect prompt, never in chat. Empty input,
-`cancel`, Ctrl+C or EOF cancels browser input; Enter/Ctrl+C/EOF cancels browser exchange. Authentication is timeout bounded.
+are present). OAI details have no login actions; the provider list has no global login entries. Bracketed pastes cannot trigger menu actions. No browser is opened
+automatically. Paste a browser callback only at the private hidden redirect prompt, never in chat.
+Private-input cancellation controls are listed in the [client controls guide](CLIENT_CONTROLS.md#retained-terminal-audio-and-provider-controls).
+Authentication is timeout bounded.
 Saved feedback means only that the selected profile's credentials were persisted to the private config, with an
 explicit restart notice. It does not mean the active agent/runtime is now logged in. Cancellation/failure does not
 write credentials. Other profiles are never a fallback.
 
-Forms support typing and Backspace (append/erase, not a general cursor editor), with a visible 4096-unit UTF-16 field
-limit. `j`/`k`/`l`/`d` are ordinary form text. `Enter` advances to review; only the explicit **Save provider** confirmation
-writes. `Esc` goes back; leaving type selection or `Ctrl+C` abandons the draft. **Cancel** also abandons it. Validation
+Forms use append/erase editing, not a general cursor editor, with a visible 4096-unit UTF-16 field limit.
+Only the explicit **Save provider** confirmation writes; cancelling abandons the draft. Validation
 or save failure retains the form for correction/retry. Once publication starts, cancellation is not a rollback.
 Form values and menu actions never enter chat history, agent transcripts or command parsing. IDs are displayed with
 terminal-control/format characters sanitized; malformed configured endpoints show `<invalid endpoint>`. Credentials,
@@ -224,7 +211,7 @@ that snapshot. To use a newly saved provider, configure an agent referencing its
 Provider edit/delete and live config reload are not implemented. Saves are serialized only within this catalog instance; coordinate external writers because
 another process racing between read and replace can lose updates. Do not edit concurrently.
 
-## INSERT commands
+## Slash commands
 
 | Command | Meaning |
 | --- | --- |
@@ -254,7 +241,8 @@ This ordering is enforced by the core `Orchestrator.submit` API, not by REPL per
 use the same operation with an execution configured by `runner.execution(agent, staticContext)`. `Orchestrator.turn`
 remains a low-level provider call without session persistence.
 
-Press Ctrl+C twice consecutively to exit. Prefix a prompt with `//` to send a literal prompt beginning
+Interruption and exit controls are listed in the [client controls guide](CLIENT_CONTROLS.md#connected-repl-keys).
+Prefix a prompt with `//` to send a literal prompt beginning
 with `/`. Provider request captures are written under `debug/` relative to the REPL's startup directory and can contain
 prompt and tool-result content; `/debug request` displays only the most recent capture from the current session. Captures
 are not automatically cleaned up. Use `/debug request` only in an appropriate local terminal. Provider continuations are
@@ -290,24 +278,17 @@ remote model audio compatibility; those remain unverified until a successful inv
 
 ### Editable voice insertion
 
-In the terminal client, INSERT uses JLine's Vi insert map and NORMAL uses explicit command/navigation bindings. While editing a draft, press `Esc`, then
-`v` for the JVM microphone or `m` for the browser microphone (setup below) to enter recording mode. Speak, press `Space` to stop, or `Esc` to cancel. The client transcribes the audio
-and inserts the text at the original cursor position; it does **not** submit the draft. Press `Enter` only after making
-any desired edits (`i` enters INSERT). A 30-second capture limit remains in effect. On capable terminals, a persistent bottom status bar
-shows `[INSERT]`, `[NORMAL]`, `[PROVIDER]`, `[AGENTS]`, `[VOICE]` (waiting for actual microphone start), `[RECORDING]`, or `[TRANSCRIBING]` together with the relevant keys; it is hidden when
-the terminal cannot support a JLine status bar.
+For activation, stop/discard keys, mode transitions and draft-preservation rules, use the
+[retained terminal controls reference](CLIENT_CONTROLS.md#retained-terminal-audio-and-provider-controls).
+The following describes data flow and persistence, not additional bindings.
 
-`Esc` first switches from INSERT to NORMAL; pressing it again in NORMAL does nothing. `v` and `m` are terminal-client keybindings, not
-REPL commands. They do not change the active chat session, head, context or continuation. Every successful exchange
+Voice insertion does not submit a prompt or change the active chat session, head, context or continuation. Every successful exchange
 is retained separately before draft insertion, even if the draft is later discarded: a generated `transcription-<uuid>`
 session contains a human-authored audio reference as root and the transcriber-authored assistant transcript as its child.
 Audio is stored before inference; an inference failure leaves the audio message/blob without an assistant transcript.
 No user-supplied session name is needed. These sessions appear in normal listings, but are never implicitly resumed or
 imported into ordinary chat or later voice requests. Messages and blobs are process-local and do not survive restart.
 A storage failure is reported explicitly and leaves the draft unchanged.
-In NORMAL, `q` submits the typed `/exit` command and closes the REPL. Voice completion, cancellation or failure returns to NORMAL;
-press `i` to edit. Cancellation, failure and empty transcripts preserve the exact draft and NORMAL cursor. Capture completion/error/deadline
-returns without requiring another key.
 
 ```mermaid
 sequenceDiagram
@@ -318,9 +299,9 @@ sequenceDiagram
     participant Model as Configured voice endpoint/model
     participant Agent as normal REPL / AgentRunner
 
-    User->>Line: Esc, v
+    User->>Line: Start voice insertion
     Line->>Line: preserve editable draft and cursor
-    Line->>Recorder: record until Space or Esc (maximum 30 seconds)
+    Line->>Recorder: record until stop/discard (maximum 30 seconds)
     Recorder->>Recorder: microphone → in-memory 16 kHz mono WAV
     Recorder-->>Line: CapturedAudio(AudioAttachment with BlobId, WAV bytes)
     Line->>Voice: transcribe(audio)
@@ -330,7 +311,7 @@ sequenceDiagram
     Voice->>Voice: append assistant transcript as child of audio message
     Voice-->>Line: transcript text
     Line->>Line: insert transcript at the saved cursor
-    Note over User,Line: User reviews and edits the draft, then presses Enter.
+    Note over User,Line: User reviews and edits the draft, then explicitly sends it.
     User->>Agent: submitted draft
     Agent-->>Line: assistant response
     Line->>User: assistant> response
@@ -338,18 +319,18 @@ sequenceDiagram
 
 ### Browser microphone and explicit speech
 
-1. In NORMAL, press `m` (or `t`) to start the browser bridge lazily. Its setup URL is printed only while the webpage is disconnected,
-   not during connected recording or speech. With no enabled page, the action fails
-   locally without submitting anything; text and JVM `v` remain available. Open the **exact** `http://127.0.0.1:5180/#token=…` URL.
+1. Use a browser audio action from the [retained controls reference](CLIENT_CONTROLS.md#retained-terminal-audio-and-provider-controls)
+   to start the bridge lazily. Its setup URL is printed only while the webpage is disconnected, not during connected
+   recording or speech. With no enabled page, the action fails locally without submitting anything; text and JVM voice
+   remain available. Open the **exact** `http://127.0.0.1:5180/#token=…` URL.
 2. In a focused desktop browser with AudioWorklet, Web Audio and `speechSynthesis`, click **Enable audio** and grant microphone
    permission. The click requests an “Audio enabled.” speech test. Keep the tab open; the microphone stream remains open/indicated
-   while enabled, although recording buffers exist only for an explicit `m` operation. **Disable audio** releases it.
-3. Return to the REPL and press `m`. `[VOICE]` waits for actual capture acknowledgement; `[RECORDING]` is not shown merely because
-   the page is connected. Speak, then `Space` stops and inserts the transcript at the saved insertion point; `Esc` discards it without
-   transcription. Capture is capped at 30 seconds. This does not submit the draft; review/edit it and press Enter yourself.
-4. NORMAL `t` explicitly speaks the latest nonblank **assistant text in the current conversation**, including resumed sessions.
+   while enabled, although recording buffers exist only for an explicit capture operation. **Disable audio** releases it.
+3. Return to the REPL and explicitly capture or discard audio using the central controls reference. Capture is capped
+   at 30 seconds and waits for acknowledgement from the page before reporting recording. Insertion never submits the draft.
+4. The speech action explicitly reads the latest nonblank **assistant text in the current conversation**, including resumed sessions.
    New/changed sessions use their own transcript, never cached user/tool text. Missing replies or a disconnected page produce local
-   errors. Speech waits asynchronously so editing stays responsive; a new `t` replaces previous speech. There is no automatic TTS
+   errors. Speech waits asynchronously so editing stays responsive; a new speech request replaces previous speech. There is no automatic TTS
    on assistant replies, no history submission, and no agent tool. Browser start/end events, not enqueueing, determine completion;
    events still cannot prove audible output.
 
@@ -367,7 +348,7 @@ reopen the original URL. Never share it or expose/forward the listener publicly.
 Browser WAV is canonical in-memory 16 kHz mono PCM16, at most **960,044 bytes** (30 seconds plus 44-byte header). Only stopped,
 valid audio goes through the configured transcription agent; capture cancelled or failed before ingestion is discarded.
 Once ingestion begins, failure or interruption does not delete the stored audio. Speech text is sent only by
-`t` and lives in memory, but browser/OS speech engines may use **network services**: local synthesis is not guaranteed.
+the explicit speech action and lives in memory, but browser/OS speech engines may use **network services**: local synthesis is not guaranteed.
 
 Permission revocation, autoplay rules, suspended audio contexts, device loss and background/frozen tabs may interrupt audio even after
 setup. Focus the page and explicitly Enable again; permissions and background execution are not permanent guarantees. Failed operations
@@ -389,8 +370,8 @@ At REPL startup, `ReplMain` builds these components:
    followed by configured `Instructions`, no history/continuation/context features/tool definitions, `ToolChoice.None`,
    `parallelToolCalls = false`. It does not use the conversational runner or execute tools. Calls, unsupported results,
    blank text or incomplete/non-stop responses fail without follow-up turns.
-5. `TerminalRepl` invokes the same configured voice service for editable `Esc v` / `Esc m`; its browser server starts
-   only on the first enabled `m` or `t` and lives in the REPL scope. Disabled voice does not start capture or the server.
+5. `TerminalRepl` invokes the same configured voice service for editable JVM/browser voice insertion; its browser server
+   starts only on the first enabled browser audio action and lives in the REPL scope. Disabled voice does not start capture or the server.
 
 The JVM recorder prefers 16 kHz, 16-bit mono PCM, but can capture common 24/44.1/48 kHz mono or stereo formats and
 converts them to 16 kHz mono before encoding WAV entirely in memory. Browser WAV uses a validated canonical header.
@@ -405,8 +386,8 @@ A voice request proceeds only when all of the following hold:
 | Boundary | Required condition | Failure behavior |
 | --- | --- | --- |
 | Client | It runs in the local interactive terminal client. | No recording or agent turn. |
-| Invocation | Editable voice is started with NORMAL `v` or `m`. | The draft is unchanged. |
-| Microphone | `v`: JVM microphone permission and a convertible Java Sound `TargetDataLine`; `m`: the connected setup page has enabled browser audio. | Local setup/audio error; state, draft and cursor remain unchanged. |
+| Invocation | Editable voice is explicitly started through a retained terminal audio action. | The draft is unchanged. |
+| Microphone | JVM capture needs microphone permission and a convertible Java Sound `TargetDataLine`; browser capture needs an enabled, connected setup page. | Local setup/audio error; state, draft and cursor remain unchanged. |
 | Payload | The recorded WAV is non-empty and at most 1 MiB. A canonical 30-second 16 kHz PCM16 capture is 960,044 bytes including its header. | `OAIAgent` rejects it before HTTP. |
 | Model Runner | The configured transcription OAI endpoint is reachable, its agent model is audio-capable, and it accepts the `input_audio`/WAV chat-completions dialect used by `gdict`. | A bounded HTTP/protocol error is displayed; no text is submitted. |
 | Response | A completed text-only assistant result with nonblank content. | A protocol error is displayed; no text is submitted. |
@@ -449,7 +430,7 @@ may contain sensitive text. The editable transcript is untrusted user input and 
 No transcription debug section or hash lookup command is added.
 
 Microphone access belongs to the machine running the REPL process. If `yallmo` is launched on a remote SSH host,
-`Esc v` attempts to use that remote host’s microphone—not the local SSH client’s microphone. Browser `m` instead uses the device
+JVM capture attempts to use that remote host’s microphone—not the local SSH client’s microphone. Browser capture instead uses the device
 running the setup page. Same-machine loopback is the supported default; an optional SSH loopback tunnel must preserve the exact same
 port and canonical host on both ends, for example:
 

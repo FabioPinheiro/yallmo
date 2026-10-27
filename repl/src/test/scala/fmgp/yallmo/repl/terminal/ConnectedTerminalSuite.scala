@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.SessionId
 import fmgp.yallmo.repl.*
@@ -86,14 +88,18 @@ final class ConnectedTerminalSuite extends FunSuite {
           _ <- ZIO.succeed {
             assertEquals(Option(reader.getKeyMaps.get(LineReader.VICMD).getBound("p")), None)
             assert(!reader.getKeyMaps.containsKey(TerminalMenus.ProviderKeyMap))
-            assert(!reader.getWidgets.containsKey("browser-speak"))
+            assert(
+              !reader.getWidgets.containsKey(TerminalControlBindings.widgetName(LineReader.VICMD, ControlAction.Speak))
+            )
             assert(!reader.getWidgets.containsKey(s"${TerminalProviderMode.KeyMapName}-enter"))
           }
           _ <- client.run
         } yield {
           assertEquals(reader.getHistory.size(), 1)
           assertEquals(reader.getHistory.get(0), "/exit")
-          assert(!reader.getWidgets.containsKey("browser-speak"))
+          assert(
+            !reader.getWidgets.containsKey(TerminalControlBindings.widgetName(LineReader.VICMD, ControlAction.Speak))
+          )
           assert(!output.toString(UTF_8).contains("Browser audio setup"))
         }
       })

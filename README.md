@@ -30,7 +30,8 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
 - [Future UserId identity model](docs/future-plan/UserId-future_identity_model.md) — one user connection with multiple acting AgentIds.
 - [Setup and running](docs/HOW_TO_RUN.md)
-- [Interactive REPL](docs/REPL.md) — NORMAL `v`: JVM voice; `m`: browser microphone; `t`: explicitly speak the current assistant reply.
+- [Interactive REPL](docs/REPL.md) — startup, connections, commands and retained feature details.
+- [Client controls — quick reference](docs/CLIENT_CONTROLS.md) — keyboard/mode tables for the website and REPL, dictation and ClientHarness.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
 - [Capabilities architecture](docs/Capabilities_Architecture.md) — configuration inheritance, restrictions, enforcement flow, and REPL voice policy.
 - [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)

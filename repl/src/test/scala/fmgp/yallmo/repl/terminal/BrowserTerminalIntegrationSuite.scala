@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.clientharness.ControlAction
+
 import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.*
@@ -141,8 +143,9 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
           val result = originalInit.apply()
           promptCount.incrementAndGet()
           if ready.getCount > 0 then {
-            for command <- List("v", "m", "t") do {
-              val name = if command == "t" then "browser-speak" else s"voice-insert-$command"
+            for control <- List(ControlAction.Voice, ControlAction.Dictation, ControlAction.Speak) do {
+              val command = control.shortcut.get
+              val name = TerminalControlBindings.widgetName(LineReader.VICMD, control)
               val original = reader.getWidgets.get(name)
               reader.getWidgets.put(
                 name,

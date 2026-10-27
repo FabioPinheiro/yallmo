@@ -1,7 +1,8 @@
 package fmgp.yallmo.repl.terminal
 
 import zio.*
-import org.jline.reader.{LineReader, Reference, Widget}
+import fmgp.yallmo.clientharness.{ControlAction, DictationKeyboard, DictationMode, KeyInput}
+import org.jline.reader.LineReader
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
@@ -12,23 +13,14 @@ private[terminal] final class VoiceInsert(
     recorder: AudioRecorder,
     transcriber: Option[Transcriber],
     terminalStatus: TerminalVoiceModeStatus,
-    command: String = VoiceInsert.VoiceCommand,
+    control: ControlAction = ControlAction.Voice,
     recordingStarted: UIO[Boolean] = ZIO.succeed(true),
     runtime: Runtime[Any] = Runtime.default
 ) {
   import VoiceInsert.*
 
-  def install(): Unit = {
-    reader.getWidgets.put(
-      widgetName,
-      new Widget {
-        override def apply(): Boolean = insertVoice()
-      }
-    )
-    reader.getKeyMaps.get(LineReader.VICMD).bind(new Reference(widgetName), command)
-  }
-
-  private val widgetName = s"voice-insert-$command"
+  def install(): Unit =
+    TerminalControlBindings.bind(reader, LineReader.VICMD, control) { val _ = insertVoice() }
 
   private def insertVoice(): Boolean = {
     val originalCursor = reader.getBuffer.cursor()
@@ -91,18 +83,22 @@ private[terminal] final class VoiceInsert(
   ): Unit = {
     var waiting = true
     var started = false
+    var end = Option.empty[VoiceRecordingTermination]
+    // The terminal also accepts Stop during setup; its recorder owns that pending termination.
+    val keyboard = new DictationKeyboard(
+      () => DictationMode.Recording,
+      () => end = Some(VoiceRecordingTermination.Stop),
+      () => end = Some(VoiceRecordingTermination.Cancel)
+    )
     terminalStatus.waitingForRecording()
     while waiting && run(recording.poll).isEmpty do {
       if !started && run(recordingStarted) then {
         started = true
         terminalStatus.recording()
       }
-      val end = reader.readControl(100L) match {
-        case Space  => Some(VoiceRecordingTermination.Stop)
-        case Escape => Some(VoiceRecordingTermination.Cancel)
-        case -1     => Some(VoiceRecordingTermination.Cancel)
-        case _      => None
-      }
+      val character = reader.readControl(100L)
+      if character == -1 then end = Some(VoiceRecordingTermination.Cancel)
+      else { val _ = keyboard.keyDown(KeyInput.fromTerminal(character)) }
       end.foreach { value =>
         run(termination.succeed(value))
         waiting = false
@@ -138,9 +134,6 @@ private[terminal] final class VoiceInsert(
 }
 
 private[terminal] object VoiceInsert {
-  val VoiceCommand = "v"
-  private val Space = ' '.toInt
-  private val Escape = 27
 
   /** Maps a NORMAL cursor to the following text insertion point. */
   private[terminal] def insertionPoint(cursor: Int, currentCharacter: Int): Int =

@@ -147,3 +147,15 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .composer-actions { flex-wrap: wrap; gap: .4rem; }
   time { margin-left: 0; }
 }
+
+/* Native modal dialog supplies focus trapping, Escape and focus restoration. */
+.keyboard-controls { display: contents; }
+.keyboard-help { white-space: nowrap; }
+.command-palette { width: min(580px, calc(100% - 2rem)); max-height: 85dvh; padding: 1rem; border: 1px solid #aebdd0; border-radius: 12px; color: inherit; background: #fbfcfd; box-shadow: 0 12px 48px #1c293840; }
+.command-palette::backdrop { background: #1c293866; }
+.command-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.command-search { width: 100%; }
+.command-list { list-style: none; padding: 0; margin: .8rem 0 0; display: grid; gap: .3rem; max-height: 50dvh; overflow-y: auto; }
+.command-list button { display: flex; justify-content: space-between; align-items: center; gap: 1rem; width: 100%; text-align: left; }
+.command-list kbd { color: #617086; font: inherit; font-family: ui-monospace, monospace; }
+.command-list kbd:empty { display: none; }

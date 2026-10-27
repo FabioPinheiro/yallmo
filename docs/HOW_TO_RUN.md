@@ -12,7 +12,7 @@ sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080
 ```
 
 Type a prompt, then `/history`. First prompt creates once, retains its ID and submits once; later prompts reuse it.
-No agent selected means no prompt write or session creation: choose `--agent` or `Esc a`. `/new [name]` creates an empty
+No agent selected means no prompt write or session creation: choose `--agent` or use the agent picker from the [client controls guide](CLIENT_CONTROLS.md#connected-repl-keys). `/new [name]` creates an empty
 remote session explicitly. `/session list` and `/session resume <id>` enable restart/reconnect history reads.
 Assistant choices use advertised configured IDs, not mixed human/presence IDs; remote model/provider metadata is unknown.
 

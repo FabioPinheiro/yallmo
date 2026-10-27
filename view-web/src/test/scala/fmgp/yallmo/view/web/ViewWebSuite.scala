@@ -27,6 +27,11 @@ final class ViewWebSuite extends FunSuite {
     assertEquals(ViewRoute.parse("#/sessions/%ZZ"), ViewRoute.Sessions(None))
   }
 
+  test("navigation shortcuts come from typed catalog actions, including selected-session routes") {
+    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "6"))
+    assertEquals(ViewRoute.Sessions(Some("existing")).command, ViewRoute.Sessions(None).command)
+  }
+
   test("only function calls and outputs pretty-print valid JSON, without changing invalid JSON or text") {
     val raw = """{"result":[1,2],"ok":true}"""
     val pretty = MessageText.format("tool_call", raw)

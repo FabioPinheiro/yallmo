@@ -215,11 +215,23 @@ object App {
                 }
               case ViewRoute.Blobs =>
                 listPage("Blobs", "No stored blobs.", () => client.blobs(), refreshes) { ids =>
-                  ul(
-                    cls := "id-list",
-                    children <-- ids.split(identity) { (id, _, _) =>
-                      li(downloadLink(id, id.value, client))
-                    }
+                  div(
+                    p(cls := "muted", "Stored files. Download a blob to save it to your device."),
+                    ul(
+                      cls := "blob-list",
+                      aria.label := "Stored blobs",
+                      children <-- ids.split(identity) { (id, _, _) =>
+                        li(
+                          cls := "blob-row",
+                          div(
+                            cls := "blob-identity",
+                            span(cls := "muted", "Blob ID"),
+                            code(id.value)
+                          ),
+                          downloadButton(id, "Download", client)
+                        )
+                      }
+                    )
                   )
                 }
             }
@@ -381,7 +393,7 @@ object App {
       div(
         cls := "attachments",
         children <-- message.map(_.blobIds.toList).split(identity) { (id, _, _) =>
-          downloadLink(id, s"Download attachment ${id.value}", client)
+          downloadButton(id, s"Download attachment ${id.value}", client)
         }
       ),
       detailsTag(
@@ -391,15 +403,18 @@ object App {
       )
     )
 
-  private def downloadLink(id: BlobId, label: String, client: OrchestratorWSClient): HtmlElement = {
+  private def downloadButton(id: BlobId, label: String, client: OrchestratorWSClient): HtmlElement = {
     val busy = Var(false)
     val error = Var("")
-    span(
-      a(
-        href := "#",
-        label,
-        aria.disabled <-- busy.signal,
-        onClick.preventDefault --> { _ =>
+    div(
+      cls := "download-control",
+      button(
+        typ := "button",
+        cls := "blob-download",
+        aria.label <-- busy.signal.map(if _ then s"Downloading blob ${id.value}" else s"Download blob ${id.value}"),
+        disabled <-- busy.signal,
+        child.text <-- busy.signal.map(if _ then "Downloading…" else label),
+        onClick --> { _ =>
           if !busy.now() then {
             busy.set(true)
             error.set("")
@@ -410,8 +425,15 @@ object App {
           }
         }
       ),
-      child.text <-- busy.signal.map(if _ then " Downloading…" else ""),
-      span(cls := "error", role := "alert", child.text <-- error.signal)
+      span(
+        cls := "muted download-status",
+        role := "status",
+        child.text <-- busy.signal.map(if _ then "Preparing your download…" else "")
+      ),
+      child <-- error.signal.map { message =>
+        if message.nonEmpty then p(cls := "error download-error", role := "alert", message)
+        else emptyNode
+      }
     )
   }
 

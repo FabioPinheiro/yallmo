@@ -18,6 +18,16 @@ h2 { font-size: 1.1rem; overflow-wrap: anywhere; }
 .page { padding: 1.5rem 2rem; max-width: 1100px; margin: auto; }
 .id-list { padding-left: 1.2rem; overflow-wrap: anywhere; }
 .id-list li { margin: .8rem 0; }
+.blob-list { list-style: none; padding: 0; margin: 1.25rem 0; display: grid; gap: .65rem; }
+.blob-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 1rem; padding: 1rem 1.2rem; border: 1px solid #dde3ea; border-radius: 10px; background: white; }
+.blob-identity { min-width: 0; align-self: center; }
+.blob-identity > .muted { font-size: .75rem; }
+.blob-identity code { margin-top: .25rem; font-size: .9rem; line-height: 1.5; }
+.download-control { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; min-width: 0; max-width: 100%; }
+.blob-row > .download-control { align-items: flex-end; max-width: 22rem; }
+.blob-download { color: #215ba6; font-size: .85rem; overflow-wrap: anywhere; max-width: 100%; }
+.download-status:empty { display: none; }
+.download-error { margin: 0; font-size: .8rem; line-height: 1.5; overflow-wrap: anywhere; }
 .graph-scroll { overflow: auto; }
 .graph-tree, .graph-tree ul { list-style: none; margin: 0; padding-left: 1rem; }
 .graph-tree ul { border-left: 1px solid #aebdd0; }
@@ -130,6 +140,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .workspace > aside { border-right: 0; border-bottom: 1px solid #dde3ea; }
   .workspace .session-list { max-height: 220px; overflow-y: auto; }
   .page, .transcript { padding: 1rem; }
+  .blob-row { grid-template-columns: minmax(0, 1fr); gap: .75rem; padding: 1rem; }
+  .blob-row > .download-control { align-items: flex-start; max-width: 100%; }
   .chat-heading, .composer { padding: .6rem .8rem; }
   .chat-history { padding: 0 .8rem .8rem; }
   .composer-actions { flex-wrap: wrap; gap: .4rem; }

@@ -186,12 +186,18 @@ object BrowserAudioBridge {
       .flatMap(bytes => if bytes.size <= limit then ZIO.succeed(bytes) else ZIO.fail(failure("too_large")))
 
   private def asset(path: String): IO[BrowserAudioError, Response] = {
-    val name = if path == "/" then "index.html" else path.stripPrefix("/")
-    if !name.matches("[A-Za-z0-9_-]+\\.(html|js|css)") then ZIO.fail(failure("not_found"))
+    val resource = path match {
+      case "/view-web/vite/browser-audio.js" | "/view-web/vite/audio-core.js" | "/view-web/vite/capture-worklet.js" =>
+        path
+      case "/"                                                       => "/browser-STT-TTS/index.html"
+      case asset if asset.matches("/[A-Za-z0-9_-]+\\.(html|js|css)") => s"/browser-STT-TTS$asset"
+      case _                                                         => ""
+    }
+    if resource.isEmpty then ZIO.fail(failure("not_found"))
     else
       ZIO
         .attemptBlocking {
-          val stream = getClass.getResourceAsStream(s"/browser-STT-TTS/$name")
+          val stream = getClass.getResourceAsStream(resource)
           if stream == null then None
           else
             try Some(Chunk.fromArray(stream.readNBytes(256 * 1024 + 1)))
@@ -200,8 +206,8 @@ object BrowserAudioBridge {
         .mapError(_ => failure("not_found"))
         .flatMap {
           case Some(bytes) if bytes.size <= 256 * 1024 =>
-            val contentType = if name.endsWith(".html") then "text/html; charset=utf-8"
-            else if name.endsWith(".css") then "text/css; charset=utf-8"
+            val contentType = if resource.endsWith(".html") then "text/html; charset=utf-8"
+            else if resource.endsWith(".css") then "text/css; charset=utf-8"
             else "text/javascript; charset=utf-8"
             ZIO.succeed(Response(body = Body.fromChunk(bytes)).addHeader("Content-Type", contentType))
           case _ => ZIO.fail(failure("not_found"))

@@ -29,7 +29,7 @@ final class OrchestratorLive[-R] private (
 
   @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
   override def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse] =
-    getAgent(id).flatMap(_.turn(request.copy(readBlob = readBlob)))
+    getAgent(id).flatMap(_.turn(request.copy(readBlob = id => readBlob(id))))
 
   override def submit[R1](
       id: SessionId,
@@ -64,6 +64,45 @@ final class OrchestratorLive[-R] private (
         .mapError(SessionSubmitFailure(_, Some(accepted)))
     } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
 
+  private def persistMessage(message: Message): IO[YallmoError, Message] =
+    instances.validateAuthor(message.agentId) *>
+      storage.putMessage(message).mapError(YallmoError.StorageFailed.apply)
+
+  override def invoke[R1](input: Message, execution: AgentExecution[R1]): ZIO[R1, YallmoError, Message] =
+    for {
+      _ <- ZIO
+        .fail(YallmoError.InvalidMessage("Message id does not match data"))
+        .unless(input.id == MessageId.from(input.data))
+      _ <- ZIO
+        .fail(YallmoError.InvalidMessage("Invocation input must be a root user or audio message"))
+        .unless(input.parentId.isEmpty && (input.payload match {
+          case _: MessagePayload.User | _: MessagePayload.AudioAttachment => true
+          case _                                                          => false
+        }))
+      _ <- getAgent(execution.agentId)
+      accepted <- persistMessage(input)
+      _ <- ZIO.foreachDiscard(accepted.payload.blobIds.distinct)(id => readBlob(id, BlobUploadLimits.AwaitTimeout))
+      context = RunContext(Chunk(accepted.payload))
+      turn <- execution.run(AgentTask(accepted.payload.contentStr), context)
+      _ <- ZIO
+        .fail(YallmoError.InvalidAgentDecision("Agent execution must preserve the accepted input and agent ID"))
+        .unless(
+          turn.result.agentId == execution.agentId &&
+            turn.runContext.messages.take(context.messages.size) == context.messages && turn.result.text.trim.nonEmpty
+        )
+      timestamp <- Clock.instant
+      response <- persistMessage(
+        Message(
+          MessageData(
+            execution.agentId,
+            Some(accepted.id),
+            timestamp,
+            MessagePayload.Assistant(turn.result.text)
+          )
+        )
+      )
+    } yield response
+
   override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
     validateAuthors(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)
 
@@ -78,9 +117,36 @@ final class OrchestratorLive[-R] private (
       agentId: AgentId,
       messages: Chunk[MessagePayload]
   ): IO[YallmoError, Session] =
-    instances.validateAuthor(agentId) *> storage.append(id, agentId, messages).mapError(YallmoError.StorageFailed.apply)
+    instances.validateAuthor(agentId) *>
+      (if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
+       else appendToLatestSession(id, agentId, messages)).mapError(YallmoError.StorageFailed.apply)
 
-  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = storage.readBlob(blobId)
+  private def appendToLatestSession(
+      id: SessionId,
+      agentId: AgentId,
+      payloads: Chunk[MessagePayload]
+  ): IO[YallmoError, Session] =
+    (for {
+      session <- storage.loadSession(id)
+      _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(session.agentIds.contains(agentId))
+      expectedHead = session.messages.lastOption.map(_.id)
+      messages <- ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (batch, payload) =>
+        Clock.instant.map { timestamp =>
+          val parent = batch.lastOption.map(_.id).orElse(expectedHead)
+          batch :+ Message(MessageData(agentId, parent, timestamp, payload))
+        }
+      }
+      saved <- storage.putMessagesAndUpdateSession(id, expectedHead, messages)
+    } yield saved).catchSome {
+      // Only this pre-write rejection is safe to retry. Rebuild timestamps/parents from the latest snapshot.
+      case _: YallmoError.SessionHeadConflict => ZIO.yieldNow *> appendToLatestSession(id, agentId, payloads)
+    }
+
+  override def readBlob(blobId: BlobId, awaitTimeout: Duration = Duration.Zero): IO[YallmoError, Blob] =
+    storage.readBlob(blobId, awaitTimeout)
+
+  override def beginBlobUpload(blobId: BlobId, totalBytes: Long): IO[YallmoError, BlobUploader] =
+    storage.beginBlobUpload(blobId, totalBytes)
 
   override def appendWithBlobWriter[R1](
       id: SessionId,
@@ -109,7 +175,7 @@ final class OrchestratorLive[-R] private (
               .flatMap(ZIO.fromEither)
           exit <- (append(id, agentId, Chunk(message)) <* restore(ZIO.suspendSucceed(produce(write)))).exit
           bytes <- buffer.getAndSet(None).map(_.getOrElse(Chunk.empty))
-          _ <- storage.append(Blob(blobId, bytes))
+          _ <- storage.putBlob(Blob(blobId, bytes))
           appended <- exit
         } yield appended
       }
@@ -125,11 +191,20 @@ final class OrchestratorLive[-R] private (
 object OrchestratorLive {
 
   /** Creates an orchestrator using a shared registry and ephemeral, process-local storage. */
-  def inMemory[R](instances: RuntimeInstances[R]): UIO[OrchestratorLive[R]] =
-    StorageInMemory.make.map(storage => new OrchestratorLive(storage, instances))
+  def inMemory[R](
+      instances: RuntimeInstances[R]
+  ): UIO[OrchestratorLive[R]] =
+    for {
+      storage <- StorageInMemory.make
+    } yield new OrchestratorLive(storage, instances)
 
   /** Opens filesystem storage using a shared registry. */
-  def filesystem[R](root: Path, instances: RuntimeInstances[R]): IO[YallmoError, OrchestratorLive[R]] =
-    StorageFS.open(root).map(storage => new OrchestratorLive(storage, instances))
+  def filesystem[R](
+      root: Path,
+      instances: RuntimeInstances[R]
+  ): IO[YallmoError, OrchestratorLive[R]] =
+    for {
+      storage <- StorageFS.open(root)
+    } yield new OrchestratorLive(storage, instances)
 
 }

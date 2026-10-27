@@ -27,8 +27,8 @@ lixo/
 server-storage/
 
 # Frontend build dependencies and output
-view-web/node_modules/
-view-web/dist/
+view-web/vite/node_modules/
+view-web/vite/dist/
 
 # Other
 .playwright-mcp

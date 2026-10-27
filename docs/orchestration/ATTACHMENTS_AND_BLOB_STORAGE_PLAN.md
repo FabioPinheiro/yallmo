@@ -2,7 +2,7 @@
 
 Status: implemented, with one open message-append failure-path finding recorded below. This is the single design/implementation record for the change.
 Keep this plan active until that finding and a permanent regression are addressed; see [Plans and delivery status](../PLANS.md).
-No separate public blob-management service was introduced.
+Generic bounded session-independent uploads now live on Orchestrator and JSON-RPC `blobs.upload`; no separate storage service was introduced.
 The Scala audio type is `MessagePayload.AudioAttachment`, with the JSON discriminator `AudioAttachment` and no override. Only the current schema is supported; there are no legacy decoders, migrations, or hash-verification exceptions.
 
 ## Goal
@@ -27,15 +27,15 @@ Replace destructive audio redaction with references; keep the implementation sma
 
 ## Reading blobs (interface refinement)
 
-Expose `readBlob(id): IO[YallmoError, Blob]` through `Orchestrator`; return all stored bytes in memory, not a stream.
+Expose `readBlob(id, awaitTimeout = Duration.Zero): IO[YallmoError, Blob]` through shared `BlobOps` on `Storage` and `Orchestrator`; return all stored bytes in memory, not a stream.
 Implemented model:
 
 ```scala
 final case class Blob(id: BlobId, bytes: Chunk[Byte])
 ```
 
-Storage owns duplicate-ID enforcement and reports missing files. Orchestrator keeps no in-flight ID registry.
-There is no metadata or lifecycle/completeness/integrity tracking. Reading a stored blob returns its bytes, including bytes preserved from failed or cancelled producers.
+Storage owns duplicate-ID enforcement, missing-file reporting and the bounded process-local registry for the generic upload API (below). Orchestrator forwards blob operations; legacy sessionful ingestion is unchanged.
+Stored blobs have no metadata or lifecycle/completeness/integrity tracking. Legacy sessionful ingestion preserves bytes from failed or cancelled producers; generic uploads publish only after successful Complete.
 Whole-blob reads are an intentional initial simplification; providers still enforce their own input-size limits.
 
 ## Append API
@@ -50,12 +50,12 @@ appendWithBlobWriter(sessionId, agentId, message, write => produce(write))
 
 - The extra argument is respectively `Chunk[Byte]`, `ZStream`, or a producer callback receiving `write: Chunk[Byte] => IO[YallmoError, Unit]`.
 - Orchestrator obtains the blob ID from the supplied payload; callers do not repeat it.
-- No separate public `createBlob` / `writeBlob` workflow.
+- These legacy sessionful forms remain compatible; generic uploads below provide a separate bounded Begin/Append/Complete/Abort workflow.
 - Initially require exactly one blob reference in the supplied message; defer multiple-blob binding APIs.
 - Preserve producer environment requirements, sequential chunk consumption, scoped writers, and typed errors. Streams must be finite and fit in memory. Generic ingestion has no enforced size limit; callers must bound input before buffering. Provider limits are checked later, after storage.
 - The writer is valid only during its callback; Orchestrator buffers the bytes and owns completion.
 - There is no `BlobAppend`, `BlobReader`, or `BlobWriter` trait; read/write dependencies are plain functions.
-- Storage has separate message appends and `append(blob: Blob): IO[YallmoError, Unit]`, plus `readBlob(id)`. It does not accept streams or producers.
+- Storage has `putMessage(message)` for standalone messages, `putMessagesAndUpdateSession(id, expectedHead, messages)` for preconstructed session batches, and `putBlob(blob: Blob): IO[YallmoError, Unit]` / `getBlob(id)` for blobs. Orchestrator retains public `append` / `readBlob` and privately validates authors before standalone persistence; `putMessage` is Storage-only. Storage does not accept streams or producers.
 - `StorageFS` and `StorageInMemory` implement blob persistence directly alongside messages; there is no separate blob storage service.
 - `Blob`, `BlobId`, and `Message` stay in the model package, not inside Storage.
 - `AgentTurnRequest.readBlob: BlobId => IO[YallmoError, Blob]` is an explicit read function, not serialized content. `Orchestrator.turn` and the REPL runner supply it; direct adapter callers can supply their own function.
@@ -78,7 +78,7 @@ See the open finding below for the current deviation when the message append its
 The message is visible before ingestion finishes. The append effect returns after ingestion finishes; callers can fork it for concurrent production.
 Producer failure after message persistence keeps both the message and collected bytes; it is not converted into a successful ingestion result.
 Filesystem Storage uses `<storage>/blobs/<BlobId>` as the filename and stores exactly the raw bytes inside it. No JSON encoding, framing, per-blob directory, or metadata file.
-Blob files are created exclusively to reject duplicate IDs and written directly. Blob files and their directory use filesystem-default permissions (including the process umask); StorageFS does not set them explicitly. Existing object-store protections on the storage root remain unchanged. Reads overlapping writes, or reads after failed filesystem writes, may return partial bytes: there is no atomic publication or integrity check. Wait for successful append before relying on all supplied bytes being stored.
+Blob files are now published exclusively from fully written, forced temporary files via hard links, then the directory is forced. This preserves duplicate rejection without exposing partial targets on write failure or restart. Hard links and directory forcing must be supported by the filesystem; no unsafe fallback is used. Temporary names are not valid BlobIds and are ignored on reads/listing/reopen; crash leftovers are not automatically collected. Temporary files use JDK temporary-file permissions; published files retain those permissions. Existing object-store protections on the storage root remain unchanged. This does not validate old partial files or add blob integrity checking.
 In-memory Storage stores blobs in memory.
 Providers resolve references at request construction and report missing content or invalid audio input.
 Do not imply that this storage change alone adds provider audio-streaming support.
@@ -88,12 +88,54 @@ Do not imply that this storage change alone adds provider audio-streaming suppor
 - Exactly one Storage service owns each root; no other process writes to it. There is no shared lock registry.
 - One root-local semaphore coordinates all session/object read-modify-write operations, complete object batches and head publication, and actual blob writes. Session/list reads acquire coherent snapshots; historical traversal can release the permit because indexed objects are immutable and append-only. Blob reads coordinate with byte writes.
 - Provider/tool execution and blob producer callbacks do not hold the storage permit. Independent sessions may execute concurrently; only their storage operations coordinate.
-- Committed message batches finish publication before honoring interruption. Failures still need not roll back objects or partial blobs; atomic session replacement and the semaphore are not crash transactions.
+- Committed message batches finish publication before honoring interruption. Failures still need not roll back objects; atomic session replacement and the semaphore are not crash transactions.
 - The standalone root lease coordinates only cooperating processes. Legacy owners and other services/processes writing the same root remain unsupported; this semaphore does not add cross-process ownership or locking.
 
-## Transcription flow
+## Generic bounded upload and dependency wait
 
-Agreed ordering: append audio with bytes, invoke transcription, then append the transcript.
+See [wire contract, examples and limits](../../server/PROTOCOL.md#generic-binary-upload).
+`Storage` and `Orchestrator[-R]` extend shared `BlobOps`. `beginBlobUpload(blobId, totalBytes)` returns a
+`BlobUploader` capability exposing `blobId`, `append(offset, bytes)`, `complete` and `abort`. Storage instances own
+active registries and create uploaders; stateless shared `storage.BlobOpsUtils` implements the common filesystem/memory
+lifecycle (also on Scala.js). OrchestratorLive only forwards BlobOps. There is no owner parameter or second upload ID.
+The server's connection-local `Map[BlobId, BlobUploader]` is the sole lookup for Append/Complete/Abort; knowing another
+connection's BlobId confers no capability, even for the same human. Begin echoes the caller's BlobId on the wire.
+The transport checks trusted-operator policy, decodes bounded canonical base64, and serializes admission with disconnect,
+which aborts unfinished capabilities. Terminal connection entries have bounded no-traffic cleanup, not a replay ledger.
+No session ID, message append, audio validation or provider is involved.
+
+The object-only constants in `BlobUploadLimits` reserve at most 16 uploads, 4 MiB each and 16 MiB total declared bytes.
+Decoded chunks are at most 65536 bytes; JSON base64 is limited to 87384 characters before decoding. Automatic per-upload
+timers enforce **10 seconds idle** since Begin/last accepted Append and **60 seconds absolute lifetime** from Begin.
+Rejected chunks refresh neither deadline; accepted chunks refresh only idle. These deadlines do not preempt an
+in-progress uninterruptible filesystem publication holding the registry/storage permits; blocked publication can delay
+expiry and terminal cleanup. Timers stop on terminal outcomes, and there is no perpetual sweep. Internal monotonic-clock/expiry seams support deterministic tests without configurable limits.
+Byte reservations bound staging content, not the whole heap: transport/decoder buffers and copying have overhead;
+completed Storage content retains its existing memory/read behavior.
+
+Begin registers identity before content is complete, allowing references without rewriting immutable messages.
+Unified `readBlob(id, awaitTimeout = Duration.Zero)` returns completed content immediately. Zero timeout returns missing
+for active/missing content; positive finite timeout waits only for a known active upload outside storage/registry permits;
+unknown IDs fail immediately. Negative/infinite durations are explicitly invalid. `invoke` uses the existing bounded
+2-minute await constant. Timeout cancels only the waiter, not the upload; no public `awaitBlob` remains.
+Abort/expiry/disconnect/publication failure fail captured waiters with typed `BlobUploadFailed` reasons and release staging
+buffers and count/byte reservations even if a caller retains the terminal uploader. Completion promises retain no bytes.
+New waits on failed uploads see missing, not retained failure history. A later Begin may reuse an unstored BlobId;
+old handles, captured waiters and timers are bound to their original state identity and cannot affect the replacement.
+Ordered wire commands are still required: stale same-connection requests cannot be distinguished from commands for a
+replacement using the same ID. Successful Complete publishes only exact declared bytes, including empty blobs.
+
+No automatic retry/replay/resume guarantees or durable pending registry are provided. Complete/Abort/disconnect races
+serialize; successful completed blobs remain. Blob persistence is independent of message persistence and can leave
+orphaned blobs. Legacy sessionful producer partial-byte preservation and the existing message-append finding below
+are unchanged. `agents.invoke` now explicitly consumes the dependency seam: it saves a root user/audio Message without
+a session, awaits blobs, runs the configured runner and saves a final assistant Message linked directly to the input.
+Ordinary reads and current REPL/sessionful behavior are unchanged. The [browser dictation UI](../../view-web/README.md#dictation)
+now uses this path; general agent execution cancellation remains separate work. See [independent invocation](../../server/PROTOCOL.md#independent-agent-invocation).
+
+## Legacy REPL transcription flow
+
+The web-independent `agents.invoke` path above does not use these sessionful ingestion operations. Legacy REPL ordering: append audio with bytes, invoke transcription, then append the transcript.
 
 ```mermaid
 flowchart TD
@@ -121,7 +163,7 @@ sequenceDiagram
     Orchestrator->>Storage: Append message containing BlobId
     Note over Caller,Storage: Message is visible before bytes are complete
     Caller->>Orchestrator: Produce chunks into memory
-    Orchestrator->>Storage: append(Blob with all collected bytes)
+    Orchestrator->>Storage: putBlob(Blob with all collected bytes)
     Orchestrator-->>Caller: Append result or error
 ```
 
@@ -133,7 +175,7 @@ sequenceDiagram
 - Verify every message hash using the current schema. No old-format compatibility path is maintained. Old inline/redacted `AudioInput` envelopes cannot be decoded: back up the old store and use a fresh storage root; no automatic migration is supplied.
 - These hashes protect message envelopes/references, not blob contents. Blob modification is not detected by message verification.
 - Recordings remain stored after inference failure, interruption after ingestion, or draft discard. There is no automatic blob cleanup, garbage collection, or public recording-deletion API. Protect the whole storage root and its backups.
-- Existing `append` accepts payloads because Storage constructs author/parent/timestamp and persists the envelope.
+- `Orchestrator.append` accepts payloads, validates registered authors/session membership and nonempty turns, and constructs author/parent/timestamp using `Clock.instant`. Storage validates the entire content-addressed chain and compares the expected head before writing; stale conflicts write nothing and orchestration rebuilds/retries against the latest session. Participant additions are retained; storage batches may contain multiple authors. Filesystem publication is serialized and interruption-masked once writes begin, not a crash transaction or rollback on I/O failure (orphan objects can remain).
 - Existing envelopes are not lost on reload, but re-appending their payloads does not preserve original timestamps, parents, or IDs.
 - A separate envelope-preserving import API is outside this change.
 
@@ -183,11 +225,25 @@ Run focused suites, downstream compilation, and targeted formatting; no real-dev
 - Reviewed repository Markdown for affected contracts and moved links. Updated user guides, configuration/capability and orchestration references, visualization/future transport boundaries, and historical-plan annotations without rewriting past validation results.
 - Review changes are documentation-only; no implementation fix is included for the finding below.
 
+### Generic upload validation
+
+- `sbt --batch 'core/testOnly *BlobUploadsSuite; core/testOnly *; server/testOnly *'`: upload suite **14 passed**,
+  full core **285 passed / 2 existing skips**, full server **145 passed**. Covers both backends, a 960044-byte multi-chunk
+  upload, empty content, one-byte chunks, pending waits, ownership, bounds, abort/expiry/disconnect, publication failure,
+  abandoned staging/reopen and terminal races; real WebSocket control continues while an orchestrator dependency waits.
+- Model JVM and JS: **36 passed each**; core JS: **14 passed**. Protocol JVM and JS goldens/invalid shapes: **24 passed each**.
+- Post-targeted-format revalidation: protocol JVM/JS **24 each**, upload + existing blob suites **30**, server submission
+  + logging **35**, and `repl/Test/compile` passed. TRACE tests cover actual uploaded content, reads, batches, escaped
+  field names and malformed JSON without logging binary base64.
+- An initial broad server run timed out in the existing invalid-UTF8/oversized-frame transport test; its independent
+  suite rerun (**14 tests**) and the later full server rerun (**145 tests**) passed. No timeout thresholds were changed.
+- Targeted `scalafmtOnly` and `git diff --check` passed; no browser/provider/device behavior is claimed.
+
 ## Open review finding: failed message append still submits an empty blob
 
 **P2 — `core/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala`, `appendWithBlobWriter`.**
 The captured `exit` currently includes both message append and production. If the message append fails after initial
-validation, the producer never runs, but finalization still calls `storage.append(Blob(blobId, Chunk.empty))`.
+validation, the producer never runs, but finalization still calls `storage.putBlob(Blob(blobId, Chunk.empty))`.
 This consumes the ID without a successfully appended message, so retrying that reference can fail with `BlobAlreadyExists`.
 If that blob append also fails, it can mask the original message-persistence error.
 

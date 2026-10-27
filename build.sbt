@@ -158,14 +158,27 @@ lazy val repl = project
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
     Compile / resourceGenerators += Def.task {
-      val assets = (LocalRootProject / baseDirectory).value / "browser-STT-TTS"
-      val output = (Compile / resourceManaged).value / "browser-STT-TTS"
-      (assets ** "*").get().filter(_.isFile).flatMap { file =>
-        IO.relativize(assets, file).map { relative =>
-          val target = output / relative
-          IO.copyFile(file, target)
+      Def.uncached {
+        val root = (LocalRootProject / baseDirectory).value
+        val assets = root / "browser-STT-TTS"
+        val output = (Compile / resourceManaged).value / "browser-STT-TTS"
+        val sharedOutput = (Compile / resourceManaged).value / "view-web"
+        // Both source directories are external inputs; remove obsolete assets after moves.
+        IO.delete(output)
+        IO.delete(sharedOutput)
+        val pageResources = (assets ** "*").get().filter(_.isFile).flatMap { file =>
+          IO.relativize(assets, file).map { relative =>
+            val target = output / relative
+            IO.copyFile(file, target)
+            target
+          }
+        }
+        val audioResources = Seq("browser-audio.js", "audio-core.js", "capture-worklet.js").map { name =>
+          val target = sharedOutput / "vite" / name
+          IO.copyFile(root / "view-web" / "vite" / name, target)
           target
         }
+        pageResources ++ audioResources
       }
     }.taskValue,
     Compile / run / fork := true,
@@ -180,7 +193,7 @@ lazy val repl = project
   )
 
 /** Explicit release tasks: ordinary backend compilation never invokes npm or the Scala.js linker. */
-lazy val bundleFrontend = taskKey[Unit]("Link and bundle the view SPA (requires npm ci in view-web)")
+lazy val bundleFrontend = taskKey[Unit]("Link and bundle the view SPA (requires npm ci in view-web/vite)")
 lazy val bundle = taskKey[Unit]("Package the view server with the production SPA")
 
 lazy val viewWeb = project
@@ -203,9 +216,9 @@ lazy val viewWeb = project
     ),
     bundleFrontend := Def.uncached {
       val _ = (Compile / fullLinkJS).value
-      val directory = baseDirectory.value
+      val directory = baseDirectory.value / "vite"
       val result = scala.sys.process.Process(Seq("npm", "run", "build"), directory).!
-      if (result != 0) sys.error("SPA bundling failed. Run npm ci in view-web first.")
+      if (result != 0) sys.error("SPA bundling failed. Run npm ci in view-web/vite first.")
       ()
     },
   )
@@ -222,7 +235,7 @@ lazy val server = project
     libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
     Compile / resourceGenerators += Def.task {
       Def.uncached {
-        val assets = (LocalRootProject / baseDirectory).value / "view-web/dist"
+        val assets = (LocalRootProject / baseDirectory).value / "view-web/vite/dist"
         val output = (Compile / resourceManaged).value / "view-web"
         // External Vite output is not an sbt input; inspect it on every resource pass.
         // Remove stale fingerprinted assets, including when dist has been removed.

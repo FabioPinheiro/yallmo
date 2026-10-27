@@ -1,7 +1,7 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.model.{AgentId, YallmoError}
-import fmgp.yallmo.orchestration.OrchestratorLive
+import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, YallmoError}
+import fmgp.yallmo.orchestration.{BlobUploader, OrchestratorLive}
 import fmgp.yallmo.server.application.ServerApplication
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -32,9 +32,10 @@ private[server] final class OrchestratorRpc(
   private val humans = TrieMap.empty[UUID, AgentId]
 
   def openConnection: UIO[Connection] =
-    Ref.Synchronized
-      .make[ConnectionState](ConnectionState.Uninitialized)
-      .map(new Connection(UUID.randomUUID(), _))
+    for {
+      state <- Ref.Synchronized.make[ConnectionState](ConnectionState.Uninitialized)
+      uploads <- Ref.make(Map.empty[BlobId, BlobUploader])
+    } yield new Connection(UUID.randomUUID(), state, uploads)
 
   def disconnect(connection: Connection): UIO[Unit] =
     connection.state.modifyZIO { _ =>
@@ -44,6 +45,9 @@ private[server] final class OrchestratorRpc(
           ZIO.foreachDiscard(removed)(id => ZIO.logInfo(s"Viewer identity removed userId=${escapedHumanId(id)}"))
         }
         .as(((), ConnectionState.Closed))
+        .tap(_ =>
+          connection.uploads.getAndSet(Map.empty).flatMap(uploads => ZIO.foreachDiscard(uploads.values)(_.abort.ignore))
+        )
     }.uninterruptible
   private val methods = List(
     Initialize.method,
@@ -135,7 +139,13 @@ private[server] final class OrchestratorRpc(
                   if permitted(request.userId) then Role.Operator else Role.Viewer
                 ),
                 if permitted(request.userId) then
-                  methods ++ List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
+                  methods ++ List(
+                    SessionsCreate.method,
+                    TurnSubmit.method,
+                    DiagnosticsRequest.method,
+                    BlobsUpload.method,
+                    AgentsInvoke.method
+                  )
                 else methods,
                 Nil,
                 MaxBlobChunkBytes,
@@ -176,6 +186,11 @@ private[server] final class OrchestratorRpc(
             }
           case BlobsList.method =>
             decode[Empty](params) *> domain(master.listBlobIds).flatMap(values => encode(values.sortBy(_.value)))
+          case BlobsUpload.method =>
+            // Serialize admission with disconnect, not with long-running turns or blob waiters.
+            connection.state.modifyZIO { current =>
+              (operator(current) *> upload(params, connection)).map(result => (result, current))
+            }.uninterruptible
           case BlobsRead.method                             => readBlob(params)
           case SessionsCreate.method if configured.nonEmpty =>
             for {
@@ -196,6 +211,13 @@ private[server] final class OrchestratorRpc(
                 request.resetContinuation
               )
               result <- encode(outcome)
+            } yield result
+          case AgentsInvoke.method if configured.nonEmpty =>
+            for {
+              author <- operator(state)
+              request <- decode[AgentsInvoke.Params](params)
+              response <- configured.get.invoke(author, request.agentId, request.input)
+              result <- encode(response)
             } yield result
           case DiagnosticsRequest.method if configured.nonEmpty =>
             for {
@@ -243,6 +265,63 @@ private[server] final class OrchestratorRpc(
       )
     } yield result
 
+  private def upload(params: Json.Obj, connection: Connection): IO[JsonRpc.Error, Json] =
+    for {
+      command <- decode[BlobsUpload.Params](params)
+      result <- command match {
+        case BlobsUpload.Params.Begin(blobId, total) =>
+          domain(for {
+            uploader <- master.beginBlobUpload(blobId, total)
+            _ <- connection.uploads.update(_.updated(blobId, uploader))
+            // Drop retained capabilities after the observed outcome or bounded dependency wait, even without traffic.
+            // Blocked uninterruptible publication can delay this lookup and expiry beyond MaximumLifetime.
+            // Identity protects a replacement Begin.
+            _ <- (master.readBlob(blobId, BlobUploadLimits.AwaitTimeout).ignore *>
+              forgetUpload(connection, uploader)).interruptible.forkDaemon
+          } yield BlobsUpload.Result.Begun(uploader.blobId))
+        case BlobsUpload.Params.Append(id, offset, encoded) =>
+          for {
+            _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(encoded.length <= BlobsUpload.MaxEncodedChunkChars)
+            bytes <- ZIO.attempt(Base64.getDecoder.decode(encoded)).mapError(_ => JsonRpc.Error.InvalidParams)
+            _ <- ZIO
+              .fail(JsonRpc.Error.InvalidParams)
+              .unless(
+                bytes.nonEmpty && bytes.length <= MaxBlobChunkBytes && Base64.getEncoder
+                  .encodeToString(bytes) == encoded
+              )
+            uploader <- ownedUpload(connection, id)
+            next <- domain(uploader.append(offset, Chunk.fromArray(bytes)))
+          } yield BlobsUpload.Result.Appended(id, next)
+        case BlobsUpload.Params.Complete(id) =>
+          ownedUpload(connection, id)
+            .flatMap { uploader =>
+              domain(uploader.complete).tap(_ => forgetUpload(connection, uploader))
+            }
+            .map(BlobsUpload.Result.Completed(_))
+        case BlobsUpload.Params.Abort(id) =>
+          ownedUpload(connection, id)
+            .flatMap { uploader =>
+              domain(uploader.abort).tap(_ => forgetUpload(connection, uploader))
+            }
+            .as(BlobsUpload.Result.Aborted(id))
+      }
+      json <- encode[BlobsUpload.Result](result)
+    } yield json
+
+  private def forgetUpload(connection: Connection, uploader: BlobUploader): UIO[Unit] =
+    connection.uploads.update { current =>
+      if current.get(uploader.blobId).exists(_ eq uploader) then current - uploader.blobId else current
+    }
+
+  private def ownedUpload(connection: Connection, id: BlobId): IO[JsonRpc.Error, BlobUploader] =
+    domain(
+      connection.uploads.get.flatMap(current =>
+        ZIO
+          .fromOption(current.get(id))
+          .orElseFail(YallmoError.BlobUploadFailed(BlobUploadFailure.Unknown))
+      )
+    )
+
   private def decode[A: JsonDecoder](params: Json): IO[JsonRpc.Error, A] =
     ZIO.fromEither(params.as[A]).mapError(_ => JsonRpc.Error.InvalidParams)
 
@@ -259,6 +338,14 @@ private[server] final class OrchestratorRpc(
     case YallmoError.StorageFailed(error)                            => storageError(error)
     case _: YallmoError.SessionNotFound | _: YallmoError.BlobMissing =>
       JsonRpc.Error(ErrorCode.NotFound, "Not found")
+    case _: YallmoError.BlobAlreadyExists     => JsonRpc.Error(ErrorCode.Conflict, "Blob already exists")
+    case YallmoError.BlobUploadFailed(reason) =>
+      reason match {
+        case BlobUploadFailure.Capacity => JsonRpc.Error(ErrorCode.Busy, reason.message)
+        case BlobUploadFailure.Unknown  => JsonRpc.Error(ErrorCode.NotFound, reason.message)
+        case BlobUploadFailure.Storage  => JsonRpc.Error.InternalError
+        case _                          => JsonRpc.Error(ErrorCode.Rejected, reason.message)
+      }
     case _ => JsonRpc.Error.InternalError
   }
 }
@@ -272,6 +359,7 @@ private[server] object OrchestratorRpc {
 
   final class Connection private[OrchestratorRpc] (
       val id: UUID,
-      private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState]
+      private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState],
+      private[server] val uploads: Ref[Map[BlobId, BlobUploader]]
   )
 }

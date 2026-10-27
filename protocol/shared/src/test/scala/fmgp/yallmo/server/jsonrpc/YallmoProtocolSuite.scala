@@ -17,6 +17,42 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+  test("blobs.upload explicit command/result goldens and round trips") {
+    val commands: List[(BlobsUpload.Params, String)] = List(
+      BlobsUpload.Params.Begin(blobId, 3) -> s"""{"command":"begin","blobId":"${blobId.value}","totalBytes":3}""",
+      BlobsUpload.Params.Append(
+        blobId,
+        0,
+        "AQID"
+      ) -> s"""{"command":"append","blobId":"${blobId.value}","offset":0,"dataBase64":"AQID"}""",
+      BlobsUpload.Params.Complete(blobId) -> s"""{"command":"complete","blobId":"${blobId.value}"}""",
+      BlobsUpload.Params.Abort(blobId) -> s"""{"command":"abort","blobId":"${blobId.value}"}"""
+    )
+    commands.foreach { case (value, json) => assertWire[BlobsUpload.Params](value, json) }
+    val results: List[(BlobsUpload.Result, String)] = List(
+      BlobsUpload.Result.Begun(blobId) -> s"""{"status":"begun","blobId":"${blobId.value}"}""",
+      BlobsUpload.Result
+        .Appended(blobId, 3) -> s"""{"status":"appended","blobId":"${blobId.value}","nextOffset":3}""",
+      BlobsUpload.Result.Completed(blobId) -> s"""{"status":"completed","blobId":"${blobId.value}"}""",
+      BlobsUpload.Result.Aborted(blobId) -> s"""{"status":"aborted","blobId":"${blobId.value}"}"""
+    )
+    results.foreach { case (value, json) => assertWire[BlobsUpload.Result](value, json) }
+    assert(!commands(1)._1.toString.contains("AQID"))
+  }
+
+  test("blobs.upload rejects missing/unknown discriminator, malformed blob IDs and incomplete shapes") {
+    List(
+      """{}""",
+      """{"command":"unknown"}""",
+      """{"command":"begin","blobId":"bad","totalBytes":3}""",
+      s"""{"command":"begin","blobId":"${blobId.value}"}""",
+      """{"command":"append","blobId":"BAD","offset":0,"dataBase64":"AQID"}""",
+      s"""{"command":"append","blobId":"${blobId.value}","offset":0}""",
+      """{"command":"complete","blobId":null}""",
+      """{"command":"abort"}"""
+    ).foreach(json => assert(json.fromJson[BlobsUpload.Params].isLeft, json))
+  }
+
   test("initialize is an ordinary JSON-RPC request with typed named params") {
     val request = JsonRpc.Request(Json.Str("r1"), Initialize.method, Initialize.Params(Version, "repl"))
     assertWire(
@@ -45,6 +81,37 @@ final class YallmoProtocolSuite extends FunSuite {
     val request = JsonRpc.Request(Json.Str("r2"), SessionsList.method, Empty())
     assertWire(request, """{"id":"r2","method":"sessions.list","params":{},"jsonrpc":"2.0"}""")
     assert(!request.toJson.contains("SessionsList"))
+  }
+
+  test("agents.invoke reuses full Message input/output without session fields") {
+    val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))
+    val output = Message(MessageData(agentId, Some(input.id), Instant.EPOCH, Message.Assistant("answer")))
+    val params = AgentsInvoke.Params(agentId, input)
+    assertWire(
+      JsonRpc.Request(Json.Str("invoke"), AgentsInvoke.method, params),
+      s"""{"id":"invoke","method":"agents.invoke","params":{"agentId":"agent1","input":${input.toJson}},"jsonrpc":"2.0"}"""
+    )
+    assertWire(
+      JsonRpc.Success[AgentsInvoke.Result](Json.Str("invoke"), output),
+      s"""{"id":"invoke","result":${output.toJson},"jsonrpc":"2.0"}"""
+    )
+    val audio = Message(input.data.copy(payload = MessagePayload.AudioAttachment(blobId, AudioFormat.Wav)))
+    assertEquals(
+      AgentsInvoke.Params(agentId, audio).toJson.fromJson[AgentsInvoke.Params],
+      Right(AgentsInvoke.Params(agentId, audio))
+    )
+    assert(!params.toJson.contains("sessionId"))
+  }
+
+  test("agents.invoke rejects legacy/session controls, missing input and mismatched message hashes") {
+    val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))
+    val params = AgentsInvoke.Params(agentId, input)
+    List("\"sessionId\":\"s1\"", "\"expectedHead\":null", "\"resetContinuation\":false").foreach { extra =>
+      val json = params.toJson.dropRight(1) + "," + extra + "}"
+      assert(json.fromJson[AgentsInvoke.Params].isLeft)
+    }
+    assert("""{"agentId":"agent1"}""".fromJson[AgentsInvoke.Params].isLeft)
+    assert(params.copy(input = input.copy(id = head)).toJson.fromJson[AgentsInvoke.Params].isLeft)
   }
 
   test("turn.submit uses an optional expected-head message ID") {

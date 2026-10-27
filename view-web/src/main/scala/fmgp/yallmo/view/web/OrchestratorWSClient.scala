@@ -1,6 +1,6 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.model.{AgentId, BlobId}
+import fmgp.yallmo.model.{AgentId, BlobId, Message}
 import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -92,6 +92,11 @@ final class OrchestratorWSClient private[web] (
   def createSession(name: Option[SessionId] = None): Future[SessionSnapshot] =
     request(SessionsCreate.method, SessionsCreate.Params(name))
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
+  def invokeAgent(params: AgentsInvoke.Params): Future[Message] = request(AgentsInvoke.method, params)
+  def uploadBlob(params: BlobsUpload.Params): Future[BlobsUpload.Result] = request(BlobsUpload.method, params)
+  private[web] def connectionVersion: Long = generation
+  private[web] def blobChunkBytes: Int = chunkBytes
+
   def diagnostic(id: SessionId): Future[DiagnosticsRequest.Result] =
     request(DiagnosticsRequest.method, DiagnosticsRequest.Params(id))
 
@@ -162,8 +167,13 @@ final class OrchestratorWSClient private[web] (
     }
   }
 
-  private def request[P: JsonCodec, A: JsonDecoder](method: String, params: P): Future[A] =
-    ready.future.flatMap(_ => send[P, A](method, params))
+  private def request[P: JsonCodec, A: JsonDecoder](method: String, params: P): Future[A] = {
+    val handshake = ready
+    handshake.future.flatMap { _ =>
+      if handshake ne ready then Future.failed(new RuntimeException("Connection changed"))
+      else send[P, A](method, params)
+    }
+  }
 
   private def send[P: JsonCodec, A: JsonDecoder](method: String, params: P): Future[A] = socket match {
     case None => Future.failed(new RuntimeException("Connection closed. Click Refresh to reconnect."))
@@ -173,7 +183,7 @@ final class OrchestratorWSClient private[web] (
       val id = nextId.toString
       val result = Promise[Json]()
       // Execution is terminal-response only and may legitimately outlast a read deadline.
-      val timer = Option.when(method != TurnSubmit.method)(setTimeout(timeoutMillis) {
+      val timer = Option.when(method != TurnSubmit.method && method != AgentsInvoke.method)(setTimeout(timeoutMillis) {
         pending.remove(id).foreach(_.result.tryFailure(new RuntimeException("Request timed out")))
       })
       pending(id) = Pending(result, timer)

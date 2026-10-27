@@ -119,7 +119,7 @@ final class ServerSubmissionSuite extends FunSuite {
         reloaded <- again.loadSession(created.id)
       } yield {
         assertEquals(info.get.identity, Identity(human, Role.Operator))
-        assertEquals(info.get.methods.size, 10)
+        assertEquals(info.get.methods.size, 12)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -416,8 +416,14 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(3),
-          List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
+          info.methods.takeRight(5),
+          List(
+            SessionsCreate.method,
+            TurnSubmit.method,
+            DiagnosticsRequest.method,
+            BlobsUpload.method,
+            AgentsInvoke.method
+          )
         )
         assertEquals(info.notifications, Nil)
         assertEquals(decode[JsonRpc.Failure](changed.get).error.code, ErrorCode.Conflict)
@@ -573,8 +579,14 @@ final class ServerSubmissionSuite extends FunSuite {
         val info = decode[JsonRpc.Success[Initialize.Result]](initialized).result
         assertEquals(info.identity, Identity(human, Role.Operator))
         assertEquals(
-          info.methods.takeRight(3),
-          List(SessionsCreate.method, TurnSubmit.method, DiagnosticsRequest.method)
+          info.methods.takeRight(5),
+          List(
+            SessionsCreate.method,
+            TurnSubmit.method,
+            DiagnosticsRequest.method,
+            BlobsUpload.method,
+            AgentsInvoke.method
+          )
         )
         assertEquals(decode[JsonRpc.Success[SessionSnapshot]](created).result.id, sessionId)
         assert(decode[JsonRpc.Success[TurnOutcome]](submitted).result.isInstanceOf[TurnOutcome.Succeeded])
@@ -934,6 +946,262 @@ final class ServerSubmissionSuite extends FunSuite {
       }
     })
   }
+
+  test("blobs.upload authorization and discovery require initialized configured operators") {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        uninitialized <- rpc.openConnection
+        command = BlobsUpload.Params.Begin(BlobId.fresh(), 0)
+        before <- uploadCall(rpc, uninitialized, command)
+        replies <- ZIO.foreach(List(None, Some(AgentId("")))) { claimed =>
+          for {
+            connection <- rpc.openConnection
+            initialized <- initializeUpload(rpc, connection, claimed)
+            rejected <- uploadCall(rpc, connection, command)
+            _ <- rpc.disconnect(connection)
+          } yield (initialized, rejected)
+        }
+        viewerRpc = new OrchestratorRpc(app.master)
+        viewer <- viewerRpc.openConnection
+        info <- initializeUpload(viewerRpc, viewer, Some(human))
+        forbidden <- uploadCall(viewerRpc, viewer, command)
+        _ <- viewerRpc.disconnect(viewer)
+        _ <- rpc.disconnect(uninitialized)
+      } yield {
+        assertEquals(decode[JsonRpc.Failure](before).error.code, ErrorCode.Unauthorized)
+        // Blank identities are rejected by the existing AgentId codec and remain uninitialized.
+        replies.foreach { case (initialized, rejected) =>
+          initialized
+            .fromJson[JsonRpc.Success[Initialize.Result]]
+            .foreach(value => assert(!value.result.methods.contains(BlobsUpload.method)))
+          assert(
+            Set(ErrorCode.Forbidden, ErrorCode.Unauthorized).contains(decode[JsonRpc.Failure](rejected).error.code)
+          )
+        }
+        assert(!decode[JsonRpc.Success[Initialize.Result]](info).result.methods.contains(BlobsUpload.method))
+        assertEquals(decode[JsonRpc.Failure](forbidden).error.code, ErrorCode.Forbidden)
+      }
+    })
+  }
+
+  test(
+    "blobs.upload validates canonical bounded base64 and offsets, isolates same-user connections, and wakes awaiters"
+  ) {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        owner <- rpc.openConnection
+        alien <- rpc.openConnection
+        info <- initializeUpload(rpc, owner, Some(human))
+        _ <- initializeUpload(rpc, alien, Some(human))
+        id = BlobId.fresh()
+        begun <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(id, 3))
+        _ = assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](begun).result, BlobsUpload.Result.Begun(id))
+        waiter <- app.master.readBlob(id, BlobUploadLimits.AwaitTimeout).either.fork
+        _ <- (ZIO.yieldNow *> waiter.status).repeatUntil(_.isInstanceOf[Fiber.Status.Suspended])
+        invalid <- ZIO.foreach(
+          List("!", "AQ", "AR==", "AQ==\n", "A" * (BlobsUpload.MaxEncodedChunkChars + 1), "AAAA" * 21846)
+        ) { encoded =>
+          uploadCall(rpc, owner, BlobsUpload.Params.Append(id, 0, encoded))
+        }
+        unauthorized <- ZIO.foreach(
+          List[BlobsUpload.Params](
+            BlobsUpload.Params.Append(id, 0, "AQID"),
+            BlobsUpload.Params.Complete(id),
+            BlobsUpload.Params.Abort(id)
+          )
+        )(uploadCall(rpc, alien, _))
+        foreignDuplicate <- uploadCall(rpc, alien, BlobsUpload.Params.Begin(id, 0))
+        badOffset <- uploadCall(rpc, owner, BlobsUpload.Params.Append(id, 1, "AQID"))
+        appended <- uploadCall(rpc, owner, BlobsUpload.Params.Append(id, 0, "AQID"))
+        pending <- waiter.poll
+        duplicate <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(id, 0))
+        completed <- uploadCall(rpc, owner, BlobsUpload.Params.Complete(id))
+        result <- waiter.join
+        _ <- rpc.disconnect(owner)
+        _ <- rpc.disconnect(alien)
+        sessions <- app.master.listSessions
+        messages <- app.master.listMessages
+      } yield {
+        assert(decode[JsonRpc.Success[Initialize.Result]](info).result.methods.contains(BlobsUpload.method))
+        invalid.foreach(value => assertEquals(decode[JsonRpc.Failure](value).error, JsonRpc.Error.InvalidParams))
+        unauthorized.foreach(value => assertEquals(decode[JsonRpc.Failure](value).error.code, ErrorCode.NotFound))
+        assertEquals(decode[JsonRpc.Failure](foreignDuplicate).error.code, ErrorCode.Conflict)
+        assertEquals(decode[JsonRpc.Failure](badOffset).error.code, ErrorCode.Rejected)
+        assertEquals(decode[JsonRpc.Failure](duplicate).error.code, ErrorCode.Conflict)
+        assertEquals(
+          decode[JsonRpc.Success[BlobsUpload.Result]](appended).result,
+          BlobsUpload.Result.Appended(id, 3)
+        )
+        assertEquals(pending, None)
+        assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](completed).result, BlobsUpload.Result.Completed(id))
+        assertEquals(result, Right(Blob(id, Chunk[Byte](1, 2, 3))))
+        assertEquals(sessions, Chunk.empty)
+        assertEquals(messages, Chunk.empty)
+      }
+    })
+  }
+
+  test("blobs.upload disconnect races cannot leak newly admitted uploads; Abort is cleanup only") {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        owner <- rpc.openConnection
+        _ <- initializeUpload(rpc, owner, Some(human))
+        id = BlobId.fresh()
+        begun <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(id, 3))
+        _ = assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](begun).result, BlobsUpload.Result.Begun(id))
+        waiter <- app.master.readBlob(id, BlobUploadLimits.AwaitTimeout).either.fork
+        _ <- (ZIO.yieldNow *> waiter.status).repeatUntil(_.isInstanceOf[Fiber.Status.Suspended])
+        _ <- uploadCall(rpc, owner, BlobsUpload.Params.Append(id, 0, "AQ=="))
+        _ <- uploadCall(rpc, owner, BlobsUpload.Params.Abort(id))
+        aborted <- waiter.join
+        racedId = BlobId.fresh()
+        _ <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(racedId, 3)).zipPar(rpc.disconnect(owner))
+        absent <- app.master.readBlob(racedId, BlobUploadLimits.AwaitTimeout).either
+        remaining <- app.master.listBlobIds
+      } yield {
+        // Suspension alone does not prove the bounded wait has captured its dependency yet.
+        assert(
+          aborted == Left(YallmoError.BlobUploadFailed(BlobUploadFailure.Aborted)) ||
+            aborted == Left(YallmoError.BlobMissing(id))
+        )
+        assertEquals(absent, Left(YallmoError.BlobMissing(racedId)))
+        assertEquals(remaining, Chunk.empty)
+      }
+    })
+  }
+
+  test("connection maps drop terminal uploaders automatically without new traffic") {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        owner <- rpc.openConnection
+        _ <- initializeUpload(rpc, owner, Some(human))
+        time <- Ref.make(0L)
+        sleeping <- Promise.make[Nothing, Unit]
+        wake <- Promise.make[Nothing, Unit]
+        clock = new Clock {
+          export Clock.ClockLive.{currentTime, currentDateTime, javaClock, localDateTime, scheduler, instant}
+          def nanoTime(using Trace): UIO[Long] = time.get
+          def sleep(duration: => Duration)(using Trace): UIO[Unit] =
+            if duration == BlobUploadLimits.IdleTimeout then sleeping.succeed(()) *> wake.await
+            else ZIO.never
+        }
+        id = BlobId.fresh()
+        _ <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(id, 1)).withClock(clock)
+        _ <- sleeping.await
+        before <- owner.uploads.get
+        _ <- time.set(10.seconds.toNanos)
+        _ <- wake.succeed(())
+        after <- (ZIO.yieldNow *> owner.uploads.get).repeatUntil(_.isEmpty)
+        replacement <- uploadCall(rpc, owner, BlobsUpload.Params.Begin(id, 0))
+        _ <- uploadCall(rpc, owner, BlobsUpload.Params.Complete(id))
+        completed <- owner.uploads.get
+        _ <- rpc.disconnect(owner)
+      } yield {
+        assertEquals(before.size, 1)
+        assertEquals(after.size, 0)
+        assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](replacement).result, BlobsUpload.Result.Begun(id))
+        assertEquals(completed.size, 0)
+      }
+    })
+  }
+
+  test("WebSocket upload control remains responsive while an early orchestrator await is pending") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    run(ZIO.scoped {
+      for {
+        _ <- OrchestratorServerMain.configureLogging(LogLevel.Trace, capture).build
+        app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        channelReady <- Promise.make[Nothing, WebSocketChannel]
+        replies <- Queue.unbounded[String]
+        socket = Handler.webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
+              channelReady.succeed(channel).unit
+            case ChannelEvent.Read(WebSocketFrame.Text(value)) => replies.offer(value).unit
+            case _                                             => ZIO.unit
+          }
+        }
+        environment <- Client.default.build
+        _ <- socket.connect(s"ws://127.0.0.1:$port/rpc").provideSomeEnvironment[Scope](_.add(environment.get[Client]))
+        channel <- channelReady.await
+        send = (method: String, params: Json) =>
+          channel.send(
+            ChannelEvent.Read(WebSocketFrame.Text(JsonRpc.Request(Json.Str("request"), method, params).toJson))
+          ) *> replies.take
+        _ <- send(
+          Initialize.method,
+          Initialize
+            .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", Some(human))
+            .toJsonAST
+            .toOption
+            .get
+        )
+        id = BlobId.fresh()
+        begun <- send(BlobsUpload.method, (BlobsUpload.Params.Begin(id, 3): BlobsUpload.Params).toJsonAST.toOption.get)
+        _ = assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](begun).result, BlobsUpload.Result.Begun(id))
+        waiter <- app.master.readBlob(id, BlobUploadLimits.AwaitTimeout).fork
+        _ <- (ZIO.yieldNow *> waiter.status).repeatUntil(_.isInstanceOf[Fiber.Status.Suspended])
+        _ <- send(
+          BlobsUpload.method,
+          (BlobsUpload.Params.Append(id, 0, "AQID"): BlobsUpload.Params).toJsonAST.toOption.get
+        )
+        pending <- waiter.poll
+        _ <- send(BlobsUpload.method, (BlobsUpload.Params.Complete(id): BlobsUpload.Params).toJsonAST.toOption.get)
+        blob <- waiter.join
+        // Disconnect cleanup also reaches awaiters on real sockets, without another upload-control RPC.
+        next = BlobId.fresh()
+        _ <- send(BlobsUpload.method, (BlobsUpload.Params.Begin(next, 1): BlobsUpload.Params).toJsonAST.toOption.get)
+        disconnected <- app.master.readBlob(next, BlobUploadLimits.AwaitTimeout).either.fork
+        _ <- (ZIO.yieldNow *> disconnected.status).repeatUntil(_.isInstanceOf[Fiber.Status.Suspended])
+        _ <- channel.shutdown
+        failure <- disconnected.join
+      } yield {
+        assertEquals(pending, None)
+        assertEquals(blob.bytes, Chunk[Byte](1, 2, 3))
+        assert(!logs.toString.contains("AQID"))
+        assert(logs.toString.contains("<redacted>"))
+        assert(
+          failure == Left(YallmoError.BlobUploadFailed(BlobUploadFailure.Aborted)) ||
+            failure == Left(YallmoError.BlobMissing(next))
+        )
+      }
+    })
+  }
+
+  private def initializeUpload(
+      rpc: OrchestratorRpc,
+      connection: OrchestratorRpc.Connection,
+      claimed: Option[AgentId]
+  ): UIO[String] =
+    rpc
+      .handle(
+        JsonRpc
+          .Request(
+            Json.Str("init"),
+            Initialize.method,
+            Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", claimed)
+          )
+          .toJson,
+        connection
+      )
+      .map(_.get)
+
+  private def uploadCall(
+      rpc: OrchestratorRpc,
+      connection: OrchestratorRpc.Connection,
+      command: BlobsUpload.Params
+  ): UIO[String] =
+    rpc.handle(JsonRpc.Request(Json.Str("upload"), BlobsUpload.method, command).toJson, connection).map(_.get)
 
   private def application(
       respond: Request => Task[Response],

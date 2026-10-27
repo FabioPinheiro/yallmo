@@ -58,7 +58,11 @@ final class ReplOrchestratorLive[-R] private (
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     orchestrator.addSessionAgent(id, agentId)
 
-  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = orchestrator.readBlob(blobId)
+  override def beginBlobUpload(blobId: BlobId, totalBytes: Long): IO[YallmoError, BlobUploader] =
+    orchestrator.beginBlobUpload(blobId, totalBytes)
+
+  override def readBlob(blobId: BlobId, awaitTimeout: Duration = Duration.Zero): IO[YallmoError, Blob] =
+    orchestrator.readBlob(blobId, awaitTimeout)
 
   override def appendWithBlobWriter[R1](
       id: SessionId,

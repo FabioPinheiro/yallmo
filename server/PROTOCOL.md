@@ -8,7 +8,7 @@ The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access.
 DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
 and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
 The browser shares protocol/model sources and uses the same initialization and methods as the REPL. HTTP serves static assets and the WebSocket
-upgrade only; no conversation/blob REST endpoint, upload, login, voice or tool-control API is enabled. Operator-only
+upgrade only; no conversation/blob REST endpoint, login, voice or tool-control API is enabled. Generic binary uploads use JSON-RPC only. Operator-only
 `diagnostics.request` reads existing provider-request captures without executing a turn.
 
 ## Connection and capabilities
@@ -17,7 +17,7 @@ Send `initialize` first. Protocol `1` is independent of JSON-RPC `"2.0"`. Initia
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Operator additionally advertises `sessions.create`, `turn.submit` and the read-only `diagnostics.request`. Notifications are empty.
+Operator additionally advertises `sessions.create`, `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
 Operator requires a configured backend and a nonempty initialized claimed `userId`, irrespective of Origin or peer
@@ -27,12 +27,12 @@ with network access can claim an author and execute configured agents/tools, so 
 
 Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
 also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed by this catalog; explicit operator diagnostics may show the request model.
-The server independently resolves configured assistants; it never accepts executable code, author IDs or provider state
-from a turn request. Identity rebinding is rejected. Configured/caller-supplied agent ID collisions are rejected;
+The server independently resolves configured assistants; it never accepts executable code or provider state from a
+turn request. `agents.invoke` accepts an authored Message only when its author matches the initialized identity. Identity rebinding is rejected. Configured/caller-supplied agent ID collisions are rejected;
 known dynamically registered human authors can reconnect.
 
 Presence is connection-owned and cleaned on disconnect; duplicate same-name viewers retain presence while connected.
-A human registered on create/submit remains in the runtime registry for the process lifetime, independently of active
+A human registered on create/submit/invoke remains in the runtime registry for the process lifetime, independently of active
 viewers. Neither retention nor a stable label is authentication or durable identity.
 
 ## Framing and bounds
@@ -72,8 +72,10 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `sessions.create` | `{name?: SessionId}` | `SessionSnapshot` |
 | `messages.list` | `{}` | `[MessageSnapshot]` |
 | `agents.list` | `{}` | `[AgentId]` |
+| `agents.invoke` | `{agentId: AgentId, input: Message}`; no session controls | `Message` (final assistant answer) |
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
+| `blobs.upload` | Discriminated command (below), no session ID | Discriminated result (below) |
 | `diagnostics.request` | `{sessionId: SessionId}` | `{providerRequest?: JsonObject}` |
 | `turn.submit` | `{sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
@@ -84,6 +86,8 @@ Collections encode as arrays. Protocol-local codecs do not alter storage formats
 - `Identity = {id: AgentId, role: "viewer" | "operator"}`.
 - `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId]}`.
 - `AgentTask = {prompt: String}`; `AgentResult = {agentId: AgentId, text: String}`.
+- `Message = {id: MessageId, data: {agentId: AgentId, parentId?: MessageId, timestamp: String, payload: MessagePayload}}`.
+  The shared codec verifies `id` against the canonical encoded `data`; payload variants retain their existing tagged JSON.
 - `SessionSnapshot = {id: SessionId, agentIds: [AgentId], messages: [MessageSnapshot]}`.
 - `MessageSnapshot = {id: MessageId, agentId: AgentId, parentId?: MessageId, timestamp: String, role: String,
   content: String, blobIds: [BlobId], toolName?: String}`.
@@ -95,8 +99,120 @@ messages or change persisted history. Listing order remains sessions/agents/blob
 then ID; session messages are in transcript order.
 
 `blobs.read`: offset must be nonnegative and no greater than size; maxBytes is 1..65536 decoded bytes. At EOF, data
-is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. No upload or binary frames.
-Core full-blob reads and partial-failure storage limitations remain; this is not a blob lifecycle/status service.
+is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. Binary frames remain unsupported.
+Normal reads/listing never wait for in-flight uploads; staged bytes are invisible.
+
+## Generic binary upload
+
+`blobs.upload` uses explicit `command` and `status` discriminators. Only initialized configured operators may use it;
+viewers/unconfigured connections get Forbidden and uninitialized connections get Unauthorized. An active upload is keyed by
+its `BlobId` and owned by the exact connection, **not** its claimed user ID. Another connection cannot append, complete or abort it.
+
+Example params/results (enclose each in the usual JSON-RPC request/response):
+
+```json
+{"command":"begin","blobId":"00000000-0000-0000-0000-000000000001","totalBytes":3}
+{"status":"begun","blobId":"00000000-0000-0000-0000-000000000001"}
+{"command":"append","blobId":"00000000-0000-0000-0000-000000000001","offset":0,"dataBase64":"AQID"}
+{"status":"appended","blobId":"00000000-0000-0000-0000-000000000001","nextOffset":3}
+{"command":"complete","blobId":"00000000-0000-0000-0000-000000000001"}
+{"status":"completed","blobId":"00000000-0000-0000-0000-000000000001"}
+```
+
+`{"command":"abort","blobId":"..."}` returns `{"status":"aborted","blobId":"..."}`.
+Every command and acknowledgement uses the same canonical lowercase UUID `BlobId`, which is also the stored blob identity.
+Begin echoes the supplied ID; it does not allocate a second identity. It reserves the ID and declared length;
+active/stored duplicate IDs yield Conflict. Empty blobs use Begin(0)
+then Complete without Append. Append requires a nonempty decoded chunk of at most **65536 bytes**, the exact next byte
+offset, and no overrun of the declared total. It accepts only canonical padded standard base64 (padding only when
+required), bounded to **87384 characters before decoding**, then validates decoded size and canonical re-encoding.
+Invalid base64/encoding bounds yield InvalidParams; invalid offset/chunk/total/incomplete completion yield Rejected.
+Rejected commands retain the prior upload state but do not refresh its inactivity deadline.
+
+Fixed staging limits, defined as constants in `BlobUploadLimits`:
+**16** active uploads, **4 MiB** per upload, **16 MiB** aggregate declared-byte reservations, **10 seconds** inactivity
+since Begin/last accepted Append, **60 seconds** absolute lifetime from Begin (never refreshed), and **2 minutes**
+for invocation dependency reads. A 960044-byte file fits in multiple chunks.
+These are staging-content/reservation limits, not a total JVM heap cap: bounded transport frames/decoding and copying
+have additional overhead; completed Storage content follows existing storage/read semantics. Capacity exhaustion is Busy.
+
+Complete requires all declared bytes and succeeds only after Storage publication. The filesystem backend forces the
+full temporary file, publishes with an exclusive hard link (never replacing an existing ID), and forces its directory.
+It requires filesystem hard-link/directory-force support; unsupported operations fail safely, with no fallback to direct
+partial writes. Reads/restarts ignore temporary filenames. File cleanup after publication is best effort; a crash can
+leave ignored temporary files. Existing root ownership/semaphore rules still apply. This is not a multi-file/message
+transaction or a new recovery/garbage-collection service, and it cannot detect partial files from older implementations.
+Publication is uninterruptible and holds the registry/storage permits. The idle and absolute deadlines cannot preempt
+it: blocked filesystem publication can delay expiry, disconnect cleanup and terminal capability removal beyond those
+deadlines. They are not hard filesystem I/O deadlines.
+
+Abort, expiry and disconnect discard unfinished bytes and fail existing dependency waiters with a typed reason;
+storage failure also fails waiters, never with partial bytes. Commands for inactive or foreign uploads return NotFound.
+Terminal uploads have no retained replay ledger. Complete/Abort/disconnect races serialize: successful publication
+cannot be undone by later Abort. Errors/logs contain no uploaded bytes; transport TRACE redacts `dataBase64` in both
+directions (including batches) and omits malformed JSON payloads.
+
+Storage owns staging and implements shared `BlobOps`, forwarded unchanged by Orchestrator. Its
+`readBlob(blobId, awaitTimeout = Duration.Zero)` returns completed blobs immediately; zero timeout returns missing
+for active/missing content. A positive finite timeout waits only for a known active upload, outside storage/registry
+permits; unknown IDs fail immediately. Negative/infinite timeouts are invalid. Timeout abandons just that waiter,
+not the upload. `beginBlobUpload(blobId, totalBytes)` returns a `BlobUploader` capability with `blobId`, `append`,
+`complete` and `abort`; there is no owner argument or second upload identity. The server holds a connection-local
+`Map[BlobId, BlobUploader]`: Append/Complete/Abort resolve only there, never by global ID lookup. Disconnect is
+serialized with Begin and aborts that connection's unfinished capabilities. Terminal capabilities are removed
+on completion/abort and by bounded dependency cleanup even with no further traffic. Storage releases staging
+buffers, reservations, waiters and timers on every terminal outcome, including publication failure and automatic expiry.
+`agents.invoke` uses an explicit bounded read timeout; there is no separate RPC await endpoint. Uploads never create sessions or messages,
+mutate Message/AudioAttachment, or run an agent/provider. Stored blobs can be orphaned: later message/invocation failure
+cannot undo a completed upload. Abort cleans upload resources only, not agent execution.
+
+**No automatic retry, replay, resume or reconnect promises.** A new Begin may reuse an unstored BlobId after cleanup,
+but stale commands from the same connection cannot be distinguished from commands for that new upload. Use a fresh
+BlobId if old commands may still arrive; internal timers and captured dependency waiters never retarget a new upload.
+Await each Append response and use `nextOffset` for the next command; do not pipeline unordered chunks. Lost Complete responses may leave a fully stored blob; query ordinary
+reads/listing rather than assuming a safe retry. Browser dictation uses these commands as described in
+[view-web](../view-web/README.md#dictation).
+
+## Independent agent invocation
+
+`agents.invoke` runs a configured agent without requiring or creating a session. It is available only on configured
+servers to initialized Operators; anonymous clients get Forbidden and unconfigured servers return MethodNotFound.
+Params have exactly `agentId` (recipient) and `input` (full Message). Extra params, including `sessionId`,
+`expectedHead` and `resetContinuation`, are InvalidParams. Message hash/field validation happens during decoding.
+The input author must match the initialized claimed identity (Forbidden otherwise); this is still not authentication.
+
+Currently input must be a root (`parentId` absent/null) `User` or `AudioAttachment` payload. Other roles and parents are
+Rejected; parent-history support is intentionally deferred. Unsupported agent audio capability and invalid configured
+recipients are rejected before saving input. Endpoint/model audio compatibility is still a provider concern.
+The input timestamp/content/id are preserved exactly, not replaced with a server-generated user message.
+
+The core Orchestrator saves the input independently in message storage, awaits any referenced blobs with an explicit bounded `readBlob` timeout,
+then supplies only that input to the normal configured AgentRunner. Configured instructions, tools, capability policy,
+extensions and budgets apply normally; no session history, prior provider continuation or session continuation policy
+is inherited. Successful execution saves and returns a single full `Message` with final `Assistant` text, the selected
+agent as author, a server timestamp and `parentId = input.id`. Internal tool/reasoning exchanges stay transient and are
+not returned or persisted by this method; private provider continuation values are never serialized in the result.
+History APIs continue using redacted snapshots.
+
+Both input and final output are visible through `messages.list` and survive filesystem reopen. Neither creates a
+session/sidebar conversation or advances an existing session. Message puts validate content addresses and existing
+parent references; identical puts are idempotent, **agent execution is not**. Repeating the same invocation can call
+providers/tools again and store another response. There is no request deduplication, automatic retry or replay ledger.
+
+Send the invocation and subsequent upload commands as separate WebSocket documents: an invocation can wait for its
+blob while later Append/Complete requests proceed on the same socket. Do not place the waiting invocation before its
+own upload completion in a sequential JSON-RPC batch. Existing frame/worker bounds still apply; reserve capacity for
+upload controls rather than saturating the connection with waiting invocations.
+
+Failures use ordinary sanitized JSON-RPC errors, not `TurnOutcome`. Missing blobs are NotFound; aborted/expired/failed
+dependencies reject execution; provider/defect/storage failures return safe errors. A failed input write prevents
+execution; dependency/execution/output-write failures do not roll back an accepted input. Errors do not assert that
+nothing was saved. The application owns admitted work beyond caller disconnect; disconnect may abort its unfinished
+connection-owned uploads, but never provides general agent-execution cancellation. Shutdown stops owned work before
+storage/tool ownership is released. Lost replies may hide completed work: inspect `messages.list` by the known input
+ID and response parent before considering a **manual** repeat. There is no standalone status/cancel/diagnostics API.
+The browser dictation adapter uses this method without the ordinary read deadline; the REPL does not expose an
+independent invocation command. See [dictation](../view-web/README.md#dictation) for UI gating, cursor insertion and discard semantics.
 
 ## Provider-request diagnostics
 
@@ -182,10 +298,11 @@ Standard JSON-RPC codes: -32700 Parse error, -32600 Invalid Request, -32601 Meth
 | -32003 | Forbidden / operator operation unavailable |
 | -32004 | Not found |
 | -32005 | Conflict / head mismatch, explicit name or identity collision |
-| -32006 | Busy / same-session turn already active |
-| -32007 | Rejected / invalid selection or unavailable/oversized diagnostic capture |
+| -32006 | Busy / same-session turn already active or upload capacity exhausted |
+| -32007 | Rejected / invalid input, selection, upload/dependency or unavailable/oversized diagnostic capture |
 
-Pre-execution rejections are JSON-RPC errors; execution failures use `TurnOutcome`. Provider causes/stacks are not sent.
+For `turn.submit`, pre-execution rejections are JSON-RPC errors and execution failures use `TurnOutcome`.
+`agents.invoke` uses ordinary JSON-RPC errors at every failure phase. Provider causes/stacks are not sent.
 Unconfigured mutation endpoints return MethodNotFound. Malformed unidentifiable requests use null ID; notifications
 receive no reply. Connection overload is a close, not a run-capacity/ledger API.
 
@@ -197,6 +314,14 @@ Provider/login/voice/human-interaction transport and public authentication remai
 ## Validation
 
 `YallmoProtocolSuite` freezes enabled shapes, optional fields/defaults and shared JVM/JS decoding.
+`OrchestratorInvokeSuite` covers session-independent persistence on memory/filesystem storage, blob dependency waits,
+invalid inputs/executions, persistence failures and interruption. `AgentsInvokeSuite` covers authorization, ordinary
+tool execution, continuation privacy, owned lifetime/shutdown, and real same-socket upload/invocation correlation.
+The independent-invocation backend change was validated with **570 tests**, with **2 existing Scala-CLI integration skips**: core JVM 302,
+core JS 15, protocol JVM/JS 26 each, server 157, view-web 44; REPL test compilation also passed. Focused post-format
+revalidation passed 127 checks and REPL test compilation. Subsequent browser dictation integration passed 59 Scala.js
+checks and 51 Node checks (including the unchanged browser audio tests); see the frontend guide for synthetic-browser
+smoke evidence and remaining real microphone/provider acceptance checks.
 `OrchestratorWebSocketSuite` retains initialization/correlation/pending/deadline/disconnect/framing gates;
 `ServerSubmissionSuite` covers actual durable execution, concurrent sessions, Busy/head checks, viewer denial,
 disconnect, shutdown/lease ordering, closed scope, overload, continuation/restart policy and session-isolated

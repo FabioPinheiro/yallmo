@@ -19,7 +19,7 @@ import fmgp.yallmo.orchestration.{
   *
   *   - The agent decides: answer, call tools, or retrieve knowledge.
   *   - The runner executes those requests, checks permissions, and enforces limits.
-  *   - The orchestrator persists session messages; the runner itself does not.
+  *   - The orchestrator persists messages and session (pointer to messages); the runner itself does not.
   */
 final class AgentRunner[R](
     tools: Map[String, AgentTool[R]],
@@ -27,7 +27,7 @@ final class AgentRunner[R](
     val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
 
-  /** Binds a program and its capabilities for session-aware orchestration; constructing it performs no effects. */
+  /** Binds a program and its capabilities for orchestrator-owned execution; construction performs no effects. */
   def execution(
       agent: AgentInstance[R],
       staticContext: StaticContext[R],

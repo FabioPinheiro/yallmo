@@ -2,7 +2,7 @@ package fmgp.yallmo.model
 
 import fmgp.yallmo.model.llm.ProviderContinuation
 import zio.Chunk
-import zio.json.{EncoderOps, JsonCodec}
+import zio.json.{DeriveJsonCodec, EncoderOps, JsonCodec}
 
 import java.time.Instant
 import scala.util.Try
@@ -50,6 +50,15 @@ final case class Message(id: MessageId, data: MessageData) {
 }
 
 object Message {
+
+  /** Full id/data envelope; decoding verifies its content address, not author permissions or payload visibility. */
+  given JsonCodec[Message] = DeriveJsonCodec
+    .gen[Message]
+    .transformOrFail(
+      message => Either.cond(message.id == MessageId.from(message.data), message, "message id does not match data"),
+      identity
+    )
+
   def apply(data: MessageData): Message =
     new Message(MessageId.from(data), data)
 

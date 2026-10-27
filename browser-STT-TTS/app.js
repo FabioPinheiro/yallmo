@@ -1,5 +1,5 @@
 import { OperationController, pollSequentially } from './bridge-client.js';
-import { recordingAdapter, speechAdapter } from './browser-audio.js';
+import { recordingAdapter, speechAdapter } from '../view-web/vite/browser-audio.js';
 import { makeRequest } from './http-client.js';
 
 const enable = document.querySelector('#enable');
@@ -106,7 +106,7 @@ async function enableAudio() {
       session.stream = stream;
       return stream;
     });
-    const module = invoke(() => session.context.audioWorklet.addModule('./capture-worklet.js'));
+    const module = invoke(() => session.context.audioWorklet.addModule('../view-web/vite/capture-worklet.js'));
     await waitForSetup(Promise.all([resumed, speech, permission, module]), session.abort.signal);
     if (!session.active) return;
     if (session.context.state !== 'running' || !session.stream.getAudioTracks().length ||

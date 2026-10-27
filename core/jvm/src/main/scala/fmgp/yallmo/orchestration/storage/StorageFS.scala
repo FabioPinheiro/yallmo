@@ -6,7 +6,6 @@ import fmgp.yallmo.orchestration.*
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.{FileAlreadyExistsException, Files, LinkOption, NoSuchFileException, Path, StandardOpenOption}
-import java.time.Instant
 import scala.jdk.CollectionConverters.*
 import zio.*
 
@@ -17,13 +16,32 @@ import zio.*
   * producers. Published histories use immutable, append-only objects and can be traversed after releasing the permit.
   * This is not cross-process coordination, a crash transaction, or rollback on failure.
   *
-  * Each blob is one raw-byte file at `blobs/<BlobId>`, with no metadata or framing. Reads coordinate with byte writes,
-  * but failed writes may leave partial files. Blob files use filesystem-default permissions; the object store
-  * initializes private root permissions.
+  * Each blob is one raw-byte file at `blobs/<BlobId>`, with no metadata or framing. Publication links a fully written,
+  * forced temporary file exclusively into place; failed writes never expose partial blobs. Blob files use
+  * filesystem-default permissions; the object store initializes private root permissions.
   */
-private[orchestration] final class StorageFS(val root: Path, store: StorageStore, lock: Semaphore) extends Storage {
+private[orchestration] final class StorageFS(
+    val root: Path,
+    store: StorageStore,
+    lock: Semaphore,
+    uploads: BlobOpsUtils.Registry
+) extends Storage {
+
+  override def readBlob(blobId: BlobId, awaitTimeout: Duration = Duration.Zero): IO[YallmoError, Blob] =
+    BlobOpsUtils.read(this, uploads, blobId, awaitTimeout)
+
+  override def beginBlobUpload(blobId: BlobId, totalBytes: Long): IO[YallmoError, BlobUploader] =
+    BlobOpsUtils.begin(this, uploads, blobId, totalBytes)
 
   override def listMessages: IO[YallmoError, Chunk[Message]] = lock.withPermit(store.listMessages)
+
+  override def putMessage(message: Message): IO[YallmoError, Message] =
+    lock.withPermit {
+      ZIO
+        .fail(YallmoError.InvalidMessage("Message id does not match data"))
+        .unless(message.id == MessageId.from(message.data)) *>
+        store.put(message.data).map(stored => Message(stored.id, stored.value)).uninterruptible
+    }
 
   override def listBlobIds: IO[YallmoError, Chunk[BlobId]] = lock.withPermit {
     ZIO
@@ -76,43 +94,59 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
       }
       .flatMap(sessionFrom(id, _))
 
-  override def append(
+  override def putMessagesAndUpdateSession(
       id: SessionId,
-      agentId: AgentId,
-      messages: Chunk[MessagePayload]
+      expectedHead: Option[MessageId],
+      messages: Chunk[Message]
   ): IO[YallmoError, Session] =
-    if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
-    else
-      lock
-        .withPermit {
-          for {
-            state <- readState(id)
-            _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(state.agentIds.contains(agentId))
-            // Once object writes start, finish the batch and publish its head before honoring cancellation.
-            // The permit covers the entire batch; masking is not rollback/crash recovery.
-            updated <- (for {
-              head <- ZIO.foldLeft(messages)(state.head) { (parent, message) =>
-                store.put(MessageData(agentId, parent, Instant.now(), message)).map(stored => Some(stored.id))
-              }
-              _ <- StorageFiles.write(root, id, state.agentIds, head)
-            } yield state.copy(head = head)).uninterruptible
-          } yield updated
-        }
-        .flatMap(sessionFrom(id, _))
+    lock
+      .withPermit {
+        for {
+          state <- readState(id)
+          _ <- ZIO.fromEither(StoreageUtils.validateMessageBatch(id, expectedHead, state.head, messages))
+          // Once object writes start, finish the batch and publish its head before honoring cancellation.
+          // The permit covers validation and the entire batch. I/O failure may leave orphan objects;
+          // masking is not rollback/crash recovery. Stale-head and invalid-chain rejections write nothing.
+          updated <- (for {
+            _ <- ZIO.foreachDiscard(messages)(message => store.put(message.data))
+            head = messages.lastOption.map(_.id)
+            _ <- StorageFiles.write(root, id, state.agentIds, head)
+          } yield state.copy(head = head)).uninterruptible
+        } yield updated
+      }
+      .flatMap(sessionFrom(id, _))
 
   private def blobPath(blobId: BlobId): Path = root.resolve("blobs").resolve(blobId.value)
 
-  override def append(blob: Blob): IO[YallmoError, Unit] = lock.withPermit {
+  override def putBlob(blob: Blob): IO[YallmoError, Unit] = lock.withPermit {
     ZIO
       .attemptBlocking {
         val path = blobPath(blob.id)
-        Files.createFile(path)
-        val channel = FileChannel.open(path, StandardOpenOption.WRITE)
+        val staged = Files.createTempFile(root.resolve("blobs"), ".upload-", ".tmp")
         try {
-          val buffer = ByteBuffer.wrap(blob.bytes.toArray)
-          while buffer.hasRemaining do channel.write(buffer)
-          channel.force(true)
-        } finally channel.close()
+          val channel = FileChannel.open(staged, StandardOpenOption.WRITE)
+          try {
+            val buffer = ByteBuffer.wrap(blob.bytes.toArray)
+            while buffer.hasRemaining do channel.write(buffer)
+            channel.force(true)
+          } finally channel.close()
+          // A hard link is an atomic exclusive publication, unlike ATOMIC_MOVE which may replace a target.
+          Files.createLink(path, staged)
+          try {
+            val directory = FileChannel.open(path.getParent, StandardOpenOption.READ)
+            try directory.force(true)
+            finally directory.close()
+          } catch {
+            case error: java.io.IOException =>
+              try Files.delete(path)
+              catch { case cleanup: java.io.IOException => error.addSuppressed(cleanup) }
+              throw error
+          }
+        } finally {
+          // A cleanup failure after publication must not report an unsuccessful append of readable content.
+          try { Files.deleteIfExists(staged); () }
+          catch { case _: java.io.IOException => () }
+        }
       }
       .mapError {
         case _: FileAlreadyExistsException => YallmoError.BlobAlreadyExists(blob.id)
@@ -121,7 +155,7 @@ private[orchestration] final class StorageFS(val root: Path, store: StorageStore
       .uninterruptible
   }
 
-  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] = lock.withPermit {
+  override def getBlob(blobId: BlobId): IO[YallmoError, Blob] = lock.withPermit {
     ZIO
       .attemptBlocking(Blob(blobId, Chunk.fromArray(Files.readAllBytes(blobPath(blobId)))))
       .mapError {
@@ -183,10 +217,11 @@ private[orchestration] object StorageFS {
   def open(root: Path): IO[YallmoError, StorageFS] =
     for {
       lock <- Semaphore.make(1)
+      uploads <- BlobOpsUtils.registry
       store <- StorageStore.open(root)
       _ <- StorageFiles.ensureDirectories(root)
       _ <- ZIO
         .attemptBlocking(Files.createDirectories(root.resolve("blobs")))
         .mapError(error => YallmoError.StorageFailure("create blob directory", error))
-    } yield StorageFS(root, store, lock)
+    } yield StorageFS(root, store, lock, uploads)
 }

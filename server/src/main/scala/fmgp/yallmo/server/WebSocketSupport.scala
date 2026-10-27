@@ -5,6 +5,7 @@ import java.nio.charset.{CodingErrorAction, StandardCharsets}
 import zio.*
 import zio.http.{WebSocketConfig, WebSocketFrame}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
+import zio.json.*
 import zio.json.ast.Json
 
 /** Boundary checks only; envelope and application values still use the standard derived zio-json codecs. */
@@ -16,6 +17,19 @@ private[server] object RpcWire {
     .forceCloseTimeout(1.second)
 
   def parse(input: String): Either[String, Json] = JsonRpc.parseDocument(input)
+
+  /** Never log binary base64, even in batches, responses, or malformed requests. */
+  def tracePayload(input: String): String = {
+    def redact(value: Json): Json = value match {
+      case Json.Obj(fields) =>
+        Json.Obj(fields.map { case (key, item) =>
+          (key, if key == "dataBase64" then Json.Str("<redacted>") else redact(item))
+        })
+      case Json.Arr(values) => Json.Arr(values.map(redact))
+      case other            => other
+    }
+    parse(input).fold(_ => "<invalid JSON omitted>", value => redact(value).toJson).toJson
+  }
   def size(input: String): Int = input.getBytes(StandardCharsets.UTF_8).length
 }
 

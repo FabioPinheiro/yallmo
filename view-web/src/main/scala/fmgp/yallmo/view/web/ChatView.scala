@@ -22,7 +22,7 @@ import org.scalajs.dom
   * | Scrollable session list |--------------------------------------------------|
   * |                         | Recovery notice (only when needed)               |
   * |                         | Editable message composer                        |
-  * |                         | Shortcut hint      Waiting / agent warning  Send |
+  * |                         | Status / warning  Dictation / Stop  Discard Send |
   * +-------------------------+--------------------------------------------------+
   * }}}
   *
@@ -46,7 +46,7 @@ private[web] object ChatView {
       button(
         typ := "button",
         "New conversation",
-        disabled <-- state.map(s => !s.enabled || s.creating || s.pending.nonEmpty),
+        disabled <-- state.map(s => !s.enabled || s.creating || s.pending.nonEmpty || s.voiceBusy),
         onClick --> (_ => { model.newConversation(name.now()); openChat() })
       ),
       detailsTag(
@@ -125,16 +125,100 @@ private[web] object ChatView {
   ): Boolean =
     key == "Enter" && !shift && !ctrl && !meta && !alt && !composing
 
+  private def voiceControls(model: ChatModel, voice: VoiceModel, target: () => VoiceDraftTarget): HtmlElement = {
+    val state = voice.state.signal
+    div(
+      cls := "voice-controls",
+      hidden <-- state.map(!_.available),
+      button(
+        typ := "button",
+        cls := "voice-record",
+        aria.label <-- state.map(_.phase match {
+          case VoicePhase.Idle         => "Start dictation"
+          case VoicePhase.Preparing    => "Requesting microphone"
+          case VoicePhase.Recording    => "Stop and transcribe"
+          case VoicePhase.Stopping     => "Finishing recording"
+          case VoicePhase.Uploading    => "Uploading recording"
+          case VoicePhase.Transcribing => "Transcribing recording"
+        }),
+        child.text <-- state.map(_.phase match {
+          case VoicePhase.Idle         => "🎤 Dictation"
+          case VoicePhase.Preparing    => "Requesting microphone…"
+          case VoicePhase.Recording    => "Stop"
+          case VoicePhase.Stopping     => "Finishing recording…"
+          case VoicePhase.Uploading    => "Uploading…"
+          case VoicePhase.Transcribing => "Transcribing…"
+        }),
+        title := (if voice.supported then "Record up to 30 seconds; insert a transcript without sending"
+                  else "Microphone capture requires HTTPS or localhost and AudioWorklet support"),
+        disabled <-- state.combineWith(model.state.signal).map { (v, c) =>
+          !voice.supported || !v.available || c.creating || c.pending.nonEmpty ||
+          (v.busy && v.phase != VoicePhase.Recording)
+        },
+        // Prevent mouse focus from moving the textarea cursor before it is captured.
+        onMouseDown.preventDefault --> (_ => ()),
+        onClick --> (_ =>
+          if voice.state.now().phase == VoicePhase.Recording then voice.stop() else voice.start(target())
+        )
+      ),
+      span(
+        cls <-- state.map(s =>
+          if s.phase == VoicePhase.Recording && s.seconds >= 25 then "voice-timer voice-limit" else "voice-timer"
+        ),
+        role := "timer",
+        aria.label := "Recording time, maximum 30 seconds",
+        hidden <-- state.map(_.phase != VoicePhase.Recording),
+        child.text <-- state.map(s => f"00:${s.seconds}%02d / 00:30")
+      ),
+      button(
+        typ := "button",
+        hidden <-- state.map(!_.busy),
+        "Discard",
+        aria.label <-- state.map(s =>
+          if s.phase == VoicePhase.Uploading || s.phase == VoicePhase.Transcribing then "Discard result"
+          else "Discard recording"
+        ),
+        title := "Discard locally; already submitted agent work is not cancelled",
+        onClick --> (_ => voice.cancel())
+      )
+    )
+  }
+
   /** Routed transcript and composer; `client` is reused by persisted-message attachment download controls. */
-  def apply(model: ChatModel, client: OrchestratorWSClient): HtmlElement = {
+  def apply(model: ChatModel, client: OrchestratorWSClient, speech: MessageSpeech, voice: VoiceModel): HtmlElement = {
     val state = model.state.signal
     val current = state.map(_.current)
     val follow = Var(true)
     val history = state.map(s => (s.current.snapshot.toList.flatMap(_.messages.toList), s.currentPending)).distinct
     val messages = history.map(_._1).distinct
     val pending = history.map(_._2).distinct
+    var composer = Option.empty[dom.HTMLTextAreaElement]
+    var cursor = Option.empty[(String, Long, Int, Int)]
+    def remember(element: dom.HTMLTextAreaElement): Unit = {
+      val s = model.state.now()
+      if element.value == s.current.draft then
+        cursor = Some((s.active, s.current.draftVersion, element.selectionStart, element.selectionEnd))
+    }
+    def target(): VoiceDraftTarget = {
+      composer.filter(_ == dom.document.activeElement).foreach(remember)
+      val s = model.state.now()
+      model.voiceTarget(cursor.collect {
+        case (key, revision, start, end) if key == s.active && revision == s.current.draftVersion => (start, end)
+      })
+    }
     sectionTag(
       cls := "chat-main",
+      onUnmountCallback(_ => voice.cancel(false)),
+      state.map(_.active).distinct.changes --> (_ => voice.cancel(false)),
+      model.voiceInsertions.events --> { insertion =>
+        composer.foreach { element =>
+          val _ = dom.window.requestAnimationFrame { _ =>
+            if element.isConnected && model.state.now().active == insertion.conversation &&
+              element.value == insertion.text && dom.document.activeElement == element
+            then element.setSelectionRange(insertion.cursor, insertion.cursor)
+          }
+        }
+      },
       div(
         cls := "chat-heading",
         h2(
@@ -171,7 +255,7 @@ private[web] object ChatView {
           hidden <-- history.map { case (messages, pending) => messages.nonEmpty || pending.nonEmpty },
           "No persisted messages to display."
         ),
-        App.messageList(messages, client),
+        App.messageList(messages, client, speech),
         child <-- pending.map {
           case Some(message) =>
             div(
@@ -182,7 +266,8 @@ private[web] object ChatView {
                   cls := "message-meta",
                   span(cls := "role", "user"),
                   strong(AgentId.value(message.author)),
-                  span(role := "status", "Pending — not yet confirmed saved")
+                  span(role := "status", "Pending — not yet confirmed saved"),
+                  speech.buttonFor(Val(message.prompt))
                 ),
                 pre(message.prompt)
               )
@@ -204,8 +289,18 @@ private[web] object ChatView {
           textArea(
             rows := 3,
             value <-- current.map(_.draft),
-            placeholder := "Write a message…",
-            onInput.mapToValue --> model.draft,
+            placeholder := "Write a message… (Enter to send · Shift+Enter for newline)",
+            onMountCallback(context => composer = Some(context.thisNode.ref)),
+            onUnmountCallback(_ => composer = None),
+            onInput --> { event =>
+              val element = event.target.asInstanceOf[dom.HTMLTextAreaElement]
+              model.draft(element.value)
+              remember(element)
+            },
+            onSelect --> (event => remember(event.target.asInstanceOf[dom.HTMLTextAreaElement])),
+            onBlur --> (event => remember(event.target.asInstanceOf[dom.HTMLTextAreaElement])),
+            onKeyUp --> (event => remember(event.target.asInstanceOf[dom.HTMLTextAreaElement])),
+            onClick --> (event => remember(event.target.asInstanceOf[dom.HTMLTextAreaElement])),
             onKeyDown --> { event =>
               if shouldSend(
                   event.key,
@@ -224,26 +319,33 @@ private[web] object ChatView {
         ),
         div(
           cls := "composer-actions",
-          small(cls := "muted", "Enter to send · Shift+Enter for newline"),
-          span(
-            cls := "muted",
-            role := "status",
-            aria.live := "polite",
-            hidden <-- state.map(s => !s.creating && s.pending.isEmpty),
-            child.text <-- state.map { s =>
-              if s.creating then "Creating conversation…"
-              else if s.currentPending.nonEmpty then "Waiting for the terminal result…"
-              else if s.pending.nonEmpty then "Waiting for another conversation…"
-              else ""
-            }
+          div(
+            cls := "composer-feedback",
+            hidden <-- state.map(s => !s.creating && s.pending.isEmpty && !s.needsAgent),
+            span(
+              cls := "muted",
+              role := "status",
+              aria.live := "polite",
+              hidden <-- state.map(s => !s.creating && s.pending.isEmpty),
+              child.text <-- state.map { s =>
+                if s.creating then "Creating conversation…"
+                else if s.currentPending.nonEmpty then "Waiting for the terminal result…"
+                else if s.pending.nonEmpty then "Waiting for another conversation…"
+                else ""
+              }
+            ),
+            span(
+              cls := "agent-warning",
+              role := "status",
+              hidden <-- state.map(!_.needsAgent),
+              "Choose an agent to send."
+            )
           ),
-          span(
-            cls := "agent-warning",
-            role := "status",
-            hidden <-- state.map(!_.needsAgent),
-            "Choose an agent to send."
-          ),
-          button(typ := "button", "Send", disabled <-- state.map(!_.canSend), onClick --> (_ => model.send()))
+          div(
+            cls := "composer-buttons",
+            voiceControls(model, voice, () => target()),
+            button(typ := "button", "Send", disabled <-- state.map(!_.canSend), onClick --> (_ => model.send()))
+          )
         )
       )
     )

@@ -6,7 +6,8 @@ provides the existing configured backend for server-owned prompt execution; no a
 HTTP serves static assets and upgrade only, not conversation/blob REST endpoints.
 
 **Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
-initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit` and `diagnostics.request`,
+initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit`, `agents.invoke`,
+`blobs.upload` and `diagnostics.request`,
 including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
 `clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
 reach the listener (including through a browser or proxy) can claim an author and execute configured agents/tools.
@@ -44,6 +45,20 @@ Initialized human presence is connection-owned and deduplicated. Dynamically reg
 runtime/process lifetime after disconnect, independently of viewer cleanup. Configured/supplied ID collisions and
 identity rebinding are rejected; known humans may reconnect. Human labels do not make executable assistants.
 
+## Independent agent calls
+
+The generic JSON-RPC `agents.invoke` method accepts `{agentId, input: Message}` and returns a final assistant `Message`.
+It saves the input and response independently of sessions, preserving the input's content address and linking the
+response to it. Root user/audio inputs only are accepted for now; the input author must match the initialized identity.
+An input can reference a blob still arriving through `blobs.upload`: the invocation waits before starting the normal
+configured runner, without blocking subsequent upload commands on the socket. No session is required or created.
+
+Failures can leave accepted input; disconnect abandons the local wait, not admitted execution. Repeating an invocation
+can repeat provider/tool side effects. Inspect message history before manually repeating uncertain requests.
+See [wire contract](PROTOCOL.md#independent-agent-invocation) for authorization, limits and persistence semantics.
+The [browser dictation UI](../view-web/README.md#dictation) uses this path and generic uploads; no voice-specific
+endpoint or session is introduced. General execution cancellation remains separate pending work.
+
 ## Submission lifetime and uncertainty
 
 Core persist–run–persist alone saves the prompt, executes and saves generated output; RPC never preappends it.
@@ -69,7 +84,7 @@ Prerequisites: the repository's JDK/sbt, Node 22.12+ (or 20.19+) and npm.
 
 ```sh
 # Repository root:
-npm --prefix view-web ci
+npm --prefix view-web/vite ci
 sbt 'viewWeb/fastLinkJS'
 sbt 'server/run --storage ./zzz'
 ```
@@ -77,12 +92,12 @@ sbt 'server/run --storage ./zzz'
 In another terminal:
 
 ```sh
-npm --prefix view-web run dev
+npm --prefix view-web/vite run dev
 ```
 
 Open **http://127.0.0.1:5173**. Vite uses `host: true`, listening on all interfaces, including the Docker network.
 It proxies WebSocket `/rpc` to `127.0.0.1:8080` with `ws: true`, preserving the real browser Origin.
-If the backend uses another port, update `view-web/vite.config.js`. Vite's development/HMR socket is separate from the
+If the backend uses another port, update `view-web/vite/vite.config.js`. Vite's development/HMR socket is separate from the
 website's single application socket.
 
 Both the development server/proxy and backend listen on all interfaces.
@@ -99,7 +114,8 @@ sbt 'server/bundle'
 sbt 'server/run --storage ./zzz'
 ```
 
-Open **http://127.0.0.1:8080**. The bundle task full-links Scala.js, runs Vite, and packages the SPA in the server JAR.
+Open **http://127.0.0.1:8080**. The bundle task full-links Scala.js, runs Vite from `view-web/vite/`,
+and packages `view-web/vite/dist/` in the server JAR.
 Ordinary JVM compilation/test/run does not invoke npm or build the frontend. Without packaged assets, `/` returns 503;
 `/rpc` still works. Asset/API misses return 404, never fallback HTML. The module JAR includes assets, not JVM dependencies;
 use sbt's runtime classpath or a normal JVM distribution.

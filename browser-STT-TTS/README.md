@@ -2,6 +2,10 @@
 
 Plain same-origin HTML/ES modules/CSS; no installation, build, framework, external assets or encoder. The REPL bridge serves these files from its classpath. Opening `index.html` as a file or using a separate web server does **not** connect to the REPL.
 
+Shared audio code lives in `view-web/vite/`: `audio-core.js`, `browser-audio.js` and `capture-worklet.js`.
+This page imports those modules directly; sbt packages them alongside the page, and the bridge serves only those
+three shared files under `/view-web/vite/`. No Vite build or frontend dependency installation is needed for the REPL.
+
 ## Setup
 
 Configure the REPL's explicit `transcriberAgent` first: an audio-capable agent with a nonblank model/prompt and empty
@@ -62,8 +66,8 @@ ordinary polling is not logged.
 From the repository root (Node built-ins only):
 
 ```sh
-node --test browser-STT-TTS/*.test.js
-for file in browser-STT-TTS/*.js; do node --check "$file" || exit; done
+node --test browser-STT-TTS/*.test.js view-web/vite/*.test.js
+for file in browser-STT-TTS/*.js view-web/vite/*.js; do node --check "$file" || exit; done
 ```
 
 Tests cover canonical WAV/bounds/clipping, native rates including 44.1/48 kHz, block invariance, stereo downmix and anti-alias suppression; execute the worklet with a mocked processor/port; test operation/acknowledgement/upload/cancellation/replacement/deadline races; test header-only transport, non-JSON errors, timeouts and aborts; and execute the page with mocked DOM/audio APIs to verify gesture order, permission denial/timeout/late completion and shutdown. These are **mocks, not real browser/microphone/OS playback evidence**.

@@ -56,17 +56,17 @@ final class StorageAudioSuite extends FunSuite {
           store <- if filesystem then StorageFS.open(root) else StorageInMemory.make
           input = audio
           value = Blob(input.blobId, Chunk.fromIterable((-128 to 127).map(_.toByte)))
-          _ <- store.append(value)
-          loaded <- store.readBlob(input.blobId)
+          _ <- store.putBlob(value)
+          loaded <- store.getBlob(input.blobId)
           sessions <- store.listSessions
-          duplicate <- store.append(value).either
+          duplicate <- store.putBlob(value).either
           candidate = value.copy(id = BlobId.fresh())
           competing = candidate.copy(bytes = candidate.bytes.reverse)
-          concurrent <- store.append(candidate).either.zipPar(store.append(competing).either)
-          winner <- store.readBlob(candidate.id)
+          concurrent <- store.putBlob(candidate).either.zipPar(store.putBlob(competing).either)
+          winner <- store.getBlob(candidate.id)
           empty = Blob(BlobId.fresh(), Chunk.empty)
-          _ <- store.append(empty)
-          loadedEmpty <- store.readBlob(empty.id)
+          _ <- store.putBlob(empty)
+          loadedEmpty <- store.getBlob(empty.id)
         } yield {
           assertEquals(loaded, value)
           assertEquals(sessions, Chunk.empty)
@@ -263,11 +263,11 @@ final class StorageAudioSuite extends FunSuite {
         _ <- started.await
         storage <- StorageFS.open(root)
         visible <- storage.loadSession(sessionId)
-        notStored <- storage.readBlob(input.blobId).either
+        notStored <- storage.getBlob(input.blobId).either
         _ <- ZIO.succeed(assert(Files.notExists(root.resolve("blobs").resolve(input.blobId.value))))
         _ <- finish.succeed(())
         _ <- fiber.join
-        complete <- storage.readBlob(input.blobId)
+        complete <- storage.getBlob(input.blobId)
       } yield {
         assertEquals(visible.messages.head.payload, input)
         assertEquals(notStored, Left(YallmoError.BlobMissing(input.blobId)))
@@ -282,13 +282,13 @@ final class StorageAudioSuite extends FunSuite {
       run(for {
         store <- StorageFS.open(root)
         _ <- store.createSession(sessionId, Chunk(human))
-        original <- store.append(sessionId, human, Chunk(input))
-        _ <- store.append(
+        original <- StorageTestMessages.persistTurn(store, sessionId, human, Chunk(input))
+        _ <- store.putBlob(
           Blob(input.blobId, bytes)
         )
-        _ <- store.append(sessionId, human, Chunk(MessagePayload.Assistant("transcript")))
+        _ <- StorageTestMessages.persistTurn(store, sessionId, human, Chunk(MessagePayload.Assistant("transcript")))
         reopened <- StorageFS.open(root)
-        blob <- reopened.readBlob(input.blobId)
+        blob <- reopened.getBlob(input.blobId)
         loaded <- reopened.loadSession(sessionId)
       } yield {
         assertEquals(blob.bytes, bytes)
@@ -313,9 +313,9 @@ final class StorageAudioSuite extends FunSuite {
         store <- StorageFS.open(root)
         _ <- store.createSession(sessionId, Chunk(human))
         value = Blob(input.blobId, bytes)
-        _ <- store.append(value)
+        _ <- store.putBlob(value)
         reopened <- StorageFS.open(root)
-        duplicate <- reopened.append(value).either
+        duplicate <- reopened.putBlob(value).either
         path = root.resolve("blobs").resolve(input.blobId.value)
         _ <- ZIO.attempt {
           if Files.getFileStore(root).supportsFileAttributeView("posix") then {
@@ -324,9 +324,9 @@ final class StorageAudioSuite extends FunSuite {
           }
           Files.write(path, Array[Byte](1))
         }.orDie
-        changed <- reopened.readBlob(input.blobId)
+        changed <- reopened.getBlob(input.blobId)
         _ <- ZIO.attempt(Files.delete(path)).orDie
-        missing <- reopened.readBlob(input.blobId).either
+        missing <- reopened.getBlob(input.blobId).either
       } yield {
         assertEquals(duplicate, Left(YallmoError.BlobAlreadyExists(input.blobId)))
         assertEquals(changed, Blob(input.blobId, Chunk[Byte](1)))

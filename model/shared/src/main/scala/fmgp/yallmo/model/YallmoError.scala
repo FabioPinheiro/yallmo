@@ -47,6 +47,8 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' returned an empty action batch")
       with YallmoError
 
+  final case class InvalidMessage(reason: String) extends RuntimeException(reason) with YallmoError
+
   final case class InvalidAgentDecision(reason: String) extends RuntimeException(reason) with YallmoError
 
   final case class TurnLimitExceeded(limit: Int)
@@ -103,9 +105,16 @@ object YallmoError {
       extends RuntimeException(s"Cannot append an empty message batch to session '${id.value}'")
       with YallmoError
 
+  /** A retryable compare-and-set rejection; no messages or session state were written. */
+  final case class SessionHeadConflict(id: SessionId, expectedHead: Option[MessageId], actualHead: Option[MessageId])
+      extends RuntimeException(s"Session '${id.value}' head changed from $expectedHead to $actualHead")
+      with YallmoError
+
   final case class StorageFailure(message: String, cause: Throwable)
       extends RuntimeException(message, cause)
       with YallmoError
+
+  final case class BlobUploadFailed(reason: BlobUploadFailure) extends RuntimeException(reason.message) with YallmoError
 
   final case class BlobMissing(blobId: BlobId)
       extends RuntimeException(s"Blob '${blobId.value}' is missing")

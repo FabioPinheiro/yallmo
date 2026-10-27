@@ -37,6 +37,7 @@ h2 { font-size: 1.1rem; overflow-wrap: anywhere; }
 .message-user { border-left: 3px solid #377cd6; background: #f4f8ff; }
 .message-assistant { border-left: 3px solid #25704f; }
 .message-meta { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; font-size: .8rem; overflow-wrap: anywhere; }
+.message-read { flex-shrink: 0; padding: .25rem .45rem; font-size: .75rem; }
 .role { background: #edf2f7; color: #344b68; border-radius: 5px; padding: .25rem .5rem; }
 time { color: #617086; margin-left: auto; }
 pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -99,8 +100,16 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .composer { flex-shrink: 0; padding: .7rem 1.2rem; border-top: 1px solid #dde3ea; background: white; max-height: 60%; overflow-y: auto; }
 .composer > p:empty { display: none; }
 .composer textarea { width: 100%; resize: vertical; max-height: 200px; }
-.composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: .7rem; margin-top: .5rem; }
-.composer-actions small { margin-right: auto; font-size: .75rem; }
+.voice-controls { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+.voice-controls button { padding: .35rem .6rem; font-size: .8rem; }
+.voice-timer { font-variant-numeric: tabular-nums; font-size: .75rem; white-space: nowrap; }
+.voice-limit { color: #9e2828; font-weight: 700; }
+.composer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .7rem; margin-top: .5rem; }
+.composer-feedback { flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: .5rem; min-width: 0; }
+.composer-buttons { display: flex; align-items: center; gap: .5rem; max-width: 100%; }
+.composer-buttons > button, .voice-controls > button:not(.voice-record) { flex-shrink: 0; }
+.composer-buttons > button { padding: .35rem .6rem; font-size: .85rem; }
+.voice-record { min-width: 0; }
 .agent-warning { color: #8b5000; font-size: .8rem; }
 .chat-notice { padding: .5rem; border-left: 3px solid #377cd6; overflow-wrap: anywhere; font-size: .85rem; }
 .toasts { position: absolute; z-index: 5; top: .6rem; right: 1rem; width: min(360px, calc(100% - 2rem)); display: grid; gap: .5rem; pointer-events: none; }
@@ -124,6 +133,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .chat-heading, .composer { padding: .6rem .8rem; }
   .chat-history { padding: 0 .8rem .8rem; }
   .composer-actions { flex-wrap: wrap; gap: .4rem; }
-  .composer-actions small { flex-basis: 100%; }
   time { margin-left: 0; }
 }

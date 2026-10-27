@@ -106,13 +106,22 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     assert(!lines.exists(_.contains("AAH/")))
   }
 
-  test("TRACE emits both full RPC directions, while OFF suppresses application logs") {
+  test("TRACE emits RPC directions without binary content, while OFF suppresses application logs") {
     val lines = exchange(LogLevel.Trace)
     assert(lines.exists(line => line.contains("RPC incoming payload=") && line.contains("sessions.get")))
     assert(lines.exists(line => line.contains("RPC outgoing payload=") && line.contains("PRIVATE_TRANSCRIPT")))
-    assert(lines.exists(line => line.contains("RPC outgoing payload=") && line.contains("AAH/")))
+    assert(!lines.exists(_.contains("AAH/")))
+    assert(lines.exists(_.contains("<redacted>")))
     assert(lines.filter(_.contains("payload=")).forall(_.contains("connectionId=")))
     assertEquals(exchange(LogLevel.None), Vector.empty)
+  }
+
+  test("TRACE redaction covers batch fields, escaped field names, responses and malformed JSON") {
+    List(
+      """[{"params":{"dataBase64":"PRIVATE_BINARY"}},{"result":{"dataBase64":"PRIVATE_BINARY"}}]""",
+      """{"params":{"data\u0042ase64":"PRIVATE_BINARY"}}""",
+      """{"params":{"dataBase64":"PRIVATE_BINARY""""
+    ).foreach { payload => assert(!RpcWire.tracePayload(payload).contains("PRIVATE_BINARY")) }
   }
 
   private def exchange(level: LogLevel): Vector[String] = {

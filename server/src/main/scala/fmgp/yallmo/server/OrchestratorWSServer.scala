@@ -4,7 +4,6 @@ import fmgp.yallmo.orchestration.OrchestratorLive
 import fmgp.yallmo.server.application.ServerApplication
 import zio.*
 import zio.http.*
-import zio.json.*
 
 /** JSON-RPC WebSocket adapter and SPA host over the supplied master. Construction starts nothing. start binds to
   * 0.0.0.0; routes may also be installed in an existing trusted host. Configured clients claiming a human ID can
@@ -80,7 +79,7 @@ final class OrchestratorWSServer(
                               val work = for {
                                 _ <- ZIO.logDebug(s"RPC incoming bytes=${RpcWire.size(input)}")
                                 // Encode as a JSON string to escape control characters/newlines in untrusted input.
-                                _ <- ZIO.logTrace(s"RPC incoming payload=${input.toJson}")
+                                _ <- ZIO.logTrace(s"RPC incoming payload=${RpcWire.tracePayload(input)}")
                                 response <- rpc.handle(input, connection)
                                 _ <- ZIO.foreachDiscard(response) { output =>
                                   if RpcWire.size(output) > RpcWire.MaxMessageBytes then
@@ -91,7 +90,7 @@ final class OrchestratorWSServer(
                                     for {
                                       _ <- send(WebSocketFrame.Text(output))
                                       _ <- ZIO.logDebug(s"RPC outgoing bytes=${RpcWire.size(output)}")
-                                      _ <- ZIO.logTrace(s"RPC outgoing payload=${output.toJson}")
+                                      _ <- ZIO.logTrace(s"RPC outgoing payload=${RpcWire.tracePayload(output)}")
                                     } yield ()
                                 }
                               } yield ()

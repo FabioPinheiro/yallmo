@@ -1,6 +1,7 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.model.{AgentId, BlobId}
+import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageData}
+import java.time.Instant
 import fmgp.yallmo.orchestration.{AgentTask, SessionId}
 import zio.Chunk
 import fmgp.yallmo.server.jsonrpc.JsonRpc
@@ -223,6 +224,44 @@ final class OrchestratorWSClientSuite extends FunSuite {
       assertEquals(h.sent.count(_.method == Initialize.method), 1)
       assertEquals(info.configuredAgentIds, Some(Chunk(AgentId("assistant"))))
       assertEquals(OrchestratorWSClient.claimedUser("  "), None)
+      h.client.close()
+    }
+  }
+
+  test("agents.invoke uses Message codecs without a read deadline, while generic upload commands remain bounded") {
+    val h = new Harness(timeout = 30)
+    val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))
+    val output =
+      Message(MessageData(AgentId("Transcriber"), Some(input.id), Instant.EPOCH, Message.Assistant("transcript")))
+    val blobId = BlobId.fresh()
+    for {
+      _ <- h.initialize()
+      begun = h.client.uploadBlob(BlobsUpload.Params.Begin(blobId, 46))
+      uploadRequest <- h.awaitRequest(BlobsUpload.method)
+      _ = h.reply(uploadRequest, BlobsUpload.Result.Begun(blobId): BlobsUpload.Result)
+      _ <- begun
+      invocation = h.client.invokeAgent(AgentsInvoke.Params(AgentId("Transcriber"), input))
+      request <- h.awaitRequest(AgentsInvoke.method)
+      _ = assertEquals(decode[AgentsInvoke.Params](request.params.toJson).input, input)
+      read = h.client.agents()
+      _ <- h.awaitRequest(AgentsList.method)
+      _ <- read.failed
+      _ = assert(!invocation.isCompleted)
+      _ = h.reply(request, output)
+      result <- invocation
+    } yield { assertEquals(result, output); h.client.close() }
+  }
+
+  test("a request queued before disconnect is not sent over a replacement socket") {
+    val h = new Harness()
+    for {
+      _ <- h.initialize()
+      old = h.client.agents()
+      _ = h.client.close()
+      _ <- h.initialize()
+      _ <- old.failed
+    } yield {
+      assertEquals(h.sent.count(_.method == AgentsList.method), 0)
       h.client.close()
     }
   }

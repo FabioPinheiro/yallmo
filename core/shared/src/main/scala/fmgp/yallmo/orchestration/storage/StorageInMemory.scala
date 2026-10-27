@@ -2,21 +2,47 @@ package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
-import java.time.Instant
 import zio.*
 
-/** Process-local [[Storage]] implementation for callers that do not need durable filesystem state. */
+/** Process-local [[Storage]] implementation for callers that do not need durable filesystem state.
+  *
+  * FIXME there are two separated Message sets... The message should be independent from the session!
+  */
 private[orchestration] final class StorageInMemory private (
     sessions: Ref[Map[SessionId, Session]],
-    blobs: Ref[Map[BlobId, Blob]]
+    standalone: Ref[Map[MessageId, Message]],
+    blobs: Ref[Map[BlobId, Blob]],
+    uploads: BlobOpsUtils.Registry
 ) extends Storage {
+  override def readBlob(blobId: BlobId, awaitTimeout: Duration = Duration.Zero): IO[YallmoError, Blob] =
+    BlobOpsUtils.read(this, uploads, blobId, awaitTimeout)
+
+  override def beginBlobUpload(blobId: BlobId, totalBytes: Long): IO[YallmoError, BlobUploader] =
+    BlobOpsUtils.begin(this, uploads, blobId, totalBytes)
+
   override def listMessages: IO[YallmoError, Chunk[Message]] =
-    sessions.get.map { values =>
+    sessions.get.zip(standalone.get).map { (values, independent) =>
       Chunk
-        .fromIterable(values.valuesIterator.flatMap(_.messages).toList)
+        .fromIterable(values.valuesIterator.flatMap(_.messages).toList ++ independent.values)
         .distinctBy(_.id)
         .sortBy(message => (message.timestamp.getEpochSecond, message.timestamp.getNano, MessageId.value(message.id)))
     }
+
+  override def putMessage(message: Message): IO[YallmoError, Message] =
+    for {
+      _ <- ZIO
+        .fail(YallmoError.InvalidMessage("Message id does not match data"))
+        .unless(message.id == MessageId.from(message.data))
+      // Messages are append-only: a validated parent cannot disappear while publishing this child.
+      existing <- listMessages
+      _ <- ZIO
+        .fail(YallmoError.InvalidMessage("Message parent is missing"))
+        .unless(message.parentId.forall(parent => existing.exists(_.id == parent)))
+      _ <- ZIO
+        .fail(YallmoError.InvalidMessage("Conflicting message id"))
+        .when(existing.exists(stored => stored.id == message.id && stored != message))
+      _ <- standalone.update(_.updated(message.id, message))
+    } yield message
 
   override def listBlobIds: IO[YallmoError, Chunk[BlobId]] =
     blobs.get.map(values => Chunk.fromIterable(values.keys.toList.sortBy(_.value)))
@@ -57,32 +83,25 @@ private[orchestration] final class StorageInMemory private (
       }
       .flatMap(ZIO.fromEither)
 
-  override def append(
+  override def putMessagesAndUpdateSession(
       id: SessionId,
-      agentId: AgentId,
-      messages: Chunk[MessagePayload]
+      expectedHead: Option[MessageId],
+      messages: Chunk[Message]
   ): IO[YallmoError, Session] =
-    if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
-    else
-      sessions
-        .modify { current =>
-          current.get(id).toRight(YallmoError.SessionNotFound(id)).flatMap { session =>
-            if !session.agentIds.contains(agentId) then Left(YallmoError.AgentNotInSession(id, agentId))
-            else {
-              val appended = messages.foldLeft(session.messages) { (stored, payload) =>
-                val parentId = stored.lastOption.map(_.id)
-                stored :+ Message(MessageData(agentId, parentId, Instant.now(), payload))
-              }
-              val updated = session.copy(messages = appended)
-              Right(updated)
-            }
-          } match
-            case Left(error)    => (Left(error), current)
-            case Right(updated) => (Right(updated), current.updated(id, updated))
-        }
-        .flatMap(ZIO.fromEither)
+    sessions
+      .modify { current =>
+        current.get(id).toRight(YallmoError.SessionNotFound(id)).flatMap { session =>
+          StoreageUtils.validateMessageBatch(id, expectedHead, session.messages.lastOption.map(_.id), messages).map {
+            _ =>
+              session.copy(messages = session.messages ++ messages)
+          }
+        } match
+          case Left(error)    => (Left(error), current)
+          case Right(updated) => (Right(updated), current.updated(id, updated))
+      }
+      .flatMap(ZIO.fromEither)
 
-  override def append(blob: Blob): IO[YallmoError, Unit] =
+  override def putBlob(blob: Blob): IO[YallmoError, Unit] =
     blobs
       .modify { current =>
         if current.contains(blob.id) then (false, current)
@@ -90,7 +109,7 @@ private[orchestration] final class StorageInMemory private (
       }
       .flatMap(inserted => ZIO.fail(YallmoError.BlobAlreadyExists(blob.id)).unless(inserted).unit)
 
-  override def readBlob(blobId: BlobId): IO[YallmoError, Blob] =
+  override def getBlob(blobId: BlobId): IO[YallmoError, Blob] =
     blobs.get.flatMap(current => ZIO.fromOption(current.get(blobId)).orElseFail(YallmoError.BlobMissing(blobId)))
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
@@ -119,6 +138,8 @@ private[orchestration] final class StorageInMemory private (
 object StorageInMemory {
   def make: UIO[StorageInMemory] = for {
     sessions <- Ref.make(Map.empty[SessionId, Session])
+    standalone <- Ref.make(Map.empty[MessageId, Message])
     blobs <- Ref.make(Map.empty[BlobId, Blob])
-  } yield new StorageInMemory(sessions, blobs)
+    uploads <- BlobOpsUtils.registry
+  } yield new StorageInMemory(sessions, standalone, blobs, uploads)
 }

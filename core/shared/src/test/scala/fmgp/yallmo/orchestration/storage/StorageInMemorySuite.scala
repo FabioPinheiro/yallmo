@@ -17,9 +17,9 @@ final class StorageInMemorySuite extends FunSuite {
       for {
         storage <- StorageInMemory.make
         _ <- storage.createSession(source, Chunk(human))
-        _ <- storage.append(source, human, Chunk(MessagePayload.User("hello")))
+        _ <- StorageTestMessages.persistTurn(storage, source, human, Chunk(MessagePayload.User("hello")))
         _ <- storage.addSessionAgent(source, assistant)
-        saved <- storage.append(source, assistant, Chunk(MessagePayload.Assistant("reply")))
+        saved <- StorageTestMessages.persistTurn(storage, source, assistant, Chunk(MessagePayload.Assistant("reply")))
         forked <- storage.fork(source, target)
         listed <- storage.listMessages
       } yield {
@@ -38,15 +38,40 @@ final class StorageInMemorySuite extends FunSuite {
       val blob = Blob(BlobId.fresh(), Chunk[Byte](0, 1, -1))
       for {
         storage <- StorageInMemory.make
-        _ <- storage.append(blob)
-        duplicate <- storage.append(blob.copy(bytes = Chunk.empty)).either
-        loaded <- storage.readBlob(blob.id)
+        _ <- storage.putBlob(blob)
+        duplicate <- storage.putBlob(blob.copy(bytes = Chunk.empty)).either
+        loaded <- storage.getBlob(blob.id)
         ids <- storage.listBlobIds
       } yield {
         assertEquals(BlobId.from(blob.id.value), Right(blob.id))
         assertEquals(duplicate, Left(YallmoError.BlobAlreadyExists(blob.id)))
         assertEquals(loaded, blob)
         assertEquals(ids, Chunk(blob.id))
+      }
+    }
+  }
+
+  test("standalone messages preserve content addresses and parents without creating sessions") {
+    run {
+      val parent = Message(MessageData(AgentId("human"), None, java.time.Instant.EPOCH, Message.User("input")))
+      val child =
+        Message(MessageData(AgentId("agent"), Some(parent.id), java.time.Instant.EPOCH, Message.Assistant("output")))
+      for {
+        storage <- StorageInMemory.make
+        orphan <- storage.putMessage(child).either
+        _ <- storage.putMessage(parent)
+        stored <- storage.putMessage(child)
+        _ <- storage.putMessage(child)
+        wrongHash <- storage.putMessage(child.copy(id = parent.id)).either
+        listed <- storage.listMessages
+        sessions <- storage.listSessions
+      } yield {
+        assert(orphan.isLeft)
+        assert(wrongHash.isLeft)
+        assertEquals(stored, child)
+        assertEquals(listed.map(_.id).toSet, Set(parent.id, child.id))
+        assertEquals(listed.size, 2)
+        assertEquals(sessions, Chunk.empty)
       }
     }
   }

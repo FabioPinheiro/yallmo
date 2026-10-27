@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, YallmoError}
 import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
@@ -237,16 +237,28 @@ object ApplicationRuntime {
         }
       }
 
+    /** Executes with only the supplied message, using the same configured runner/capabilities as session turns. */
+    def invoke(input: Message, selection: ConfiguredAgentBinding): ZIO[R, YallmoError, Message] = {
+      val selected = Some(selection)
+      orchestrator.invoke(
+        input,
+        runner(selected).execution(selection.bind[R](id => orchestrator.readBlob(id)), context(selected))
+      )
+    }
+
+    private def runner(selection: Option[ConfiguredAgentBinding]): AgentRunner[R] =
+      new AgentRunner[R](
+        (availableTools ++ localTools(selection)).map(tool => tool.definition.key -> tool).toMap,
+        Map.empty
+      )
+
     /** Builds an immutable selection over this same registry, storage and tool runner. */
     def submission(authorId: AgentId, selection: Option[ConfiguredAgentBinding]): SessionSubmission[R] =
       SessionSubmission.configured(
         orchestrator,
         authorId,
-        new AgentRunner[R](
-          (availableTools ++ localTools(selection)).map(tool => tool.definition.key -> tool).toMap,
-          Map.empty
-        ),
-        selection.map(_.bind[R](orchestrator.readBlob)),
+        runner(selection),
+        selection.map(_.bind[R](id => orchestrator.readBlob(id))),
         context(selection)
       )
   }

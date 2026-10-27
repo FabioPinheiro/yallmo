@@ -1,6 +1,6 @@
 package fmgp.yallmo.view.web
 
-import com.raquo.laminar.api.L.Var
+import com.raquo.laminar.api.L.{EventBus, Var}
 import fmgp.yallmo.model.AgentId
 import fmgp.yallmo.orchestration.{AgentTask, SessionId, SessionSummary}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -18,6 +18,8 @@ import scala.util.{Failure, Success}
   *   Absent before creation or the first successful history read; never contains the temporary pending card.
   * @param draft
   *   Editable, unsent composer text. On failure, submitted text is restored only when this is still empty.
+  * @param draftVersion
+  *   Increments on draft edits so asynchronous dictation cannot replace a stale selection, even if text is restored.
   * @param agent
   *   Assistant selected for the next turn, independent of historical message authors. Must belong to the configured
   *   agent catalog before sending.
@@ -36,6 +38,7 @@ import scala.util.{Failure, Success}
 private[web] final case class ChatConversation(
     snapshot: Option[SessionSnapshot] = None,
     draft: String = "",
+    draftVersion: Long = 0L,
     agent: Option[AgentId] = None,
     resetContinuation: Boolean = true,
     loading: Boolean = false,
@@ -81,6 +84,8 @@ private[web] final case class ChatPendingMessage(conversation: String, author: A
   * @param creating
   *   Whether session creation is outstanding. Explicit New conversation sets this without a pending message; first Send
   *   sets both until creation completes.
+  * @param voiceBusy
+  *   Blocks Send and session creation during explicit dictation; draft editing remains enabled.
   * @param listError
   *   Latest session-list read error displayed in the sidebar; cleared by a successful list refresh.
   */
@@ -92,6 +97,7 @@ private[web] final case class ChatState(
     enabled: Boolean = false,
     pending: Option[ChatPendingMessage] = None,
     creating: Boolean = false,
+    voiceBusy: Boolean = false,
     listError: String = ""
 ) {
 
@@ -108,6 +114,7 @@ private[web] final case class ChatState(
   def sendBlockedReason: Option[String] =
     if !enabled then Some("Reconnect to a chat-enabled server before sending.")
     else if creating then Some("Wait for conversation creation to finish.")
+    else if voiceBusy then Some("Finish or discard dictation before sending.")
     else if pending.nonEmpty then Some("Wait for the pending turn to finish before sending.")
     else if current.loading then Some("Wait for history to load before sending.")
     else if current.reloadRequired || (active.nonEmpty && current.snapshot.isEmpty) then
@@ -136,6 +143,7 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     ExecutionContext
 ) {
   val state = Var(ChatState())
+  val voiceInsertions = new EventBus[VoiceInsertion]
   private var initializedIdentity = Option.empty[AgentId]
   private var listVersion = 0L
   private var readVersions = Map.empty[String, Long]
@@ -180,7 +188,37 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     }
   }
 
-  def draft(text: String): Unit = edit(state.now().active)(_.copy(draft = text))
+  def draft(text: String): Unit = edit(state.now().active)(c =>
+    if text == c.draft then c else c.copy(draft = text, draftVersion = c.draftVersion + 1)
+  )
+
+  def voiceTarget(selection: Option[(Int, Int)]): VoiceDraftTarget = {
+    val s = state.now()
+    VoiceDraftTarget(s.active, s.current.draft, s.current.draftVersion, selection)
+  }
+
+  def setVoiceBusy(busy: Boolean): Unit = state.update(_.copy(voiceBusy = busy))
+
+  /** Insert like typing when the captured range is still valid; otherwise append to the latest originating draft. A
+    * version check also detects edits which happen to restore the original text. Never submit or redirect a result.
+    */
+  def insertTranscript(target: VoiceDraftTarget, text: String): Unit =
+    state.now().conversations.get(target.conversation).foreach { c =>
+      val range = target.selection.filter { (start, end) =>
+        c.draftVersion == target.version && c.draft == target.draft && start >= 0 && end >= start && end <= c.draft.length
+      }
+      val (updated, cursor) = range match {
+        case Some((start, end)) => (c.draft.take(start) + text + c.draft.drop(end), start + text.length)
+        case None               =>
+          val separator =
+            if c.draft.nonEmpty && text.nonEmpty && !c.draft.last.isWhitespace && !text.head.isWhitespace then " "
+            else ""
+          val value = c.draft + separator + text
+          (value, value.length)
+      }
+      edit(target.conversation)(_.copy(draft = updated, draftVersion = c.draftVersion + 1))
+      voiceInsertions.emit(VoiceInsertion(target.conversation, updated, cursor))
+    }
 
   def selectAgent(value: String): Unit = {
     val s = state.now()
@@ -236,7 +274,8 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
   /** Explicit creation is optional; the ordinary Send path creates only after validating the chosen agent. */
   def newConversation(name: String): Unit = {
     val s = state.now()
-    if s.enabled && s.pending.isEmpty && !s.creating then create(name, ChatConversation(agent = s.current.agent), false)
+    if s.enabled && s.pending.isEmpty && !s.creating && !s.voiceBusy then
+      create(name, ChatConversation(agent = s.current.agent), false)
   }
 
   def send(): Unit = {

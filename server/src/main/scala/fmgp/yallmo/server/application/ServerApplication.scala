@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.application
 
 import fmgp.yallmo.LlmProviderPayloadDebug
-import fmgp.yallmo.model.{Agent, AgentId, MessageId, YallmoError}
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -113,6 +113,27 @@ object ServerApplication {
         }
       }
 
+    /** Independent configured execution; the application owns work and the caller owns only its wait. No session,
+      * continuation policy or session diagnostic capture is created. Accepted input survives execution failure.
+      */
+    def invoke(author: AgentId, agentId: AgentId, input: Message): IO[JsonRpc.Error, Message] =
+      owned {
+        for {
+          _ <- ZIO
+            .fail(JsonRpc.Error(ErrorCode.Forbidden, "Message author must match the initialized identity"))
+            .unless(input.agentId == author)
+          binding <- checked(runtime.resolve(agentId))
+          _ <- ZIO
+            .fail(JsonRpc.Error(ErrorCode.Rejected, "Selected agent does not support audio input"))
+            .when(
+              input.payload.isInstanceOf[MessagePayload.AudioAttachment] &&
+                !binding.adapter.isInstanceOf[AudioAgent[?]]
+            )
+          _ <- checked(runtime.registerUser(author))
+          result <- checked(assembly.invoke(input, binding))
+        } yield result
+      }()
+
     /** Explicit read-only diagnostic; session lookup prevents unknown IDs from becoming a path lookup. */
     def providerRequest(sessionId: SessionId): IO[JsonRpc.Error, DiagnosticsRequest.Result] =
       for {
@@ -197,14 +218,23 @@ object ServerApplication {
 
     private def checked[A](effect: IO[YallmoError, A]): IO[JsonRpc.Error, A] =
       effect.mapError {
-        case YallmoError.StorageFailed(_: YallmoError.SessionNotFound) =>
-          JsonRpc.Error(ErrorCode.NotFound, "Not found")
-        case YallmoError.StorageFailed(_: YallmoError.SessionAlreadyExists) =>
-          JsonRpc.Error(ErrorCode.Conflict, "Session already exists")
-        case _: YallmoError.UnknownAgent | _: YallmoError.InvalidConfig =>
-          JsonRpc.Error(ErrorCode.Rejected, "Invalid author or assistant configuration")
-        case _ => JsonRpc.Error.InternalError
+        case YallmoError.StorageFailed(error) => checkedError(error)
+        case error                            => checkedError(error)
       }
+
+    private def checkedError(error: YallmoError): JsonRpc.Error = error match {
+      case _: YallmoError.SessionNotFound | _: YallmoError.BlobMissing =>
+        JsonRpc.Error(ErrorCode.NotFound, "Not found")
+      case _: YallmoError.SessionAlreadyExists =>
+        JsonRpc.Error(ErrorCode.Conflict, "Session already exists")
+      case _: YallmoError.InvalidMessage =>
+        JsonRpc.Error(ErrorCode.Rejected, "Invalid message for this invocation")
+      case YallmoError.BlobUploadFailed(reason) =>
+        JsonRpc.Error(ErrorCode.Rejected, reason.message)
+      case _: YallmoError.UnknownAgent | _: YallmoError.InvalidConfig =>
+        JsonRpc.Error(ErrorCode.Rejected, "Invalid author or assistant configuration")
+      case _ => JsonRpc.Error.InternalError
+    }
   }
 
   /** Provide around the entire open/listen/serve lifetime, not just registry construction: it captures the client. */

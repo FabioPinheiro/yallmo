@@ -5,12 +5,12 @@ import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import zio.*
 import zio.stream.ZStream
 
-/** Application-facing API for registered agents and durable sessions.
+/** Application-facing API for registered agents, immutable messages and durable sessions.
   *
   * Implementations resolve agents and delegate transcript persistence to an internal [[Storage]]. Callers do not use
   * storage directly.
   */
-trait Orchestrator[-R] {
+trait Orchestrator[-R] extends BlobOps {
 
   /** Resolves executable behavior; a registered user identity alone is not an agent. */
   def getAgent(id: AgentId): IO[YallmoError, Agent[R]]
@@ -57,6 +57,16 @@ trait Orchestrator[-R] {
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, SessionTurn]
 
+  /** Accepts one root user/audio message, saves it, awaits referenced blobs and runs the configured agent loop. No
+    * session or prior context is loaded or created. Only the final assistant answer is persisted/returned, as a direct
+    * child of the input; tool/reasoning intermediates stay inside this invocation. Failure or interruption never rolls
+    * back accepted input. Repeating an invocation may execute again even if the input is already stored.
+    */
+  def invoke[R1](input: Message, execution: AgentExecution[R1]): ZIO[R1, YallmoError, Message] = {
+    val _ = (input, execution)
+    ZIO.fail(YallmoError.InvalidConfig("Standalone invocation unsupported"))
+  }
+
   def listSessions: IO[YallmoError, Chunk[SessionSummary]]
 
   def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session]
@@ -73,8 +83,6 @@ trait Orchestrator[-R] {
     }
 
   def append(id: SessionId, agentId: AgentId, messages: Chunk[MessagePayload]): IO[YallmoError, Session]
-
-  def readBlob(blobId: BlobId): IO[YallmoError, Blob] = Blob.unavailable(blobId)
 
   def appendWithBlobBytes(
       id: SessionId,

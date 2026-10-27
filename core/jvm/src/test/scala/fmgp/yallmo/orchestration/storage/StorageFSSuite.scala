@@ -33,13 +33,19 @@ final class StorageFSSuite extends FunSuite:
         for {
           storage <- StorageFS.open(root)
           _ <- storage.createSession(SessionId.unsafe("main"), agents)
-          appended <- storage.append(
+          appended <- StorageTestMessages.persistTurn(
+            storage,
             SessionId.unsafe("main"),
             replAgent,
             Chunk(Message.User("research this"), Message.Assistant("starting research"))
           )
           copied <- storage.fork(SessionId.unsafe("main"), SessionId.unsafe("copy"))
-          _ <- storage.append(SessionId.unsafe("main"), replAgent, Chunk(Message.Assistant("final answer")))
+          _ <- StorageTestMessages.persistTurn(
+            storage,
+            SessionId.unsafe("main"),
+            replAgent,
+            Chunk(Message.Assistant("final answer"))
+          )
           original <- storage.loadSession(SessionId.unsafe("main"))
           listed <- storage.listSessions
         } yield (appended, copied, original, listed)
@@ -65,17 +71,12 @@ final class StorageFSSuite extends FunSuite:
           storage <- StorageFS.open(root)
           empty <- storage.createSession(SessionId.unsafe("empty"), Chunk.empty).either
           _ <- storage.createSession(SessionId.unsafe("main"), agents)
-          unassigned <- storage
-            .append(SessionId.unsafe("main"), AgentId("other"), Chunk(Message.User("hello")))
-            .either
-        } yield (empty, unassigned)
+          duplicate <- storage.createSession(SessionId.unsafe("duplicate"), Chunk(replAgent, replAgent)).either
+        } yield (empty, duplicate)
       }
 
       assertEquals(result._1, Left(YallmoError.EmptyAgentIds(SessionId.unsafe("empty"))))
-      assertEquals(
-        result._2,
-        Left(YallmoError.AgentNotInSession(SessionId.unsafe("main"), AgentId("other")))
-      )
+      assertEquals(result._2, Left(YallmoError.DuplicateAgentId(SessionId.unsafe("duplicate"), replAgent)))
     finally deleteRecursively(root)
   }
 
@@ -102,9 +103,10 @@ final class StorageFSSuite extends FunSuite:
               } yield stored
           }
           lock <- Semaphore.make(1)
-          storage = new StorageFS(root, store, lock)
+          uploads <- BlobOpsUtils.registry
+          storage = new StorageFS(root, store, lock, uploads)
           messages = Chunk(Message.User("first"), Message.Assistant("second"))
-          fiber <- storage.append(id, replAgent, messages).fork
+          fiber <- StorageTestMessages.persistTurn(storage, id, replAgent, messages).fork
           _ <- written.await
           _ <- fiber.interruptFork
           _ <- release.succeed(())
@@ -141,8 +143,14 @@ final class StorageFSSuite extends FunSuite:
               ZIO.checkInterruptible(status => writes.update(_ :+ status.isInterruptible)) *> delegate.put(value)
           }
           lock <- Semaphore.make(1)
-          storage = new StorageFS(root, store, lock)
-          _ <- storage.append(id, replAgent, Chunk(Message.User("first"), Message.Assistant("second")))
+          uploads <- BlobOpsUtils.registry
+          storage = new StorageFS(root, store, lock, uploads)
+          _ <- StorageTestMessages.persistTurn(
+            storage,
+            id,
+            replAgent,
+            Chunk(Message.User("first"), Message.Assistant("second"))
+          )
           writeStatuses <- writes.get
           readStatuses <- reads.get
         } yield (writeStatuses, readStatuses)
@@ -163,7 +171,12 @@ final class StorageFSSuite extends FunSuite:
           start <- Promise.make[Nothing, Unit]
           workers <- ZIO.foreach(1 to 16) { i =>
             (start.await *> storage.addSessionAgent(id, AgentId(s"member-$i")) *>
-              storage.append(id, replAgent, Chunk(Message.User(s"$i-first"), Message.Assistant(s"$i-second")))).fork
+              StorageTestMessages.persistTurn(
+                storage,
+                id,
+                replAgent,
+                Chunk(Message.User(s"$i-first"), Message.Assistant(s"$i-second"))
+              )).fork
           }
           _ <- start.succeed(())
           _ <- ZIO.foreachDiscard(workers)(_.join)
@@ -198,9 +211,14 @@ final class StorageFSSuite extends FunSuite:
               _ <- start.await
               id = SessionId.unsafe(s"main-$i")
               _ <- storage.createSession(id, agents)
-              _ <- storage.append(id, replAgent, Chunk(Message.User(s"prompt-$i"), Message.Assistant(s"answer-$i")))
+              _ <- StorageTestMessages.persistTurn(
+                storage,
+                id,
+                replAgent,
+                Chunk(Message.User(s"prompt-$i"), Message.Assistant(s"answer-$i"))
+              )
               forked <- storage.fork(id, SessionId.unsafe(s"copy-$i"))
-              _ <- storage.append(id, replAgent, Chunk(Message.Assistant(s"final-$i")))
+              _ <- StorageTestMessages.persistTurn(storage, id, replAgent, Chunk(Message.Assistant(s"final-$i")))
               _ <- storage.loadSession(id)
               listed <- storage.listSessions
               indexed <- storage.listMessages
@@ -259,8 +277,11 @@ final class StorageFSSuite extends FunSuite:
               delegate.put(value).tap(_ => written.succeed(()) *> release.await)
           }
           lock <- Semaphore.make(1)
-          storage = new StorageFS(root, store, lock)
-          append <- storage.append(id, replAgent, Chunk(Message.User("first"), Message.Assistant("second"))).fork
+          uploads <- BlobOpsUtils.registry
+          storage = new StorageFS(root, store, lock, uploads)
+          append <- StorageTestMessages
+            .persistTurn(storage, id, replAgent, Chunk(Message.User("first"), Message.Assistant("second")))
+            .fork
           _ <- written.await
           started <- ZIO.foreach(1 to 4)(_ => Promise.make[Nothing, Unit])
           load <- (started(0).succeed(()) *> storage.loadSession(id)).fork
@@ -295,7 +316,7 @@ final class StorageFSSuite extends FunSuite:
           initial <- StorageFS.open(root)
           id = SessionId.unsafe("main")
           _ <- initial.createSession(id, agents)
-          before <- initial.append(id, replAgent, Chunk(Message.User("before")))
+          before <- StorageTestMessages.persistTurn(initial, id, replAgent, Chunk(Message.User("before")))
           delegate <- StorageStore.open(root)
           reading <- Promise.make[Nothing, Unit]
           release <- Promise.make[Nothing, Unit]
@@ -309,10 +330,11 @@ final class StorageFSSuite extends FunSuite:
             def put(value: MessageData): IO[YallmoError, StoredArtifact[MessageData]] = delegate.put(value)
           }
           lock <- Semaphore.make(1)
-          storage = new StorageFS(root, store, lock)
+          uploads <- BlobOpsUtils.registry
+          storage = new StorageFS(root, store, lock, uploads)
           read <- storage.loadSession(id).fork
           _ <- reading.await
-          after <- storage.append(id, replAgent, Chunk(Message.Assistant("after")))
+          after <- StorageTestMessages.persistTurn(storage, id, replAgent, Chunk(Message.Assistant("after")))
           _ <- storage.createSession(SessionId.unsafe("independent"), agents)
           _ <- release.succeed(())
           snapshot <- read.join

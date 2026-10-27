@@ -14,14 +14,14 @@ import zio.{Chunk, ZIO}
   * bounded agent loop, potentially containing several model requests and tool/retrieval actions, not one provider turn.
   *
   * Responsibilities remain separate:
-  *   - The orchestrator accepts and saves the prompt, supplies stored history, invokes this operation and saves
-  *     results.
+  *   - The orchestrator accepts and saves input, supplies either session history or just an independent input, invokes
+  *     this operation and saves results.
   *   - The configured runner executes model/tool work and enforces its permissions and budgets.
   *   - This interface neither owns storage nor duplicates the runner's execution logic.
   *
   * The supplied transcript already includes the accepted user prompt. Implementations must preserve that prefix and
-  * return the complete transcript without appending the prompt again. They must not persist messages themselves; the
-  * orchestrator saves only the generated suffix after successful execution.
+  * return the complete transcript without appending the prompt again. They must not persist messages themselves;
+  * orchestration saves the generated suffix for session submissions or only the final answer for independent calls.
   *
   * {{{
   * val execution = runner.execution(agent, staticContext, budget)
@@ -33,7 +33,7 @@ import zio.{Chunk, ZIO}
   */
 trait AgentExecution[-R] {
 
-  /** Registered agent identity used to validate execution and attribute its generated session messages. */
+  /** Registered agent identity used to validate execution and attribute its generated messages. */
   def agentId: AgentId
 
   /** Describes execution of one accepted task; the orchestrator controls when this effect runs.
@@ -41,10 +41,10 @@ trait AgentExecution[-R] {
     * @param task
     *   task to execute; its prompt is already present in acceptedContext
     * @param acceptedContext
-    *   stored conversation history including the accepted prompt exactly once
+    *   accepted input exactly once, preceded by stored history only for session-based execution
     * @return
     *   the final result attributed to agentId and the full append-only transcript, not just the generated suffix;
-    *   execution failures are left to the orchestrator to report together with the accepted session
+    *   execution failures are left to the orchestrator; already accepted input is not rolled back
     */
   def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult]
 }

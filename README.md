@@ -28,6 +28,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
+- [Future UserId identity model](docs/future-plan/UserId-future_identity_model.md) — one user connection with multiple acting AgentIds.
 - [Setup and running](docs/HOW_TO_RUN.md)
 - [Interactive REPL](docs/REPL.md) — NORMAL `v`: JVM voice; `m`: browser microphone; `t`: explicitly speak the current assistant reply.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
@@ -56,6 +57,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 ### WIP
 
 Remaining work:
+- The Message shound ne part of the YallmoProtocol!!!
 - Add remote /tools and richer agent information.
 - Migrate provider administration/login, voice execution, human interactions and diagnostics.
 - Perform a real-provider, separate-process smoke test.

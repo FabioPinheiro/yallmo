@@ -63,7 +63,7 @@ final class OrchestratorListingSuite extends FunSuite {
         objects <- StorageStore.open(root)
         orphan <- objects.put(MessageData(author, None, Instant.EPOCH, MessagePayload.User("no session")))
         blobId = BlobId.fresh()
-        _ <- storage.append(Blob(blobId, Chunk.empty))
+        _ <- storage.putBlob(Blob(blobId, Chunk.empty))
         _ <- ZIO.attemptBlocking {
           Files.writeString(root.resolve("blobs/not-a-blob"), "unrelated")
           Files.createDirectory(root.resolve("blobs").resolve(BlobId.fresh().value))

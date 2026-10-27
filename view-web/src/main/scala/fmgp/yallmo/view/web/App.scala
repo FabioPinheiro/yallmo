@@ -31,9 +31,17 @@ object App {
 
   private def application(): HtmlElement = {
     val notifications = new UiNotifications
+    val speech = new MessageSpeech(MessageSpeech.browserPlayback, notifications.publish)
     val disconnected = new EventBus[Throwable]
     val client = new OrchestratorWSClient(OrchestratorWSClient.defaultEndpoint, onDisconnect = disconnected.emit)
     val chat = new ChatModel(client, notifications.publish)
+    val voice = new VoiceModel(
+      chat,
+      VoiceRecorder.browser,
+      VoiceTransfer.browser(client),
+      notifications.publish,
+      () => speech.stop()
+    )
     val humanName = Var("fabio")
     val connection = Var("Connecting…")
     val connecting = Var(false)
@@ -44,13 +52,15 @@ object App {
     var intentionalClose = false
     var mounted = false
     def close(): Unit = {
+      voice.disable()
       intentionalClose = true
       client.close()
       intentionalClose = false
     }
     def connect(): Unit = {
       val requestedUser = OrchestratorWSClient.claimedUser(humanName.now())
-      if requestedUser.nonEmpty && !connecting.now() && chat.state.now().pending.isEmpty && !chat.state.now().creating
+      if requestedUser.nonEmpty && !connecting
+          .now() && chat.state.now().pending.isEmpty && !chat.state.now().creating && !chat.state.now().voiceBusy
       then {
         connecting.set(true)
         connection.set("Connecting…")
@@ -63,6 +73,7 @@ object App {
           case scala.util.Success(info) if mounted =>
             connecting.set(false)
             chat.configure(info)
+            voice.configure(info)
             chat.reload()
             refresh.emit(())
             connection.set(if OrchestratorWSClient.canChat(info) then
@@ -70,6 +81,7 @@ object App {
             else "Read only")
           case scala.util.Failure(error) if mounted =>
             connecting.set(false)
+            voice.disable()
             chat.disable()
             connection.set(s"Disconnected: ${error.getMessage}")
             notifications.publish(UiNotice(s"Connection failed: ${error.getMessage}", "error"))
@@ -84,16 +96,21 @@ object App {
     }
     div(
       cls := "app",
+      voice.state.signal
+        .map(s => s.phase == VoicePhase.Preparing || s.phase == VoicePhase.Recording || s.phase == VoicePhase.Stopping)
+        .distinct --> speech.setCaptureActive,
       disconnected.events --> { error =>
         if mounted && !intentionalClose then {
+          voice.disable()
           chat.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
           if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
         }
       },
       onMountCallback { _ => mounted = true; connect() },
-      onUnmountCallback { _ => mounted = false; close() },
-      windowEvents(_.onBeforeUnload) --> (_ => close()),
+      onUnmountCallback { _ => mounted = false; speech.stop(); close() },
+      windowEvents(_.onBeforeUnload) --> (_ => { speech.stop(); close() }),
+      windowEvents(_.onPageHide) --> (_ => { speech.stop(); voice.cancel(false) }),
       windowEvents(_.onHashChange).map(_ => ViewRoute.parse(dom.window.location.hash)) --> route.writer,
       button(
         cls := "skip-link",
@@ -153,7 +170,9 @@ object App {
             "Reconnect",
             disabled <-- humanName.signal.combineWith(connecting.signal, chat.state.signal).map {
               case (name, busy, state) =>
-                OrchestratorWSClient.claimedUser(name).isEmpty || busy || state.pending.nonEmpty || state.creating
+                OrchestratorWSClient
+                  .claimedUser(name)
+                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy
             },
             title <-- humanName.signal.map(name =>
               if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
@@ -169,11 +188,11 @@ object App {
             idAttr := "content",
             tabIndex := -1,
             child <-- route.signal.map {
-              case ViewRoute.Chat         => ChatView(chat, client)
-              case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client)
+              case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
+              case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
               case ViewRoute.Messages     =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>
-                  messageList(messages, client)
+                  messageList(messages, client, speech)
                 )
               case ViewRoute.Graph =>
                 listPage("Conversation graph", "No messages.", () => client.messages(), refreshes) { messages =>
@@ -182,7 +201,7 @@ object App {
                       cls := "muted",
                       "Expand a node to inspect its message. Shared history appears once. Up to 32 levels are shown."
                     ),
-                    child <-- messages.map(messages => conversationTree(messages, client))
+                    child <-- messages.map(messages => conversationTree(messages, client, speech))
                   )
                 }
               case ViewRoute.Agents =>
@@ -210,7 +229,12 @@ object App {
     )
   }
 
-  private def sessionPage(id: Option[String], refreshes: Signal[Unit], client: OrchestratorWSClient): HtmlElement = {
+  private def sessionPage(
+      id: Option[String],
+      refreshes: Signal[Unit],
+      client: OrchestratorWSClient,
+      speech: MessageSpeech
+  ): HtmlElement = {
     val sessions = refreshes.flatMapSwitch(_ => load(client.sessions()))
     val details: Signal[LoadState[Option[SessionSnapshot]]] = refreshes.flatMapSwitch { _ =>
       id match {
@@ -277,7 +301,8 @@ object App {
             case LoadState.Ready(Some(session)) => session.messages.toList
             case _                              => Nil
           },
-          client
+          client,
+          speech
         )
       )
     )
@@ -321,13 +346,21 @@ object App {
       }
     )
 
-  private[web] def messageList(messages: Signal[List[MessageSnapshot]], client: OrchestratorWSClient): HtmlElement =
+  private[web] def messageList(
+      messages: Signal[List[MessageSnapshot]],
+      client: OrchestratorWSClient,
+      speech: MessageSpeech
+  ): HtmlElement =
     div(
       cls := "messages",
-      children <-- messages.split(_.id) { (_, _, message) => messageCard(message, client) }
+      children <-- messages.split(_.id) { (_, _, message) => messageCard(message, client, speech) }
     )
 
-  private def messageCard(message: Signal[MessageSnapshot], client: OrchestratorWSClient): HtmlElement =
+  private def messageCard(
+      message: Signal[MessageSnapshot],
+      client: OrchestratorWSClient,
+      speech: MessageSpeech
+  ): HtmlElement =
     articleTag(
       cls <-- message.map(value =>
         value.role match {
@@ -341,7 +374,8 @@ object App {
         span(cls := "role", child.text <-- message.map(_.role)),
         strong(child.text <-- message.map(value => AgentId.value(value.agentId))),
         span(child.text <-- message.map(_.toolName.getOrElse(""))),
-        timeTag(child.text <-- message.map(_.timestamp.toString))
+        timeTag(child.text <-- message.map(_.timestamp.toString)),
+        speech.buttonFor(message.map(_.content))
       ),
       child <-- message.map(messageBody),
       div(
@@ -406,7 +440,11 @@ object App {
     else pre(text)
 
   /** Messages have one parent, so a small HTML/CSS forest is enough; no graph layout library. */
-  private def conversationTree(messages: List[MessageSnapshot], client: OrchestratorWSClient): HtmlElement = {
+  private def conversationTree(
+      messages: List[MessageSnapshot],
+      client: OrchestratorWSClient,
+      speech: MessageSpeech
+  ): HtmlElement = {
     val ids = messages.map(_.id).toSet
     val children = messages.groupBy(_.parentId)
     def branch(message: MessageSnapshot, depth: Int): HtmlElement =
@@ -419,7 +457,7 @@ object App {
             code(MessageId.value(message.id)),
             small(s"Parent: ${message.parentId.getOrElse("(root)")}")
           ),
-          messageCard(Val(message), client)
+          messageCard(Val(message), client, speech)
         ),
         if depth >= 32 then
           if children.contains(Some(message.id)) then

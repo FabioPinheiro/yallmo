@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.protocol
 
-import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageId, MessagePayload}
+import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, MessagePayload}
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentResult, AgentTask, AgentToolDefinition, Session, SessionId, SessionSummary}
 import java.time.Instant
@@ -10,12 +10,13 @@ import zio.json.ast.Json
 
 /** The Yallmo v1 application contract, identical on WebSocket and Unix-domain sockets. Each operation declares its
   * JSON-RPC method, named Params and Result. This defines messages only: no handler, listener or runtime is started.
-  * Domain values are reused directly; only messages/sessions need redacted snapshots to exclude private provider
-  * continuations. There is no dependency on the legacy viewer contract. See server/PROTOCOL.md.
+  * Domain values are reused directly. History uses redacted snapshots to exclude private provider continuations;
+  * agents.invoke accepts restricted user input and returns only a final assistant Message. There is no dependency on
+  * the legacy viewer contract. See server/PROTOCOL.md.
   */
 object YallmoProtocol {
   val Version: Int = 1
-  val MaxBlobChunkBytes: Int = 65536
+  val MaxBlobChunkBytes: Int = BlobUploadLimits.MaxChunkBytes
 
   // Missing domain codecs are derived here, without changing persistence formats or core/model ownership.
   given JsonCodec[SessionId] = JsonCodec.string.transformOrFail(SessionId.from, _.value)
@@ -132,6 +133,17 @@ object YallmoProtocol {
     type Result = Chunk[AgentId]
   }
 
+  object AgentsInvoke {
+    val method: String = "agents.invoke"
+
+    /** Independent invocation: no session fields, inherited history or prior provider continuation. The input author
+      * must match the initialized identity; currently only root User/AudioAttachment inputs are accepted.
+      */
+    @jsonNoExtraFields
+    final case class Params(agentId: AgentId, input: Message) derives JsonCodec
+    type Result = Message
+  }
+
   object ToolsList {
     val method: String = "tools.list"
     final case class Params(agentId: AgentId) derives JsonCodec
@@ -151,6 +163,33 @@ object YallmoProtocol {
     final case class Params(blobId: BlobId, offset: Long, maxBytes: Int = MaxBlobChunkBytes) derives JsonCodec
     final case class Result(blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean)
         derives JsonCodec
+  }
+
+  object BlobsUpload {
+    val method: String = "blobs.upload"
+    val MaxEncodedChunkChars: Int = 4 * ((MaxBlobChunkBytes + 2) / 3)
+
+    /** Every command/result uses the caller's BlobId; Begin echoes it without allocating another identity. Commands are
+      * connection-owned and ordered, with no automatic retry, replay or resume guarantee.
+      */
+    @jsonDiscriminator("command")
+    sealed trait Params derives JsonCodec
+    object Params {
+      @jsonHint("begin") final case class Begin(blobId: BlobId, totalBytes: Long) extends Params
+      @jsonHint("append") final case class Append(blobId: BlobId, offset: Long, dataBase64: String) extends Params {
+        override def toString: String = s"Append($blobId,$offset,<redacted>)"
+      }
+      @jsonHint("complete") final case class Complete(blobId: BlobId) extends Params
+      @jsonHint("abort") final case class Abort(blobId: BlobId) extends Params
+    }
+    @jsonDiscriminator("status")
+    sealed trait Result derives JsonCodec
+    object Result {
+      @jsonHint("begun") final case class Begun(blobId: BlobId) extends Result
+      @jsonHint("appended") final case class Appended(blobId: BlobId, nextOffset: Long) extends Result
+      @jsonHint("completed") final case class Completed(blobId: BlobId) extends Result
+      @jsonHint("aborted") final case class Aborted(blobId: BlobId) extends Result
+    }
   }
 
   object TurnSubmit {

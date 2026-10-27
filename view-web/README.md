@@ -3,11 +3,22 @@
 Scala.js / Laminar session inspector and trusted-browser chat. See [the server guide](../server/README.md) for development,
 production bundling, embedding, API documentation and security boundaries.
 
+## Layout
+
+- `src/` — Scala.js sources and tests.
+- `vite/` — JavaScript, CSS, HTML, JavaScript tests, Vite config and npm manifests.
+- `vite/node_modules/` — npm-managed dependencies (ignored by Git, retained by `sbt clean`).
+- `target/scalajs-dev/` and `target/scalajs-prod/` — sbt linker output.
+- `vite/dist/` — production bundle embedded by the server.
+- `target/vite/cache/` — Vite's generated cache.
+
+Run npm from `vite/`, or use `npm --prefix view-web/vite` from the repository root.
+
 ```sh
 # Repository root:
-npm --prefix view-web ci
+npm --prefix view-web/vite ci
 sbt 'viewWeb/fastLinkJS'
-npm --prefix view-web run dev
+npm --prefix view-web/vite run dev
 ```
 
 The backend must be running on loopback port 8080 (`sbt 'server/run --storage ./zzz'`). Vite uses `host: true` to listen
@@ -32,6 +43,63 @@ visible partial-transfer errors. There is no Fetch client or HTTP blob fallback.
 The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RPC/application protocol and domain types.
 There is no direct source inclusion, JVM core dependency or duplicate browser DTO layer. The cross-projects use
 `shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.
+
+## Read messages aloud
+
+Each message card (including tool messages and pending chat input) has a small **Read** button. It reads the full
+message content verbatim, including Markdown/code and collapsed text, using the browser's default voice. It does not
+read card metadata or download attachments. Click **Stop** to cancel; reading another message replaces playback.
+Leaving the card's view, page exit and application unmount stop playback. Nothing is read automatically.
+
+Reading uses native `speechSynthesis` and does **not** require a configured `Transcriber`, a microphone, a backend
+request or a new session. Unsupported browsers and empty messages have disabled buttons. Browser errors/stalls show
+a notification without retrying. Browser voices may use network services; local synthesis and audible output cannot
+be guaranteed. Text preparation is kept separate from playback for a future speech-ready summarization flow; no
+summarization or transcription is implemented in the read-aloud flow.
+
+## Dictation
+
+In Chat, **Dictation** appears beside **Send** only for an initialized Operator whose configured agent catalog contains the exact ID
+`Transcriber` and whose server advertises both `blobs.upload` and `agents.invoke`. No chat agent needs to be selected.
+This catalog check does not prove endpoint/model audio compatibility; normal server configuration/provider checks
+still apply. Configure an audio-capable `Transcriber` with transcription instructions; use explicit empty capability
+allowlists for tools/retrievers/skills/extensions if you want transcription only. There is no web-specific voice RPC.
+
+Microphone capture requires **HTTPS or localhost**, microphone permission, Web Audio and AudioWorklet support.
+Unsupported browsers show a disabled control with an explanation. Nothing requests microphone access until a click.
+The first click requests access and starts recording; **Stop** finishes capture and transcribes it. **Discard**
+stops/releases the microphone without uploading. Permission/setup and worklet completion have deadlines;
+late permission grants after cancellation are immediately released. Tracks close after capture, not after inference.
+
+The elapsed timer highlights the last five seconds. At **30 seconds**, recording stops automatically, a visible
+notification announces the limit, and transcription starts once. There is no beep or automatic restart. Repeat with a
+new explicit click. Starting capture stops browser speech; Read buttons are disabled only while microphone capture is
+active to avoid recording synthesized speech. No new keyboard shortcuts are added; Send/session creation/reconnect are blocked during dictation,
+while the draft stays editable. Leaving Chat, switching conversations, page exit/freeze or disconnect discards capture
+and prevents stale results from changing any draft.
+
+The resampler/WAV encoder (`vite/audio-core.js`), browser adapters (`vite/browser-audio.js`) and AudioWorklet
+(`vite/capture-worklet.js`) live in this project and are also imported by the REPL's `browser-STT-TTS/` page. One bounded mono 16 kHz PCM16 WAV (at most 960044 bytes) is uploaded through ordinary
+`blobs.upload` commands, all keyed by the recording's `BlobId` (Begin echoes it; no separate upload ID);
+a normal `agents.invoke` message to `Transcriber` is submitted while chunks are arriving.
+Chunks are sequential and acknowledgements are checked; invocation has no ordinary read deadline. Transfers never
+replay across reconnect and never create/submit a chat session. The server persists audio, input and final response
+through the generic APIs; those messages appear in All messages, not as a new conversation.
+
+The transcript replaces the selection/inserts at the cursor remembered before clicking Dictation. If the draft was edited
+in the meantime or no usable cursor exists, it appends to the latest originating draft instead. Nothing is sent to a
+chat agent automatically. **Discard** during upload/transcription ignores the result and best-effort aborts an
+unfinished upload; it **does not cancel agent execution or delete already stored recordings/messages**. Work may still
+finish after discard/disconnect. Errors retain draft text and never retry; inspect saved messages before a manual retry
+when the outcome is uncertain. Browser buffers live in memory only, with no storage APIs or inline audio in logs.
+
+Checks: `npm --prefix view-web/vite test`, `sbt ';viewWeb/testOnly *;viewWeb/fastLinkJS'`, and production linking/bundling.
+Recorder tests mock permission, deadlines and device lifecycle; Scala.js tests cover transfer ordering/bounds,
+acknowledgements, configured-agent gating, stale responses and cursor-safe draft updates. Browser smoke checks used
+the production AudioWorklet under the server CSP with a synthetic MediaStream and mocked RPC responses, including
+limit/discard/navigation behavior. These are **not real microphone, OS permission or remote provider evidence**.
+Manual acceptance still requires an actual audio-capable Transcriber and microphone: grant/deny permission, speak,
+stop/discard, reach the limit, edit the draft while waiting, navigate/disconnect, and verify actual transcript quality.
 
 ## Chat (trusted browser)
 
@@ -60,7 +128,7 @@ tabs, and is replaced by the returned snapshot on completion, never persisted by
 composer immediately and leaves it editable for your next draft; Send stays blocked while waiting, with the waiting
 status beside it. Completion never erases that next draft. On failure or disconnect, the temporary card clears and
 recovery instructions remain; the submitted text is restored only if the composer is still empty. There is no streaming,
-progress, cancellation, upload or automatic retry.
+progress or execution cancellation for chat turns, and no automatic retry. Dictation uses the independent upload/invoke path above.
 Turn submission has no read deadline; ordinary reads, creation and diagnostics remain bounded. A pending turn and
 per-conversation drafts live at application root and survive tab/session navigation, but not page reloads.
 New messages, including pending cards, follow the scroll position only when near the bottom.
@@ -72,7 +140,12 @@ sending a duplicate prompt. Reconnect never replays requests. The client also ex
 the shared protocol DTOs; a diagnostics UI is intentionally deferred.
 
 Validation: `sbt ';viewWeb/testOnly *;viewWeb/compile;viewWeb/fastLinkJS'`; production: `sbt 'viewWeb/fullLinkJS'` then
-`npm --prefix view-web run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
+`npm --prefix view-web/vite run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
 cover create-once/send-once, configured agents, stored heads, draft retention, continuation reset, stale responses,
 failed outcomes and uncertain transport. Manual smoke check: verify the default identity, edit a name and Reconnect, send to a configured agent, switch views
 while waiting, resume a REPL session, change agents, and verify narrow-screen sidebar and scroll behavior.
+
+Upload staging is storage-owned: the wire still uses the caller-created BlobId for Begin/Append/Complete/Abort.
+Only the connection that began an upload can control it; disconnect aborts unfinished uploads. Accepted chunks refresh
+10-second idle expiry but never the 60-second absolute lifetime. Keep using a fresh BlobId when retrying after failure.
+Invocation waits only for known active dependencies with a bounded server read timeout; completed reads remain immediate.

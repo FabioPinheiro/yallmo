@@ -293,6 +293,37 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
+  test("interrupting a local turn wait leaves server execution running once and the same socket usable") {
+    run(ZIO.scoped {
+      for {
+        entered <- Promise.make[Nothing, Unit]
+        release <- Promise.make[Nothing, Unit]
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(answer))
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+        session <- client.createSession(Some(SessionId.unsafe("abandoned")))
+        wait <- client.submitTurn(session.id, first, AgentTask("keep running")).fork
+        _ <- entered.await
+        interrupted <- wait.interrupt
+        during <- client.loadSession(session.id)
+        busy <- client.submitTurn(session.id, first, AgentTask("not retried")).either
+        _ <- release.succeed(())
+        after <- (ZIO.yieldNow *> client.loadSession(session.id)).repeatUntil(_.messages.size == 2)
+        executions <- calls.get
+      } yield {
+        assert(interrupted.isInterrupted)
+        assertEquals(during.messages.map(_.content), Chunk("keep running"))
+        assertEquals(
+          busy.left.toOption.collect { case OrchestratorClient.Error.Remote(error) => error.code },
+          Some(ErrorCode.Busy)
+        )
+        assertEquals(after.messages.map(_.content), Chunk("keep running", "answer"))
+        assertEquals(executions, 1)
+      }
+    })
+  }
+
   test("shutdown interrupts app work, runs provider finalizers before root lease and services release") {
     run(ZIO.scoped {
       for {

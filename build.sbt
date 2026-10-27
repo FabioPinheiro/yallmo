@@ -123,7 +123,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .jvmSettings(jvmSettings)
   .jvmSettings(
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-http" % "3.0.1",
+      "dev.zio" %% "zio-http" % "3.11.6",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
       "com.google.genai" % "google-genai" % "1.53.0",
     ),

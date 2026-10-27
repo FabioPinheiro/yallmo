@@ -54,13 +54,26 @@ final class OrchestratorWebHostSuite extends FunSuite {
             "/api/blobs/id",
             "/api/sessions/main",
             "/assets/missing.js",
-            "/assets/../index.html",
+            "/assets/../api/messages",
+            "/assets/../../fmgp/yallmo/server/OrchestratorWSServer.class",
             "/fmgp/yallmo/server/OrchestratorWSServer.class"
           )
         )(path => get(port, path))
       } yield responses.foreach { response =>
         assertEquals(response.statusCode(), 404)
         assert(!response.body().contains("<html"))
+      }
+    })
+  }
+
+  test("dot segments are normalized by ZIO HTTP before static asset routing") {
+    run(ZIO.scoped {
+      for {
+        port <- start
+        responses <- ZIO.foreach(List("/assets/../index.html", "/assets/%2e%2e/index.html"))(get(port, _))
+      } yield responses.foreach { response =>
+        assertEquals(response.statusCode(), 200)
+        assert(response.body().contains("app"))
       }
     })
   }

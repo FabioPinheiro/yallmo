@@ -29,7 +29,7 @@ private[server] final class WebSocketText private (partial: Ref[Option[Chunk[Byt
         for {
           previous <- partial.get
           _ <- ZIO.fail(Failure(1002, "Unexpected text frame")).when(previous.isDefined)
-          // zio-http 3.0.1 already decodes the initial text frame, losing incomplete UTF-8 bytes. Reject that case
+          // ZIO HTTP already decodes the initial text frame, losing incomplete UTF-8 bytes. Reject that case
           // rather than silently corrupting a message. Continuations are raw bytes and decoded together below.
           _ <- ZIO
             .fail(Failure(1007, "Incomplete initial UTF-8 fragment"))

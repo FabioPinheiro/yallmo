@@ -499,6 +499,31 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
+  test("interrupting a local wait sends no cancellation or replay and ignores its late reply") {
+    run(ZIO.scoped {
+      for {
+        abandoned <- Promise.make[Nothing, Json]
+        methods <- Ref.make(Vector.empty[String])
+        port <- peer { (channel, request) =>
+          methods.update(_ :+ request.method) *>
+            (if request.method == SessionsList.method then abandoned.succeed(request.id).unit
+             else
+               abandoned.await.flatMap(id => reply(channel, id, Json.Arr())) *>
+                 reply(channel, request.id, Json.Arr(Json.Str("still-connected"))))
+        }
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        wait <- client.listSessions.fork
+        _ <- abandoned.await
+        _ <- wait.interrupt
+        agents <- client.listAgentIds
+        seen <- methods.get
+      } yield {
+        assertEquals(agents, Chunk(AgentId("still-connected")))
+        assertEquals(seen, Vector(SessionsList.method, AgentsList.method))
+      }
+    })
+  }
+
   test("disconnect fails pending requests and explicit close makes subsequent calls fail promptly") {
     run(ZIO.scoped {
       for {
@@ -567,7 +592,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
-  test("JDK client assembles fragmented replies including a Unicode code point split across wire frames") {
+  test("client assembles fragmented replies including a Unicode code point split across wire frames") {
     run(ZIO.scoped {
       for {
         port <- peer { (channel, request) =>
@@ -584,7 +609,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
-  test("JDK client rejects binary and oversized assembled replies and cleans up pending requests") {
+  test("client rejects binary and oversized assembled replies and cleans up pending requests") {
     run(ZIO.scoped {
       ZIO.foreachDiscard(List(false, true)) { oversized =>
         for {

@@ -7,13 +7,9 @@ import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.given
 import java.net.URI
-import java.net.http.{HttpClient, WebSocket}
-import java.nio.ByteBuffer
-import java.nio.charset.{CodingErrorAction, StandardCharsets}
-import java.util.concurrent.{ArrayBlockingQueue, CompletionStage, ThreadPoolExecutor, TimeUnit}
-import scala.jdk.FutureConverters.*
 import scala.util.Try
 import zio.*
+import zio.http.{ChannelEvent, Handler, Status, WebSocketChannel, WebSocketFrame}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -22,7 +18,7 @@ import zio.json.ast.Json
   */
 final class OrchestratorWSClient private (
     val endpoint: String,
-    channel: WebSocket,
+    channel: WebSocketChannel,
     state: Ref[OrchestratorWSClient.State],
     writes: Semaphore,
     timeout: Duration,
@@ -73,11 +69,18 @@ final class OrchestratorWSClient private (
     request(BlobsRead.method, BlobsRead.Params(id, offset, maxBytes))
 
   override def close: UIO[Unit] =
-    disconnect(state, Error.Disconnected) *>
-      writes
-        .withPermit(ZIO.fromCompletionStage(channel.sendClose(WebSocket.NORMAL_CLOSURE, "")))
-        .timeout(1.second)
-        .ignore *> ZIO.succeed(channel.abort())
+    ZIO.uninterruptibleMask { restore =>
+      disconnect(state, Error.Disconnected).flatMap { wasOpen =>
+        ZIO
+          .when(wasOpen) {
+            restore(writes.withPermit(channel.send(ChannelEvent.Read(WebSocketFrame.Close(1000, None)))))
+              .timeout(1.second)
+              .ignore
+              .ensuring(channel.shutdown *> channel.awaitShutdown)
+          }
+          .unit
+      }
+    }
 
   private def request[P: JsonCodec, A: JsonDecoder](method: String, params: P): IO[Error, A] =
     ZIO.uninterruptibleMask { restore =>
@@ -100,9 +103,9 @@ final class OrchestratorWSClient private (
             wait =
               for {
                 _ <- writes
-                  .withPermit(ZIO.fromCompletionStage(channel.sendText(output, true)))
+                  .withPermit(channel.send(ChannelEvent.Read(WebSocketFrame.Text(output))))
                   .mapError(Error.Transport.apply)
-                  .tapError(_ => disconnect(state, Error.Disconnected))
+                  .tapError(_ => (disconnect(state, Error.Disconnected) *> channel.shutdown).uninterruptible)
                 value <- promise.await
               } yield value
             value <- if method == TurnSubmit.method then wait else wait.timeoutFail(Error.RequestTimedOut)(timeout)
@@ -147,97 +150,56 @@ object OrchestratorWSClient {
       _ <- ZIO.fail(Error.InvalidEndpoint).unless(validEndpoint(endpoint) && requestTimeout > Duration.Zero)
       state <- Ref.make(State())
       writes <- Semaphore.make(1)
-      runtime <- ZIO.runtime[Any]
-      // One demanded callback at a time, and one bounded message under assembly. No callback queue or detached work.
-      partial <- Ref.make("")
-      listener = new WebSocket.Listener {
-        private def callback(socket: WebSocket)(effect: UIO[Unit]): CompletionStage[Unit] =
-          Unsafe.unsafe { unsafe ?=>
-            runtime.unsafe.runToFuture(effect *> ZIO.succeed(socket.request(1)).unit).asJava
-          }
-        private def reject(socket: WebSocket, code: Int): UIO[Unit] =
-          disconnect(state, Error.InvalidResponse) *>
-            writes
-              .withPermit(ZIO.fromCompletionStage(socket.sendClose(code, "Invalid response")))
-              .timeout(1.second)
-              .ignore *> ZIO.succeed(socket.abort())
-
-        override def onOpen(socket: WebSocket): Unit = { socket.request(1); () }
-        override def onText(socket: WebSocket, data: CharSequence, last: Boolean): CompletionStage[?] = {
-          val fragment = data.toString
-          callback(socket) {
-            partial
-              .modify { previous =>
-                // UTF-16 units are bounded before concatenation; strict UTF-8 byte limit is checked at message end.
-                if previous.length.toLong + fragment.length > RpcWire.MaxMessageBytes then (None, "")
-                else {
-                  val combined = previous + fragment
-                  (Some(combined), if last then "" else combined)
-                }
-              }
-              .flatMap {
-                case None                => reject(socket, 1009)
-                case Some(input) if last =>
-                  ZIO
-                    .attempt {
-                      StandardCharsets.UTF_8
-                        .newEncoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .encode(java.nio.CharBuffer.wrap(input))
-                        .remaining()
-                    }
+      ready <- Promise.make[Error, WebSocketChannel]
+      _ <- ZIO.addFinalizer(disconnect(state, Error.Disconnected))
+      http <- OrchestratorWSClientTransport.layer.build.map(_.get[zio.http.Client]).mapError(Error.Transport.apply)
+      app = Handler
+        .webSocket { channel =>
+          val reject = (code: Int, reason: String) =>
+            disconnect(state, Error.InvalidResponse) *>
+              writes
+                .withPermit(channel.send(ChannelEvent.Read(WebSocketFrame.Close(code, Some(reason)))))
+                .timeout(1.second)
+                .ignore *> channel.shutdown
+          WebSocketText.make
+            .flatMap { text =>
+              channel.receiveAll {
+                case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
+                  ready.succeed(channel).unit
+                case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) =>
+                  ready.fail(Error.RequestTimedOut).unit *> channel.shutdown
+                // Netty answers pings (with their original payload) and drops pongs automatically.
+                case ChannelEvent.Read(WebSocketFrame.Ping | WebSocketFrame.Pong) => ZIO.unit
+                case ChannelEvent.Read(_: WebSocketFrame.Close)                   =>
+                  disconnect(state, Error.Disconnected) *> channel.shutdown
+                case ChannelEvent.Read(frame) =>
+                  text
+                    .accept(frame)
                     .foldZIO(
-                      _ => reject(socket, 1007),
-                      bytes =>
-                        if bytes > RpcWire.MaxMessageBytes then reject(socket, 1009)
-                        else receive(input, state, socket)
+                      failure => reject(failure.code, failure.reason),
+                      message => ZIO.foreachDiscard(message)(receive(_, state, channel))
                     )
+                case ChannelEvent.ExceptionCaught(error) =>
+                  val failure = OrchestratorWSClientTransport.error(error)
+                  ready.fail(failure).unit *> disconnect(state, failure) *> channel.shutdown
                 case _ => ZIO.unit
               }
-          }
+            }
+            .catchAllCause { cause =>
+              val failure = if cause.isInterruptedOnly then Error.Disconnected else Error.Transport(cause.squash)
+              ready.fail(failure).unit *> disconnect(state, failure)
+            }
+            .ensuring(
+              ready.fail(Error.Disconnected).unit *> disconnect(state, Error.Disconnected) *> channel.shutdown
+            )
         }
-        override def onBinary(socket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage[?] = {
-          val _ = (data, last)
-          callback(socket)(reject(socket, 1003))
-        }
-        override def onPing(socket: WebSocket, message: ByteBuffer): CompletionStage[?] =
-          callback(socket)(
-            writes
-              .withPermit(ZIO.fromCompletionStage(socket.sendPong(message)))
-              .unit
-              .catchAll(_ => disconnect(state, Error.Disconnected) *> ZIO.succeed(socket.abort()))
-          )
-        override def onPong(socket: WebSocket, message: ByteBuffer): CompletionStage[?] = {
-          val _ = message
-          callback(socket)(ZIO.unit)
-        }
-        override def onClose(socket: WebSocket, code: Int, reason: String): CompletionStage[?] = {
-          val _ = (code, reason)
-          callback(socket)(disconnect(state, Error.Disconnected) *> ZIO.succeed(socket.abort()))
-        }
-        override def onError(socket: WebSocket, error: Throwable): Unit = {
-          val _ = callback(socket)(disconnect(state, Error.Transport(error)) *> ZIO.succeed(socket.abort()))
-        }
-      }
-      executor <- ZIO
-        .acquireRelease(
-          ZIO.attempt(new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue[Runnable](256)))
-        )(executor => ZIO.succeed(executor.shutdownNow()).unit)
-        .mapError(Error.Transport.apply)
-      http <- ZIO
-        .acquireRelease(ZIO.attempt(HttpClient.newBuilder().executor(executor).build()))(http =>
-          ZIO.succeed(http.shutdownNow())
-        )
-        .mapError(Error.Transport.apply)
-      _ <- ZIO.addFinalizer(disconnect(state, Error.Disconnected))
-      // The JDK transport deliberately sends no Origin: browser Origin policy remains entirely server-owned.
-      channel <- ZIO.acquireRelease(
-        ZIO
-          .fromCompletionStage(http.newWebSocketBuilder().buildAsync(URI.create(endpoint), listener))
-          .mapError(Error.Transport.apply)
-          .timeoutFail(Error.RequestTimedOut)(requestTimeout)
-      )(socket => ZIO.succeed(socket.abort()))
+        .withConfig(RpcWire.webSocketConfig.handshakeTimeout(Duration.fromMillis(requestTimeout.toMillis.max(1L))))
+      channel <- (for {
+        response <- http.uri(URI.create(endpoint)).socket(app).mapError(Error.Transport.apply)
+        _ <- ZIO.fail(Error.InvalidResponse).unless(response.status == Status.SwitchingProtocols)
+        // socket returns the HTTP response before Netty has necessarily validated the upgrade.
+        channel <- ready.await
+      } yield channel).timeoutFail(Error.RequestTimedOut)(requestTimeout)
       negotiated <- Ref.make(Option.empty[Initialize.Result])
       client = new OrchestratorWSClient(endpoint, channel, state, writes, requestTimeout, userId, negotiated)
       _ <- ZIO.addFinalizer(client.close)
@@ -250,12 +212,15 @@ object OrchestratorWSClient {
         uri.getUserInfo == null && uri.getFragment == null
     )
 
-  private def disconnect(state: Ref[State], error: Error): UIO[Unit] =
+  private def disconnect(state: Ref[State], error: Error): UIO[Boolean] =
     state
-      .modify(current => (current.pending.values.toList, current.copy(pending = Map.empty, closed = true)))
-      .flatMap(pending => ZIO.foreachDiscard(pending)(_.fail(error)))
+      .modify(current =>
+        ((current.pending.values.toList, !current.closed), current.copy(pending = Map.empty, closed = true))
+      )
+      .flatMap { (pending, wasOpen) => ZIO.foreachDiscard(pending)(_.fail(error)).as(wasOpen) }
+      .uninterruptible
 
-  private def receive(input: String, state: Ref[State], channel: WebSocket): UIO[Unit] = {
+  private def receive(input: String, state: Ref[State], channel: WebSocketChannel): UIO[Unit] = {
     val decoded = for {
       json <- RpcWire.parse(input)
       fields <- json match {
@@ -275,11 +240,12 @@ object OrchestratorWSClient {
       }
     } yield (id, outcome)
     decoded match {
-      case Left(_)              => disconnect(state, Error.InvalidResponse) *> ZIO.succeed(channel.abort())
+      case Left(_)              => disconnect(state, Error.InvalidResponse) *> channel.shutdown
       case Right((id, outcome)) =>
         state
           .modify(current => (current.pending.get(id), current.copy(pending = current.pending - id)))
           .flatMap(pending => ZIO.foreachDiscard(pending)(_.done(Exit.fromEither(outcome))))
+          .uninterruptible
     }
   }
 }

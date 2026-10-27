@@ -1,6 +1,7 @@
 # Attachments and blob storage
 
 Status: implemented, with one open message-append failure-path finding recorded below. This is the single design/implementation record for the change.
+Keep this plan active until that finding and a permanent regression are addressed; see [Plans and delivery status](../PLANS.md).
 No separate public blob-management service was introduced.
 The Scala audio type is `MessagePayload.AudioAttachment`, with the JSON discriminator `AudioAttachment` and no override. Only the current schema is supported; there are no legacy decoders, migrations, or hash-verification exceptions.
 
@@ -158,9 +159,10 @@ Audit remaining byte accesses, redaction calls, comments, and tests across model
 
 ## Documentation and verification
 
-Update `docs/REPL.md`, `browser-STT-TTS/README.md`, and these files under `docs/transcriber/`:
-`TRANSCRIBER_AS_AN_AGENT_PLAN.md`, `DEBUG_BY_MESSAGE_ID_PLAN.md`, and `BROWSER_STT_TTS_PLAN.md`.
-Mark old discard/hash-exception decisions superseded; annotate `TRANSCRIBER_AS_AN_AGENT_EXECUTION_PLAN.md` and `BROWSER_STT_TTS_EXECUTION_PLAN.md` without rewriting historical results.
+Documentation targets: `docs/REPL.md`, `browser-STT-TTS/README.md`, and the active
+[debug-by-message-ID plan](../transcriber/DEBUG_BY_MESSAGE_ID_PLAN.md).
+The transcriber/browser design and execution records are now [archived](../../completed/README.md#browser-audio-and-transcription)
+under `completed/transcriber/`; their annotations mark old discard/hash-exception decisions superseded without rewriting historical results.
 Update affected model, storage, provider, voice, rendering, and debug tests.
 Cover all three append forms, early message visibility, stable IDs, persistence/reopen, failure/cancellation, duplicate IDs, missing blobs.
 Assert no blob bytes in JSONL or default diagnostics, unchanged credential/continuation protection, and working new-format message hash verification.

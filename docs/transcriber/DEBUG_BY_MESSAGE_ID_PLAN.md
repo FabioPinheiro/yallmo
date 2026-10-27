@@ -30,4 +30,4 @@ Inspect a stored message without selecting/resuming its session or inserting it 
 - State before and after inspection is identical; test with a fake provider/capabilities that fail if invoked.
 - Add narrow grammar/storage/UI suites, then full tests and formatting according to project conventions.
 
-Related: [TRANSCRIBER_AS_AN_AGENT_PLAN.md](TRANSCRIBER_AS_AN_AGENT_PLAN.md).
+Related: TRANSCRIBER_AS_AN_AGENT_PLAN.md

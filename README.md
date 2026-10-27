@@ -27,6 +27,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 ## Documentation
 
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
+- [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
 - [Setup and running](docs/HOW_TO_RUN.md)
 - [Interactive REPL](docs/REPL.md) — NORMAL `v`: JVM voice; `m`: browser microphone; `t`: explicitly speak the current assistant reply.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
@@ -36,7 +37,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
-- [Conversation-DAG visualization plan](docs/visualization/CONVERSATION_DAG_VISUALIZATION_PLAN.md)
+- [Conversation graph](server/README.md#website-behavior-and-downloads) — implemented session/message inspector.
 
 ## Project layout
 

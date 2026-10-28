@@ -4,6 +4,9 @@ Scala.js / Laminar session inspector and trusted-browser chat. See [the server g
 production bundling, embedding, API documentation and security boundaries.
 For keyboard shortcuts, modes and dictation keys, use the [client controls quick reference](../docs/CLIENT_CONTROLS.md).
 
+The interface uses a dark theme by default, including native form controls and dialogs.
+Shared color tokens live in `vite/style.css`.
+
 ## Layout
 
 - `src/` — Scala.js sources and tests.

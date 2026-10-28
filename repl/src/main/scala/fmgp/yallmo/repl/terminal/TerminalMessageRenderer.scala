@@ -40,12 +40,11 @@ private[terminal] object TerminalMessageRenderer {
         s"${author.fold("user> ")(id => TerminalPrompt.user(id))}$text"
       case MessagePayload.Assistant(text) =>
         s"${author.fold("assistant> ")(id => TerminalPrompt.assistant(id))}$text"
-      case MessagePayload.RagResult(key, documents)  => s"retriever[$key]> ${documents.size} document(s)"
-      case MessagePayload.ToolResult(key, text)      => s"tool[$key]> $text"
-      case MessagePayload.FunctionCallRequest(call)  => s"tool-call[${call.name}]> ${call.argumentsJson}"
-      case MessagePayload.FunctionCallOutput(output) => s"tool-output[${output.name}]> ${output.output}"
-      case MessagePayload.Reasoning(summary, _)      => s"reasoning> ${summary.getOrElse("<provider continuation>")}"
-      case MessagePayload.Context(label, text)       => s"context[$label]> $text"
-      case MessagePayload.Instructions(text)         => s"system> $text"
+      case MessagePayload.RagResult(key, documents) => s"retriever[$key]> ${documents.size} document(s)"
+      case MessagePayload.ToolCall(call)            => s"tool-call[${call.name}]> ${call.argumentsJson}"
+      case MessagePayload.ToolOutput(output)        => s"tool-output[${output.name}]> ${output.output}"
+      case MessagePayload.Reasoning(summary, _)     => s"reasoning> ${summary.getOrElse("<provider continuation>")}"
+      case MessagePayload.Context(label, text)      => s"context[$label]> $text"
+      case MessagePayload.Instructions(text)        => s"system> $text"
     }
 }

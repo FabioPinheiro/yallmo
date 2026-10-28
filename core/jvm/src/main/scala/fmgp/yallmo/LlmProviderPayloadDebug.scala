@@ -55,7 +55,7 @@ object LlmProviderPayloadDebug {
         "text" -> response.output.collect { case MessagePayload.Assistant(text) => text }.mkString,
         "toolCalls" -> ujson.Arr.from(
           response.output
-            .collect { case MessagePayload.FunctionCallRequest(call) => call }
+            .collect { case MessagePayload.ToolCall(call) => call }
             .map(call =>
               ujson.Obj(
                 "callId" -> FunctionCallId.value(call.id),

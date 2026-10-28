@@ -72,6 +72,24 @@ final class StorageValidationSuite extends FunSuite {
     assert(!dataError.contains("PRIVATE_SECRET"))
   }
 
+  test("legacy tool results fail with explicit compatibility guidance without modifying storage or exposing content") {
+    directory { root =>
+      val legacyData =
+        """{"agentId":"author","timestamp":"2026-01-01T00:00:00Z","payload":{"ToolResult":{"toolKey":"clock","text":"PRIVATE_SECRET"}}}"""
+      val legacyId = MessageId.sha256(legacyData)
+      val contents = s"""{"id":"${MessageId.value(legacyId)}","kind":"msg","value":$legacyData}""" + "\n"
+      Files.writeString(root.resolve("objects.jsonl"), contents)
+
+      val error = run(StorageFS.open(root).either).swap.toOption.get
+      assert(error.getMessage.contains("objects.jsonl record 1"))
+      assert(error.getMessage.contains("legacy ToolResult payload is unsupported"))
+      assert(error.getMessage.contains("No automatic migration"))
+      assert(!error.toString.contains("PRIVATE_SECRET"))
+      assert(!error.getCause.toString.contains("PRIVATE_SECRET"))
+      assertEquals(Files.readString(root.resolve("objects.jsonl")), contents)
+    }
+  }
+
   private def message(text: String, parent: Option[MessageId] = None): MessageData =
     MessageData(AgentId("author"), parent, Instant.parse("2026-01-01T00:00:00Z"), MessagePayload.User(text))
 

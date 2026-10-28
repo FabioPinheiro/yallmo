@@ -17,7 +17,7 @@ private[oai] object OAIChatCompletionsMapper {
       response.functionCalls.map(call => FunctionCall(FunctionCallId.unsafe(call.callId), call.name, call.arguments))
     val output =
       Chunk.fromIterable(text.map(MessagePayload.Assistant.apply)) ++ calls.map(
-        MessagePayload.FunctionCallRequest.apply
+        MessagePayload.ToolCall.apply
       )
     Right(
       AgentTurnResponse(
@@ -72,12 +72,10 @@ private[oai] object OAIChatCompletionsMapper {
         messages :+ ujson.Obj("role" -> "user", "content" -> s"Context [$label]:\n$text")
       case item: MessagePayload.RagResult =>
         messages :+ ujson.Obj("role" -> "user", "content" -> s"Context:\n${item.contentStr}")
-      case item: MessagePayload.ToolResult =>
-        messages :+ ujson.Obj("role" -> "user", "content" -> s"Context:\n${item.contentStr}")
-      case MessagePayload.Assistant(text)           => messages :+ ujson.Obj("role" -> "assistant", "content" -> text)
-      case MessagePayload.Reasoning(_, _)           => messages
-      case MessagePayload.Instructions(text)        => messages :+ ujson.Obj("role" -> "system", "content" -> text)
-      case MessagePayload.FunctionCallRequest(call) =>
+      case MessagePayload.Assistant(text)    => messages :+ ujson.Obj("role" -> "assistant", "content" -> text)
+      case MessagePayload.Reasoning(_, _)    => messages
+      case MessagePayload.Instructions(text) => messages :+ ujson.Obj("role" -> "system", "content" -> text)
+      case MessagePayload.ToolCall(call)     =>
         val toolCall = ujson.Obj(
           "id" -> call.id.value,
           "type" -> "function",
@@ -90,7 +88,7 @@ private[oai] object OAIChatCompletionsMapper {
             messages
           case None =>
             messages :+ ujson.Obj("role" -> "assistant", "content" -> ujson.Null, "tool_calls" -> ujson.Arr(toolCall))
-      case MessagePayload.FunctionCallOutput(output) =>
+      case MessagePayload.ToolOutput(output) =>
         messages :+ ujson.Obj("role" -> "tool", "tool_call_id" -> output.callId.value, "content" -> output.output)
 
   private[oai] def initialMessages(prompt: String, options: ProviderGenerateOptions): ujson.Arr = {

@@ -132,26 +132,24 @@ final class AgentRunner[R](
         case AgentDecision.Actions(actions) =>
           if actions.isEmpty then ZIO.fail(YallmoError.EmptyActionBatch(agent.id))
           else
-            val runContextWithCalls = runContextWithTurn.appendAll(
-              actions.collect {
-                case LlmAction.CallExternalTool(call) if call.callId.nonEmpty =>
-                  MessagePayload.FunctionCallRequest(
-                    FunctionCall(call.callId.get, call.toolKey, call.argumentsJson)
-                  )
-              }
-            )
-            executeActions(agent, actions, staticContext, budget, actionCount)
-              .flatMap(messages =>
-                runLoop(
-                  agent,
-                  task,
-                  staticContext,
-                  runContextWithCalls.appendAll(messages),
-                  budget,
-                  turnCount,
-                  actionCount
-                )
+            for
+              preparedActions <- prepareActions(actions)
+              runContextWithCalls = runContextWithTurn.appendAll(
+                preparedActions.collect { case PreparedAction.CallExternalTool(call) =>
+                  MessagePayload.ToolCall(call)
+                }
               )
+              messages <- executeActions(agent, preparedActions, staticContext, budget, actionCount)
+              result <- runLoop(
+                agent,
+                task,
+                staticContext,
+                runContextWithCalls.appendAll(messages),
+                budget,
+                turnCount,
+                actionCount
+              )
+            yield result
     yield result
 
   private def applyExtensions(
@@ -162,9 +160,26 @@ final class AgentRunner[R](
       contextExtension(staticContext, current)
     }
 
+  /** Runner-internal actions cannot contain an uncorrelated tool invocation. */
+  private enum PreparedAction {
+    case RetrieveRag(retrieverKey: String, query: RagQuery)
+    case CallExternalTool(call: FunctionCall)
+  }
+
+  private def prepareActions(actions: Chunk[LlmAction]): UIO[Chunk[PreparedAction]] =
+    ZIO.foreach(actions) {
+      case LlmAction.RetrieveRag(key, query) => ZIO.succeed(PreparedAction.RetrieveRag(key, query))
+      case LlmAction.CallExternalTool(call)  =>
+        val callId = call.callId match {
+          case Some(id) => ZIO.succeed(id)
+          case None     => Random.nextUUID.map(uuid => FunctionCallId.unsafe(s"call-$uuid"))
+        }
+        callId.map(id => PreparedAction.CallExternalTool(FunctionCall(id, call.toolKey, call.argumentsJson)))
+    }
+
   private def executeActions(
       agent: AgentInstance[R],
-      actions: Chunk[LlmAction],
+      actions: Chunk[PreparedAction],
       staticContext: StaticContext[R],
       budget: AgentBudget,
       actionCount: Ref[Int]
@@ -179,11 +194,11 @@ final class AgentRunner[R](
 
   private def executeAction(
       agent: AgentInstance[R],
-      action: LlmAction,
+      action: PreparedAction,
       staticContext: StaticContext[R]
   ): ZIO[R, YallmoError, MessagePayload] =
     action match
-      case LlmAction.RetrieveRag(retrieverKey, query) =>
+      case PreparedAction.RetrieveRag(retrieverKey, query) =>
         if !staticContext.retrievers.exists(_.key == retrieverKey) then
           ZIO.fail(YallmoError.RetrieverUnavailableToAgent(agent.id, retrieverKey))
         else
@@ -193,7 +208,8 @@ final class AgentRunner[R](
             .flatMap(_.retrieve(query))
             .map(MessagePayload.RagResult(retrieverKey, _))
 
-      case LlmAction.CallExternalTool(call) =>
+      case PreparedAction.CallExternalTool(functionCall) =>
+        val call = ExternalToolCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
         val execute =
           if !staticContext.tools.exists(_.key == call.toolKey) then
             ZIO.fail(YallmoError.ToolUnavailableToAgent(agent.id, call.toolKey))
@@ -215,15 +231,12 @@ final class AgentRunner[R](
               )
 
         execute.fold(
-          error => toolMessage(call, toolErrorOutput(error)),
-          output => toolMessage(call, output)
+          error => toolMessage(functionCall, toolErrorOutput(error)),
+          output => toolMessage(functionCall, output)
         )
 
-  private def toolMessage(call: ExternalToolCall, output: String): MessagePayload =
-    call.callId match
-      case Some(id) =>
-        MessagePayload.FunctionCallOutput(FunctionCallOutput(id, call.toolKey, output))
-      case None => MessagePayload.ToolResult(call.toolKey, output)
+  private def toolMessage(call: FunctionCall, output: String): MessagePayload =
+    MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, output))
 
   private def toolErrorOutput(error: YallmoError): String =
     ujson.write(

@@ -412,13 +412,13 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
           )
         )
         call <- ZIO
-          .fromOption(first.output.collectFirst { case MessagePayload.FunctionCallRequest(value) => value })
+          .fromOption(first.output.collectFirst { case MessagePayload.ToolCall(value) => value })
           .orElseFail(new IllegalStateException("Missing tool proposal"))
         second <- agent.turn(
           AgentTurnRequest(
             "account-model",
             Chunk(MessagePayload.User("Read README")) ++ first.output ++ Chunk(
-              MessagePayload.FunctionCallOutput(FunctionCallOutput(call.id, call.name, "README contents")),
+              MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "README contents")),
               MessagePayload.Instructions("Stay concise")
             )
           )

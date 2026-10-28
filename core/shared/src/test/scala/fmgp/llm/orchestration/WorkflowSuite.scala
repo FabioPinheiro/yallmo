@@ -62,8 +62,9 @@ final class AgentRunnerSuite extends FunSuite:
                   AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))))
                 )
               case 2 =>
-                val toolResult = runContext.messages.collectFirst { case Message.ToolResult("clock", text) =>
-                  text
+                val toolResult = runContext.messages.collectFirst {
+                  case Message.ToolOutput(output) if output.name == "clock" =>
+                    output.output
                 }
                 ZIO.succeed(AgentDecision.FinalAnswer(toolResult.getOrElse("missing tool result")))
               case _ => ZIO.dieMessage("unexpected extra turn")
@@ -76,16 +77,86 @@ final class AgentRunnerSuite extends FunSuite:
             calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z"))
         }
         runner = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-        answer <- runner.run(
+        answer <- runner.runWithContext(
           agent,
           AgentTask("What time is it?"),
-          StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(tool.definition))
+          StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(tool.definition)),
+          RunContext()
         )
         recordedCalls <- calls.get
       yield answer -> recordedCalls
     } { result =>
-      assertEquals(result._1, AgentResult(CoordinatorId, "2026-10-02T12:00:00Z"))
-      assertEquals(result._2, Chunk(ExternalToolCall("clock", "{}")))
+      assertEquals(result._1.result, AgentResult(CoordinatorId, "2026-10-02T12:00:00Z"))
+      val requests = result._1.runContext.messages.collect { case Message.ToolCall(call) => call }
+      val outputs = result._1.runContext.messages.collect { case Message.ToolOutput(output) => output }
+      assertEquals(requests.size, 1)
+      assert(FunctionCallId.from(requests.head.id.value).isRight)
+      assertEquals(result._2, Chunk(ExternalToolCall("clock", "{}", Some(requests.head.id))))
+      assertEquals(outputs, Chunk(FunctionCallOutput(requests.head.id, "clock", "2026-10-02T12:00:00Z")))
+      val transcript = result._1.runContext.messages
+      assert(
+        transcript.indexOf(Message.ToolCall(requests.head)) < transcript.indexOf(
+          Message.ToolOutput(outputs.head)
+        )
+      )
+    }
+  }
+
+  test("runner assigns distinct IDs across batches and turns, preserves supplied IDs and links failures") {
+    val suppliedId = FunctionCallId.unsafe("provider-call")
+    runZIO {
+      for
+        turns <- Ref.make(0)
+        executions <- Ref.make(Chunk.empty[ExternalToolCall])
+        agent = TestAgent[Any](
+          CoordinatorId,
+          (_, _, _) =>
+            turns.updateAndGet(_ + 1).map {
+              case 1 =>
+                AgentDecision.Actions(
+                  Chunk(
+                    LlmAction.CallExternalTool(ExternalToolCall("clock", "{}")),
+                    LlmAction.CallExternalTool(ExternalToolCall("clock", "{}", Some(suppliedId))),
+                    LlmAction.CallExternalTool(ExternalToolCall("missing", "{}"))
+                  )
+                )
+              case 2 => AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))))
+              case _ => AgentDecision.FinalAnswer("done")
+            }
+        )
+        tool = new AgentTool[Any] {
+          override val definition = AgentToolDefinition("clock", "Returns a fixed time")
+          override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+            executions.update(_ :+ call).as(ExternalToolResult("12:00"))
+        }
+        run <- new AgentRunner[Any](Map("clock" -> tool), Map.empty).runWithContext(
+          agent,
+          AgentTask("Check repeatedly"),
+          StaticContext[Any](
+            "System",
+            tools = Chunk(tool.definition, AgentToolDefinition("missing", "Not registered"))
+          ),
+          RunContext()
+        )
+        executed <- executions.get
+      yield run -> executed
+    } { case (run, executed) =>
+      val transcript = run.runContext.messages
+      val requests = transcript.collect { case Message.ToolCall(call) => call }
+      val outputs = transcript.collect { case Message.ToolOutput(output) => output }
+      assertEquals(requests.size, 4)
+      assertEquals(requests.map(_.id).distinct.size, 4)
+      assertEquals(requests(1).id, suppliedId)
+      assert(requests.forall(call => FunctionCallId.from(call.id.value).isRight))
+      assertEquals(outputs.map(_.callId), requests.map(_.id))
+      assertEquals(outputs.map(_.name), requests.map(_.name))
+      assertEquals(outputs.take(2).map(_.output), Chunk("12:00", "12:00"))
+      assert(outputs(2).output.contains("UnknownTool"))
+      assertEquals(outputs(3).output, "12:00")
+      assertEquals(executed.map(_.callId), requests.filter(_.name == "clock").map(call => Some(call.id)))
+      requests.zip(outputs).foreach { case (call, output) =>
+        assert(transcript.indexOf(Message.ToolCall(call)) < transcript.indexOf(Message.ToolOutput(output)))
+      }
     }
   }
 
@@ -102,7 +173,7 @@ final class AgentRunnerSuite extends FunSuite:
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
-                    .collectFirst { case Message.ToolResult("email", output) => output }
+                    .collectFirst { case Message.ToolOutput(output) if output.name == "email" => output.output }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
@@ -169,7 +240,7 @@ final class AgentRunnerSuite extends FunSuite:
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
-                    .collectFirst { case Message.ToolResult("clock", output) => output }
+                    .collectFirst { case Message.ToolOutput(output) if output.name == "clock" => output.output }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
@@ -218,12 +289,12 @@ final class AgentRunnerSuite extends FunSuite:
           _staticContext: StaticContext[Any],
           runContext: RunContext
       ): IO[YallmoError, RunContext] =
-        ZIO.succeed(runContext.append(Message.ToolResult(key, "request-id=42")))
+        ZIO.succeed(runContext.append(Message.Context(key, "request-id=42")))
     }
     val agent = TestAgent[Any](
       CoordinatorId,
       (_, _, runContext) =>
-        val metadata = runContext.messages.collectFirst { case Message.ToolResult("request-metadata", text) =>
+        val metadata = runContext.messages.collectFirst { case Message.Context("request-metadata", text) =>
           text
         }
         ZIO.succeed(AgentDecision.FinalAnswer(metadata.getOrElse("missing metadata")))

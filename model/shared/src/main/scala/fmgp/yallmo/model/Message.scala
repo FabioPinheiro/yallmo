@@ -62,17 +62,7 @@ object Message {
   def apply(data: MessageData): Message =
     new Message(MessageId.from(data), data)
 
-  export MessagePayload.{
-    Assistant,
-    Context,
-    FunctionCallOutput,
-    FunctionCallRequest as FunctionCall,
-    Instructions,
-    RagResult,
-    Reasoning,
-    ToolResult,
-    User
-  }
+  export MessagePayload.{Assistant, Context, Instructions, RagResult, Reasoning, ToolCall, ToolOutput, User}
 }
 
 /** Ordered, provider-neutral context exchanged with a language model. */
@@ -137,25 +127,20 @@ object MessagePayload {
         .mkString(s"RAG result from $retrieverKey:\n", "\n\n", "")
   }
 
-  // TODO REMOVE!
-  final case class ToolResult(toolKey: String, text: String) extends MessagePayload derives JsonCodec {
-    override def role: String = "context"
-    override def contentStr: String = s"tool result from $toolKey:\n$text"
-  }
-
   final case class Reasoning(summary: Option[String], continuation: ProviderContinuation) extends MessagePayload
       derives JsonCodec {
     override def role: String = "reasoning"
     override def contentStr: String = summary.getOrElse("")
   }
 
-  final case class FunctionCallRequest(call: fmgp.yallmo.model.FunctionCall) extends MessagePayload derives JsonCodec {
+  /** A tool invocation recorded before execution, including host-assigned IDs for non-native calls. */
+  final case class ToolCall(call: FunctionCall) extends MessagePayload derives JsonCodec {
     override def role: String = "tool_call"
     override def contentStr: String = call.argumentsJson
   }
 
-  final case class FunctionCallOutput(output: fmgp.yallmo.model.FunctionCallOutput) extends MessagePayload
-      derives JsonCodec {
+  /** A trusted result (including failures) linked to its recorded request by call ID. */
+  final case class ToolOutput(output: FunctionCallOutput) extends MessagePayload derives JsonCodec {
     override def role: String = "tool_result"
     override def contentStr: String = output.output
   }

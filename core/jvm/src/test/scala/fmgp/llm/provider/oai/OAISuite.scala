@@ -77,8 +77,8 @@ final class OAISuite extends FunSuite:
       "test",
       Chunk(
         MessagePayload.Assistant("Checking."),
-        MessagePayload.FunctionCallRequest(call),
-        MessagePayload.FunctionCallOutput(output),
+        MessagePayload.ToolCall(call),
+        MessagePayload.ToolOutput(output),
         MessagePayload.Instructions("System")
       ),
       tools = Chunk(

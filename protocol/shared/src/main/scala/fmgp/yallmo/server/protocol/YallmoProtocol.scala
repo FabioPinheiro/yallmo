@@ -49,9 +49,9 @@ object YallmoProtocol {
         message.payload.contentStr,
         message.payload.blobIds,
         message.payload match {
-          case MessagePayload.FunctionCallRequest(call)  => Some(call.name)
-          case MessagePayload.FunctionCallOutput(output) => Some(output.name)
-          case _                                         => None
+          case MessagePayload.ToolCall(call)     => Some(call.name)
+          case MessagePayload.ToolOutput(output) => Some(output.name)
+          case _                                 => None
         }
       )
   }

@@ -85,7 +85,7 @@ final class OpenAiCodexSuite extends FunSuite:
 
     val turn = OpenAiCodexTurnMapper.response(response)
     assertEquals(
-      turn.map(_.output.collect { case MessagePayload.FunctionCallRequest(value) => value }),
+      turn.map(_.output.collect { case MessagePayload.ToolCall(value) => value }),
       Right(Chunk(call))
     )
     assertEquals(turn.map(_.stopReason), Right(LlmStopReason.ToolUse))
@@ -101,8 +101,8 @@ final class OpenAiCodexSuite extends FunSuite:
     val input = OpenAiCodexTurnMapper
       .input(
         Chunk(
-          MessagePayload.FunctionCallRequest(call),
-          MessagePayload.FunctionCallOutput(FunctionCallOutput(call.id, call.name, "contents"))
+          MessagePayload.ToolCall(call),
+          MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "contents"))
         )
       )
       .toOption
@@ -197,8 +197,8 @@ final class OpenAiCodexSuite extends FunSuite:
         MessagePayload.User("read"),
         MessagePayload.Reasoning(Some("summary"), continuation),
         MessagePayload.Reasoning(None, continuation.copy(provider = ProviderId.unsafe("other-provider"))),
-        MessagePayload.FunctionCallRequest(call),
-        MessagePayload.FunctionCallOutput(FunctionCallOutput(call.id, call.name, "file contents")),
+        MessagePayload.ToolCall(call),
+        MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "file contents")),
         MessagePayload.Instructions("Use the tools")
       ),
       tools = Chunk(definition),
@@ -346,7 +346,7 @@ final class OpenAiCodexSuite extends FunSuite:
           MessagePayload
             .Reasoning(None, ProviderContinuation(OpenAiCodexTurnMapper.providerId, Some("rs-1"), "encrypted")),
           MessagePayload.Assistant("streamed text"),
-          MessagePayload.FunctionCallRequest(FunctionCall(FunctionCallId.unsafe("call-1"), "read", "{}", Some("fc-1")))
+          MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call-1"), "read", "{}", Some("fc-1")))
         )
       )
     )

@@ -47,7 +47,7 @@ final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localTools
       _ <- ZIO
         .fail(YallmoError.InvalidAgentDecision("CoachAgent returned a tool call outside its local notebook policy"))
         .when(response.output.exists {
-          case MessagePayload.FunctionCallRequest(call) =>
+          case MessagePayload.ToolCall(call) =>
             !prepared.tools.exists(_.name == call.name) || prepared.toolChoice == ToolChoice.None
           case _ => false
         })

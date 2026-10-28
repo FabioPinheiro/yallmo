@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.model.MessagePayload
+import fmgp.yallmo.model.{FunctionCallId, FunctionCallOutput, MessagePayload}
 import fmgp.yallmo.orchestration.RunContext
 import fmgp.yallmo.repl.ReplState
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}
@@ -174,14 +174,19 @@ final class TerminalBrowserAudioSuite extends FunSuite {
       MessagePayload.Assistant("older"),
       MessagePayload.User("private user"),
       MessagePayload.Assistant("resumed reply"),
-      MessagePayload.ToolResult("tool", "private tool"),
+      MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-tool"), "tool", "private tool")),
       MessagePayload.Assistant("  ")
     ).copy(sessionId = Some("resumed"), continuationStart = 5)
     assertEquals(TerminalBrowserAudio.latestAssistant(resumed), Some("resumed reply"))
     assertEquals(TerminalBrowserAudio.latestAssistant(ReplState(sessionId = Some("new"))), None)
     assertEquals(TerminalBrowserAudio.latestAssistant(state(MessagePayload.Assistant("different"))), Some("different"))
     assertEquals(
-      TerminalBrowserAudio.latestAssistant(state(MessagePayload.User("user"), MessagePayload.ToolResult("x", "tool"))),
+      TerminalBrowserAudio.latestAssistant(
+        state(
+          MessagePayload.User("user"),
+          MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-x"), "x", "tool"))
+        )
+      ),
       None
     )
   }

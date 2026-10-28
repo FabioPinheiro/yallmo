@@ -88,7 +88,7 @@ final class OAIAudioTurnSuite extends FunSuite {
       assertEquals(response.responseId, Some("audio-response"))
       assertEquals(response.stopReason, LlmStopReason.ToolUse)
       assertEquals(response.output.head, MessagePayload.Assistant("A bell"))
-      assert(response.output(1).isInstanceOf[MessagePayload.FunctionCallRequest])
+      assert(response.output(1).isInstanceOf[MessagePayload.ToolCall])
       val captured = Files.readString(path.get)
       assert(!captured.contains(encoded))
       assertEquals(

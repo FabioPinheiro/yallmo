@@ -35,14 +35,7 @@ object ReplDebug {
           ),
           "timestamp" -> ujson.Num(timestamp.toDouble)
         )
-      case MessagePayload.ToolResult(toolKey, text) =>
-        ujson.Obj(
-          "role" -> "toolResult",
-          "toolName" -> toolKey,
-          "content" -> ujson.Arr(ujson.Obj("type" -> "text", "text" -> text)),
-          "timestamp" -> ujson.Num(timestamp.toDouble)
-        )
-      case MessagePayload.FunctionCallRequest(call) =>
+      case MessagePayload.ToolCall(call) =>
         ujson.Obj(
           "role" -> "function_call",
           "callId" -> fmgp.yallmo.model.value(call.id),
@@ -50,7 +43,7 @@ object ReplDebug {
           "arguments" -> call.argumentsJson,
           "timestamp" -> ujson.Num(timestamp.toDouble)
         )
-      case MessagePayload.FunctionCallOutput(output) =>
+      case MessagePayload.ToolOutput(output) =>
         ujson.Obj(
           "role" -> "function_call_output",
           "callId" -> fmgp.yallmo.model.value(output.callId),

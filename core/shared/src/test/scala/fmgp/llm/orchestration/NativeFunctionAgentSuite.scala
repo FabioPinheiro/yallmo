@@ -25,7 +25,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
                 AgentTurnResponse(
                   Chunk(
                     Message.Reasoning(Some("Checking the time"), continuation),
-                    Message.FunctionCall(call)
+                    Message.ToolCall(call)
                   ),
                   LlmStopReason.ToolUse
                 )
@@ -55,16 +55,16 @@ final class NativeFunctionAgentSuite extends FunSuite:
         case Message.Assistant(text) => text.isEmpty; case _ => false
       })
       assert(result._1.runContext.messages.exists {
-        case Message.FunctionCall(call) => call.id.value == "call-clock"; case _ => false
+        case Message.ToolCall(call) => call.id.value == "call-clock"; case _ => false
       })
       assert(result._1.runContext.messages.exists {
-        case Message.FunctionCallOutput(output) => output.output == "12:00"; case _ => false
+        case Message.ToolOutput(output) => output.output == "12:00"; case _ => false
       })
       assert(!result._2(1).input.exists {
         case Message.Assistant(text) => text.isEmpty; case _ => false
       })
       assert(result._2(1).input.exists {
-        case Message.FunctionCallOutput(output) => output.callId.value == "call-clock"; case _ => false
+        case Message.ToolOutput(output) => output.callId.value == "call-clock"; case _ => false
       })
       assert(result._2(1).input.exists {
         case Message.Reasoning(_, value) => value.encryptedContent == "encrypted"
@@ -94,7 +94,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
           override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
             requests.updateAndGet(_ :+ request).map {
               case history if history.size == 1 =>
-                AgentTurnResponse(calls.map(Message.FunctionCall.apply), LlmStopReason.ToolUse)
+                AgentTurnResponse(calls.map(Message.ToolCall.apply), LlmStopReason.ToolUse)
               case _ =>
                 AgentTurnResponse(Chunk(Message.Assistant("Recovered.")), LlmStopReason.Stop)
             }
@@ -158,7 +158,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
       val outputs = result
         ._2(1)
         .input
-        .collect { case Message.FunctionCallOutput(output) => output.callId.value -> output.output }
+        .collect { case Message.ToolOutput(output) => output.callId.value -> output.output }
         .toMap
       assert(outputs("unknown").contains("UnknownTool"))
       assert(outputs("unadvertised").contains("ToolUnavailableToAgent"))

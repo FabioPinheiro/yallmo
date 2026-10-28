@@ -30,7 +30,7 @@ final class ChatGPTAgent(val id: AgentId, provider: OpenAiCodexClient) extends A
           ),
         turn =>
           ZIO.logInfo(
-            s"OpenAI Codex turn completed model=${request.model} stopReason=${turn.stopReason} toolCalls=${turn.output.count(_.isInstanceOf[MessagePayload.FunctionCallRequest])}"
+            s"OpenAI Codex turn completed model=${request.model} stopReason=${turn.stopReason} toolCalls=${turn.output.count(_.isInstanceOf[MessagePayload.ToolCall])}"
           )
       )
 }

@@ -448,7 +448,12 @@ final class ReplSuite extends FunSuite {
 
   test("debug renderer emits newline-terminated Pi-style JSON objects") {
     val rendered = ReplDebug.renderJsonLines(
-      Chunk(Message.User("hello"), Message.ToolResult("clock", "12:00")),
+      Chunk(
+        Message.User("hello"),
+        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call-clock"), "clock", "{}")),
+        Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-clock"), "clock", "12:00")),
+        Message.Context("request-metadata", "request-id=42")
+      ),
       timestamp = 42L
     )
 
@@ -457,7 +462,9 @@ final class ReplSuite extends FunSuite {
     assertEquals(
       rendered.trim,
       """{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":42}
-        |{"role":"toolResult","toolName":"clock","content":[{"type":"text","text":"12:00"}],"timestamp":42}""".stripMargin
+        |{"role":"function_call","callId":"call-clock","name":"clock","arguments":"{}","timestamp":42}
+        |{"role":"function_call_output","callId":"call-clock","name":"clock","output":"12:00","timestamp":42}
+        |{"role":"context","label":"request-metadata","content":[{"type":"text","text":"request-id=42"}],"timestamp":42}""".stripMargin
     )
   }
 

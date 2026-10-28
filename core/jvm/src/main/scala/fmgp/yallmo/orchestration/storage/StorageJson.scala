@@ -29,6 +29,14 @@ private[storage] object StorageJson {
                 "sbt \"core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio <source> <new-destination>\". " +
                 "Redacted recordings become unavailable-audio notices; the source is unchanged."
             )
+          else if envelope.value.asObject.flatMap(_.get("payload")).flatMap(_.asObject).exists(_.contains("ToolResult"))
+          then
+            Left(
+              "legacy ToolResult payload is unsupported; tool executions now require ToolCall/ToolOutput " +
+                "pairs. Archive the existing storage and start in a new directory, or migrate a copy offline, " +
+                "recomputing message IDs, descendant parent IDs and session references. " +
+                "No automatic migration is performed."
+            )
           else
             envelope.value.toJson
               .fromJson[MessageData]

@@ -55,8 +55,9 @@ private[terminal] object TerminalEventRenderer {
       case ReplEvent.AgentTurn(result, newMessages) =>
         for {
           _ <- printLines(newMessages.collect {
-            case message @ MessagePayload.RagResult(_, _)  => TerminalMessageRenderer.render(message)
-            case message @ MessagePayload.ToolResult(_, _) => TerminalMessageRenderer.render(message)
+            case message @ MessagePayload.RagResult(_, _) => TerminalMessageRenderer.render(message)
+            case message: MessagePayload.ToolCall         => TerminalMessageRenderer.render(message)
+            case message: MessagePayload.ToolOutput       => TerminalMessageRenderer.render(message)
           })
           _ <- Console
             .printLine(TerminalMessageRenderer.render(MessagePayload.Assistant(result.text), Some(result.agentId)))

@@ -22,7 +22,7 @@ private[orchestration] class ConfiguredAgent(
     val filtered = capabilities.filterRequest(request)
     delegate.turn(filtered).flatMap { response =>
       val forbidden = response.output.exists {
-        case MessagePayload.FunctionCallRequest(call) =>
+        case MessagePayload.ToolCall(call) =>
           capabilities.tools.isDefined && (!capabilities.allowsTool(call.name) || !filtered.tools.exists(
             _.name == call.name
           ) || filtered.toolChoice == ToolChoice.None)

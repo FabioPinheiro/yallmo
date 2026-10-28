@@ -15,22 +15,41 @@ final class MessagePayloadSuite extends FunSuite {
     MessagePayload.Context("label", "context") -> """{"Context":{"label":"label","text":"context"}}""",
     MessagePayload.RagResult("docs", Chunk(RagDocument("id", "source", "text"))) ->
       """{"RagResult":{"retrieverKey":"docs","documents":[{"id":"id","source":"source","text":"text"}]}}""",
-    MessagePayload.ToolResult("tool", "result") -> """{"ToolResult":{"toolKey":"tool","text":"result"}}""",
     MessagePayload.Reasoning(Some("summary"), ProviderContinuation(ProviderId.unsafe("provider"), None, "opaque")) ->
       """{"Reasoning":{"summary":"summary","continuation":{"provider":"provider","encryptedContent":"opaque"}}}""",
-    MessagePayload.FunctionCallRequest(FunctionCall(callId, "tool", "{}")) ->
-      """{"FunctionCallRequest":{"call":{"id":"call-1","name":"tool","argumentsJson":"{}"}}}""",
-    MessagePayload.FunctionCallOutput(FunctionCallOutput(callId, "tool", "result")) ->
-      """{"FunctionCallOutput":{"output":{"callId":"call-1","name":"tool","output":"result"}}}""",
+    MessagePayload.ToolCall(FunctionCall(callId, "tool", "{}")) ->
+      """{"ToolCall":{"call":{"id":"call-1","name":"tool","argumentsJson":"{}"}}}""",
+    MessagePayload.ToolOutput(FunctionCallOutput(callId, "tool", "result")) ->
+      """{"ToolOutput":{"output":{"callId":"call-1","name":"tool","output":"result"}}}""",
     MessagePayload.Instructions("system") -> """{"Instructions":{"text":"system"}}"""
   )
 
+  test("tool message exports retain their roles and content projections") {
+    val call = FunctionCall(callId, "tool", "{}")
+    val output = FunctionCallOutput(callId, "tool", "result")
+    assertEquals(Message.ToolCall(call), MessagePayload.ToolCall(call))
+    assertEquals(Message.ToolOutput(output), MessagePayload.ToolOutput(output))
+    assertEquals(Message.ToolCall(call).role, "tool_call")
+    assertEquals(Message.ToolCall(call).contentStr, "{}")
+    assertEquals(Message.ToolOutput(output).role, "tool_result")
+    assertEquals(Message.ToolOutput(output).contentStr, "result")
+  }
+
+  test("removed ToolResult JSON is rejected rather than silently reinterpreted") {
+    assert("""{"ToolResult":{"toolKey":"tool","text":"result"}}""".fromJson[MessagePayload].isLeft)
+  }
+
   fixtures.foreach { case (payload, json) =>
-    test(s"${payload.getClass.getSimpleName} preserves existing JSON") {
+    test(s"${payload.getClass.getSimpleName} matches expected JSON and round-trips") {
       assertEquals(payload.toJson, json)
       assertEquals(json.fromJson[MessagePayload], Right(payload))
       val data = MessageData(AgentId("agent"), None, Instant.parse("2026-01-01T00:00:00Z"), payload)
-      assertEquals(data.toJson.fromJson[MessageData], Right(data))
+      val storedJson = s"""{"agentId":"agent","timestamp":"2026-01-01T00:00:00Z","payload":$json}"""
+      assertEquals(data.toJson, storedJson)
+      assertEquals(storedJson.fromJson[MessageData], Right(data))
+      val message = Message(data)
+      assertEquals(message.id, MessageId.sha256(storedJson))
+      assertEquals(message.toJson.fromJson[Message], Right(message))
     }
   }
 }

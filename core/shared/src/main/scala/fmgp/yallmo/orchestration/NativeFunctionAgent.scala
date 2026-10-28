@@ -89,7 +89,7 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
       send(policy.filterRequest(request))
         .mapError(error => YallmoError.AgentExecutionFailed(id, error.getMessage, error))
         .flatMap { response =>
-          val toolCalls = response.output.collect { case MessagePayload.FunctionCallRequest(call) => call }
+          val toolCalls = response.output.collect { case MessagePayload.ToolCall(call) => call }
           val text = response.output.collect { case MessagePayload.Assistant(value) => value }.mkString
           val assistant = Option.when(text.nonEmpty)(MessagePayload.Assistant(text))
           if toolCalls.nonEmpty then
@@ -129,13 +129,12 @@ object NativeFunctionAgent {
 
   private def input(runContext: RunContext, staticContext: StaticContext[?]): Chunk[MessagePayload] =
     runContext.messages.flatMap {
-      case payload: MessagePayload.AudioAttachment     => Chunk(payload)
-      case payload: MessagePayload.User                => Chunk(payload)
-      case payload: MessagePayload.Assistant           => Chunk(payload)
-      case payload: MessagePayload.FunctionCallRequest => Chunk(payload)
-      case payload: MessagePayload.FunctionCallOutput  => Chunk(payload)
-      case payload: MessagePayload.Reasoning           => Chunk(payload)
-      case MessagePayload.ToolResult(toolKey, text) => Chunk(MessagePayload.Context(s"tool result from $toolKey", text))
+      case payload: MessagePayload.AudioAttachment           => Chunk(payload)
+      case payload: MessagePayload.User                      => Chunk(payload)
+      case payload: MessagePayload.Assistant                 => Chunk(payload)
+      case payload: MessagePayload.ToolCall                  => Chunk(payload)
+      case payload: MessagePayload.ToolOutput                => Chunk(payload)
+      case payload: MessagePayload.Reasoning                 => Chunk(payload)
       case MessagePayload.RagResult(retrieverKey, documents) =>
         val rendered = documents.map(document => s"source=${document.source}\n${document.text}").mkString("\n\n")
         Chunk(MessagePayload.Context(s"RAG result from $retrieverKey", rendered))

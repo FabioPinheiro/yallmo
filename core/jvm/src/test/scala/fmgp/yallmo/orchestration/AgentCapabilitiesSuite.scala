@@ -95,7 +95,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
               .set(Some(r))
               .as(
                 AgentTurnResponse(
-                  Chunk(MessagePayload.FunctionCallRequest(FunctionCall(FunctionCallId.unsafe("call"), "shell", "{}"))),
+                  Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "shell", "{}"))),
                   LlmStopReason.ToolUse
                 )
               )
@@ -170,7 +170,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
             override val capabilities = disabled
             def next(t: AgentTask, c: StaticContext[Any], r: RunContext): IO[YallmoError, AgentTurn] = {
               val _ = (t, c)
-              if r.messages.exists(_.isInstanceOf[MessagePayload.ToolResult]) then
+              if r.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
                 ZIO.succeed(AgentTurn(None, AgentDecision.FinalAnswer("done")))
               else
                 ZIO.succeed(
@@ -281,7 +281,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
 
   test("configured nonempty tool allowlist preserves allowed calls and rejects unadvertised allowed IDs") {
     val policy = AgentCapabilities(tools = Some(Set("clock")))
-    val call = MessagePayload.FunctionCallRequest(FunctionCall(FunctionCallId.unsafe("allowed-call"), "clock", "{}"))
+    val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("allowed-call"), "clock", "{}"))
     val delegate = new Agent[Any] {
       val id = AgentCapabilitiesSuite.this.id
       def turn(r: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {

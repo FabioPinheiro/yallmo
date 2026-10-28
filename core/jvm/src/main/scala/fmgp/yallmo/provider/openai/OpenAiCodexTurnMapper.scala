@@ -78,7 +78,7 @@ private[openai] object OpenAiCodexTurnMapper {
         result.flatMap(items => toOutputItem(item).map(_.fold(items)(items :+ _)))
       }
       .map { output =>
-        val hasToolCalls = output.exists(_.isInstanceOf[MessagePayload.FunctionCallRequest])
+        val hasToolCalls = output.exists(_.isInstanceOf[MessagePayload.ToolCall])
         AgentTurnResponse(
           output = output,
           stopReason = stopReason(response.status, hasToolCalls),
@@ -113,7 +113,6 @@ private[openai] object OpenAiCodexTurnMapper {
         )
       case MessagePayload.Context(label, text) => Right(Chunk(userMessage(s"Context [$label]:\n$text")))
       case item: MessagePayload.RagResult      => Right(Chunk(userMessage(s"Context:\n${item.contentStr}")))
-      case item: MessagePayload.ToolResult     => Right(Chunk(userMessage(s"Context:\n${item.contentStr}")))
       case MessagePayload.Instructions(text)   =>
         Right(
           Chunk(
@@ -140,8 +139,8 @@ private[openai] object OpenAiCodexTurnMapper {
             )
           )
         )
-      case MessagePayload.Reasoning(_, _)           => Right(Chunk.empty)
-      case MessagePayload.FunctionCallRequest(call) =>
+      case MessagePayload.Reasoning(_, _) => Right(Chunk.empty)
+      case MessagePayload.ToolCall(call)  =>
         Right(
           Chunk(
             ujson.Obj.from(
@@ -155,7 +154,7 @@ private[openai] object OpenAiCodexTurnMapper {
             )
           )
         )
-      case MessagePayload.FunctionCallOutput(output) =>
+      case MessagePayload.ToolOutput(output) =>
         Right(
           Chunk(
             ujson.Obj(
@@ -176,7 +175,7 @@ private[openai] object OpenAiCodexTurnMapper {
             arguments = item.get("arguments").flatMap(_.strOpt).getOrElse("{}")
             id <- FunctionCallId.from(callId)
           } yield Some(
-            MessagePayload.FunctionCallRequest(FunctionCall(id, name, arguments, item.get("id").flatMap(_.strOpt)))
+            MessagePayload.ToolCall(FunctionCall(id, name, arguments, item.get("id").flatMap(_.strOpt)))
           )
         case "reasoning" =>
           item.get("encrypted_content").flatMap(_.strOpt) match

@@ -2,7 +2,10 @@ package fmgp.yallmo.model
 
 import zio.*
 
-/** Fixed upload bounds. Declared bytes are reserved at Begin; empty uploads also count toward MaxUploads. */
+/** Fixed upload bounds. Declared bytes are reserved at Begin; empty uploads also count toward MaxUploads.
+  *
+  * This is only on 'model' becuase both 'core' and 'protocol' use it
+  */
 object BlobUploadLimits {
   val MaxUploads: Int = 16
   val MaxUploadBytes: Int = 4 * 1024 * 1024

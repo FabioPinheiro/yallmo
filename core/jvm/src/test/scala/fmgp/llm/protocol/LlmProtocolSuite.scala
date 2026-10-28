@@ -13,11 +13,11 @@ final class LlmProtocolSuite extends FunSuite:
   test("turn response preserves ordered function calls in output") {
     val call = FunctionCall(FunctionCallId.unsafe("call-42"), "read", "{\"path\":\"README.md\"}")
     val response = AgentTurnResponse(
-      output = Chunk(MessagePayload.Assistant("I will inspect the file."), MessagePayload.FunctionCallRequest(call)),
+      output = Chunk(MessagePayload.Assistant("I will inspect the file."), MessagePayload.ToolCall(call)),
       stopReason = LlmStopReason.ToolUse
     )
 
-    assertEquals(response.output.collect { case MessagePayload.FunctionCallRequest(value) => value }, Chunk(call))
+    assertEquals(response.output.collect { case MessagePayload.ToolCall(value) => value }, Chunk(call))
   }
 
   test("turn request rejects duplicate tools and invalid nested schemas") {

@@ -123,10 +123,9 @@ object LlmDecisionAgent {
               .mkString("\n\n")
             s"RAG result from $retrieverKey:\n$renderedDocuments"
           }
-        case MessagePayload.ToolResult(toolKey, text) => ZIO.succeed(s"Tool result from $toolKey:\n$text")
-        case MessagePayload.FunctionCallRequest(call) =>
+        case MessagePayload.ToolCall(call) =>
           ZIO.succeed(s"Function call ${call.name}: ${call.argumentsJson}")
-        case MessagePayload.FunctionCallOutput(output) =>
+        case MessagePayload.ToolOutput(output) =>
           ZIO.succeed(s"Function output from ${output.name}:\n${output.output}")
         case MessagePayload.Reasoning(summary, _) =>
           ZIO.succeed(s"Reasoning: ${summary.getOrElse("<provider continuation>")}")

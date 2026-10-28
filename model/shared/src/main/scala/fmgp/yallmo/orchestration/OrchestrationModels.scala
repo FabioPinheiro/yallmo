@@ -33,7 +33,7 @@ final case class AgentResult(
 /** One completed agent turn: an optional textual assistant reply and its next decision.
   *
   * A provider may request function calls without producing text. In that case `assistant` is `None`; the calls are
-  * retained as [[MessagePayload.FunctionCallRequest]] messages rather than fabricating an empty assistant message.
+  * retained as [[MessagePayload.ToolCall]] messages rather than fabricating an empty assistant message.
   */
 final case class AgentTurn(
     assistant: Option[MessagePayload.Assistant],
@@ -58,7 +58,11 @@ final case class AgentToolDefinition(
     inputSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(Map.empty, additionalProperties = true)
 )
 
-/** A provider-neutral external-tool invocation proposed by an agent. */
+/** A provider-neutral external-tool invocation proposed by an agent.
+  *
+  * Native calls retain their provider ID. If `callId` is absent, the runner assigns one before recording and executing
+  * the invocation; tools and approval checks always receive the resolved ID.
+  */
 final case class ExternalToolCall(
     toolKey: String,
     argumentsJson: String,

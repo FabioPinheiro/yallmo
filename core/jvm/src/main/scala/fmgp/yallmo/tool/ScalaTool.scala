@@ -47,11 +47,13 @@ object ScalaTool {
   }
 
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "scala",
-    description =
-      "Evaluate a pure Scala block with a pinned Scala 3 nightly, offline. The last expression is returned. " +
-        "No file, network, process, environment access or println. No dependencies, directives or annotations. " +
-        "Returns exitCode, output (value or compiler/runtime errors), timedOut and truncated.",
+    key = "scalamode",
+    // FIXME
+    description = "Evaluate a Scala block with a pinned Scala 3 nightly, offline. The last expression is returned. " +
+      "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
+      "No direct file, network, process, environment access or println. " +
+      "No user-supplied dependencies, directives or annotations. " +
+      "Returns exitCode, output (value, trusted API output or compiler/runtime errors), timedOut and truncated.",
     inputSchema = JsonSchema.ObjectSchema(
       Map("code" -> JsonSchema.StringSchema(Some("Scala block body; its last expression is the result"))),
       required = Set("code"),

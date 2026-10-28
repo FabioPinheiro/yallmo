@@ -24,6 +24,7 @@ enum ControlAction(val id: String, val webLabel: String, val terminalLabel: Stri
   case Graph extends ControlAction("graph", "Go to Conversation graph", "graph", Some("4"))
   case AgentRegistry extends ControlAction("agent-registry", "Go to Agents", "agent registry", Some("5"))
   case Blobs extends ControlAction("blobs", "Go to Blobs", "blobs", Some("6"))
+  case Scalamode extends ControlAction("scalamode", "Go to Scalamode", "scalamode", Some("7"))
   case Conversations extends ControlAction("conversations", "Choose conversation", "conversations", Some("s"))
   case NewConversation extends ControlAction("new-conversation", "New conversation", "new conversation", Some("n"))
   case Reload extends ControlAction("reload", "Reload current view / history", "reload", Some("r"))

@@ -48,7 +48,7 @@ object ApplicationTools {
           Option.unless(hasWorkspace)("listFiles" -> Chunk("workspace is not an accessible directory")),
           Option.unless(hasBash)("bash" -> Chunk("bash is not available on PATH")),
           gitStatus.left.toOption.map(reason => "repositoryChanges" -> Chunk(reason)),
-          Option.unless(hasScala)("scala" -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
+          Option.unless(hasScala)("scalamode" -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
         ).flatten
       )
       available = Chunk.fromIterable(

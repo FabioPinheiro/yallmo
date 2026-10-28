@@ -31,9 +31,9 @@ browser Origin. Keep the dev server/proxy private: publish Docker's Vite port on
 `127.0.0.1:5173:5173`), or use a trusted network. Backend loopback binding alone does not protect the Vite proxy.
 
 Static assets still use HTTP; application requests and attachment bytes use JSON-RPC exclusively. No Scala.js/Vite sbt
-bridge is needed: Vite imports the output of the separately-running linker. Six hash-linked navigation links provide chat and show sessions,
+bridge is needed: Vite imports the output of the separately-running linker. Seven hash-linked navigation links provide chat and show sessions,
 all messages, a small CSS conversation tree,
-registry agent IDs and stored blob IDs. Reconnect refreshes the active view; requests from an unmounted tab cannot update
+registry agent IDs, stored blob IDs and the Scalamode playground. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
 invalid JSON falls back to plain text. Long text starts collapsed in native details elements. Graph nodes expand to
@@ -47,6 +47,29 @@ visible partial-transfer errors. There is no Fetch client or HTTP blob fallback.
 The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RPC/application protocol and domain types.
 There is no direct source inclusion, JVM core dependency or duplicate browser DTO layer. The cross-projects use
 `shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.
+
+## Scalamode
+
+Open **Scalamode** (`#/scalamode`, NORMAL shortcut `7`) to run a Scala string without asking an LLM to generate or execute
+a conversation turn. Choose an agent using the **same toolbar picker as Chat**, edit the code, and click **Run scalamode**.
+Both views use the current conversation's selected agent; Scalamode has no separate agent selection. The shared picker
+is disabled while a Scalamode request is pending. The page sends an
+ordinary `agents.invoke` message containing `ToolCall(name = "scalamode", argumentsJson = {"code":"..."})` and displays its
+correlated `ToolOutput`: stdout/result, compiler/runtime diagnostics, exit code, timeout and truncation metadata.
+Editor text is treated only as text; no Markdown/HTML is executed by the browser.
+
+A configured backend, initialized Operator and advertised `agents.invoke` method are required. Tool availability and
+the selected agent's capability allowlist are checked by the server, not inferred from the agent selector. Scala CLI
+and the pinned offline compiler cache must exist on the backend. The tool key was renamed from `scala` to `scalamode`;
+update any explicit tool allowlists. It still accepts only `{"code":"..."}`, with the same compiler restrictions,
+injected `tool.api` helper and execution limits.
+
+Source, pending state and the last result live at application root and survive tab navigation, not
+page reload. Editing while running does not change the submitted code. Double clicks cannot
+submit twice; only a matching author/parent/call ID/tool name response is accepted. Reconnect is blocked while a run
+is pending. Disconnect invalidates stale callbacks and never replays the request: admitted backend work may finish.
+Inspect All messages before a manual repeat after an uncertain outcome. The input and response are saved there,
+without creating a chat session. Leaving the page does not cancel execution.
 
 ## Read messages aloud
 

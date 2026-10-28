@@ -57,12 +57,12 @@ trait Orchestrator[-R] extends BlobOps {
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, SessionTurn]
 
-  /** Accepts one root user/audio message, saves it, awaits referenced blobs and runs the configured agent loop. No
-    * session or prior context is loaded or created. Only the final assistant answer is persisted/returned, as a direct
-    * child of the input; tool/reasoning intermediates stay inside this invocation. Failure or interruption never rolls
-    * back accepted input. Repeating an invocation may execute again even if the input is already stored.
+  /** Saves one message, awaits its blobs and invokes a configured recipient. Any payload may be submitted/returned; the
+    * recipient validates what it supports. A parent must exist but does not implicitly load history. No session is
+    * created or advanced. The exact response payload is saved as a direct child of input. Failure never rolls back an
+    * accepted input, and repeating an invocation may execute again even if that input is already stored.
     */
-  def invoke[R1](input: Message, execution: AgentExecution[R1]): ZIO[R1, YallmoError, Message] = {
+  def invoke[R1](input: Message, execution: AgentInvocation[R1]): ZIO[R1, YallmoError, Message] = {
     val _ = (input, execution)
     ZIO.fail(YallmoError.InvalidConfig("Standalone invocation unsupported"))
   }

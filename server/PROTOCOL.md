@@ -72,7 +72,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `sessions.create` | `{name?: SessionId}` | `SessionSnapshot` |
 | `messages.list` | `{}` | `[MessageSnapshot]` |
 | `agents.list` | `{}` | `[AgentId]` |
-| `agents.invoke` | `{agentId: AgentId, input: Message}`; no session controls | `Message` (final assistant answer) |
+| `agents.invoke` | `{agentId: AgentId, input: Message}`; no session controls | `Message` (recipient's response payload) |
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
 | `blobs.upload` | Discriminated command (below), no session ID | Discriminated result (below) |
@@ -181,18 +181,30 @@ Params have exactly `agentId` (recipient) and `input` (full Message). Extra para
 `expectedHead` and `resetContinuation`, are InvalidParams. Message hash/field validation happens during decoding.
 The input author must match the initialized claimed identity (Forbidden otherwise); this is still not authentication.
 
-Currently input must be a root (`parentId` absent/null) `User` or `AudioAttachment` payload. Other roles and parents are
-Rejected; parent-history support is intentionally deferred. Unsupported agent audio capability and invalid configured
-recipients are rejected before saving input. Endpoint/model audio compatibility is still a provider concern.
+Input and output payloads are not restricted by the transport or Orchestrator: the configured recipient determines what
+it supports and returns. An optional parent must already exist, but does not implicitly load parent history.
+Unsupported agent audio capability and invalid configured recipients are rejected before saving input.
 The input timestamp/content/id are preserved exactly, not replaced with a server-generated user message.
 
 The core Orchestrator saves the input independently in message storage, awaits any referenced blobs with an explicit bounded `readBlob` timeout,
-then supplies only that input to the normal configured AgentRunner. Configured instructions, tools, capability policy,
-extensions and budgets apply normally; no session history, prior provider continuation or session continuation policy
-is inherited. Successful execution saves and returns a single full `Message` with final `Assistant` text, the selected
-agent as author, a server timestamp and `parentId = input.id`. Internal tool/reasoning exchanges stay transient and are
-not returned or persisted by this method; private provider continuation values are never serialized in the result.
-History APIs continue using redacted snapshots.
+then supplies only its payload to an `AgentInvocation`. Successful execution saves the recipient's exact response payload
+in a full `Message`, with the selected agent as author, a server timestamp and `parentId = input.id`.
+No session history, prior provider continuation or session continuation policy is inherited.
+
+The normal text-oriented `AgentExecution` adapter still runs its configured conversation loop and returns an `Assistant`
+answer. Its internal tool/reasoning exchanges remain transient. The configured runner rejects incoming opaque
+`Reasoning` continuations as server-owned; callers can submit a `Context` summary instead. Submitted `Instructions` do not
+replace the native agent's immutable configured system instructions. History APIs continue using redacted snapshots.
+
+A directly submitted `ToolCall` takes the runner's explicit tool-invocation branch, not a model turn. It resolves the
+selected agent's effective capabilities, validates arguments and invokes the same registered/approval-wrapped tool,
+with the configured budget deadline. The response is `ToolOutput` with the original call ID and tool name.
+Unavailable tools, invalid arguments and approval denials become correlated tool-error output without executing the
+implementation. Merely seeing a `ToolCall` in history, or submitting a `ToolOutput`, does not execute it.
+No provider inference or session is needed for direct tools.
+
+The Scala tool key is now `scalamode` (formerly `scala`); update explicit configured tool allowlists accordingly.
+Its arguments remain `{"code":"..."}`. The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this generic flow.
 
 Both input and final output are visible through `messages.list` and survive filesystem reopen. Neither creates a
 session/sidebar conversation or advances an existing session. Message puts validate content addresses and existing

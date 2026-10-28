@@ -37,6 +37,21 @@ final class AgentRunner[R](
       override val agentId: AgentId = agent.id
       override def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult] =
         runAccepted(agent, task, staticContext, acceptedContext, budget)
+
+      override def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] = input match {
+        case MessagePayload.ToolCall(call) =>
+          (for {
+            _ <- ZIO.fromEither(budget.validate)
+            _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
+            context <- agent.configuredContext(staticContext)
+            result <- executeAction(agent, PreparedAction.CallExternalTool(call), context)
+          } yield result).timeoutFail(YallmoError.AgentTimedOut(budget.timeout))(budget.timeout)
+        case _: MessagePayload.Reasoning =>
+          ZIO.fail(
+            YallmoError.InvalidMessage("Provider continuations are server-owned; submit a Context summary instead")
+          )
+        case _ => super.invoke(input)
+      }
     }
 
   /** Starts a new run with an empty transcript.

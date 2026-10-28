@@ -11,8 +11,8 @@ import zio.json.ast.Json
 /** The Yallmo v1 application contract, identical on WebSocket and Unix-domain sockets. Each operation declares its
   * JSON-RPC method, named Params and Result. This defines messages only: no handler, listener or runtime is started.
   * Domain values are reused directly. History uses redacted snapshots to exclude private provider continuations;
-  * agents.invoke accepts restricted user input and returns only a final assistant Message. There is no dependency on
-  * the legacy viewer contract. See server/PROTOCOL.md.
+  * agents.invoke exchanges payload-flexible Messages through a configured recipient. There is no dependency on the
+  * legacy viewer contract. See server/PROTOCOL.md.
   */
 object YallmoProtocol {
   val Version: Int = 1
@@ -137,7 +137,8 @@ object YallmoProtocol {
     val method: String = "agents.invoke"
 
     /** Independent invocation: no session fields, inherited history or prior provider continuation. The input author
-      * must match the initialized identity; currently only root User/AudioAttachment inputs are accepted.
+      * must match the initialized identity. Payload support belongs to the recipient; a parent must exist but does not
+      * load history.
       */
     @jsonNoExtraFields
     final case class Params(agentId: AgentId, input: Message) derives JsonCodec

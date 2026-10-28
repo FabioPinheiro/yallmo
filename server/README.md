@@ -47,11 +47,16 @@ identity rebinding are rejected; known humans may reconnect. Human labels do not
 
 ## Independent agent calls
 
-The generic JSON-RPC `agents.invoke` method accepts `{agentId, input: Message}` and returns a final assistant `Message`.
-It saves the input and response independently of sessions, preserving the input's content address and linking the
-response to it. Root user/audio inputs only are accepted for now; the input author must match the initialized identity.
-An input can reference a blob still arriving through `blobs.upload`: the invocation waits before starting the normal
-configured runner, without blocking subsequent upload commands on the socket. No session is required or created.
+The generic JSON-RPC `agents.invoke` method accepts `{agentId, input: Message}` and returns the recipient's response
+`Message`, without imposing a payload role. It saves input and response independently of sessions, preserving the
+input's content address and linking the response to it. The input author must match the initialized identity.
+An existing parent is allowed without inheriting its history. An input can reference a blob still arriving through
+`blobs.upload`: invocation waits without blocking subsequent upload commands on the socket.
+
+Conversational agents retain their normal text-loop behavior. A direct `ToolCall` executes through the selected
+agent's authorized runner and returns a correlated `ToolOutput` without inference. Registered approval gates,
+argument validation and deadlines still apply. No session is required or created.
+The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path; the tool key is `scalamode`, not `scala`.
 
 Failures can leave accepted input; disconnect abandons the local wait, not admitted execution. Repeating an invocation
 can repeat provider/tool side effects. Inspect message history before manually repeating uncertain requests.

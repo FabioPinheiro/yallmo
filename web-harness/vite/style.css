@@ -185,3 +185,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .command-list button { display: flex; justify-content: space-between; align-items: center; gap: 1rem; width: 100%; text-align: left; }
 .command-list kbd { color: var(--text-muted); font: inherit; font-family: ui-monospace, monospace; }
 .command-list kbd:empty { display: none; }
+
+/* Explicit, non-chat tool invocation playground. */
+.scalamode-page { height: 100%; overflow: auto; }
+.scalamode-page > label, .scalamode-page > div > label { display: grid; gap: .5rem; margin: 1rem 0; }
+.scalamode-page textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+.scalamode-result { margin-top: 1.5rem; }

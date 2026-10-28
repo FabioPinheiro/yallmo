@@ -61,6 +61,7 @@ object ScalaCodeExecutor {
                 }.orDie
               )
               _ <- ZIO.attemptBlocking {
+                Files.writeString(directory.resolve("ScalaToolApi.scala"), runtimeApiSource, UTF_8)
                 Files.writeString(directory.resolve("Snippet.scala"), snippet(code), UTF_8)
                 Files.writeString(directory.resolve("Main.scala"), main, UTF_8)
               }
@@ -147,7 +148,15 @@ object ScalaCodeExecutor {
     "import scala.language.experimental.safe\nobject ScalaToolSnippet {\n  def result: Any = {\n" +
       code + "\n  }\n}\n"
 
-  // Kept in a separate source file: only the trusted runner may print, including formatting the result.
+  // Ship only the audited API, not the application classpath or model-supplied dependencies.
+  private def runtimeApiSource: String = {
+    val stream = Option(getClass.getResourceAsStream("/fmgp/yallmo/tool/ScalaToolApi.scala"))
+      .getOrElse(throw new IllegalStateException("Missing bundled Scala tool runtime API"))
+    try new String(stream.readAllBytes(), UTF_8)
+    finally stream.close()
+  }
+
+  // Kept in a separate source file: the trusted runner prints the result; snippets use the narrow runtime API.
   private val main = """object ScalaToolMain {
     |  def main(args: Array[String]): Unit = println(ScalaToolSnippet.result)
     |}

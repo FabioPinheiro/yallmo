@@ -98,8 +98,8 @@ private[web] object ChatView {
     )
   }
 
-  /** Shared-toolbar selector for the current conversation's next assistant, populated from configured agent IDs. */
-  def agentSelect(model: ChatModel): HtmlElement = {
+  /** Shared-toolbar agent selection, populated from configured agent IDs. */
+  def agentSelect(model: ChatModel, busy: Signal[Boolean] = Val(false)): HtmlElement = {
     val state = model.state.signal
     val choices = state.map(s => (s.agents, s.current.agent.filter(s.agents.contains))).distinct
     select(
@@ -107,7 +107,9 @@ private[web] object ChatView {
       idAttr := "configured-agent",
       aria.label := "Configured agent",
       title := "Changing agent resets provider continuation, not history.",
-      disabled <-- state.map(s => s.creating || s.currentPending.nonEmpty),
+      disabled <-- state.combineWith(busy).map { case (s, running) =>
+        running || s.creating || s.currentPending.nonEmpty
+      },
       onChange.mapToValue --> model.selectAgent,
       // Options must exist before restoring the value, including after catalog changes.
       children <-- choices.map { case (agents, _) =>

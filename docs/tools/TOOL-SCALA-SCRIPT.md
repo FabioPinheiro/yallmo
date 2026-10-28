@@ -31,7 +31,7 @@ EOF
 
 ## Minimal implementation
 
-The `scala` agent tool accepts one JSON argument:
+The `scalamode` agent tool accepts one JSON argument:
 
 ```json
 {"code":"val numbers = List(1, 2, 3); numbers.map(_ * 2).sum"}
@@ -41,13 +41,28 @@ It returns `{"exitCode":0,"timedOut":false,"output":"12\n","truncated":false}`.
 Compiler diagnostics and runtime exceptions appear in `output` with a nonzero exit code.
 Use the **last expression**, not `println`, to return a value.
 
+### Injected runtime API
+
+Every invocation also receives a separate, trusted `ScalaToolApi.scala` module, automatically imported into the snippet:
+
+```scala
+tool.api // prints "Yes Tool API is available" through the trusted API
+42  // the last expression is still returned
+```
+
+The output includes `Yes Tool API is available\n42\n`.
+
+The model sees only the public contract in the tool description: `def api: Unit` prints a fixed API availability message. It does not receive the implementation source. The implementation lives in `core/jvm/src/main/resources/fmgp/yallmo/tool/ScalaToolApi.scala`, bundled as a resource and copied into each temporary Scala CLI project. This is a runtime source module, not the application's dependency classpath.
+
+Only the API availability helper implementation uses `@caps.assumeSafe` to cross the compiler's trust boundary. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
+
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
 - Starts a fresh background `scala-cli run .` process in an isolated temporary directory (the explicit project root) for each call, using the hard-coded `3.10.2-RC1-bin-20261021-a98b104-NIGHTLY` compiler with `--offline --jvm system --server=false`. The main project's Scala version is unchanged. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
-- Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. No machine capabilities or application classpath are supplied. A separate trusted main prints the returned value.
-- No dependencies, directives, annotations, Unicode source escapes, backticks or compiler safety overrides. The small validator intentionally also rejects these inside strings/comments; it is not a Scala parser or an API blacklist.
+- Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. Only the narrow trusted runtime API is supplied, not the application classpath. A separate trusted main prints the returned value.
+- No user-supplied dependencies, directives, annotations, Unicode source escapes, backticks or compiler safety overrides. The small validator intentionally also rejects these inside strings/comments; it is not a Scala parser or an API blacklist.
 - Defaults: 45-second process deadline (including compilation), 128 MiB evaluation heap, 64 KiB retained combined stdout/stderr, 65,536 source characters. Output beyond the cap is drained and discarded, not written to an unbounded log. Timeout/cancellation kills the process tree; temporary source/build files are removed.
 - The tool deadline is shorter than the default two-minute agent budget so a stalled compiler can return diagnostics to the model before the whole turn is cancelled. Start/finish logs report the selected compiler, offline mode and timeout status without logging submitted code.
-- No persistent REPL, tool bridge or additional dependencies yet.
+- No persistent REPL, general tool bridge or external library dependencies yet. The trusted runtime source module is injected on every call, but user definitions do not persist.
 
 ### Pinned nightly / offline use
 
@@ -59,7 +74,7 @@ This avoids `3.nightly` resolution, which contacts `repo.scala-lang.org` even wh
 
 [ATC](https://github.com/lampepfl/atc) and [TACIT](https://github.com/lampepfl/tacit) combine compiler safe mode, capture checking, lexical validation, and trusted capability APIs. Their permission checks govern operations exposed by those APIs; **they do not lock down the JVM**. An allowed external command still runs with the user's OS privileges. See ATC's README security model and both projects' `CodeValidator` / REPL implementations.
 
-This first version supplies **no effect capabilities at all**. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI and trusted runner remain part of the trusted computing base.
+This version supplies only a **fixed-message output helper**, not general effect capabilities. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI, trusted runtime API and trusted runner remain part of the trusted computing base.
 
 [Pi codemode](https://pi.dev) is inspiration for code-in/result-out and returning only the computation result to the agent. Its QuickJS sandbox lacks Node/filesystem/network APIs; ordinary Scala/JVM does not have that property. There is deliberately no `tools` bridge here yet.
 

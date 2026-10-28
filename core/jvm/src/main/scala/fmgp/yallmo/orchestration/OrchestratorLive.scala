@@ -68,28 +68,15 @@ final class OrchestratorLive[-R] private (
     instances.validateAuthor(message.agentId) *>
       storage.putMessage(message).mapError(YallmoError.StorageFailed.apply)
 
-  override def invoke[R1](input: Message, execution: AgentExecution[R1]): ZIO[R1, YallmoError, Message] =
+  override def invoke[R1](input: Message, execution: AgentInvocation[R1]): ZIO[R1, YallmoError, Message] =
     for {
       _ <- ZIO
         .fail(YallmoError.InvalidMessage("Message id does not match data"))
         .unless(input.id == MessageId.from(input.data))
-      _ <- ZIO
-        .fail(YallmoError.InvalidMessage("Invocation input must be a root user or audio message"))
-        .unless(input.parentId.isEmpty && (input.payload match {
-          case _: MessagePayload.User | _: MessagePayload.AudioAttachment => true
-          case _                                                          => false
-        }))
       _ <- getAgent(execution.agentId)
       accepted <- persistMessage(input)
       _ <- ZIO.foreachDiscard(accepted.payload.blobIds.distinct)(id => readBlob(id, BlobUploadLimits.AwaitTimeout))
-      context = RunContext(Chunk(accepted.payload))
-      turn <- execution.run(AgentTask(accepted.payload.contentStr), context)
-      _ <- ZIO
-        .fail(YallmoError.InvalidAgentDecision("Agent execution must preserve the accepted input and agent ID"))
-        .unless(
-          turn.result.agentId == execution.agentId &&
-            turn.runContext.messages.take(context.messages.size) == context.messages && turn.result.text.trim.nonEmpty
-        )
+      payload <- execution.invoke(accepted.payload)
       timestamp <- Clock.instant
       response <- persistMessage(
         Message(
@@ -97,7 +84,7 @@ final class OrchestratorLive[-R] private (
             execution.agentId,
             Some(accepted.id),
             timestamp,
-            MessagePayload.Assistant(turn.result.text)
+            payload
           )
         )
       )

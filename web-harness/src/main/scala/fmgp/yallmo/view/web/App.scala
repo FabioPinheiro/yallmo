@@ -36,6 +36,8 @@ object App {
     val disconnected = new EventBus[Throwable]
     val client = new OrchestratorWSClient(OrchestratorWSClient.defaultEndpoint, onDisconnect = disconnected.emit)
     val chat = new ChatModel(client, notifications.publish)
+    val selectedAgent = chat.state.signal.map(_.current.agent).distinct
+    val scalamode = new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent)
     val voice = new VoiceModel(
       chat,
       VoiceRecorder.browser,
@@ -54,6 +56,7 @@ object App {
     var mounted = false
     def close(): Unit = {
       voice.disable()
+      scalamode.disable()
       intentionalClose = true
       client.close()
       intentionalClose = false
@@ -61,7 +64,9 @@ object App {
     def connect(): Unit = {
       val requestedUser = OrchestratorWSClient.claimedUser(humanName.now())
       if requestedUser.nonEmpty && !connecting
-          .now() && chat.state.now().pending.isEmpty && !chat.state.now().creating && !chat.state.now().voiceBusy
+          .now() && chat.state.now().pending.isEmpty && !chat.state.now().creating && !chat.state
+          .now()
+          .voiceBusy && !scalamode.state.now().pending
       then {
         connecting.set(true)
         connection.set("Connecting…")
@@ -74,6 +79,7 @@ object App {
           case scala.util.Success(info) if mounted =>
             connecting.set(false)
             chat.configure(info)
+            scalamode.configure(info)
             voice.configure(info)
             chat.reload()
             refresh.emit(())
@@ -84,6 +90,7 @@ object App {
             connecting.set(false)
             voice.disable()
             chat.disable()
+            scalamode.disable()
             connection.set(s"Disconnected: ${error.getMessage}")
             notifications.publish(UiNotice(s"Connection failed: ${error.getMessage}", "error"))
           case _ => ()
@@ -117,8 +124,14 @@ object App {
           }
         )
       } ++ List(
-        WebCommand(ControlAction.Edit, () => focusChat("#chat-composer")),
-        WebCommand(ControlAction.Agents, () => focus("#configured-agent")),
+        WebCommand(
+          ControlAction.Edit,
+          () => if route.now() == ViewRoute.Scalamode then focus("#scalamode-code") else focusChat("#chat-composer")
+        ),
+        WebCommand(
+          ControlAction.Agents,
+          () => focus("#configured-agent")
+        ),
         WebCommand(
           ControlAction.Conversations,
           () => {
@@ -158,6 +171,7 @@ object App {
         if mounted && !intentionalClose then {
           voice.disable()
           chat.disable()
+          scalamode.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
           if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
         }
@@ -220,17 +234,18 @@ object App {
             onInput.mapToValue --> humanName.writer
           ),
           span(cls := "connection-status", role := "status", child.text <-- connection.signal),
-          ChatView.agentSelect(chat),
+          ChatView.agentSelect(chat, scalamode.state.signal.map(_.pending)),
           button(
             typ := "button",
             "Reconnect",
             idAttr := "reconnect",
-            disabled <-- humanName.signal.combineWith(connecting.signal, chat.state.signal).map {
-              case (name, busy, state) =>
+            disabled <-- humanName.signal
+              .combineWith(connecting.signal, chat.state.signal, scalamode.state.signal)
+              .map { case (name, busy, state, scalaState) =>
                 OrchestratorWSClient
                   .claimedUser(name)
-                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy
-            },
+                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy || scalaState.pending
+              },
             title <-- humanName.signal.map(name =>
               if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
               else "Apply username and refresh connection state."
@@ -247,6 +262,7 @@ object App {
             tabIndex := -1,
             child <-- route.signal.distinct.map {
               case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
+              case ViewRoute.Scalamode    => ScalamodeView(scalamode, selectedAgent)
               case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
               case ViewRoute.Messages     =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>

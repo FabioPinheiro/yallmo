@@ -20,7 +20,7 @@ final class ScalaToolSuite extends FunSuite {
 
   test("pure code is forwarded and its result is returned") {
     val result =
-      run(new ScalaTool().execute(ExternalToolCall("scala", """{"code":"(1 to 10).sum"}""")).provide(executor))
+      run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"(1 to 10).sum"}""")).provide(executor))
     val json = ujson.read(result.text)
     assertEquals(json("output").str, "55\n")
     assertEquals(json("exitCode").num.toInt, 0)
@@ -28,8 +28,8 @@ final class ScalaToolSuite extends FunSuite {
   }
 
   test("invalid arguments are rejected before executing anything") {
-    for arguments <- List("{}", "[]", """{"code":1}""", """{"code":""}""", """{"code":"1", "scala":"3"}""") do
-      assert(run(new ScalaTool().execute(ExternalToolCall("scala", arguments)).either.provide(executor)).isLeft)
+    for arguments <- List("{}", "[]", """{"code":1}""", """{"code":""}""", """{"code":"1", "scalamode":"3"}""") do
+      assert(run(new ScalaTool().execute(ExternalToolCall("scalamode", arguments)).either.provide(executor)).isLeft)
   }
 
   test("compiler escape hatches and directives are rejected conservatively") {
@@ -58,6 +58,13 @@ final class ScalaToolSuite extends FunSuite {
     assert(ScalaCodeExecutor.snippet("42").startsWith("import scala.language.experimental.safe\n"))
   }
 
+  test("runtime API is imported and only its public contract is advertised") {
+    assert(ScalaCodeExecutor.snippet("api").contains("import tool.*"))
+    assert(ScalaTool.definition.description.contains("def api: Unit"))
+    assert(ScalaTool.definition.description.contains("tool.api"))
+    assert(!ScalaTool.definition.description.contains("println(\"Yes API is available\")"))
+  }
+
   test("trusted host configuration can select an exact cached nightly without resolution") {
     val version = "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY"
     val arguments = ScalaCodeExecutor.arguments("custom-scala-cli", version, offline = true)
@@ -73,7 +80,7 @@ final class ScalaToolSuite extends FunSuite {
         ZIO.succeed(CommandOutput(1, false, "Compilation failed", false))
       }
     })
-    val result = run(new ScalaTool().execute(ExternalToolCall("scala", """{"code":"unknown"}""")).provide(errors))
+    val result = run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"unknown"}""")).provide(errors))
     assertEquals(ujson.read(result.text)("exitCode").num.toInt, 1)
     assertEquals(ujson.read(result.text)("output").str, "Compilation failed")
   }

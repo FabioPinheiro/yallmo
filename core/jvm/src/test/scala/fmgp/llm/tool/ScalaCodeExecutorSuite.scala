@@ -37,11 +37,18 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("isolated temporary sources are removed after execution") {
     withFakeCli(
-      "test \"$1\" = run && test \"$2\" = . || exit 8\ntest -f Snippet.scala && test -f Main.scala || exit 9\npwd\n"
+      "test \"$1\" = run && test \"$2\" = . || exit 8\n" +
+        "test -f Snippet.scala && test -f Main.scala && test -f ScalaToolApi.scala || exit 9\n" +
+        "grep -q 'def api: Unit' ScalaToolApi.scala || exit 10\n" +
+        "grep -q 'import tool.\\*' Snippet.scala || exit 11\npwd\n"
     ) { executable =>
-      val result = execute(executable)
-      assertEquals(result.exitCode, 0)
-      assert(!Files.exists(Path.of(result.output.trim)))
+      val first = execute(executable)
+      val second = execute(executable)
+      for result <- List(first, second) do {
+        assertEquals(result.exitCode, 0)
+        assert(!Files.exists(Path.of(result.output.trim)))
+      }
+      assertNotEquals(first.output.trim, second.output.trim)
     }
   }
 
@@ -73,7 +80,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     withFakeCli("printf 'Checking compiler metadata\\n'; sleep 60\n") { executable =>
       val result = run(
         new ScalaTool(timeout = 300.millis)
-          .execute(fmgp.yallmo.orchestration.ExternalToolCall("scala", """{"code":"2 + 3"}"""))
+          .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"2 + 3"}"""))
           .provide(ScalaCodeExecutor.layer(executable.toString))
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
@@ -131,12 +138,27 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
     val result = run(
       new ScalaTool(timeout = 1.second)
-        .execute(fmgp.yallmo.orchestration.ExternalToolCall("scala", """{"code":"2 + 3"}"""))
+        .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"2 + 3"}"""))
         .provide(ScalaCodeExecutor.layer(realCli.get, scalaVersion = "3.nightly", offline = false))
         .timeoutFail(new RuntimeException("Scala CLI resolution did not respect its deadline"))(5.seconds)
     )
     val json = ujson.read(result.text)
     if json("timedOut").bool then assert(json("hint").str.contains("deadline"))
+  }
+
+  test("nightly provides the trusted runtime API on every fresh invocation") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the runtime API integration test")
+    for code <- List("api; tool.api; 42", "api") do {
+      val result = run(
+        ZIO
+          .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
+          .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
+      )
+      assertEquals(result.exitCode, 0, result.output)
+      val lines = result.output.linesIterator.toList
+      if code == "api" then assertEquals(lines, List("Yes API is available", "()"))
+      else assertEquals(lines, List("Yes API is available", "Yes API is available", "42"))
+    }
   }
 
   test("nightly accepts pure code and rejects ambient JVM authority") {

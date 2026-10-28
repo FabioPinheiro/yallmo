@@ -8,7 +8,7 @@ import zio.*
 
 final class ApplicationToolsSuite extends FunSuite {
   private val workspace = Path.of("/explicit/application-workspace")
-  private val allKeys = Chunk("readFile", "listFiles", "bash", "repositoryChanges", "scala")
+  private val allKeys = Chunk("readFile", "listFiles", "bash", "repositoryChanges", "scalamode")
 
   test("startup selects only tools whose requirements pass without executing tools") {
     val (tools, calls) = run {
@@ -18,11 +18,11 @@ final class ApplicationToolsSuite extends FunSuite {
         calls <- services.calls.get
       } yield (tools, calls)
     }
-    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scala"))
+    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scalamode"))
     assertEquals(
       tools.availability,
       ToolAvailability(
-        Chunk("readFile", "listFiles", "bash", "scala"),
+        Chunk("readFile", "listFiles", "bash", "scalamode"),
         Chunk("repositoryChanges" -> Chunk("git is not available on PATH"))
       )
     )
@@ -68,7 +68,7 @@ final class ApplicationToolsSuite extends FunSuite {
           "listFiles" -> Chunk("workspace is not an accessible directory"),
           "bash" -> Chunk("bash is not available on PATH"),
           "repositoryChanges" -> Chunk("git is not available on PATH"),
-          "scala" -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+          "scalamode" -> Chunk("Scala CLI (scala-cli) is not available on PATH")
         )
       )
     )
@@ -82,7 +82,7 @@ final class ApplicationToolsSuite extends FunSuite {
         tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
       } yield tools
     }
-    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scala"))
+    assertEquals(tools.available.map(_.definition.key), Chunk("readFile", "listFiles", "bash", "scalamode"))
     assertEquals(
       tools.availability.unavailable,
       Chunk("repositoryChanges" -> Chunk("workspace is not a Git work tree"))

@@ -28,7 +28,7 @@ final class ViewWebSuite extends FunSuite {
   }
 
   test("navigation shortcuts come from typed catalog actions, including selected-session routes") {
-    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "6"))
+    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "6", "7"))
     assertEquals(ViewRoute.Sessions(Some("existing")).command, ViewRoute.Sessions(None).command)
   }
 

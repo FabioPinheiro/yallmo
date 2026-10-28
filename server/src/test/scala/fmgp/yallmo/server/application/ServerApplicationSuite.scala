@@ -109,7 +109,7 @@ final class ServerApplicationSuite extends FunSuite {
         assertEquals(configured.assembly.context(None).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
         assertEquals(
           configured.assembly.context(None).tools.map(_.key).toSet,
-          Set("readFile", "listFiles", "bash", "repositoryChanges", "scala")
+          Set("readFile", "listFiles", "bash", "repositoryChanges", "scalamode")
         )
         assertEquals(
           calls,
@@ -157,7 +157,7 @@ final class ServerApplicationSuite extends FunSuite {
         application <- ServerApplication.open(root, Some(path), Some(root)).provideSomeLayer[Scope](services.layer)
       } yield assertEquals(
         application.configured.get.assembly.context(None).tools.map(_.key).toSet,
-        Set("bash", "scala")
+        Set("bash", "scalamode")
       )
     })
   }
@@ -233,7 +233,7 @@ final class ServerApplicationSuite extends FunSuite {
       for {
         root <- temporaryRoot
         restricted = config.copy(agents =
-          Map(first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set("scala")))))
+          Map(first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
         )
         path <- writeConfig(root, restricted)
         services <- probes(scala = false)

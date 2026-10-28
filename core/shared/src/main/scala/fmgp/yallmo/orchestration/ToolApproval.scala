@@ -4,9 +4,9 @@ import fmgp.yallmo.model.YallmoError
 import zio.*
 import fmgp.yallmo.orchestration.{AgentToolDefinition, ExternalToolCall, ExternalToolResult}
 
-/** Authorizes one model-proposed external-tool call before it is executed.
+/** Authorizes one model- or client-proposed external-tool call before it is executed.
   *
-  * Implementations may ask a person, evaluate a policy, or reject the call. Arguments are model-produced untrusted
+  * Implementations may ask a person, evaluate a policy, or reject the call. Arguments are caller-produced untrusted
   * input and must be validated before an approval is granted.
   */
 trait ToolApproval[R] {

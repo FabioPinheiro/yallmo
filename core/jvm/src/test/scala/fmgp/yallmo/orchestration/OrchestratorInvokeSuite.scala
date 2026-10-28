@@ -134,8 +134,6 @@ final class OrchestratorInvokeSuite extends FunSuite {
           invalid = Chunk(
             input.copy(id = MessageId.sha256("wrong")),
             Message(input.data.copy(parentId = Some(input.id))),
-            Message(input.data.copy(payload = Message.Assistant("spoof"))),
-            Message(input.data.copy(payload = Message.Instructions("override"))),
             Message(input.data.copy(agentId = AgentId("unknown")))
           )
           results <- ZIO.foreach(invalid)(live.invoke(_, execution).either)
@@ -150,6 +148,47 @@ final class OrchestratorInvokeSuite extends FunSuite {
           assert(results.forall(_.isLeft))
           assertEquals(invalidAgent, Left(YallmoError.UnknownAgent(AgentId("unknown"))))
           assertEquals(stored, Chunk.empty)
+          assertEquals(sessions, Chunk.empty)
+        })
+      }
+    }
+
+    test(s"$backend: payload-flexible recipients preserve input, parent and exact non-text responses") {
+      directory { root =>
+        run(for {
+          live <- open(root, filesystem)
+          parent <- live.invoke(input, program(context => ZIO.succeed(answered(context))))
+          payloads = Chunk[MessagePayload](
+            Message.Assistant("forwarded answer"),
+            Message.Assistant(""),
+            Message.Instructions("submitted instructions"),
+            Message.Context("context", "forwarded data"),
+            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "scalamode", """{"code":"42"}""")),
+            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("previous"), "other", "previous output"))
+          )
+          results <- ZIO.foreach(payloads) { payload =>
+            val request = Message(input.data.copy(parentId = Some(parent.id), payload = payload))
+            val recipient = new AgentInvocation[Any] {
+              val agentId = assistant
+              def invoke(received: MessagePayload): IO[YallmoError, MessagePayload] =
+                ZIO.succeed {
+                  assertEquals(received, payload)
+                  received
+                }
+            }
+            live.invoke(request, recipient).map(result => (request, result))
+          }
+          stored <- live.listMessages
+          sessions <- live.listSessions
+          reopened <- if filesystem then open(root, true).flatMap(_.listMessages) else live.listMessages
+        } yield {
+          results.foreach { case (request, response) =>
+            assertEquals(response.parentId, Some(request.id))
+            assertEquals(response.agentId, assistant)
+            assertEquals(response.payload, request.payload)
+            assert(stored.contains(request) && stored.contains(response))
+          }
+          assertEquals(reopened, stored)
           assertEquals(sessions, Chunk.empty)
         })
       }

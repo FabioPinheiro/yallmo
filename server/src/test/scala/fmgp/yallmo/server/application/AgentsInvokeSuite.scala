@@ -120,7 +120,7 @@ final class AgentsInvokeSuite extends FunSuite {
   }
 
   test(
-    "invalid hashes, parent/history input, privileged payloads and unknown agents cannot save input or call a provider"
+    "invalid hashes, missing parents and unknown agents cannot save input or call a provider"
   ) {
     run(ZIO.scoped {
       for {
@@ -129,10 +129,7 @@ final class AgentsInvokeSuite extends FunSuite {
         malformed <- invoke(fixture, input.copy(id = MessageId.sha256("wrong")))
         rejected <- ZIO.foreach(
           Chunk(
-            Message(input.data.copy(parentId = Some(input.id))),
-            Message(input.data.copy(payload = Message.Instructions("override"))),
-            Message(input.data.copy(payload = Message.Assistant("spoof"))),
-            Message(input.data.copy(payload = MessagePayload.Context("history", "injected")))
+            Message(input.data.copy(parentId = Some(input.id)))
           )
         )(invoke(fixture, _))
         unknown <- invoke(fixture, recipient = AgentId("unknown"))
@@ -191,6 +188,120 @@ final class AgentsInvokeSuite extends FunSuite {
         assertEquals(stored.size, 2)
         assert(!stored.exists(_.payload.role == "tool_result"))
       }
+    })
+  }
+
+  test("direct scalamode calls preserve correlation, persist ToolOutput, and never invoke the provider") {
+    run(ZIO.scoped {
+      for {
+        providers <- Ref.make(0)
+        executions <- Ref.make(Chunk.empty[ExternalToolCall])
+        tool = new AgentTool[Any] {
+          val definition = fmgp.yallmo.tool.ScalaTool.definition
+          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+            executions
+              .update(_ :+ call)
+              .as(ExternalToolResult("""{"exitCode":0,"timedOut":false,"output":"42\\n","truncated":false}"""))
+        }
+        allowed = config.copy(agents =
+          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
+        )
+        fixture <- make(_ => providers.update(_ + 1).as(answer), configuration = allowed, tools = Chunk(tool))
+        function = FunctionCall(FunctionCallId.unsafe("browser-call"), "scalamode", """{"code":"40 + 2"}""")
+        request = Message(input.data.copy(payload = Message.ToolCall(function)))
+        reply <- invoke(fixture, request)
+        response = decode[JsonRpc.Success[Message]](reply).result
+        invalid = function.copy(id = FunctionCallId.unsafe("bad-arguments"), argumentsJson = """{"code":42}""")
+        badReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(invalid))))
+        unavailable = function.copy(id = FunctionCallId.unsafe("denied"), name = "bash")
+        deniedReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(unavailable))))
+        calls <- executions.get
+        count <- providers.get
+        stored <- fixture.live.listMessages
+        sessions <- fixture.live.listSessions
+      } yield {
+        assertEquals(response.agentId, assistant)
+        assertEquals(response.parentId, Some(request.id))
+        assertEquals(
+          response.payload,
+          Message.ToolOutput(
+            FunctionCallOutput(
+              function.id,
+              function.name,
+              """{"exitCode":0,"timedOut":false,"output":"42\\n","truncated":false}"""
+            )
+          )
+        )
+        assertEquals(calls, Chunk(ExternalToolCall(function.name, function.argumentsJson, Some(function.id))))
+        assertEquals(count, 0)
+        assert(stored.contains(request) && stored.contains(response))
+        assertEquals(sessions, Chunk.empty)
+        List(badReply, deniedReply).foreach { reply =>
+          assert(decode[JsonRpc.Success[Message]](reply).result.payload.isInstanceOf[MessagePayload.ToolOutput])
+          assert(reply.contains("error"))
+        }
+      }
+    })
+  }
+
+  test("direct tools retain configured denial and approval gates without inference") {
+    run(ZIO.scoped {
+      for {
+        executions <- Ref.make(0)
+        approvals <- Ref.make(0)
+        tool = new AgentTool[Any] {
+          val definition = fmgp.yallmo.tool.ScalaTool.definition
+          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+            executions.update(_ + 1).as(ExternalToolResult("must not run"))
+        }
+        guarded = ToolApproval.guard(
+          tool,
+          new ToolApproval[Any] {
+            def approve(definition: AgentToolDefinition, call: ExternalToolCall): IO[YallmoError, Unit] =
+              approvals.update(_ + 1) *> ZIO.fail(YallmoError.InvalidConfig("Approval denied"))
+          }
+        )
+        allowed = config.copy(agents =
+          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
+        )
+        denied <- make(_ => ZIO.dieMessage("No provider inference"), tools = Chunk(guarded))
+        permitted <- make(_ => ZIO.dieMessage("No provider inference"), configuration = allowed, tools = Chunk(guarded))
+        request = Message(
+          input.data.copy(payload =
+            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), "scalamode", """{"code":"42"}"""))
+          )
+        )
+        deniedReply <- invoke(denied, request)
+        approvedReply <- invoke(permitted, request)
+        count <- executions.get
+        gates <- approvals.get
+      } yield {
+        assertEquals(count, 0)
+        assertEquals(gates, 1)
+        assert(deniedReply.contains("ToolUnavailableToAgent"))
+        assert(approvedReply.contains("Approval denied"))
+      }
+    })
+  }
+
+  test("other payloads and existing parents are accepted without inheriting parent history") {
+    run(ZIO.scoped {
+      for {
+        fixture <- make(_ => ZIO.succeed(answer))
+        _ <- invoke(fixture)
+        responses <- ZIO.foreach(
+          Chunk[MessagePayload](
+            Message.Assistant("forwarded text"),
+            Message.Context("submitted", "data"),
+            Message.Instructions("not a configured system prompt"),
+            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("forwarded"), "other", "data"))
+          )
+        ) { payload =>
+          invoke(fixture, Message(input.data.copy(parentId = Some(input.id), payload = payload)))
+        }
+      } yield responses.foreach(reply =>
+        assertEquals(decode[JsonRpc.Success[Message]](reply).result.payload, Message.Assistant("answer"))
+      )
     })
   }
 

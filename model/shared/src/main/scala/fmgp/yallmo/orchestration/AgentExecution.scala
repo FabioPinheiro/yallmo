@@ -3,6 +3,14 @@ package fmgp.yallmo.orchestration
 import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
 import zio.{Chunk, ZIO}
 
+/** A configured recipient of one message. Payload support belongs to the recipient, not the transport or storage.
+  * Implementations execute through their authorized services and do not persist messages themselves.
+  */
+trait AgentInvocation[-R] {
+  def agentId: AgentId
+  def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload]
+}
+
 /** The identity and execution operation of an already-configured agent loop, independent of session storage.
   *
   * This is a small dependency boundary, not another agent implementation or execution engine. The model module defines
@@ -31,7 +39,7 @@ import zio.{Chunk, ZIO}
   * @tparam R
   *   services required by the configured loop, such as model and tool services
   */
-trait AgentExecution[-R] {
+trait AgentExecution[-R] extends AgentInvocation[R] {
 
   /** Registered agent identity used to validate execution and attribute its generated messages. */
   def agentId: AgentId
@@ -47,6 +55,22 @@ trait AgentExecution[-R] {
     *   execution failures are left to the orchestrator; already accepted input is not rolled back
     */
   def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult]
+
+  /** Compatibility adapter for text-oriented loops. Other recipients may override this to return any payload. */
+  override def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] = {
+    val context = RunContext(Chunk(input))
+    run(AgentTask(input.contentStr), context).flatMap { turn =>
+      if turn.result.agentId != agentId ||
+        turn.runContext.messages.take(context.messages.size) != context.messages || turn.result.text.trim.isEmpty
+      then
+        ZIO.fail(
+          YallmoError.InvalidAgentDecision(
+            "Agent execution must preserve the accepted input and agent ID and return a non-blank answer"
+          )
+        )
+      else ZIO.succeed(MessagePayload.Assistant(turn.result.text))
+    }
+  }
 }
 
 /** A completed submission and the durable session after its generated messages have been saved. */

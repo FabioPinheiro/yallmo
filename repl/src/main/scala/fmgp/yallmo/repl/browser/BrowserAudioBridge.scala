@@ -187,7 +187,8 @@ object BrowserAudioBridge {
 
   private def asset(path: String): IO[BrowserAudioError, Response] = {
     val resource = path match {
-      case "/view-web/vite/browser-audio.js" | "/view-web/vite/audio-core.js" | "/view-web/vite/capture-worklet.js" =>
+      case "/web-harness/vite/browser-audio.js" | "/web-harness/vite/audio-core.js" |
+          "/web-harness/vite/capture-worklet.js" =>
         path
       case "/"                                                       => "/browser-STT-TTS/index.html"
       case asset if asset.matches("/[A-Za-z0-9_-]+\\.(html|js|css)") => s"/browser-STT-TTS$asset"

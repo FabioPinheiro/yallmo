@@ -17,7 +17,7 @@ private[server] object WebAssets {
       case Some(name) =>
         ZIO
           .attemptBlocking {
-            val stream = getClass.getResourceAsStream(s"/view-web/$name")
+            val stream = getClass.getResourceAsStream(s"/web-harness/$name")
             if stream == null then None
             else
               try Some(Chunk.fromArray(stream.readAllBytes()))

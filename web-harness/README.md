@@ -1,4 +1,4 @@
-# View web
+# Web harness
 
 Scala.js / Laminar session inspector and trusted-browser chat. See [the server guide](../server/README.md) for development,
 production bundling, embedding, API documentation and security boundaries.
@@ -13,13 +13,13 @@ For keyboard shortcuts, modes and dictation keys, use the [client controls quick
 - `vite/dist/` — production bundle embedded by the server.
 - `target/vite/cache/` — Vite's generated cache.
 
-Run npm from `vite/`, or use `npm --prefix view-web/vite` from the repository root.
+Run npm from `vite/`, or use `npm --prefix web-harness/vite` from the repository root.
 
 ```sh
 # Repository root:
-npm --prefix view-web/vite ci
-sbt 'viewWeb/fastLinkJS'
-npm --prefix view-web/vite run dev
+npm --prefix web-harness/vite ci
+sbt 'webHarness/fastLinkJS'
+npm --prefix web-harness/vite run dev
 ```
 
 The backend must be running on loopback port 8080 (`sbt 'server/run --storage ./zzz'`). Vite uses `host: true` to listen
@@ -94,7 +94,7 @@ unfinished upload; it **does not cancel agent execution or delete already stored
 finish after discard/disconnect. Errors retain draft text and never retry; inspect saved messages before a manual retry
 when the outcome is uncertain. Browser buffers live in memory only, with no storage APIs or inline audio in logs.
 
-Checks: `npm --prefix view-web/vite test`, `sbt ';viewWeb/testOnly *;viewWeb/fastLinkJS'`, and production linking/bundling.
+Checks: `npm --prefix web-harness/vite test`, `sbt ';webHarness/testOnly *;webHarness/fastLinkJS'`, and production linking/bundling.
 Recorder tests mock permission, deadlines and device lifecycle; Scala.js tests cover transfer ordering/bounds,
 acknowledgements, configured-agent gating, stale responses and cursor-safe draft updates. Browser smoke checks used
 the production AudioWorklet under the server CSP with a synthetic MediaStream and mocked RPC responses, including
@@ -140,8 +140,8 @@ reload before manual resend. A disconnected turn **may still be running**: recon
 sending a duplicate prompt. Reconnect never replays requests. The client also exposes `diagnostics.request` through
 the shared protocol DTOs; a diagnostics UI is intentionally deferred.
 
-Validation: `sbt ';viewWeb/testOnly *;viewWeb/compile;viewWeb/fastLinkJS'`; production: `sbt 'viewWeb/fullLinkJS'` then
-`npm --prefix view-web/vite run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
+Validation: `sbt ';webHarness/testOnly *;webHarness/compile;webHarness/fastLinkJS'`; production: `sbt 'webHarness/fullLinkJS'` then
+`npm --prefix web-harness/vite run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
 cover create-once/send-once, configured agents, stored heads, draft retention, continuation reset, stale responses,
 failed outcomes and uncertain transport. Manual smoke check: verify the default identity, edit a name and Reconnect, send to a configured agent, switch views
 while waiting, resume a REPL session, change agents, and verify narrow-screen sidebar and scroll behavior.

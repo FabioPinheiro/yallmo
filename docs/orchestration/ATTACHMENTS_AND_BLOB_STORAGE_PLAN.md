@@ -130,7 +130,7 @@ serialize; successful completed blobs remain. Blob persistence is independent of
 orphaned blobs. Legacy sessionful producer partial-byte preservation and the existing message-append finding below
 are unchanged. `agents.invoke` now explicitly consumes the dependency seam: it saves a root user/audio Message without
 a session, awaits blobs, runs the configured runner and saves a final assistant Message linked directly to the input.
-Ordinary reads and current REPL/sessionful behavior are unchanged. The [browser dictation UI](../../view-web/README.md#dictation)
+Ordinary reads and current REPL/sessionful behavior are unchanged. The [browser dictation UI](../../web-harness/README.md#dictation)
 now uses this path; general agent execution cancellation remains separate work. See [independent invocation](../../server/PROTOCOL.md#independent-agent-invocation).
 
 ## Legacy REPL transcription flow

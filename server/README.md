@@ -56,7 +56,7 @@ configured runner, without blocking subsequent upload commands on the socket. No
 Failures can leave accepted input; disconnect abandons the local wait, not admitted execution. Repeating an invocation
 can repeat provider/tool side effects. Inspect message history before manually repeating uncertain requests.
 See [wire contract](PROTOCOL.md#independent-agent-invocation) for authorization, limits and persistence semantics.
-The [browser dictation UI](../view-web/README.md#dictation) uses this path and generic uploads; no voice-specific
+The [browser dictation UI](../web-harness/README.md#dictation) uses this path and generic uploads; no voice-specific
 endpoint or session is introduced. General execution cancellation remains separate pending work.
 
 ## Submission lifetime and uncertainty
@@ -84,27 +84,27 @@ Prerequisites: the repository's JDK/sbt, Node 22.12+ (or 20.19+) and npm.
 
 ```sh
 # Repository root:
-npm --prefix view-web/vite ci
-sbt 'viewWeb/fastLinkJS'
+npm --prefix web-harness/vite ci
+sbt 'webHarness/fastLinkJS'
 sbt 'server/run --storage ./zzz'
 ```
 
 In another terminal:
 
 ```sh
-npm --prefix view-web/vite run dev
+npm --prefix web-harness/vite run dev
 ```
 
 Open **http://127.0.0.1:5173**. Vite uses `host: true`, listening on all interfaces, including the Docker network.
 It proxies WebSocket `/rpc` to `127.0.0.1:8080` with `ws: true`, preserving the real browser Origin.
-If the backend uses another port, update `view-web/vite/vite.config.js`. Vite's development/HMR socket is separate from the
+If the backend uses another port, update `web-harness/vite/vite.config.js`. Vite's development/HMR socket is separate from the
 website's single application socket.
 
 Both the development server/proxy and backend listen on all interfaces.
 For Docker, publish the Vite port on host loopback only (for example `127.0.0.1:5173:5173`), or use a trusted network.
 The backend accepts arbitrary browser Origins; network access must be restricted to trusted users.
 
-For continuous Scala.js linking, run `sbt '~viewWeb/fastLinkJS'`. Vite bundles already-linked JavaScript; it does not
+For continuous Scala.js linking, run `sbt '~webHarness/fastLinkJS'`. Vite bundles already-linked JavaScript; it does not
 launch sbt or compile Scala.
 
 ## Production
@@ -114,8 +114,8 @@ sbt 'server/bundle'
 sbt 'server/run --storage ./zzz'
 ```
 
-Open **http://127.0.0.1:8080**. The bundle task full-links Scala.js, runs Vite from `view-web/vite/`,
-and packages `view-web/vite/dist/` in the server JAR.
+Open **http://127.0.0.1:8080**. The bundle task full-links Scala.js, runs Vite from `web-harness/vite/`,
+and packages `web-harness/vite/dist/` in the server JAR.
 Ordinary JVM compilation/test/run does not invoke npm or build the frontend. Without packaged assets, `/` returns 503;
 `/rpc` still works. Asset/API misses return 404, never fallback HTML. The module JAR includes assets, not JVM dependencies;
 use sbt's runtime classpath or a normal JVM distribution.
@@ -271,8 +271,8 @@ diagnostic definitions remain disabled; no progress notifications are advertised
 The JVM client uses dependency-free public JDK WebSocket (JDK 21+ resource lifecycle), not a synthetic-Origin transport;
 it never bypasses server policy. Read `capabilities` from cached initialization, not a second initialize.
 
-The website uses `view-web/.../OrchestratorWSClient.scala`, a browser-native WebSocket adapter with a Future API.
-`viewWeb` depends on `protocolJS`, which depends on `modelJS`. The `protocol/shared/src` directory owns the
+The website uses `web-harness/.../OrchestratorWSClient.scala`, a browser-native WebSocket adapter with a Future API.
+`webHarness` depends on `protocolJS`, which depends on `modelJS`. The `protocol/shared/src` directory owns the
 JSON-RPC envelopes and wire types; their existing `fmgp.yallmo.server` packages are unchanged. The JVM-only server
 depends on `protocolJVM` and `coreJVM`. There is no direct source inclusion or duplicate browser DTO layer.
 Models, including System One/macros, compile and test on both platforms; the browser does not depend on core/providers/tools.
@@ -328,8 +328,8 @@ sbt 'server/testOnly *'
 sbt 'protocol/testOnly fmgp.yallmo.server.jsonrpc.YallmoProtocolSuite'
 sbt 'protocolJS/testOnly fmgp.yallmo.server.jsonrpc.YallmoProtocolSuite'
 sbt 'repl/testOnly fmgp.yallmo.repl.Connected* fmgp.yallmo.repl.terminal.ConnectedTerminalSuite'
-sbt 'viewWeb/testOnly *'
-sbt 'viewWeb/fastLinkJS'
+sbt 'webHarness/testOnly *'
+sbt 'webHarness/fastLinkJS'
 sbt 'server/bundle'
 ```
 

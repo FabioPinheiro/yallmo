@@ -113,7 +113,7 @@ while recording, and **Esc: cancel** while preparing/processing. The 30-second l
 nothing restarts automatically. Transcripts enter the draft, never send it to a chat agent.
 
 The website requires the configured `Transcriber` agent, upload/invoke capabilities, a supported browser, a secure
-context and microphone permission. See [dictation setup, privacy and lifecycle](../view-web/README.md#dictation).
+context and microphone permission. See [dictation setup, privacy and lifecycle](../web-harness/README.md#dictation).
 Send, session creation and reconnect remain blocked while dictation is busy.
 
 Cancellation before upload discards the capture. Discarding during upload/transcription ignores the result and
@@ -163,7 +163,7 @@ nor server runtime, protocol, core or model. The [module diagram](../README.md#m
 | --- | --- |
 | [ControlAction / KeyboardControls](../client-harness/shared/src/main/scala/fmgp/yallmo/clientharness/KeyboardControls.scala) | Stable command `id`, separate `webLabel` / `terminalLabel`, optional `shortcut`; normalized `KeyInput`, modes, modifier/IME/repeat guards, submission, menu direction and website command search. |
 | [DictationKeyboard](../client-harness/shared/src/main/scala/fmgp/yallmo/clientharness/DictationKeyboard.scala) | Shared stop/discard decisions, held-key suppression and matching Space-release consumption; effects are callbacks. |
-| [WebKeyboard](../view-web/src/main/scala/fmgp/yallmo/view/web/WebKeyboard.scala) | DOM event/focus adapter, menu rendering and browser effects. App registers guarded actions; ViewRoute maps routes; VoiceModel translates capture phases to keyboard modes. |
+| [WebKeyboard](../web-harness/src/main/scala/fmgp/yallmo/view/web/WebKeyboard.scala) | DOM event/focus adapter, menu rendering and browser effects. App registers guarded actions; ViewRoute maps routes; VoiceModel translates capture phases to keyboard modes. |
 | [TerminalControlBindings](../repl/src/main/scala/fmgp/yallmo/repl/terminal/TerminalControlBindings.scala) | JLine adapter; widget names derive from keymap + action ID, never display labels or additional name arguments. |
 
 IDs are explicit machine names, independent of enum names and display wording. Footer action hints use `terminalLabel`;

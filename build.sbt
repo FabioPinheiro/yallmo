@@ -43,7 +43,7 @@ lazy val root = project
     clientHarnessJS,
     repl,
     server,
-    viewWeb
+    webHarness
   )
   .settings(
     name := "yallmo",
@@ -175,7 +175,7 @@ lazy val repl = project
         val root = (LocalRootProject / baseDirectory).value
         val assets = root / "browser-STT-TTS"
         val output = (Compile / resourceManaged).value / "browser-STT-TTS"
-        val sharedOutput = (Compile / resourceManaged).value / "view-web"
+        val sharedOutput = (Compile / resourceManaged).value / "web-harness"
         // Both source directories are external inputs; remove obsolete assets after moves.
         IO.delete(output)
         IO.delete(sharedOutput)
@@ -188,7 +188,7 @@ lazy val repl = project
         }
         val audioResources = Seq("browser-audio.js", "audio-core.js", "capture-worklet.js").map { name =>
           val target = sharedOutput / "vite" / name
-          IO.copyFile(root / "view-web" / "vite" / name, target)
+          IO.copyFile(root / "web-harness" / "vite" / name, target)
           target
         }
         pageResources ++ audioResources
@@ -206,15 +206,15 @@ lazy val repl = project
   )
 
 /** Explicit release tasks: ordinary backend compilation never invokes npm or the Scala.js linker. */
-lazy val bundleFrontend = taskKey[Unit]("Link and bundle the view SPA (requires npm ci in view-web/vite)")
+lazy val bundleFrontend = taskKey[Unit]("Link and bundle the view SPA (requires npm ci in web-harness/vite)")
 lazy val bundle = taskKey[Unit]("Package the view server with the production SPA")
 
-lazy val viewWeb = project
-  .in(file("view-web"))
+lazy val webHarness = project
+  .in(file("web-harness"))
   .enablePlugins(ScalaJSPlugin)
   .dependsOn(protocolJS, clientHarnessJS)
   .settings(
-    name := "yallmo-view-web",
+    name := "yallmo-web-harness",
     scalaJSUseMainModuleInitializer := true,
     scalaJSLinkerConfig ~= (_.withModuleKind(org.scalajs.linker.interface.ModuleKind.ESModule)),
     Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "target/scalajs-dev",
@@ -231,7 +231,7 @@ lazy val viewWeb = project
       val _ = (Compile / fullLinkJS).value
       val directory = baseDirectory.value / "vite"
       val result = scala.sys.process.Process(Seq("npm", "run", "build"), directory).!
-      if (result != 0) sys.error("SPA bundling failed. Run npm ci in view-web/vite first.")
+      if (result != 0) sys.error("SPA bundling failed. Run npm ci in web-harness/vite first.")
       ()
     },
   )
@@ -248,8 +248,8 @@ lazy val server = project
     libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
     Compile / resourceGenerators += Def.task {
       Def.uncached {
-        val assets = (LocalRootProject / baseDirectory).value / "view-web/vite/dist"
-        val output = (Compile / resourceManaged).value / "view-web"
+        val assets = (LocalRootProject / baseDirectory).value / "web-harness/vite/dist"
+        val output = (Compile / resourceManaged).value / "web-harness"
         // External Vite output is not an sbt input; inspect it on every resource pass.
         // Remove stale fingerprinted assets, including when dist has been removed.
         IO.delete(output)
@@ -263,7 +263,7 @@ lazy val server = project
       }
     }.taskValue,
     bundle := Def.taskDyn {
-      val _ = (viewWeb / bundleFrontend).value
+      val _ = (webHarness / bundleFrontend).value
       Def.task {
         val _ = (Compile / packageBin).value
         ()

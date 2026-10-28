@@ -1,4 +1,4 @@
-import { encodeWav, OUTPUT_RATE } from '../view-web/vite/audio-core.js';
+import { encodeWav, OUTPUT_RATE } from '../web-harness/vite/audio-core.js';
 
 export function validateSnapshot(snapshot) {
   if (!snapshot || snapshot.heartbeatMs !== 1000) throw new Error('Invalid bridge response');

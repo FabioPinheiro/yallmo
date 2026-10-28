@@ -17,7 +17,7 @@ export default defineConfig(({ command }) => ({
     },
   },
   server: {
-    // Linked Scala.js output lives beside this npm project, under view-web/target/.
+    // Linked Scala.js output lives beside this npm project, under web-harness/target/.
     fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] },
     //host: "127.0.0.1", // Keep local transcript/WebSocket access private by default.
     host: true, // Listens on all addresses, including the Docker network

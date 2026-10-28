@@ -139,9 +139,9 @@ final class TerminalBrowserAudioSuite extends FunSuite {
               "app.js",
               "http-client.js",
               "bridge-client.js",
-              "view-web/vite/browser-audio.js",
-              "view-web/vite/audio-core.js",
-              "view-web/vite/capture-worklet.js",
+              "web-harness/vite/browser-audio.js",
+              "web-harness/vite/audio-core.js",
+              "web-harness/vite/capture-worklet.js",
               "styles.css"
             )
           do {
@@ -151,13 +151,13 @@ final class TerminalBrowserAudioSuite extends FunSuite {
             if asset.endsWith(".js") then
               assert(response.headers().firstValue("Content-Type").orElse("").contains("text/javascript"), asset)
           }
-          assert(client.get("/app.js").body().contains("../view-web/vite/browser-audio.js"))
-          assert(client.get("/app.js").body().contains("../view-web/vite/capture-worklet.js"))
-          assert(client.get("/bridge-client.js").body().contains("../view-web/vite/audio-core.js"))
-          assert(client.get("/view-web/vite/capture-worklet.js").body().contains("./audio-core.js"))
+          assert(client.get("/app.js").body().contains("../web-harness/vite/browser-audio.js"))
+          assert(client.get("/app.js").body().contains("../web-harness/vite/capture-worklet.js"))
+          assert(client.get("/bridge-client.js").body().contains("../web-harness/vite/audio-core.js"))
+          assert(client.get("/web-harness/vite/capture-worklet.js").body().contains("./audio-core.js"))
           for asset <- List(
-              "view-web/vite/main.js",
-              "view-web/vite/voice-recorder.js",
+              "web-harness/vite/main.js",
+              "web-harness/vite/voice-recorder.js",
               "browser-audio.js",
               "audio-core.js",
               "capture-worklet.js"

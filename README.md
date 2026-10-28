@@ -54,7 +54,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
 - `repl/` — the JVM interactive terminal client and lazy scoped browser audio bridge.
 - `server/` — JVM-only JSON-RPC WebSocket host and packaged SPA over an existing orchestrator.
-- `view-web/` — Scala.js/Laminar session inspector and Chat UI, with Vite for development and bundling.
+- `web-harness/` — Scala.js/Laminar session inspector and Chat UI, with Vite for development and bundling.
 - `browser-STT-TTS/` — packaged browser microphone/speech page and dependency-free Node tests.
 
 ### Module dependencies
@@ -67,7 +67,7 @@ flowchart BT
     repl["repl · JVM"] --> server["server · JVM"]
     repl -->|JVM| core["core · JVM / JS"]
     repl -->|JVM| harness["ClientHarness · JVM / JS<br/>client-harness/"]
-    web["view-web · Scala.js"] -->|JS| harness
+    web["web-harness · Scala.js"] -->|JS| harness
     web -->|JS| protocol["protocol · JVM / JS"]
     server -->|JVM| core
     server -->|JVM| protocol

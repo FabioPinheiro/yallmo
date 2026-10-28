@@ -54,7 +54,7 @@ final class OrchestratorWSClient private[web] (
             openingTimer = None
             send[Initialize.Params, Initialize.Result](
               Initialize.method,
-              Initialize.Params(Version, "view-web", userId)
+              Initialize.Params(Version, "web-harness", userId)
             )
               .onComplete {
                 case Success(info) if current == generation =>

@@ -171,7 +171,7 @@ but stale commands from the same connection cannot be distinguished from command
 BlobId if old commands may still arrive; internal timers and captured dependency waiters never retarget a new upload.
 Await each Append response and use `nextOffset` for the next command; do not pipeline unordered chunks. Lost Complete responses may leave a fully stored blob; query ordinary
 reads/listing rather than assuming a safe retry. Browser dictation uses these commands as described in
-[view-web](../view-web/README.md#dictation).
+[web-harness](../web-harness/README.md#dictation).
 
 ## Independent agent invocation
 
@@ -212,7 +212,7 @@ connection-owned uploads, but never provides general agent-execution cancellatio
 storage/tool ownership is released. Lost replies may hide completed work: inspect `messages.list` by the known input
 ID and response parent before considering a **manual** repeat. There is no standalone status/cancel/diagnostics API.
 The browser dictation adapter uses this method without the ordinary read deadline; the REPL does not expose an
-independent invocation command. See [dictation](../view-web/README.md#dictation) for UI gating, cursor insertion and discard semantics.
+independent invocation command. See [dictation](../web-harness/README.md#dictation) for UI gating, cursor insertion and discard semantics.
 
 ## Provider-request diagnostics
 
@@ -318,7 +318,7 @@ Provider/login/voice/human-interaction transport and public authentication remai
 invalid inputs/executions, persistence failures and interruption. `AgentsInvokeSuite` covers authorization, ordinary
 tool execution, continuation privacy, owned lifetime/shutdown, and real same-socket upload/invocation correlation.
 The independent-invocation backend change was validated with **570 tests**, with **2 existing Scala-CLI integration skips**: core JVM 302,
-core JS 15, protocol JVM/JS 26 each, server 157, view-web 44; REPL test compilation also passed. Focused post-format
+core JS 15, protocol JVM/JS 26 each, server 157, web-harness 44; REPL test compilation also passed. Focused post-format
 revalidation passed 127 checks and REPL test compilation. Subsequent browser dictation integration passed 59 Scala.js
 checks and 51 Node checks (including the unchanged browser audio tests); see the frontend guide for synthetic-browser
 smoke evidence and remaining real microphone/provider acceptance checks.

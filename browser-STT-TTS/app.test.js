@@ -72,7 +72,7 @@ test('mock page: activation happens inside gesture before permission resolves; r
   assert.equal(f.requests.length, 0);
   f.click('enable');
   assert.deepEqual(f.events.slice(1).map(event => event[0]), ['resume', 'speech-test', 'permission', 'module']);
-  assert.deepEqual(f.events.find(event => event[0] === 'module'), ['module', '../view-web/vite/capture-worklet.js']);
+  assert.deepEqual(f.events.find(event => event[0] === 'module'), ['module', '../web-harness/vite/capture-worklet.js']);
   assert.equal(f.requests.length, 0);
   assert.equal(f.elements.get('readiness').textContent, 'Not ready');
   const stream = f.stream();

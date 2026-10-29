@@ -1226,11 +1226,7 @@ final class ServerSubmissionSuite extends FunSuite {
 
   private val tools: ULayer[ServerApplication.ToolEnvironment] = {
     def unexpected[A]: UIO[A] = ZIO.dieMessage("Unexpected tool execution")
-    val filesystem = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = ZIO.succeed(false)
-      def readUtf8(path: Path): Task[String] = unexpected
-      def list(path: Path): Task[Chunk[String]] = unexpected
-    }
+
     val bash = new BashExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(false)
       def execute(command: String, workspace: Path, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] =
@@ -1257,7 +1253,7 @@ final class ServerSubmissionSuite extends FunSuite {
       def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
         unexpected
     }
-    ZLayer.succeed[WorkspaceFileSystem](filesystem) ++ ZLayer.succeed[BashExecutor](bash) ++
+    ZLayer.succeed[BashExecutor](bash) ++
       ZLayer.succeed[GitClient](git) ++ ZLayer.succeed[ScalaCodeExecutor](scala) ++
       ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicScala)
   }

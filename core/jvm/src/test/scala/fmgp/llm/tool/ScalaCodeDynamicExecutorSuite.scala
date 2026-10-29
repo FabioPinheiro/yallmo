@@ -2,7 +2,9 @@ package fmgp.yallmo.tool
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.scalacode.{FileSystem as ScriptFileSystem, ScalaScript}
+import fmgp.yallmo.scalacode.ScalaScript
+import fmgp.yallmo.fs.{FsError, FsRead}
+import zio.stream.ZStream
 import java.nio.file.{Files, Path}
 import munit.FunSuite
 import zio.*
@@ -357,25 +359,29 @@ final class ScalaCodeDynamicExecutorSuite extends FunSuite {
     assertEquals(json("output").str, "42")
   }
 
-  test("real CLI uses the standalone API without exposing core implementation classes to the compiler") {
+  test("real CLI uses the filesystem API without exposing core implementation classes to the compiler") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run compilation integration tests")
-    val host = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = ZIO.succeed(path.isAbsolute)
-      def readUtf8(path: Path): Task[String] = ZIO.succeed(s"host:$path")
-      def list(path: Path): Task[Chunk[String]] = ZIO.succeed(Chunk(path.toString))
+    val host = new FsRead {
+      def readBytes(path: String): ZStream[Any, FsError, Byte] = ZStream.empty
+      override def readUtf8(path: String): IO[FsError, String] = ZIO.succeed(s"host:$path")
+      def list(path: String): IO[FsError, Chunk[String]] = ZIO.succeed(Chunk(path))
     }
-    val configuration = ScalaCodeDynamicExecutor.Config(executable = realCli.get)
+    val base = ScalaCodeDynamicExecutor.Config(executable = realCli.get)
+    val apiPaths = List(classOf[FsRead], classOf[ZStream[?, ?, ?]]).map { cls =>
+      Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toString
+    }
+    val configuration = base.copy(classpath = (base.classpath :: apiPaths).mkString(java.io.File.pathSeparator))
     val results = run {
       ZIO
         .foreach(
           List(
-            "ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.readUtf8(\"example.txt\"))",
+            "ZIO.serviceWithZIO[fmgp.yallmo.fs.FsRead](_.readUtf8(\"example.txt\").mapError(error => new java.io.IOException(error.toString)))",
             "ZIO.succeed(fmgp.yallmo.tool.CommandOutput(0, false, \"\", false))"
           )
-        )(code => ZIO.serviceWithZIO[ScalaCodeDynamicExecutor](_.execute[ScriptFileSystem](code, 120.seconds, 8192)))
+        )(code => ZIO.serviceWithZIO[ScalaCodeDynamicExecutor](_.execute[FsRead](code, 120.seconds, 8192)))
         .provideLayer(
           ScalaCodeDynamicExecutor.layer(configuration) ++ ZLayer
-            .succeed[ScriptFileSystem](new ScalaCodeFileSystem(host))
+            .succeed[FsRead](host)
         )
     }
     assertEquals(results.head.exitCode, 0, results.head.output)

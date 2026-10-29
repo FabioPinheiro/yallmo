@@ -5,40 +5,6 @@ import zio.*
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
-import scala.jdk.CollectionConverters.*
-
-/** Filesystem operations required by the read-only workspace tools. */
-trait WorkspaceFileSystem {
-  def isDirectory(path: Path): UIO[Boolean]
-  def readUtf8(path: Path): Task[String]
-  def list(path: Path): Task[Chunk[String]]
-}
-
-object WorkspaceFileSystem {
-  def isDirectory(path: Path): URIO[WorkspaceFileSystem, Boolean] =
-    ZIO.serviceWithZIO(_.isDirectory(path))
-
-  def readUtf8(path: Path): ZIO[WorkspaceFileSystem, Throwable, String] =
-    ZIO.serviceWithZIO(_.readUtf8(path))
-
-  def list(path: Path): ZIO[WorkspaceFileSystem, Throwable, Chunk[String]] =
-    ZIO.serviceWithZIO(_.list(path))
-
-  val live: ULayer[WorkspaceFileSystem] = ZLayer.succeed(new WorkspaceFileSystem {
-    override def isDirectory(path: Path): UIO[Boolean] =
-      ZIO.attemptBlocking(Files.isDirectory(path)).orElseSucceed(false)
-
-    override def readUtf8(path: Path): Task[String] =
-      ZIO.attemptBlocking(Files.readString(path, UTF_8))
-
-    override def list(path: Path): Task[Chunk[String]] =
-      ZIO.attemptBlocking {
-        val stream = Files.list(path)
-        try Chunk.fromIterable(stream.limit(200).map(_.getFileName.toString).sorted.toList.asScala)
-        finally stream.close()
-      }
-  })
-}
 
 /** Bounded result of a local process invocation. */
 final case class CommandOutput(

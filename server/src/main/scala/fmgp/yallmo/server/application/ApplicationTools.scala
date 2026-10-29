@@ -1,7 +1,8 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.AgentTool
+import fmgp.yallmo.fs.{FileSystem, FsRead}
+import fmgp.yallmo.model.{ToolKey, YallmoError}
+import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
 import fmgp.yallmo.tool.*
 import zio.*
 
@@ -25,18 +26,16 @@ final case class ToolAvailability(
 
 /** Shared core tool composition for an explicitly supplied workspace. */
 object ApplicationTools {
-  // Retain legacy service wiring without registering the deprecated, unsandboxed tool.
-  @scala.annotation.nowarn("cat=deprecation&msg=UNSAFE with no sandbox")
-  type Environment = WorkspaceFileSystem & BashExecutor & GitClient & ScalaCodeExecutor & ScalaCodeDynamicExecutor
+  type Environment = BashExecutor & GitClient & ScalaCodeExecutor
 
-  @scala.annotation.nowarn("cat=deprecation&msg=UNSAFE with no sandbox")
   val live: ULayer[Environment] =
-    WorkspaceFileSystem.live ++ BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live ++ ScalaCodeDynamicExecutor.live
+    BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live
 
   /** Probes requirements without executing tools and logs availability once at startup. */
   def evaluate(workspace: Path): URIO[Environment, StartupTools] =
     for {
-      hasWorkspace <- WorkspaceFileSystem.isDirectory(workspace)
+      filesystem <- FileSystem.open(workspace.toString).option
+      hasWorkspace = filesystem.nonEmpty
       hasBash <- ZIO.serviceWithZIO[BashExecutor](_.isAvailable)
       gitStatus <- ZIO.serviceWithZIO[GitClient] { git =>
         git.isAvailable.flatMap {
@@ -46,7 +45,6 @@ object ApplicationTools {
         }
       }
       hasScala <- ZIO.serviceWithZIO[ScalaCodeExecutor](_.isAvailable)
-      // UNSAFE hasDynamicScala <- ZIO.serviceWithZIO[ScalaCodeDynamicExecutor](_.isAvailable)
       unavailable = Chunk.fromIterable(
         List(
           Option.unless(hasWorkspace)(ToolKey.ReadFile -> Chunk("workspace is not an accessible directory")),
@@ -54,17 +52,15 @@ object ApplicationTools {
           Option.unless(hasBash)(ToolKey.Bash -> Chunk("bash is not available on PATH")),
           gitStatus.left.toOption.map(reason => ToolKey.RepositoryChanges -> Chunk(reason)),
           Option.unless(hasScala)(ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")),
-          // UNSAFE Option.unless(hasDynamicScala)(ToolKey.ScalaUnsafe -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
         ).flatten
       )
       available = Chunk.fromIterable(
         List[Option[AgentTool[Environment]]](
-          Option.when(hasWorkspace)(new ReadFileTool(workspace)),
-          Option.when(hasWorkspace)(new ListFilesTool(workspace)),
+          filesystem.map(fs => bindFilesystem(new ReadFileTool, fs)),
+          filesystem.map(fs => bindFilesystem(new ListFilesTool, fs)),
           Option.when(hasBash)(new BashTool(workspace)),
           gitStatus.toOption.map(_ => new RepositoryChangesTool(workspace)),
           Option.when(hasScala)(new ScalaTool()),
-          // UNSAFE Option.when(hasDynamicScala)(dynamicScalaTool(workspace))
         ).flatten
       )
       startupTools = StartupTools(available, ToolAvailability(available.map(_.definition.key), unavailable))
@@ -74,28 +70,11 @@ object ApplicationTools {
       )
     } yield startupTools
 
-  // UNSAFE /** Adapts the current caller's filesystem at execution time without capturing services during discovery. */
-  // private def dynamicScalaTool(workspace: Path): AgentTool[Environment] = {
-  //   val path = workspace.toAbsolutePath.normalize.toString
-  //   val config = ScalaCodeDynamicExecutor.Config(
-  //     apiDescription = s"""fmgp.yallmo.scalacode.FileSystem:
-  //       |  def isDirectory(path: String): zio.UIO[Boolean]
-  //       |  def readUtf8(path: String): zio.Task[String]
-  //       |  def list(path: String): zio.Task[zio.Chunk[String]]
-  //       |Workspace: $path
-  //       |Use absolute paths. Relative paths use the server working directory, not the workspace.
-  //       |Example: ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.list(${ujson.write(path)}))
-  //       |""".stripMargin
-  //   )
-  //   val tool = new ScalaDynamicTool[ScriptFileSystem](config)
-  //   new AgentTool[Environment] {
-  //     override val definition: AgentToolDefinition = tool.definition
-
-  //     override def execute(call: ExternalToolCall): ZIO[Environment, YallmoError, ExternalToolResult] =
-  //       tool.execute(call).provideSomeEnvironment[Environment] { environment =>
-  //         ZEnvironment[ScalaCodeDynamicExecutor](environment.get[ScalaCodeDynamicExecutor])
-  //           .add[ScriptFileSystem](new ScalaCodeFileSystem(environment.get[WorkspaceFileSystem]))
-  //       }
-  //   }
-  // }
+  /** Bind a read-only capability once; callers cannot substitute a different workspace at invocation time. */
+  private def bindFilesystem(tool: AgentTool[FsRead], fs: FsRead): AgentTool[Any] =
+    new AgentTool[Any] {
+      override val definition: AgentToolDefinition = tool.definition
+      override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+        tool.execute(call).provideEnvironment(ZEnvironment[FsRead](fs))
+    }
 }

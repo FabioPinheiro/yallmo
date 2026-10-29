@@ -74,37 +74,6 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
   }
 
-  test("workspace assembly advertises the injected dynamic executor and filesystem API without executing snippets") {
-    run {
-      ZIO.scoped {
-        for {
-          root <- temporaryRoot
-          events <- Ref.make(Vector.empty[String])
-          alive <- Ref.make(false)
-          runtime <- ApplicationRuntime.make(Config(), Chunk.empty)
-          executor = new ScalaCodeDynamicExecutor {
-            def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-            def execute[R: EnvironmentTag](
-                code: String,
-                timeout: Duration,
-                maxOutputBytes: Int
-            ): RIO[R, CommandOutput] =
-              ZIO.dieMessage("Assembly must not execute dynamic snippets")
-          }
-          services = toolServices(events, alive).map(_.add[ScalaCodeDynamicExecutor](executor))
-          opened <- runtime.openWorkspace(None, root, services)
-        } yield {
-          val definition = opened._1.context(None).tools.find(_.key == ToolKey.ScalaUnsafe).get
-          assert(definition.description.contains("fmgp.yallmo.scalacode.FileSystem"))
-          assert(definition.description.contains(root.toString))
-          assert(definition.description.contains("not a sandbox"))
-          assert(opened._2.available.contains(ToolKey.ScalaUnsafe))
-          assert(!opened._2.available.contains(ToolKey.Scalamode))
-        }
-      }
-    }
-  }
-
   test("coach submits with scoped notebook tools and persists drafts without exposing other roots") {
     run {
       ZIO.scoped {
@@ -309,7 +278,8 @@ final class ApplicationRuntimeSuite extends FunSuite {
         _ <- ZIO.scoped {
           for {
             root <- temporaryRoot
-            workspace = root.resolve("workspace")
+            workspace <- ZIO.attempt(Files.createDirectory(root.resolve("workspace")))
+            _ <- ZIO.attempt(Files.writeString(workspace.resolve("notes.txt"), "fake content"))
             client = toolClient(requests)
             runtime <- ApplicationRuntime.make(config, Chunk(human)).provideEnvironment(ZEnvironment(client))
             opened <- runtime.openWorkspace(Some(root.resolve("storage")), workspace, toolServices(events, alive))
@@ -344,12 +314,9 @@ final class ApplicationRuntimeSuite extends FunSuite {
               calls,
               Vector(
                 "acquire",
-                s"directory:$workspace",
                 "bash.available",
                 "git.available",
-                "scala.available",
-                s"read:${workspace.resolve("notes.txt")}",
-                s"read:${workspace.resolve("notes.txt")}"
+                "scala.available"
               )
             )
           }
@@ -641,15 +608,6 @@ final class ApplicationRuntimeSuite extends FunSuite {
 
   private def toolServices(events: Ref[Vector[String]], alive: Ref[Boolean]): ULayer[ApplicationTools.Environment] = {
     def record(event: String): UIO[Unit] = events.update(_ :+ event)
-    val filesystem = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = record(s"directory:$path").as(true)
-      def readUtf8(path: Path): Task[String] =
-        alive.get.flatMap {
-          case true  => record(s"read:$path").as("fake content")
-          case false => ZIO.dieMessage("Tool service was closed before submission")
-        }
-      def list(path: Path): Task[Chunk[String]] = ZIO.dieMessage(s"Unexpected list: $path")
-    }
     val bash = new BashExecutor {
       def isAvailable: UIO[Boolean] = record("bash.available").as(false)
       def execute(command: String, path: Path, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] =
@@ -677,12 +635,10 @@ final class ApplicationRuntimeSuite extends FunSuite {
       def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
         ZIO.dieMessage(s"Unexpected dynamic Scala: $code $timeout $maxOutputBytes")
     }
-    val filesystemLayer: ULayer[WorkspaceFileSystem] = ZLayer.scoped(
-      ZIO.acquireRelease(record("acquire") *> alive.set(true).as(filesystem))(_ =>
-        alive.set(false) *> record("release")
-      )
+    val bashLayer: ULayer[BashExecutor] = ZLayer.scoped(
+      ZIO.acquireRelease(record("acquire") *> alive.set(true).as(bash))(_ => alive.set(false) *> record("release"))
     )
-    filesystemLayer ++ ZLayer.succeed(bash) ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala) ++
+    bashLayer ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala) ++
       ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicScala)
   }
 

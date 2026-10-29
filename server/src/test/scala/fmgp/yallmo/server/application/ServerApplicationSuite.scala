@@ -114,7 +114,6 @@ final class ServerApplicationSuite extends FunSuite {
         assertEquals(
           calls,
           Vector(
-            s"directory:${configured.workspace}",
             "bash.available",
             "git.available",
             s"git.worktree:${configured.workspace}",
@@ -142,22 +141,22 @@ final class ServerApplicationSuite extends FunSuite {
         assertEquals(configured.assembly.context(None).tools.map(_.key).toSet, Set(ToolKey.ReadFile, ToolKey.ListFiles))
         assertEquals(
           calls,
-          Vector(s"directory:${workspace.toRealPath()}", "bash.available", "git.available", "scala.available")
+          Vector("bash.available", "git.available", "scala.available")
         )
       }
     })
   }
 
-  test("git outside a worktree and inaccessible tool workspace do not enter the catalog") {
+  test("git outside a worktree does not enter the catalog") {
     run(ZIO.scoped {
       for {
         root <- temporaryRoot
         path <- writeConfig(root, config)
-        services <- probes(directory = false, worktree = false)
+        services <- probes(worktree = false)
         application <- ServerApplication.open(root, Some(path), Some(root)).provideSomeLayer[Scope](services.layer)
       } yield assertEquals(
         application.configured.get.assembly.context(None).tools.map(_.key).toSet,
-        Set(ToolKey.Bash, ToolKey.Scalamode)
+        Set(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
       )
     })
   }
@@ -559,7 +558,6 @@ final class ServerApplicationSuite extends FunSuite {
   }
 
   private def probes(
-      directory: Boolean = true,
       bash: Boolean = true,
       git: Boolean = true,
       worktree: Boolean = true,
@@ -568,11 +566,7 @@ final class ServerApplicationSuite extends FunSuite {
   ): UIO[Probes] = Ref.make(Vector.empty[String]).map { calls =>
     def record(value: String): UIO[Unit] = calls.update(_ :+ value)
     def unexpected[A]: UIO[A] = ZIO.dieMessage("Startup must not execute tools")
-    val filesystem = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = record(s"directory:$path").as(directory)
-      def readUtf8(path: Path): Task[String] = unexpected
-      def list(path: Path): Task[Chunk[String]] = unexpected
-    }
+
     val shell = new BashExecutor {
       def isAvailable: UIO[Boolean] = (record("bash.available") *> beforeBash).as(bash)
       def execute(command: String, workspace: Path, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] =
@@ -597,7 +591,7 @@ final class ServerApplicationSuite extends FunSuite {
     }
     Probes(
       calls,
-      ZLayer.succeed[WorkspaceFileSystem](filesystem) ++ ZLayer.succeed[BashExecutor](shell) ++
+      ZLayer.succeed[BashExecutor](shell) ++
         ZLayer.succeed[GitClient](repository) ++ ZLayer.succeed[ScalaCodeExecutor](compiler) ++
         ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicCompiler)
     )

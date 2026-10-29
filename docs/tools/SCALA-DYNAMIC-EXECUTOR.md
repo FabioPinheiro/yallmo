@@ -10,7 +10,9 @@ The executor holds compiler configuration only. Its layer does not require or ca
 
 ```scala
 val config = ScalaCodeDynamicExecutor.Config(
-  apiDescription = "fmgp.yallmo.scalacode.FileSystem: def readUtf8(path: String): zio.Task[String]"
+  // Retain scalacode-api and explicitly add the filesystem artifact and its dependencies.
+  classpath = filesystemCompilerClasspath,
+  apiDescription = "fmgp.yallmo.fs.FsRead: def readUtf8(path: String): zio.IO[fmgp.yallmo.fs.FsError, String]"
 )
 val compiler = ScalaCodeDynamicExecutor.layer(config)
 ```
@@ -19,14 +21,14 @@ val compiler = ScalaCodeDynamicExecutor.layer(config)
 
 ```scala
 import fmgp.yallmo.tool.*
-import fmgp.yallmo.scalacode.{FileSystem as ScriptFileSystem}
+import fmgp.yallmo.fs.{FileSystem, FsRead}
 import zio.*
 
-val execution: ZIO[ScalaCodeDynamicExecutor & ScriptFileSystem, Throwable, CommandOutput] =
+val execution: ZIO[ScalaCodeDynamicExecutor & FsRead, Throwable, CommandOutput] =
   ZIO.serviceWithZIO[ScalaCodeDynamicExecutor](
-    _.execute[ScriptFileSystem](
-      """ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](
-        _.readUtf8("/tmp/example.txt")
+    _.execute[FsRead](
+      """ZIO.serviceWithZIO[fmgp.yallmo.fs.FsRead](
+        _.readUtf8("example.txt").mapError(error => new java.io.IOException(error.toString))
       )""",
       timeout = 30.seconds,
       maxOutputBytes = 4096
@@ -34,11 +36,11 @@ val execution: ZIO[ScalaCodeDynamicExecutor & ScriptFileSystem, Throwable, Comma
   )
 ```
 
-The caller supplies `ScriptFileSystem` through its normal ZIO environment when running `execution`, not when constructing the executor. To adapt an existing `WorkspaceFileSystem`, provide `new ScalaCodeFileSystem(host)` as the `ScriptFileSystem` service in the caller's environment.
+The caller supplies `FsRead` directly through its normal ZIO environment when running `execution`, not when constructing the executor. Open `FileSystem.open(trustedRoot)` in trusted host code and provide it with `ZEnvironment[FsRead](fs)`; there is no script-specific filesystem adapter. Operations use root-relative paths; absolute paths, `..`, and symlinks are rejected. Map `FsError` to a `Throwable` at the script boundary as shown above. `filesystemCompilerClasspath` is trusted host configuration containing scalacode-api, filesystem, zio-streams, zio-json and their dependencies; the default classpath intentionally remains scalacode-api only.
 
 A snippet must return a ZIO effect whose error type is `Throwable` (or a subtype). The host selects `R` at each execution; no environment type string is needed in compiler configuration. Intersections such as `example.Database & example.Notifications` are supported. Include the available service types and signatures in `Config.apiDescription`.
 
-The shared contract is `ScalaScript` with `def program[R]: ZIO[R, Throwable, Any]`. The generated implementation first checks that the snippet is a ZIO effect with a compatible error type, then uses one unchecked environment-type adaptation to implement this polymorphic method. A concrete service requirement cannot be proven for an arbitrary method-level `R`: the caller must supply all services the snippet uses. Missing services become runtime failure results; the host still prunes the environment to the selected subset. This boundary is trusted, not statically type-safe environment validation.
+The shared contract is `ScalaScript` with `def program[R]: ZIO[R, Throwable, Any]`. A concrete service requirement cannot be proven for an arbitrary method-level `R`: the caller must supply all services the snippet uses, and the host prunes the environment to the selected subset. **Existing limitation:** the current generated bridge does not adapt a concrete service requirement to its generic `R`, so service-dependent snippets such as the `FsRead` examples above currently fail compilation. The opt-in filesystem integration test exposes this pre-existing issue; the examples describe the intended host provisioning, not a workaround. Dynamic registration remains disabled.
 
 ## Use from an agent
 
@@ -46,26 +48,26 @@ Create an agent tool with the subset scripts should receive:
 
 ```scala
 // Construction requires neither an executor instance nor script-facing services.
-val tool = new ScalaDynamicTool[ScriptFileSystem](config)
-// AgentTool[ScalaCodeDynamicExecutor & ScriptFileSystem]
+val tool = new ScalaDynamicTool[FsRead](config)
+// AgentTool[ScalaCodeDynamicExecutor & FsRead]
 
-val invocation: ZIO[ScalaCodeDynamicExecutor & ScriptFileSystem,
+val invocation: ZIO[ScalaCodeDynamicExecutor & FsRead,
   fmgp.yallmo.model.YallmoError, fmgp.yallmo.orchestration.ExternalToolResult] =
   tool.execute(
     fmgp.yallmo.orchestration.ExternalToolCall(
       fmgp.yallmo.model.ToolKey.ScalaUnsafe,
-      """{"code":"ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.readUtf8(\"/tmp/example.txt\"))"}"""
+      """{"code":"ZIO.serviceWithZIO[fmgp.yallmo.fs.FsRead](_.readUtf8(\"example.txt\").mapError(error => new java.io.IOException(error.toString)))"}"""
     )
   )
 ```
 
-Register this tool in the agent's `AgentRunner` and advertise `tool.definition` in its `StaticContext`. The runner must supply `ScalaCodeDynamicExecutor & ScriptFileSystem` and may have additional services: `AgentTool` is contravariant, so this tool works in a larger agent environment. Each invocation looks up its current executor and script services; only the `ScriptFileSystem` subset is passed to the script, not the executor itself or the agent's other services. The same tool can be reused by concurrent agents with different environments.
+Register this tool in the agent's `AgentRunner` and advertise `tool.definition` in its `StaticContext`. The runner must supply `ScalaCodeDynamicExecutor & FsRead` and may have additional services: `AgentTool` is contravariant, so this tool works in a larger agent environment. Each invocation looks up its current executor and script services; only the `FsRead` subset is passed to the script, not the executor itself or the agent's other services. The same tool can be reused by concurrent agents with different environments.
 
 `ScalaDynamicTool` captures configuration only. Use `Config.apiDescription` to advertise the services provided by the tool's `R`, and keep its compiler/API configuration consistent with `ScalaCodeDynamicExecutor.layer`. The LLM calls `scalaunsafe` with `{"code":"..."}`; include `"scalaunsafe"` in an explicit tool allowlist.
 
 The two tools are independent: `ScalaTool` requires `ScalaCodeExecutor` and advertises `scalamode`; `ScalaDynamicTool[R]` requires `ScalaCodeDynamicExecutor & R` and advertises `scalaunsafe`. They have no mode switch and can coexist in one runner. With `R = Any`, the dynamic tool requires only `ScalaCodeDynamicExecutor`.
 
-`ApplicationTools` currently registers only the restricted tool; its dynamic probe and registration are commented out. When enabled through trusted host wiring, the `scalaunsafe` wrapper supplies the portable `fmgp.yallmo.scalacode.FileSystem` API by adapting the current caller's existing `WorkspaceFileSystem` at execution time. The description includes the workspace path, API signatures, and a service-access example. Use absolute paths: relative paths resolve against the server working directory, and this is not workspace confinement.
+`ApplicationTools` registers only the restricted tool; dynamic probing, service wiring and registration are disabled. Custom trusted host wiring may explicitly supply `FsRead` as above; startup does not create a dynamic filesystem wrapper. Rooted filesystem validation is not an OS sandbox and does not constrain arbitrary dynamically loaded JVM code.
 
 There is no dynamic-execution configuration flag. If trusted host wiring registers the dynamic tool, agents without an explicit tool allowlist can use it. To deny trusted in-process execution, exclude `scalaunsafe` from the agent's `capabilities.tools` allowlist. Custom host wiring can still use `ScalaDynamicTool[R]` with a different service subset.
 
@@ -78,7 +80,7 @@ Key migration: restricted-tool callers and allowlists must change `scalasafemode
 - The extra compiler classpath defaults to the `scalacode-api` artifact only, not the host classpath. Add custom service API artifacts and their dependencies explicitly through `Config.classpath`, retaining the API artifact itself.
 - Deploy the API as a separate artifact to preserve this compiler dependency boundary. For a host fat JAR, point `Config.classpath` at a separate, matching `scalacode-api` JAR.
 - The generated JAR contains script code only. `ScalaScript` (with method-level `program[R]`), service interfaces, Scala, and ZIO resolve through the host parent classloader.
-- The script-facing `FileSystem` uses string paths; `ScalaCodeFileSystem` converts them to JVM paths inside effects.
+- Filesystem service contracts live in the separate `filesystem` module, not `scalacode-api`. `FsRead` uses root-relative string paths and typed `FsError` failures.
 - Compiler directives, annotations, and other compiler-configuration escape hatches are rejected both by the tool and direct executor calls.
 - The timeout covers compilation and execution. Compiler processes are terminated on timeout/cancellation. In-process ZIO cancellation is cooperative: non-cooperative loops, blocking calls, and finalizers may outlive the deadline.
 - Results contain compiler diagnostics and the returned value or failure, bounded by `maxOutputBytes`. Excess compiler output is drained without an unbounded log file. Global stdout/stderr and ZIO logs are not captured.

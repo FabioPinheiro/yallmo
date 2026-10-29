@@ -57,36 +57,32 @@ locally spawned `ssh` command.
 
 ## Why a routed service is required
 
-`ReplTools` currently constructs tools once. `ReadFileTool` and `ListFilesTool`
-capture a local `Path`; `BashTool` depends on `BashExecutor`; and
-`RepositoryChangesTool` depends on `GitClient`. Their definitions are advertised
-through `ReplMain`'s `StaticContext`.
+The local startup path is now `ApplicationTools.evaluate`: it opens one rooted
+`FileSystem` from the `filesystem` module and binds `ReadFileTool` and
+`ListFilesTool` to its `FsRead` capability. `BashTool` captures its workspace and
+uses `BashExecutor`; `RepositoryChangesTool` uses `GitClient`.
 
-The **tool definitions** must remain fixed. The system-prompt text cannot: the
-current `ReplSession` holds one fixed `StaticContext`, so it must be refactored
-to obtain a per-turn context with the current workspace notice while retaining
-the same tool definitions.
+The **tool definitions** must remain fixed while per-turn workspace notices and
+routing change. Replacing a ZIO layer after connection is insufficient:
 
-Replacing `WorkspaceFileSystem` with an SSH implementation after connection is
-therefore insufficient:
+1. Bash and Git do not use `FsRead`.
+2. File tools are already bound to their startup filesystem; changing invocation
+   services cannot switch that root.
+3. Already-created service instances are not replaced by changing a layer.
 
-1. `bash` and Git do not use `WorkspaceFileSystem`.
-2. the file tools have already resolved paths from a local root;
-3. changing a ZIO layer does not replace an already-created service.
-
-Instead, provide stable routed implementations for all workspace-dependent
-services. Each implementation reads the current target from a shared `Ref` and
-delegates to its local or SSH backend.
+This document is a routing proposal, not implemented switching behavior. It
+would require startup to bind stable routed capabilities rather than a fixed
+local filesystem. Each routed implementation would read the current target
+from shared state and delegate to its local or SSH backend while preserving
+root-relative path validation and typed errors.
 
 ```text
-WorkspaceFileSystem  -> routed filesystem -> local filesystem OR SFTP
-BashExecutor         -> routed executor   -> local Bash       OR SSH exec
-GitClient            -> routed Git        -> local Git        OR SSH exec
+FsRead       -> routed read capability -> rooted local filesystem OR SFTP
+BashExecutor -> routed executor        -> local Bash              OR SSH exec
+GitClient    -> routed Git             -> local Git               OR SSH exec
 ```
 
-`RoutedWorkspaceFileSystem` is a better name than
-`SshWrapWorkspaceFileSystem`: it owns the local-or-remote decision, not merely
-an SSH wrapper.
+`RoutedFsRead` would own the local-or-remote decision, not merely wrap SSH.
 
 ## Component architecture
 
@@ -272,14 +268,14 @@ are modified rather than duplicated when they already own the public API.
 ```text
 core/src/main/scala/fmgp/yallmo/tool/
 ├── ToolServices.scala                  # Modify: local implementations remain behind routed services
-├── FileSystemTools.scala               # Modify: accept logical workspace paths, not fixed local paths
+├── FileSystemTools.scala               # Modify startup binding: route the existing FsRead capability
 ├── BashTool.scala                      # Modify: remove fixed local workspace capture
 ├── RepositoryChangesTool.scala         # Modify: use routed Git/cwd
 └── remote/                             # New: remote-workspace tool implementation
     ├── WorkspaceTarget.scala           # Local, Remote, RemoteUnavailable; endpoint/path value types
     ├── WorkspaceSession.scala          # Ref.Synchronized-backed active-target service
     ├── WorkspaceRouter.scala           # snapshots target and selects a backend
-    ├── RoutedWorkspaceServices.scala   # WorkspaceFileSystem, BashExecutor, GitClient adapters
+    ├── RoutedWorkspaceServices.scala   # FsRead, BashExecutor, GitClient adapters
     ├── RemoteTool.scala                # New later: approved agent-facing remote control tool
     └── ssh/                            # SSH/SFTP backend; no REPL or AgentTool classes
         ├── SshModels.scala             # ConnectRequest, errors, host-key and credential types

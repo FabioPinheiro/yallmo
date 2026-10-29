@@ -56,7 +56,7 @@ An existing parent is allowed without inheriting its history. An input can refer
 Conversational agents retain their normal text-loop behavior. A direct `ToolCall` executes through the selected
 agent's authorized runner and returns a correlated `ToolOutput` without inference. Registered approval gates,
 argument validation and deadlines still apply. No session is required or created.
-The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path with separate **Run scalamode** (restricted) and **Run scalaunsafe** (trusted dynamic) buttons. `ApplicationTools` currently registers only `scalamode`; dynamic registration is disabled. When enabled through trusted host wiring, the dynamic tool receives the current filesystem through the portable `fmgp.yallmo.scalacode.FileSystem` API; its description includes the workspace path and service signatures. Neither button bypasses server permissions. Agents without a tool allowlist can use registered `scalaunsafe`; exclude it from an explicit `capabilities.tools` allowlist to deny trusted in-process execution.
+The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path with separate **Run scalamode** (restricted) and **Run scalaunsafe** (trusted dynamic) buttons. `ApplicationTools` currently registers only `scalamode`; dynamic registration is disabled. Custom trusted host wiring can explicitly supply the `filesystem` module's read-only `fmgp.yallmo.fs.FsRead` capability and matching compiler classpath; no script-specific filesystem API or adapter remains. Neither button bypasses server permissions. Agents without a tool allowlist can use registered `scalaunsafe`; exclude it from an explicit `capabilities.tools` allowlist to deny trusted in-process execution.
 
 Failures can leave accepted input; disconnect abandons the local wait, not admitted execution. Repeating an invocation
 can repeat provider/tool side effects. Inspect message history before manually repeating uncertain requests.
@@ -176,7 +176,14 @@ the existing core implementation. Startup only probes directory access, Bash/Sca
 membership, then validates configured capabilities against the available catalog. It does not execute tools or agents.
 Tool composition, availability models/probes and service layers live in server-module `ApplicationTools`.
 `ApplicationRuntime.openWorkspace` owns scoped tool services and execution assembly on the server. The REPL
-connects over WebSocket and has no local tool probing or execution path. Core tool implementations are unchanged.
+connects over WebSocket and has no local tool probing or execution path. Tool implementations remain in core;
+read-only file tools now use the shared `filesystem` capabilities.
+
+File tools use one rooted `filesystem` instance opened at startup and receive only its `FsRead` capability.
+Paths must be workspace-relative (`.` lists the root); empty/absolute paths, `..` and symlinks are rejected.
+A listing fails if any direct entry is a symlink. Direct module callers must also supply a root with no symlink
+ancestors; server workspace configuration is canonicalized before opening. Missing or invalid
+roots omit the file tools from availability; filesystem failures become tool execution errors. Bash/Git behavior is unchanged.
 
 These workspace roots are **not a sandbox**. Configured agent filesystem roots retain core's existing cwd-relative
 semantics; `--workspace` does not silently rewrite them.

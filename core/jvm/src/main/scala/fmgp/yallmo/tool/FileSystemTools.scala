@@ -6,66 +6,67 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.model.llm.JsonSchema
 import zio.*
 
-import java.nio.file.Path
+import fmgp.yallmo.fs.{FsError, FsRead}
 import fmgp.yallmo.orchestration.{AgentToolDefinition, ExternalToolCall, ExternalToolResult}
 
-/** Reads a UTF-8 file from a path resolved against one configured workspace directory. */
-final class ReadFileTool(workspace: Path = Path.of("").toAbsolutePath.normalize)
-    extends AgentTool[WorkspaceFileSystem] {
+/** Reads a UTF-8 file relative to the configured filesystem root. */
+final class ReadFileTool extends AgentTool[FsRead] {
   override val definition: AgentToolDefinition = ReadFileTool.definition
 
-  override def execute(call: ExternalToolCall): ZIO[WorkspaceFileSystem, YallmoError, ExternalToolResult] =
-    FileSystemTools.resolve(workspace, call).flatMap { path =>
-      WorkspaceFileSystem
-        .readUtf8(path)
-        .mapError(error => YallmoError.ToolExecutionFailed(definition.key, error.getMessage, error))
-        .map(ExternalToolResult.apply)
-    }
+  override def execute(call: ExternalToolCall): ZIO[FsRead, YallmoError, ExternalToolResult] =
+    for {
+      path <- FileSystemTools.path(call)
+      contents <- ZIO.serviceWithZIO[FsRead](_.readUtf8(path)).mapError(FileSystemTools.failure(definition.key, _))
+    } yield ExternalToolResult(contents)
 }
 
 object ReadFileTool {
   val definition: AgentToolDefinition = AgentToolDefinition(
     key = ToolKey.ReadFile,
-    description = "Read a UTF-8 file at a path resolved against the workspace; parent traversal is allowed.",
+    description =
+      "Read a UTF-8 file relative to the workspace; absolute paths, parent traversal and symlinks are forbidden.",
     inputSchema = FileSystemTools.pathSchema
   )
 }
 
-/** Lists up to 200 direct entries at a path resolved against one configured workspace directory. */
-final class ListFilesTool(workspace: Path = Path.of("").toAbsolutePath.normalize)
-    extends AgentTool[WorkspaceFileSystem] {
+/** Lists all sorted direct entries relative to the configured filesystem root. */
+final class ListFilesTool extends AgentTool[FsRead] {
   override val definition: AgentToolDefinition = ListFilesTool.definition
 
-  override def execute(call: ExternalToolCall): ZIO[WorkspaceFileSystem, YallmoError, ExternalToolResult] =
-    FileSystemTools.resolve(workspace, call).flatMap { path =>
-      WorkspaceFileSystem
-        .list(path)
-        .mapError(error => YallmoError.ToolExecutionFailed(definition.key, error.getMessage, error))
-        .map(_.mkString("\n"))
-        .map(ExternalToolResult.apply)
-    }
+  override def execute(call: ExternalToolCall): ZIO[FsRead, YallmoError, ExternalToolResult] =
+    for {
+      path <- FileSystemTools.path(call)
+      entries <- ZIO.serviceWithZIO[FsRead](_.list(path)).mapError(FileSystemTools.failure(definition.key, _))
+    } yield ExternalToolResult(entries.mkString("\n"))
 }
 
 object ListFilesTool {
   val definition: AgentToolDefinition = AgentToolDefinition(
     key = ToolKey.ListFiles,
-    description = "List direct entries at a path resolved against the workspace; parent traversal is allowed.",
+    description =
+      "List all sorted direct entries relative to the workspace; absolute paths, parent traversal and symlinks are forbidden.",
     inputSchema = FileSystemTools.pathSchema
   )
 }
 
 private object FileSystemTools {
+  def failure(key: ToolKey, error: FsError): YallmoError =
+    YallmoError.ToolExecutionFailed(key, error.toString, new java.io.IOException(error.toString))
+
   val pathSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(
-    Map("path" -> JsonSchema.StringSchema(Some("Path resolved against the workspace; ../ traversal is allowed"))),
+    Map(
+      "path" -> JsonSchema.StringSchema(
+        Some("Workspace-relative path; use . for the root. Absolute paths, .. and symlinks are forbidden")
+      )
+    ),
     required = Set("path"),
     additionalProperties = false
   )
 
-  def resolve(workspace: Path, call: ExternalToolCall): IO[YallmoError, Path] =
+  def path(call: ExternalToolCall): IO[YallmoError, String] =
     ZIO
       .fromEither(
         scala.util.Try(ujson.read(call.argumentsJson)("path").str).toEither.left.map(_.getMessage)
       )
       .mapError(YallmoError.InvalidToolArguments(call.toolKey, _))
-      .map(workspace.resolve(_).normalize)
 }

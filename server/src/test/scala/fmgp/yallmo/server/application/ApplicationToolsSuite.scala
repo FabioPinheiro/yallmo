@@ -3,272 +3,198 @@ package fmgp.yallmo.server.application
 import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
 import fmgp.yallmo.tool.*
-import fmgp.yallmo.scalacode.{FileSystem as ScriptFileSystem}
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
+import java.util.Comparator
 import munit.FunSuite
 import zio.*
 
 final class ApplicationToolsSuite extends FunSuite {
-  private val workspace = Path.of("/explicit/application-workspace")
   private val allKeys = Chunk(
     ToolKey.ReadFile,
     ToolKey.ListFiles,
     ToolKey.Bash,
     ToolKey.RepositoryChanges,
-    ToolKey.Scalamode,
-    ToolKey.ScalaUnsafe
+    ToolKey.Scalamode
   )
 
   test("startup selects only tools whose requirements pass without executing tools") {
-    val (tools, calls) = run {
-      for {
-        services <- probes(git = false)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        calls <- services.calls.get
-      } yield (tools, calls)
-    }
-    assertEquals(
-      tools.available.map(_.definition.key),
-      Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe)
-    )
-    assertEquals(
-      tools.availability,
-      ToolAvailability(
-        Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe),
-        Chunk(ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"))
+    withWorkspace { workspace =>
+      val (tools, calls) = run {
+        for {
+          services <- probes(git = false)
+          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          calls <- services.calls.get
+        } yield (tools, calls)
+      }
+      val expected = Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
+      assertEquals(tools.available.map(_.definition.key), expected)
+      assertEquals(
+        tools.availability,
+        ToolAvailability(expected, Chunk(ToolKey.RepositoryChanges -> Chunk("git is not available on PATH")))
       )
-    )
-    assertEquals(
-      calls,
-      Vector(s"directory:$workspace", "bash.available", "git.available", "scala.available", "dynamic.available")
-    )
+      assertEquals(calls, Vector("bash.available", "git.available", "scala.available"))
+    }
   }
 
-  test("explicit workspace reaches directory and work-tree probes in startup order") {
-    val otherWorkspace = Path.of("/another/application-workspace")
-    val (first, second, calls) = run {
-      for {
-        services <- probes()
-        first <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        second <- ApplicationTools.evaluate(otherWorkspace).provideLayer(services.layer)
-        calls <- services.calls.get
-      } yield (first, second, calls)
-    }
-    assertEquals(first.available.map(_.definition.key), allKeys)
-    assertEquals(first.availability, ToolAvailability(allKeys, Chunk.empty))
-    assertEquals(second.availability, first.availability)
-    assertEquals(
-      calls,
-      Vector(workspace, otherWorkspace).flatMap(path =>
-        Vector(
-          s"directory:$path",
-          "bash.available",
-          "git.available",
-          s"git.worktree:$path",
-          "scala.available",
-          "dynamic.available"
+  test("explicit workspaces reach work-tree probes in startup order") {
+    withWorkspace { workspace =>
+      withWorkspace { otherWorkspace =>
+        val (first, second, calls) = run {
+          for {
+            services <- probes()
+            first <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+            second <- ApplicationTools.evaluate(otherWorkspace).provideLayer(services.layer)
+            calls <- services.calls.get
+          } yield (first, second, calls)
+        }
+        assertEquals(first.availability, ToolAvailability(allKeys, Chunk.empty))
+        assertEquals(second.availability, first.availability)
+        assertEquals(
+          calls,
+          Vector(workspace, otherWorkspace).flatMap(path =>
+            Vector("bash.available", "git.available", s"git.worktree:$path", "scala.available")
+          )
         )
-      )
-    )
+      }
+    }
   }
 
-  test("unavailable directory and executables retain ordered availability reasons") {
-    val (tools, calls) = run {
-      for {
-        services <- probes(directory = false, bash = false, git = false, scala = false, dynamicScala = false)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        calls <- services.calls.get
-      } yield (tools, calls)
-    }
-    assertEquals(tools.available, Chunk.empty)
-    assertEquals(
-      tools.availability,
-      ToolAvailability(
-        Chunk.empty,
-        Chunk(
-          ToolKey.ReadFile -> Chunk("workspace is not an accessible directory"),
-          ToolKey.ListFiles -> Chunk("workspace is not an accessible directory"),
-          ToolKey.Bash -> Chunk("bash is not available on PATH"),
-          ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"),
-          ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH"),
-          ToolKey.ScalaUnsafe -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+  test("invalid roots disable only filesystem tools and retain ordered availability reasons") {
+    withWorkspace { workspace =>
+      Files.createSymbolicLink(workspace.resolve("link"), workspace)
+      for invalid <- List(
+          workspace.resolve("missing"),
+          workspace.resolve("notes.txt"),
+          workspace.resolve("link"),
+          workspace.resolve("link/src")
         )
-      )
-    )
-    assertEquals(
-      calls,
-      Vector(s"directory:$workspace", "bash.available", "git.available", "scala.available", "dynamic.available")
-    )
+      do {
+        val tools = run {
+          for {
+            services <- probes(bash = false, git = false, scala = false)
+            tools <- ApplicationTools.evaluate(invalid).provideLayer(services.layer)
+          } yield tools
+        }
+        assertEquals(tools.available, Chunk.empty)
+        assertEquals(
+          tools.availability.unavailable,
+          Chunk(
+            ToolKey.ReadFile -> Chunk("workspace is not an accessible directory"),
+            ToolKey.ListFiles -> Chunk("workspace is not an accessible directory"),
+            ToolKey.Bash -> Chunk("bash is not available on PATH"),
+            ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"),
+            ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+          )
+        )
+      }
+    }
   }
 
   test("installed git outside a work tree is omitted with its specific reason") {
-    val tools = run {
-      for {
-        services <- probes(worktree = false)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-      } yield tools
-    }
-    assertEquals(
-      tools.available.map(_.definition.key),
-      Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe)
-    )
-    assertEquals(
-      tools.availability.unavailable,
-      Chunk(ToolKey.RepositoryChanges -> Chunk("workspace is not a Git work tree"))
-    )
-  }
-
-  test("constructed workspace tools use the supplied workspace with fake services only") {
-    val calls = run {
-      for {
-        services <- probes(allowExecution = true)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        _ <- services.calls.set(Vector.empty)
-        _ <- ZIO
-          .foreachDiscard(
-            Chunk(
-              ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""),
-              ExternalToolCall(ToolKey.ListFiles, """{"path":"src"}"""),
-              ExternalToolCall(ToolKey.Bash, """{"command":"echo fake"}"""),
-              ExternalToolCall(ToolKey.RepositoryChanges, """{"view":"status"}""")
-            )
-          )(call => tools.available.find(_.definition.key == call.toolKey).get.execute(call))
-          .provideLayer(services.layer)
-        calls <- services.calls.get
-      } yield calls
-    }
-    assertEquals(
-      calls,
-      Vector(
-        s"read:${workspace.resolve("notes.txt")}",
-        s"list:${workspace.resolve("src")}",
-        s"bash:$workspace",
-        s"git.status:$workspace"
-      )
-    )
-  }
-
-  test("startup registers the restricted Scala tool with its executor") {
-    val (definition, result, calls) = run {
-      for {
-        services <- probes(allowExecution = true)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
-        result <- scala
-          .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
-          .provideLayer(services.layer)
-        calls <- services.calls.get
-      } yield (scala.definition, result, calls)
-    }
-    assertEquals(definition, ScalaTool.definition)
-    assertEquals(ujson.read(result.text)("output").str, "fake output")
-    assert(calls.contains("scala:(1 to 10).sum"))
-  }
-
-  test("restricted and dynamic Scala availability are independent") {
-    for (safe, dynamic) <- List((true, true), (true, false), (false, true), (false, false)) do {
+    withWorkspace { workspace =>
       val tools = run {
         for {
-          services <- probes(directory = false, bash = false, git = false, scala = safe, dynamicScala = dynamic)
+          services <- probes(worktree = false)
           tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
         } yield tools
       }
-      val expected =
-        Chunk.fromIterable(
-          List(Option.when(safe)(ToolKey.Scalamode), Option.when(dynamic)(ToolKey.ScalaUnsafe)).flatten
-        )
-      assertEquals(tools.available.map(_.definition.key), expected)
-      assertEquals(tools.availability.unavailable.exists(_._1 == ToolKey.Scalamode), !safe)
-      assertEquals(tools.availability.unavailable.exists(_._1 == ToolKey.ScalaUnsafe), !dynamic)
+      assertEquals(
+        tools.available.map(_.definition.key),
+        Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
+      )
+      assertEquals(
+        tools.availability.unavailable,
+        Chunk(ToolKey.RepositoryChanges -> Chunk("workspace is not a Git work tree"))
+      )
     }
   }
 
-  test("scalaunsafe advertises the API and adapts each invocation's existing filesystem") {
-    val path = workspace.resolve("notes.txt")
-    val code = s"ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.readUtf8(${ujson.write(path.toString)}))"
-    def filesystem(content: String): WorkspaceFileSystem = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = ZIO.succeed(true)
-      def readUtf8(actual: Path): Task[String] = {
-        assertEquals(actual, path)
-        ZIO.succeed(content)
+  test("constructed tools use their bound workspace and keep other service routing unchanged") {
+    withWorkspace { workspace =>
+      val (results, calls) = run {
+        for {
+          services <- probes(allowExecution = true)
+          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          _ <- services.calls.set(Vector.empty)
+          results <- ZIO
+            .foreach(
+              Chunk(
+                ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""),
+                ExternalToolCall(ToolKey.ListFiles, """{"path":"src"}"""),
+                ExternalToolCall(ToolKey.Bash, """{"command":"echo fake"}"""),
+                ExternalToolCall(ToolKey.RepositoryChanges, """{"view":"status"}""")
+              )
+            )(call => tools.available.find(_.definition.key == call.toolKey).get.execute(call))
+            .provideLayer(services.layer)
+          calls <- services.calls.get
+        } yield (results, calls)
       }
-      def list(path: Path): Task[Chunk[String]] = ZIO.dieMessage("Unexpected directory listing")
+      assertEquals(results(0).text, "workspace content")
+      assertEquals(results(1).text, "example.txt")
+      assertEquals(calls, Vector(s"bash:$workspace", s"git.status:$workspace"))
     }
-    val executor = new ScalaCodeDynamicExecutor {
-      def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-      def execute[R: EnvironmentTag](actual: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] = {
-        assertEquals(actual, code)
-        assertEquals(timeout, 45.seconds)
-        assertEquals(maxOutputBytes, 64 * 1024)
-        ZIO.environmentWithZIO[R] { environment =>
-          assertEquals(environment.getDynamic[WorkspaceFileSystem], None)
+  }
+
+  test("separate startup tool sets keep separate filesystem roots") {
+    withWorkspace { first =>
+      withWorkspace { second =>
+        Files.writeString(second.resolve("notes.txt"), "second workspace")
+        val results = run {
           for {
-            service <- ZIO
-              .fromOption(environment.getDynamic[ScriptFileSystem])
-              .orElseFail(new IllegalStateException("Missing script-facing FileSystem"))
-            content <- service.readUtf8(path.toString)
-          } yield CommandOutput(0, false, content, false)
+            services <- probes()
+            one <- ApplicationTools.evaluate(first).provideLayer(services.layer)
+            two <- ApplicationTools.evaluate(second).provideLayer(services.layer)
+            results <- ZIO.foreach(Chunk(one, two)) { tools =>
+              tools.available
+                .find(_.definition.key == ToolKey.ReadFile)
+                .get
+                .execute(ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""))
+                .provideLayer(services.layer)
+            }
+          } yield results.map(_.text)
         }
+        assertEquals(results, Chunk("workspace content", "second workspace"))
       }
     }
-    val (definition, outputs) = run {
-      for {
-        services <- probes()
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        tool = tools.available.find(_.definition.key == ToolKey.ScalaUnsafe).get
-        outputs <- ZIO.foreach(List("first host instance", "second host instance")) { content =>
-          tool
-            .execute(ExternalToolCall(ToolKey.ScalaUnsafe, ujson.write(ujson.Obj("code" -> code))))
-            .provideLayer(
-              services.layer
-                .map(_.add[WorkspaceFileSystem](filesystem(content)).add[ScalaCodeDynamicExecutor](executor))
-            )
-        }
-      } yield (tool.definition, outputs)
-    }
-    assert(definition.description.contains("fmgp.yallmo.scalacode.FileSystem"))
-    assert(definition.description.contains("def readUtf8(path: String)"))
-    assert(definition.description.contains(workspace.toString))
-    assert(definition.description.contains("not a sandbox"))
-    assertEquals(
-      outputs.map(result => ujson.read(result.text)("output").str),
-      List("first host instance", "second host instance")
-    )
   }
 
-  test("real CLI scalaunsafe executes the registered application's filesystem API") {
-    val executable = sys.env.get("YALLMO_TEST_SCALA_CLI")
-    assume(executable.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run compilation integration tests")
-    val path = workspace.resolve("notes.txt")
-    val code = s"ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.readUtf8(${ujson.write(path.toString)}))"
-    val (result, calls) = run {
-      for {
-        executor <- ZIO
-          .service[ScalaCodeDynamicExecutor]
-          .provide(
-            ScalaCodeDynamicExecutor.layer(
-              ScalaCodeDynamicExecutor.Config(executable = executable.get)
-            )
-          )
-        services <- probes(allowExecution = true)
-        tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        tool = tools.available.find(_.definition.key == ToolKey.ScalaUnsafe).get
-        result <- tool
-          .execute(ExternalToolCall(ToolKey.ScalaUnsafe, ujson.write(ujson.Obj("code" -> code))))
-          .provideLayer(services.layer.map(_.add[ScalaCodeDynamicExecutor](executor)))
-        calls <- services.calls.get
-      } yield (result, calls)
+  test("startup registers restricted Scala but does not probe or register disabled scalaunsafe") {
+    withWorkspace { workspace =>
+      val (definition, result, calls, tools) = run {
+        for {
+          services <- probes(allowExecution = true, dynamicScala = true)
+          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
+          result <- scala
+            .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
+            .provideLayer(services.layer)
+          calls <- services.calls.get
+        } yield (scala.definition, result, calls, tools)
+      }
+      assertEquals(definition, ScalaTool.definition)
+      assertEquals(ujson.read(result.text)("output").str, "fake output")
+      assert(calls.contains("scala:(1 to 10).sum"))
+      assert(!calls.contains("dynamic.available"))
+      assert(!tools.available.exists(_.definition.key == ToolKey.ScalaUnsafe))
     }
-    val output = ujson.read(result.text)
-    assertEquals(output("exitCode").num.toInt, 0, result.text)
-    assertEquals(output("output").str, "fake output")
-    assert(calls.contains(s"read:$path"))
+  }
+
+  private def withWorkspace(test: Path => Unit): Unit = {
+    val root = Files.createTempDirectory("yallmo-startup-tools-").toRealPath()
+    Files.writeString(root.resolve("notes.txt"), "workspace content")
+    Files.createDirectory(root.resolve("src"))
+    Files.createFile(root.resolve("src/example.txt"))
+    try test(root)
+    finally {
+      val paths = Files.walk(root)
+      try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+      finally paths.close()
+    }
   }
 
   private final case class Probes(calls: Ref[Vector[String]], layer: ULayer[ApplicationTools.Environment])
 
   private def probes(
-      directory: Boolean = true,
       bash: Boolean = true,
       git: Boolean = true,
       worktree: Boolean = true,
@@ -281,11 +207,6 @@ final class ApplicationToolsSuite extends FunSuite {
       if allowExecution then record(value).as(CommandOutput(0, false, "fake output", false))
       else ZIO.dieMessage(s"Tool discovery must not execute $value")
 
-    val filesystem = new WorkspaceFileSystem {
-      def isDirectory(path: Path): UIO[Boolean] = record(s"directory:$path").as(directory)
-      def readUtf8(path: Path): Task[String] = execution(s"read:$path").map(_.output)
-      def list(path: Path): Task[Chunk[String]] = execution(s"list:$path").as(Chunk("fake.txt"))
-    }
     val shell = new BashExecutor {
       def isAvailable: UIO[Boolean] = record("bash.available").as(bash)
       def execute(command: String, path: Path, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] = {
@@ -315,7 +236,7 @@ final class ApplicationToolsSuite extends FunSuite {
     }
     Probes(
       calls,
-      ZLayer.succeed(filesystem) ++ ZLayer.succeed(shell) ++ ZLayer.succeed(repository) ++ ZLayer.succeed(compiler) ++
+      ZLayer.succeed(shell) ++ ZLayer.succeed(repository) ++ ZLayer.succeed(compiler) ++
         ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicCompiler)
     )
   }

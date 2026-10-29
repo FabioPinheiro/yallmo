@@ -46,6 +46,8 @@ lazy val root = project
     coreJS,
     protocolJVM,
     protocolJS,
+    rpcJVM,
+    rpcJS,
     clientHarnessJVM,
     clientHarnessJS,
     repl,
@@ -177,6 +179,27 @@ lazy val protocol = crossProject(JSPlatform, JVMPlatform)
   .jvmSettings(jvmSettings)
 lazy val protocolJVM = protocol.jvm
 lazy val protocolJS = protocol.js
+
+/** Standalone typed RPC experiment: no orchestration/domain dependencies. */
+lazy val rpc = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
+  .in(file("rpc"))
+  .settings(
+    name := "yallmo-rpc",
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-json" % "1.1.1",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    ),
+  )
+  .jvmSettings(jvmSettings)
+  .jvmSettings(
+    libraryDependencies += "dev.zio" %% "zio-http" % "3.11.6",
+    Test / fork := true,
+  )
+lazy val rpcJVM = rpc.jvm
+lazy val rpcJS = rpc.js
 
 /** ClientHarness: shared client interaction policy, independent of transports and server runtime. */
 lazy val clientHarness = crossProject(JSPlatform, JVMPlatform)

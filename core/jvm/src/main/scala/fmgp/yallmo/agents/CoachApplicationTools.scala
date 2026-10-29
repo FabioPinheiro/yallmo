@@ -1,5 +1,6 @@
 package fmgp.yallmo.agents
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite, WriteMode}
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.JsonSchema
@@ -15,9 +16,9 @@ import zio.stream.ZPipeline
   * processes/instances must not share a root. Corrupt/oversize journals fail closed and are never silently reset.
   */
 object CoachApplicationTools {
-  val ListKey = "coach_list_applications"
-  val GetKey = "coach_get_application"
-  val SaveKey = "coach_save_application"
+  val ListKey: ToolKey = ToolKey.CoachListApplications
+  val GetKey: ToolKey = ToolKey.CoachGetApplication
+  val SaveKey: ToolKey = ToolKey.CoachSaveApplication
   private val JournalPath = "applications.jsonl"
   private val MaxJournalBytes = 2 * 1024 * 1024
   private val MaxRecords = 2000

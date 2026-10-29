@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
@@ -32,7 +33,7 @@ final class ScalaDynamicTool[R: EnvironmentTag](
 @deprecated("UNSAFE with no sandbox", "0.2.0")
 object ScalaDynamicTool {
   def definition(config: ScalaCodeDynamicExecutor.Config): AgentToolDefinition = AgentToolDefinition(
-    key = "scalaunsafe",
+    key = ToolKey.ScalaUnsafe,
     description = "Compile a trusted Scala block and execute its returned ZIO effect inside the server JVM. " +
       "Return a ZIO effect with Throwable errors using only the advertised services. zio.* is already imported. " +
       "Use ZIO.serviceWithZIO to access existing services; do not construct services or run a Runtime. " +

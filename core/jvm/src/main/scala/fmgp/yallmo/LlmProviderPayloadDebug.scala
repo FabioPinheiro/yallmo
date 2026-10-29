@@ -60,7 +60,7 @@ object LlmProviderPayloadDebug {
               ujson.Obj(
                 "callId" -> FunctionCallId.value(call.id),
                 "providerItemId" -> call.providerItemId.map(ujson.Str(_)).getOrElse(ujson.Null),
-                "name" -> call.name,
+                "name" -> call.name.value,
                 "arguments" -> call.argumentsJson
               )
             )

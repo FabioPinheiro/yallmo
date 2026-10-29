@@ -23,15 +23,15 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not associated with session '${sessionId.value}'")
       with YallmoError
 
-  final case class UnknownTool(requestedKey: String)
+  final case class UnknownTool(requestedKey: ToolKey)
       extends RuntimeException(s"No tool is registered with key '$requestedKey'")
       with YallmoError
 
-  final case class ToolUnavailable(toolKey: String, reason: String)
+  final case class ToolUnavailable(toolKey: ToolKey, reason: String)
       extends RuntimeException(s"Tool '$toolKey' is unavailable: $reason")
       with YallmoError
 
-  final case class ToolUnavailableToAgent(agentId: AgentId, toolKey: String)
+  final case class ToolUnavailableToAgent(agentId: AgentId, toolKey: ToolKey)
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to call tool '$toolKey'")
       with YallmoError
 
@@ -69,15 +69,15 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' failed: $message", cause)
       with YallmoError
 
-  final case class ToolExecutionFailed(toolKey: String, message: String, cause: Throwable)
+  final case class ToolExecutionFailed(toolKey: ToolKey, message: String, cause: Throwable)
       extends RuntimeException(s"Tool '$toolKey' failed: $message", cause)
       with YallmoError
 
-  final case class ToolApprovalDenied(toolKey: String, reason: String)
+  final case class ToolApprovalDenied(toolKey: ToolKey, reason: String)
       extends RuntimeException(s"Tool '$toolKey' was not approved: $reason")
       with YallmoError
 
-  final case class InvalidToolArguments(toolKey: String, reason: String)
+  final case class InvalidToolArguments(toolKey: ToolKey, reason: String)
       extends RuntimeException(s"Tool '$toolKey' received invalid arguments: $reason")
       with YallmoError
 
@@ -131,10 +131,10 @@ object YallmoError {
   final case class HttpFailure(message: String) extends RuntimeException(message) with YallmoError
   final case class ProtocolFailure(message: String) extends RuntimeException(message) with YallmoError
   final case class EmptyResponse(message: String) extends RuntimeException(message) with YallmoError
-  final case class LlmUnknownTool(name: String)
+  final case class LlmUnknownTool(name: ToolKey)
       extends RuntimeException(s"OpenAI Codex requested unknown tool '$name'")
       with YallmoError
-  final case class ToolExecutionFailure(name: String, cause: Throwable)
+  final case class ToolExecutionFailure(name: ToolKey, cause: Throwable)
       extends RuntimeException(s"Tool '$name' failed: ${cause.getMessage}", cause)
       with YallmoError
   final case class ToolLoopLimitExceeded(limit: Int)

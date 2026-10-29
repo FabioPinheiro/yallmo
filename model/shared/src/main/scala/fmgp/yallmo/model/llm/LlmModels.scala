@@ -1,6 +1,6 @@
 package fmgp.yallmo.model.llm
 
-import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.model.{ToolKey, YallmoError}
 import zio.*
 
 /** Provider-neutral schema for a function tool exposed to a language model. */
@@ -21,12 +21,12 @@ final case class LlmToolParameter(
 )
 
 final case class LlmToolDefinition(
-    name: String,
+    name: ToolKey,
     description: String,
     parameters: Chunk[LlmToolParameter] = Chunk.empty
 ) {
   def validate: Either[String, Unit] =
-    if name.trim.isEmpty then Left("Tool name must not be empty")
+    if name.value.trim.isEmpty then Left("Tool name must not be empty")
     else if description.trim.isEmpty then Left(s"Tool '$name' description must not be empty")
     else if parameters.exists(_.name.trim.isEmpty) then Left(s"Tool '$name' contains a parameter with an empty name")
     else Right(())
@@ -34,12 +34,12 @@ final case class LlmToolDefinition(
 
 final case class LlmToolCall(
     id: Option[String],
-    name: String,
+    name: ToolKey,
     argsJson: String
 )
 
 final case class LlmToolResult(
-    name: String,
+    name: ToolKey,
     responseJson: String
 )
 

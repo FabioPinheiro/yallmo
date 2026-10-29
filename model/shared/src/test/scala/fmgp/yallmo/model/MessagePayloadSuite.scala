@@ -17,16 +17,16 @@ final class MessagePayloadSuite extends FunSuite {
       """{"RagResult":{"retrieverKey":"docs","documents":[{"id":"id","source":"source","text":"text"}]}}""",
     MessagePayload.Reasoning(Some("summary"), ProviderContinuation(ProviderId.unsafe("provider"), None, "opaque")) ->
       """{"Reasoning":{"summary":"summary","continuation":{"provider":"provider","encryptedContent":"opaque"}}}""",
-    MessagePayload.ToolCall(FunctionCall(callId, "tool", "{}")) ->
+    MessagePayload.ToolCall(FunctionCall(callId, ToolKey.unsafe("tool"), "{}")) ->
       """{"ToolCall":{"call":{"id":"call-1","name":"tool","argumentsJson":"{}"}}}""",
-    MessagePayload.ToolOutput(FunctionCallOutput(callId, "tool", "result")) ->
+    MessagePayload.ToolOutput(FunctionCallOutput(callId, ToolKey.unsafe("tool"), "result")) ->
       """{"ToolOutput":{"output":{"callId":"call-1","name":"tool","output":"result"}}}""",
     MessagePayload.Instructions("system") -> """{"Instructions":{"text":"system"}}"""
   )
 
   test("tool message exports retain their roles and content projections") {
-    val call = FunctionCall(callId, "tool", "{}")
-    val output = FunctionCallOutput(callId, "tool", "result")
+    val call = FunctionCall(callId, ToolKey.unsafe("tool"), "{}")
+    val output = FunctionCallOutput(callId, ToolKey.unsafe("tool"), "result")
     assertEquals(Message.ToolCall(call), MessagePayload.ToolCall(call))
     assertEquals(Message.ToolOutput(output), MessagePayload.ToolOutput(output))
     assertEquals(Message.ToolCall(call).role, "tool_call")

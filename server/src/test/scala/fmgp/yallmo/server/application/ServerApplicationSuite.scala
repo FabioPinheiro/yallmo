@@ -109,7 +109,7 @@ final class ServerApplicationSuite extends FunSuite {
         assertEquals(configured.assembly.context(None).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
         assertEquals(
           configured.assembly.context(None).tools.map(_.key).toSet,
-          Set("readFile", "listFiles", "bash", "repositoryChanges", "scalamode")
+          Set(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.RepositoryChanges, ToolKey.Scalamode)
         )
         assertEquals(
           calls,
@@ -139,7 +139,7 @@ final class ServerApplicationSuite extends FunSuite {
         calls <- services.calls.get
       } yield {
         assertEquals(configured.workspace, workspace.toRealPath())
-        assertEquals(configured.assembly.context(None).tools.map(_.key).toSet, Set("readFile", "listFiles"))
+        assertEquals(configured.assembly.context(None).tools.map(_.key).toSet, Set(ToolKey.ReadFile, ToolKey.ListFiles))
         assertEquals(
           calls,
           Vector(s"directory:${workspace.toRealPath()}", "bash.available", "git.available", "scala.available")
@@ -157,7 +157,7 @@ final class ServerApplicationSuite extends FunSuite {
         application <- ServerApplication.open(root, Some(path), Some(root)).provideSomeLayer[Scope](services.layer)
       } yield assertEquals(
         application.configured.get.assembly.context(None).tools.map(_.key).toSet,
-        Set("bash", "scalamode")
+        Set(ToolKey.Bash, ToolKey.Scalamode)
       )
     })
   }
@@ -233,7 +233,9 @@ final class ServerApplicationSuite extends FunSuite {
       for {
         root <- temporaryRoot
         restricted = config.copy(agents =
-          Map(first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
+          Map(
+            first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode))))
+          )
         )
         path <- writeConfig(root, restricted)
         services <- probes(scala = false)
@@ -250,7 +252,12 @@ final class ServerApplicationSuite extends FunSuite {
           _ <- writeConfig(
             root,
             restricted.copy(agents =
-              Map(first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set("readFile")))))
+              Map(
+                first -> AgentConfig(
+                  "Unsupported",
+                  capabilities = AgentCapabilities(tools = Some(Set(ToolKey.ReadFile)))
+                )
+              )
             )
           )
           application <- ServerApplication.open(root, Some(path))

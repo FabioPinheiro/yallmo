@@ -20,7 +20,7 @@ final class OAIAudioTurnSuite extends FunSuite {
   private val request = AgentTurnRequest(
     "explicit-audio-model",
     Chunk(MessagePayload.User("Describe the sound"), audio, MessagePayload.Instructions("Be helpful")),
-    tools = Chunk(FunctionToolDefinition("inspect", "Inspect", JsonSchema.ObjectSchema(Map.empty))),
+    tools = Chunk(FunctionToolDefinition(ToolKey.unsafe("inspect"), "Inspect", JsonSchema.ObjectSchema(Map.empty))),
     toolChoice = ToolChoice.Required,
     parallelToolCalls = true,
     options = ProviderGenerateOptions(temperature = Some(0.3), maxOutputTokens = Some(50)),

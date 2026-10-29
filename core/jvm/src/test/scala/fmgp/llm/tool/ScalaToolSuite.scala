@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
 import munit.FunSuite
 import zio.*
@@ -26,7 +27,9 @@ final class ScalaToolSuite extends FunSuite {
 
   test("pure code is forwarded and its result is returned") {
     val result =
-      run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"(1 to 10).sum"}""")).provide(executor))
+      run(
+        new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}""")).provide(executor)
+      )
     val json = ujson.read(result.text)
     assertEquals(json("output").str, "55\n")
     assertEquals(json("exitCode").num.toInt, 0)
@@ -49,7 +52,10 @@ final class ScalaToolSuite extends FunSuite {
         """{"code":"1", "scalamode":"3"}""",
         """{"code":"1", "dependencies":["dev.zio::zio:2.1.27"]}"""
       )
-    do assert(run(new ScalaTool().execute(ExternalToolCall("scalamode", arguments)).either.provide(executor)).isLeft)
+    do
+      assert(
+        run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, arguments)).either.provide(executor)).isLeft
+      )
   }
 
   test("compiler escape hatches and directives are rejected conservatively") {
@@ -106,7 +112,7 @@ final class ScalaToolSuite extends FunSuite {
       }
     })
     val result =
-      run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"unknown"}""")).provide(errors))
+      run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"unknown"}""")).provide(errors))
     assertEquals(ujson.read(result.text)("exitCode").num.toInt, 1)
     assertEquals(ujson.read(result.text)("output").str, "Compilation failed")
   }

@@ -66,9 +66,9 @@ final class ApplicationRuntimeSuite extends FunSuite {
           services = toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
           opened <- runtime.openWorkspace(None, root, services)
         } yield {
-          val definition = opened._1.context(None).tools.find(_.key == "scalamode").get
+          val definition = opened._1.context(None).tools.find(_.key == ToolKey.Scalamode).get
           assertEquals(definition, ScalaTool.definition)
-          assert(opened._2.available.contains("scalamode"))
+          assert(opened._2.available.contains(ToolKey.Scalamode))
         }
       }
     }
@@ -94,12 +94,12 @@ final class ApplicationRuntimeSuite extends FunSuite {
           services = toolServices(events, alive).map(_.add[ScalaCodeDynamicExecutor](executor))
           opened <- runtime.openWorkspace(None, root, services)
         } yield {
-          val definition = opened._1.context(None).tools.find(_.key == "scalaunsafe").get
+          val definition = opened._1.context(None).tools.find(_.key == ToolKey.ScalaUnsafe).get
           assert(definition.description.contains("fmgp.yallmo.scalacode.FileSystem"))
           assert(definition.description.contains(root.toString))
           assert(definition.description.contains("not a sandbox"))
-          assert(opened._2.available.contains("scalaunsafe"))
-          assert(!opened._2.available.contains("scalamode"))
+          assert(opened._2.available.contains(ToolKey.ScalaUnsafe))
+          assert(!opened._2.available.contains(ToolKey.Scalamode))
         }
       }
     }
@@ -246,7 +246,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           restricted = config.copy(agents =
             Map(
               first -> definition().copy(
-                capabilities = AgentCapabilities(tools = Some(Set("unavailable")))
+                capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unavailable"))))
               )
             )
           )
@@ -332,7 +332,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
             requestCount <- requests.get
           } yield {
             assert(running, "Tool services must remain open after workspace startup and both submissions")
-            assertEquals(availability.available, Chunk("readFile", "listFiles"))
+            assertEquals(availability.available, Chunk(ToolKey.ReadFile, ToolKey.ListFiles))
             assertEquals(assembled.context(None).tools, Chunk(ReadFileTool.definition, ListFilesTool.definition))
             assertEquals(firstTurn.result, AgentResult(first, "read successfully"))
             assertEquals(secondTurn.result, AgentResult(second, "read successfully"))
@@ -575,7 +575,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
 
   test("transcriber policy checks all four effective capability catalogs including partial inheritance") {
     run {
-      val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition("shell", "commands")))
+      val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition(ToolKey.unsafe("shell"), "commands")))
       val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
       val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
       val ext = StaticContext[Any](
@@ -596,8 +596,8 @@ final class ApplicationRuntimeSuite extends FunSuite {
       for {
         inherited <- ZIO.foreach(List(tool, rag, skill, ext))(check(AgentCapabilities(), _))
         partial <- check(AgentCapabilities(tools = Some(Set.empty)), skill)
-        allowed <- check(AgentCapabilities(tools = Some(Set("shell"))), tool)
-        unknown <- check(AgentCapabilities(tools = Some(Set("unknown"))), tool)
+        allowed <- check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))), tool)
+        unknown <- check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown")))), tool)
         empty <- check(AgentCapabilities(tools = Some(Set.empty)), tool)
         noCatalog <- check(AgentCapabilities(), StaticContext[Any]("chat"))
       } yield {

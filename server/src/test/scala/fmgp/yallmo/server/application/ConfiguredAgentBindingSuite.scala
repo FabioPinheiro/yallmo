@@ -18,7 +18,7 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
   )
   private val context = StaticContext[Any](
     "System",
-    tools = Chunk("shared", "program-only", "adapter-only").map(key => AgentToolDefinition(key, key))
+    tools = Chunk("shared", "program-only", "adapter-only").map(key => AgentToolDefinition(ToolKey.unsafe(key), key))
   )
   private val readBlob: BlobId => IO[YallmoError, Blob] = id =>
     if id == blob.id then ZIO.succeed(blob) else ZIO.fail(YallmoError.BlobMissing(id))
@@ -29,7 +29,8 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         requests <- Ref.make(Chunk.empty[AgentTurnRequest])
         adapter = new Agent[Any] with HasAgentCapabilities {
           override val id: AgentId = agentId
-          override val capabilities: AgentCapabilities = AgentCapabilities(tools = Some(Set("shared", "adapter-only")))
+          override val capabilities: AgentCapabilities =
+            AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shared"), ToolKey.unsafe("adapter-only"))))
           override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
             requests
               .update(_ :+ request)
@@ -40,7 +41,7 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         program = NativeFunctionAgent[Agent[Any]](
           agentId,
           "native-model",
-          capabilities = AgentCapabilities(tools = Some(Set("shared", "program-only")))
+          capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shared"), ToolKey.unsafe("program-only"))))
         )
         binding = ConfiguredAgentBinding.Native(adapter, ProviderId.unsafe("local"), program, "System")
         bound = binding.bind[Any](readBlob)
@@ -52,9 +53,9 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         assertEquals(binding.adapter, adapter)
         assertEquals(binding.systemPrompt, "System")
         assertEquals(bound.id, agentId)
-        assertEquals(bound.capabilities.tools, Some(Set("shared")))
-        assertEquals(configured.tools.map(_.key), Chunk("shared"))
-        assertEquals(request.tools.map(_.name), Chunk("shared"))
+        assertEquals(bound.capabilities.tools, Some(Set(ToolKey.unsafe("shared"))))
+        assertEquals(configured.tools.map(_.key), Chunk(ToolKey.unsafe("shared")))
+        assertEquals(request.tools.map(_.name), Chunk(ToolKey.unsafe("shared")))
         assertEquals(request.model, "native-model")
         assertEquals(request.input, input :+ MessagePayload.Instructions("System"))
         assertEquals(stored, blob)

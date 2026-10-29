@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.server.application.{ApplicationRuntime, ProviderCatalog}
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.{AgentId, AudioFormat, MessageId, MessagePayload, YallmoError}
@@ -484,7 +485,7 @@ final class ReplStartupSuite extends FunSuite {
   }
 
   scopedTest("REPL voice checks effective empty capabilities and inherited fields in partial policies") {
-    val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition("shell", "commands")))
+    val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition(ToolKey.unsafe("shell"), "commands")))
     val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
     val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
     val ext = StaticContext[Any](
@@ -505,9 +506,10 @@ final class ReplStartupSuite extends FunSuite {
     }
     for context <- List(tool, rag, skill, ext) do assert(check(AgentCapabilities(), context).isLeft)
     assert(check(AgentCapabilities(tools = Some(Set.empty)), skill).isLeft)
-    assert(check(AgentCapabilities(tools = Some(Set("shell"))), tool).isLeft)
+    assert(check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))), tool).isLeft)
     assert(
-      check(AgentCapabilities(tools = Some(Set("unknown"))), tool).swap.toOption.get.getMessage.contains("unknown")
+      check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown")))), tool).swap.toOption.get.getMessage
+        .contains("unknown")
     )
     assert(check(AgentCapabilities(tools = Some(Set.empty)), tool).isRight)
     assert(check(AgentCapabilities(), StaticContext[Any]("chat")).isRight)
@@ -559,7 +561,10 @@ final class ReplStartupSuite extends FunSuite {
     assert(rejected.left.toOption.exists(_.getMessage.contains("capabilities")))
     val typo = config.copy(agents =
       config.agents
-        .updated(eve, config.agents(eve).copy(capabilities = AgentCapabilities(tools = Some(Set("unknown-tool")))))
+        .updated(
+          eve,
+          config.agents(eve).copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown-tool")))))
+        )
     )
     assert(run(startup(typo).application.either).isLeft)
   }

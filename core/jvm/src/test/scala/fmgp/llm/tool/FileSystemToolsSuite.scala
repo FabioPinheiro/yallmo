@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
 import munit.FunSuite
 import zio.*
@@ -25,18 +26,22 @@ final class FileSystemToolsSuite extends FunSuite {
 
       assertEquals(
         run(
-          read.execute(ExternalToolCall("readFile", """{"path":"note.txt"}""")).provide(WorkspaceFileSystem.live)
+          read.execute(ExternalToolCall(ToolKey.ReadFile, """{"path":"note.txt"}""")).provide(WorkspaceFileSystem.live)
         ).text,
         "hello"
       )
       assertEquals(
         run(
-          read.execute(ExternalToolCall("readFile", """{"path":"../outside.txt"}""")).provide(WorkspaceFileSystem.live)
+          read
+            .execute(ExternalToolCall(ToolKey.ReadFile, """{"path":"../outside.txt"}"""))
+            .provide(WorkspaceFileSystem.live)
         ).text,
         "outside"
       )
       assertEquals(
-        run(list.execute(ExternalToolCall("listFiles", """{"path":"."}""")).provide(WorkspaceFileSystem.live)).text,
+        run(
+          list.execute(ExternalToolCall(ToolKey.ListFiles, """{"path":"."}""")).provide(WorkspaceFileSystem.live)
+        ).text,
         "docs\nnote.txt"
       )
     } finally {

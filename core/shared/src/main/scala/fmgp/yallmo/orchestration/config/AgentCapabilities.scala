@@ -1,28 +1,28 @@
 package fmgp.yallmo.orchestration.config
 
-import fmgp.yallmo.model.{AgentId, ToolChoice, YallmoError}
+import fmgp.yallmo.model.{AgentId, ToolChoice, ToolKey, YallmoError}
 import fmgp.yallmo.model.llm.AgentTurnRequest
 import fmgp.yallmo.orchestration.StaticContext
 import zio.json.JsonCodec
 
 /** None inherits the supplied catalog; Some(empty) disables that capability, even in a partial object. */
 final case class AgentCapabilities(
-    tools: Option[Set[String]] = None,
+    tools: Option[Set[ToolKey]] = None,
     retrievers: Option[Set[String]] = None,
     skills: Option[Set[String]] = None,
     extensions: Option[Set[String]] = None
 ) derives JsonCodec {
-  def allowsTool(key: String): Boolean = tools.forall(_.contains(key))
+  def allowsTool(key: ToolKey): Boolean = tools.forall(_.contains(key))
 
   /** Resolve against the application's available context, rejecting typos before removing capabilities. */
   def resolve[R](id: AgentId, available: StaticContext[R]): Either[YallmoError, StaticContext[R]] = {
-    def check(kind: String, allowed: Option[Set[String]], known: Set[String]): Either[YallmoError, Unit] =
+    def check[A](kind: String, allowed: Option[Set[A]], known: Set[A]): Either[YallmoError, Unit] =
       val unknown = allowed.getOrElse(Set.empty) -- known
       Either.cond(
         unknown.isEmpty,
         (),
         YallmoError.InvalidConfig(
-          s"Agent '${AgentId.value(id)}' capabilities.$kind contains unknown IDs: ${unknown.toList.sorted.mkString(", ")}; check the available $kind catalog"
+          s"Agent '${AgentId.value(id)}' capabilities.$kind contains unknown IDs: ${unknown.toList.map(_.toString).sorted.mkString(", ")}; check the available $kind catalog"
         )
       )
     for {
@@ -56,7 +56,7 @@ final case class AgentCapabilities(
 
   /** Binding cannot widen either the program's or the runtime adapter's restrictions. */
   def intersect(other: AgentCapabilities): AgentCapabilities = {
-    def both(a: Option[Set[String]], b: Option[Set[String]]): Option[Set[String]] = (a, b) match {
+    def both[A](a: Option[Set[A]], b: Option[Set[A]]): Option[Set[A]] = (a, b) match {
       case (Some(x), Some(y)) => Some(x intersect y)
       case (Some(x), None)    => Some(x)
       case (None, y)          => y

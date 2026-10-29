@@ -76,7 +76,7 @@ final case class OAILlmProvider private[yallmo] (
         model = selectedModel,
         prompt = prompt,
         options = options,
-        toolNames = tools.map(_.definition.name)
+        toolNames = tools.map(_.definition.name.value)
       )
       result <- (ZIO.fromEither(options.validate.left.map(YallmoError.InvalidConfig.apply)) *>
         toolLoop(
@@ -285,7 +285,7 @@ object OAIConfig {
     } yield OAIConfig(normalizedUrl, "")
 }
 
-private[oai] final case class OAIFunctionCall(callId: String, name: String, arguments: String)
+private[oai] final case class OAIFunctionCall(callId: String, name: ToolKey, arguments: String)
 private[oai] final case class OAIResponse(
     message: ujson.Obj,
     functionCalls: Vector[OAIFunctionCall],

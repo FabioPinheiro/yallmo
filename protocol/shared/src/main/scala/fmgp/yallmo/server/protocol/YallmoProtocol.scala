@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.protocol
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, MessagePayload}
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentResult, AgentTask, AgentToolDefinition, Session, SessionId, SessionSummary}
@@ -35,7 +36,7 @@ object YallmoProtocol {
       role: String,
       content: String,
       blobIds: Chunk[BlobId],
-      toolName: Option[String] = None
+      toolName: Option[ToolKey] = None
   ) derives JsonCodec
 
   object MessageSnapshot {

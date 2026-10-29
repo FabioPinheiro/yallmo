@@ -7,7 +7,7 @@ import zio.*
 
 final class AgentInvocationSuite extends FunSuite {
   private val id = AgentId("recipient")
-  private val call = FunctionCall(FunctionCallId.unsafe("direct-call"), "echo", "{}")
+  private val call = FunctionCall(FunctionCallId.unsafe("direct-call"), ToolKey.unsafe("echo"), "{}")
 
   private def agent: AgentInstance[Any] = new AgentInstance[Any] {
     val id: AgentId = AgentInvocationSuite.this.id
@@ -19,11 +19,11 @@ final class AgentInvocationSuite extends FunSuite {
     run(for {
       calls <- Ref.make(0)
       tool = new AgentTool[Any] {
-        val definition = AgentToolDefinition("echo", "test")
+        val definition = AgentToolDefinition(ToolKey.unsafe("echo"), "test")
         def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
           calls.update(_ + 1).as(ExternalToolResult("output"))
       }
-      runner = new AgentRunner[Any](Map("echo" -> tool), Map.empty)
+      runner = new AgentRunner[Any](Map(ToolKey.unsafe("echo") -> tool), Map.empty)
       context = StaticContext[Any]("", tools = Chunk(tool.definition))
       _ <- runner.runWithContext(agent, AgentTask("continue"), context, RunContext(Chunk(Message.ToolCall(call))))
       reply <- runner
@@ -40,7 +40,7 @@ final class AgentInvocationSuite extends FunSuite {
     run(for {
       cancelled <- Ref.make(false)
       tool = new AgentTool[Any] {
-        val definition = AgentToolDefinition("echo", "test")
+        val definition = AgentToolDefinition(ToolKey.unsafe("echo"), "test")
         def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
           ZIO.never.onInterrupt(cancelled.set(true))
       }
@@ -49,7 +49,7 @@ final class AgentInvocationSuite extends FunSuite {
         def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =
           ZIO.dieMessage("Direct tools must not invoke the agent")
       }
-      runner = new AgentRunner[Any](Map("echo" -> tool), Map.empty)
+      runner = new AgentRunner[Any](Map(ToolKey.unsafe("echo") -> tool), Map.empty)
       context = StaticContext[Any]("", tools = Chunk(tool.definition))
       result <- runner
         .execution(neverInfer, context, AgentBudget(1, 1, 50.millis))

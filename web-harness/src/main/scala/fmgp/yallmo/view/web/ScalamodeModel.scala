@@ -15,9 +15,9 @@ private[web] final case class ScalamodeResult(message: Message) {
   val fields: Option[ToolResultContent.Result] = ToolResultContent.parse(output)
 }
 
-private[web] enum ScalamodeTool(val key: String) {
-  case Safe extends ScalamodeTool("scalamode")
-  case Dynamic extends ScalamodeTool("scalaunsafe")
+private[web] enum ScalamodeTool(val key: ToolKey) {
+  case Safe extends ScalamodeTool(ToolKey.Scalamode)
+  case Dynamic extends ScalamodeTool(ToolKey.ScalaUnsafe)
 }
 
 private[web] final case class ScalamodeState(

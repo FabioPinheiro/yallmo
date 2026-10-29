@@ -43,14 +43,14 @@ Capabilities belong to an agent definition, alongside—not inside—its model/p
 
 A complete configuration also needs the agent's map key and a matching provider definition. Tool IDs must exist in the application's available catalog; the example does not install tools or configure an endpoint.
 
-`AgentCapabilities` represents each field as `Option[Set[String]]`:
+`AgentCapabilities.tools` is `Option[Set[ToolKey]]`
 
 | JSON form | Representation | Meaning |
 | --- | --- | --- |
 | Missing `capabilities`, or `"capabilities": {}` | All fields `None` | Inherit the application's existing setup for each category |
 | Field omitted from a partial object | That field is `None` | Inherit that category only |
 | `"tools": []` | `Some(Set.empty)` | Disable tools; do not inherit them |
-| `"tools": ["readFile"]` | `Some(Set("readFile"))` | Permit only that ID from the available tools |
+| `"tools": ["readFile"]` | `Some(Set(ToolKey.ReadFile))` | Permit only that ID from the available tools |
 
 These semantics apply independently to tools, retrievers, skills and extensions. In particular, `{"tools": []}` does **not** disable inherited retrievers, skills or extensions.
 

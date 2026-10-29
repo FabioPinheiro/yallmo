@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.*
@@ -48,7 +49,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
         model = model.getOrElse(defaultModel),
         prompt = prompt,
         options = options,
-        toolNames = tools.map(_.definition.name)
+        toolNames = tools.map(_.definition.name.value)
       )
       result <- (
         ZIO.fromEither(options.validate.left.map(YallmoError.InvalidConfig.apply)) *>
@@ -212,7 +213,7 @@ object OpenAiCodexClient {
     if required.nonEmpty then parameters("required") = ujson.Arr.from(required)
     ujson.Obj(
       "type" -> "function",
-      "name" -> definition.name,
+      "name" -> definition.name.value,
       "description" -> definition.description,
       "parameters" -> parameters,
       "strict" -> false
@@ -366,7 +367,7 @@ object OpenAiCodexClient {
           json
             .get("name")
             .map(_.str)
-            .filter(_.trim.nonEmpty)
+            .flatMap(name => ToolKey.from(name).toOption)
             .getOrElse(throw IllegalArgumentException("function call name is missing")),
           json.get("arguments").map(_.str).getOrElse("{}")
         )
@@ -396,7 +397,7 @@ object OpenAiCodexConfig {
   val Model = "gpt-6.1-sol"
 }
 
-private[openai] final case class OpenAiCodexFunctionCall(callId: String, name: String, arguments: String)
+private[openai] final case class OpenAiCodexFunctionCall(callId: String, name: ToolKey, arguments: String)
 private[openai] final case class OpenAiCodexResponse(
     output: Vector[ujson.Value],
     functionCalls: Vector[OpenAiCodexFunctionCall],

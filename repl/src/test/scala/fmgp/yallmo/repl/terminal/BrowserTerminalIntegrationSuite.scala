@@ -414,7 +414,9 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
           Chunk(
             MessagePayload.Assistant("initial reply"),
             MessagePayload.User("private user"),
-            MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-x"), "x", "private tool"))
+            MessagePayload.ToolOutput(
+              FunctionCallOutput(FunctionCallId.unsafe("call-x"), ToolKey.unsafe("x"), "private tool")
+            )
           )
         )
       )

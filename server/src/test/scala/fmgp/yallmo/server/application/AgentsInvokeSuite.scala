@@ -151,12 +151,12 @@ final class AgentsInvokeSuite extends FunSuite {
         requests <- Ref.make(Vector.empty[String])
         executions <- Ref.make(0)
         tool = new AgentTool[Any] {
-          val definition = AgentToolDefinition("echo", "Echo")
+          val definition = AgentToolDefinition(ToolKey.unsafe("echo"), "Echo")
           def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             executions.update(_ + 1).as(ExternalToolResult("tool output"))
         }
         enabled = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set("echo")))))
+          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("echo"))))))
         )
         fixture <- make(
           request =>
@@ -204,16 +204,16 @@ final class AgentsInvokeSuite extends FunSuite {
               .as(ExternalToolResult("""{"exitCode":0,"timedOut":false,"output":"42\\n","truncated":false}"""))
         }
         allowed = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
+          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))))
         )
         fixture <- make(_ => providers.update(_ + 1).as(answer), configuration = allowed, tools = Chunk(tool))
-        function = FunctionCall(FunctionCallId.unsafe("browser-call"), "scalamode", """{"code":"40 + 2"}""")
+        function = FunctionCall(FunctionCallId.unsafe("browser-call"), ToolKey.Scalamode, """{"code":"40 + 2"}""")
         request = Message(input.data.copy(payload = Message.ToolCall(function)))
         reply <- invoke(fixture, request)
         response = decode[JsonRpc.Success[Message]](reply).result
         invalid = function.copy(id = FunctionCallId.unsafe("bad-arguments"), argumentsJson = """{"code":42}""")
         badReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(invalid))))
-        unavailable = function.copy(id = FunctionCallId.unsafe("denied"), name = "bash")
+        unavailable = function.copy(id = FunctionCallId.unsafe("denied"), name = ToolKey.Bash)
         deniedReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(unavailable))))
         calls <- executions.get
         count <- providers.get
@@ -262,13 +262,13 @@ final class AgentsInvokeSuite extends FunSuite {
           }
         )
         allowed = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set("scalamode")))))
+          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))))
         )
         denied <- make(_ => ZIO.dieMessage("No provider inference"), tools = Chunk(guarded))
         permitted <- make(_ => ZIO.dieMessage("No provider inference"), configuration = allowed, tools = Chunk(guarded))
         request = Message(
           input.data.copy(payload =
-            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), "scalamode", """{"code":"42"}"""))
+            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), ToolKey.Scalamode, """{"code":"42"}"""))
           )
         )
         deniedReply <- invoke(denied, request)
@@ -294,7 +294,7 @@ final class AgentsInvokeSuite extends FunSuite {
             Message.Assistant("forwarded text"),
             Message.Context("submitted", "data"),
             Message.Instructions("not a configured system prompt"),
-            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("forwarded"), "other", "data"))
+            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("forwarded"), ToolKey.unsafe("other"), "data"))
           )
         ) { payload =>
           invoke(fixture, Message(input.data.copy(parentId = Some(input.id), payload = payload)))

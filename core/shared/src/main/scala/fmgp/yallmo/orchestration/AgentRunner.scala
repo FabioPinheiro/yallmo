@@ -22,7 +22,7 @@ import fmgp.yallmo.orchestration.{
   *   - The orchestrator persists messages and session (pointer to messages); the runner itself does not.
   */
 final class AgentRunner[R](
-    tools: Map[String, AgentTool[R]],
+    tools: Map[ToolKey, AgentTool[R]],
     retrievers: Map[String, KnowledgeRetriever[R]],
     val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
@@ -223,6 +223,7 @@ final class AgentRunner[R](
             .flatMap(_.retrieve(query))
             .map(MessagePayload.RagResult(retrieverKey, _))
 
+      // case PreparedAction.CallExternalTool(functionCall) => ??? // TODO scalamode
       case PreparedAction.CallExternalTool(functionCall) =>
         val call = ExternalToolCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
         val execute =

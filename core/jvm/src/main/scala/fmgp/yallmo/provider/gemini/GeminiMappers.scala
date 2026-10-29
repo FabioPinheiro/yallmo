@@ -70,7 +70,7 @@ object GenAiMappers {
   private def toSdkFunctionDeclaration(definition: LlmToolDefinition): FunctionDeclaration =
     FunctionDeclaration
       .builder()
-      .name(definition.name)
+      .name(definition.name.value)
       .description(definition.description)
       .parameters(toSdkParametersSchema(definition.parameters))
       .build()

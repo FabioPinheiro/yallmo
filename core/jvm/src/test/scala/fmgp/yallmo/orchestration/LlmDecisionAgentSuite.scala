@@ -51,7 +51,7 @@ final class LlmDecisionAgentSuite extends FunSuite {
         AgentTask("Continue"),
         StaticContext[Any](
           "System",
-          tools = Chunk(AgentToolDefinition("clock", "Time")),
+          tools = Chunk(AgentToolDefinition(ToolKey.unsafe("clock"), "Time")),
           retrievers = Chunk(RetrieverDefinition("notes", "Notes")),
           skills = Chunk(AgentSkill("guide", "Guidance", "Follow guide"))
         ),

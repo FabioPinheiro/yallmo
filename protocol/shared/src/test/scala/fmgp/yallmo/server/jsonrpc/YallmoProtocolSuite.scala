@@ -363,7 +363,7 @@ final class YallmoProtocolSuite extends FunSuite {
   test("tools use AgentToolDefinition and its existing JsonSchema model, not a duplicate DTO") {
     val tools: ToolsList.Result = Chunk(
       AgentToolDefinition(
-        "inspect",
+        ToolKey.unsafe("inspect"),
         "Read",
         JsonSchema.ObjectSchema(
           Map("path" -> JsonSchema.StringSchema()),

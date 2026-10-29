@@ -50,7 +50,7 @@ private[openai] object OpenAiCodexTurnMapper {
       case ToolChoice.Auto           => ujson.Str("auto")
       case ToolChoice.None           => ujson.Str("none")
       case ToolChoice.Required       => ujson.Str("required")
-      case ToolChoice.Function(name) => ujson.Obj("type" -> "function", "name" -> name)
+      case ToolChoice.Function(name) => ujson.Obj("type" -> "function", "name" -> name.value)
 
   /** Unsupported modalities are mapping errors, not thrown exceptions or omitted input. */
   def input(items: Chunk[MessagePayload]): Either[String, ujson.Arr] =
@@ -66,7 +66,7 @@ private[openai] object OpenAiCodexTurnMapper {
   def tool(definition: FunctionToolDefinition): ujson.Obj =
     ujson.Obj(
       "type" -> "function",
-      "name" -> definition.name,
+      "name" -> definition.name.value,
       "description" -> definition.description,
       "parameters" -> JsonSchemaEncoder.encode(definition.inputSchema),
       "strict" -> false
@@ -147,7 +147,7 @@ private[openai] object OpenAiCodexTurnMapper {
               Chunk(
                 Some("type" -> ujson.Str("function_call")),
                 Some("call_id" -> ujson.Str(call.id.value)),
-                Some("name" -> ujson.Str(call.name)),
+                Some("name" -> ujson.Str(call.name.value)),
                 Some("arguments" -> ujson.Str(call.argumentsJson)),
                 call.providerItemId.map("id" -> ujson.Str(_))
               ).flatten
@@ -171,7 +171,7 @@ private[openai] object OpenAiCodexTurnMapper {
         case "function_call" =>
           for {
             callId <- requiredString(item, "call_id")
-            name <- requiredString(item, "name")
+            name <- requiredString(item, "name").flatMap(ToolKey.from)
             arguments = item.get("arguments").flatMap(_.strOpt).getOrElse("{}")
             id <- FunctionCallId.from(callId)
           } yield Some(

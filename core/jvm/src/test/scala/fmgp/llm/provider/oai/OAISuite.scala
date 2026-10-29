@@ -11,7 +11,7 @@ final class OAISuite extends FunSuite:
   test("builds an OpenAI-compatible chat-completions request") {
     val tool = LlmTool[Any](
       LlmToolDefinition(
-        "current_time",
+        ToolKey.unsafe("current_time"),
         "Get the current time",
         Chunk(LlmToolParameter("timezone", "IANA timezone", ToolSchemaType.String, required = true))
       ),
@@ -67,11 +67,38 @@ final class OAISuite extends FunSuite:
       response.toOption.flatMap(OAIChatCompletionsMapper.agentTurnResponse(_).toOption.map(_.stopReason)),
       Some(LlmStopReason.ToolUse)
     )
-    assertEquals(response.map(_.functionCalls), Right(Vector(OAIFunctionCall("call-1", "current_time", "{}"))))
+    assertEquals(
+      response.map(_.functionCalls),
+      Right(Vector(OAIFunctionCall("call-1", ToolKey.unsafe("current_time"), "{}")))
+    )
+  }
+
+  test("provider tool names accept custom keys but reject blank identifiers") {
+    for name <- List("custom_search", "", " ") do {
+      val body = ujson.write(
+        ujson.Obj(
+          "choices" -> ujson.Arr(
+            ujson.Obj(
+              "message" -> ujson.Obj(
+                "tool_calls" -> ujson.Arr(
+                  ujson.Obj(
+                    "id" -> "call-1",
+                    "function" -> ujson.Obj("name" -> name, "arguments" -> "{}")
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      val response = OAIChatCompletionsMapper.parseResponse(body)
+      assertEquals(response.isRight, name.trim.nonEmpty)
+      if name.trim.nonEmpty then assertEquals(response.map(_.functionCalls.head.name.value), Right(name))
+    }
   }
 
   test("maps native calls, outputs, tool choice, and schemas to chat completions") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-1"), "current_time", "{\"timezone\":\"UTC\"}")
+    val call = FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("current_time"), "{\"timezone\":\"UTC\"}")
     val output = FunctionCallOutput(call.id, call.name, "12:00")
     val request = AgentTurnRequest(
       "test",
@@ -83,12 +110,12 @@ final class OAISuite extends FunSuite:
       ),
       tools = Chunk(
         FunctionToolDefinition(
-          "current_time",
+          ToolKey.unsafe("current_time"),
           "Get time",
           JsonSchema.ObjectSchema(Map("timezone" -> JsonSchema.StringSchema()), required = Set("timezone"))
         )
       ),
-      toolChoice = ToolChoice.Function("current_time"),
+      toolChoice = ToolChoice.Function(ToolKey.unsafe("current_time")),
       parallelToolCalls = true
     )
 

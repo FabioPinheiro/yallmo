@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
@@ -33,7 +34,7 @@ object ScalaTool {
   val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
   /** Shared argument/error boundary for the two Scala tools, independent of their execution backend. */
-  private[tool] def executeWith[R](call: ExternalToolCall, toolKey: String)(
+  private[tool] def executeWith[R](call: ExternalToolCall, toolKey: ToolKey)(
       execute: String => RIO[R, CommandOutput]
   ): ZIO[R, YallmoError, CommandOutput] =
     for {
@@ -64,7 +65,7 @@ object ScalaTool {
   }
 
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "scalamode",
+    key = ToolKey.Scalamode,
     description = "Evaluate a Scala block with a pinned Scala 3 nightly, offline. The last expression is returned. " +
       "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
       "No direct file, network, process, environment access or println. " +

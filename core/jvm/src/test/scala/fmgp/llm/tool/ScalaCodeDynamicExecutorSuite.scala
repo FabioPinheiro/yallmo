@@ -85,7 +85,7 @@ final class ScalaCodeDynamicExecutorSuite extends FunSuite {
   test("dynamic tools reject invalid arguments before compiling") {
     val configuration = config("must-not-start")
     val tool = new ScalaDynamicTool[DynamicTestServices](configuration)
-    assertEquals(tool.definition.key, "scalaunsafe")
+    assertEquals(tool.definition.key, ToolKey.ScalaUnsafe)
     for arguments <- List("{}", "[]", """{"code":1}""", """{"code":""}""", """{"code":"ZIO.unit","extra":1}""") do {
       val result = run(
         tool

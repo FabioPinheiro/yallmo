@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.model.llm.JsonSchema
@@ -45,7 +46,7 @@ object BashTool {
   val DefaultMaxOutputBytes: Int = 64 * 1024
 
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "bash",
+    key = ToolKey.Bash,
     description = "Run a Bash command in the workspace and return its exit code, combined output, and timeout status.",
     inputSchema = JsonSchema.ObjectSchema(
       Map("command" -> JsonSchema.StringSchema(Some("Bash command to execute in the workspace"))),

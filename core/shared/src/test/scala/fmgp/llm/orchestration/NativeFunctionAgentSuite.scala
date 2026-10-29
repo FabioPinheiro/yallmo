@@ -14,7 +14,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
     runZIO {
       for {
         requests <- Ref.make(Chunk.empty[AgentTurnRequest])
-        call = FunctionCall(FunctionCallId.unsafe("call-clock"), "clock", "{}")
+        call = FunctionCall(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "{}")
         continuation = ProviderContinuation(ProviderId.unsafe("openai-codex-responses"), Some("rs-1"), "encrypted")
         client = new Agent[Any] {
           override val id: AgentId = AgentId("test-client")
@@ -34,11 +34,12 @@ final class NativeFunctionAgentSuite extends FunSuite:
             }
         }
         tool = new AgentTool[Agent[Any]] {
-          override val definition: AgentToolDefinition = AgentToolDefinition("clock", "Returns a fixed time")
+          override val definition: AgentToolDefinition =
+            AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             ZIO.succeed(ExternalToolResult("12:00"))
         }
-        runner = new AgentRunner[Agent[Any]](Map("clock" -> tool), Map.empty)
+        runner = new AgentRunner[Agent[Any]](Map(ToolKey.unsafe("clock") -> tool), Map.empty)
         run <- runner
           .runWithContext(
             NativeFunctionAgent(NativeId, "test-model"),
@@ -82,11 +83,11 @@ final class NativeFunctionAgentSuite extends FunSuite:
         invalidExecutions <- Ref.make(0)
         failingExecutions <- Ref.make(0)
         calls = Chunk(
-          FunctionCall(FunctionCallId.unsafe("unknown"), "missing", "{}"),
-          FunctionCall(FunctionCallId.unsafe("unadvertised"), "hidden", "{}"),
-          FunctionCall(FunctionCallId.unsafe("denied"), "guarded", "{}"),
-          FunctionCall(FunctionCallId.unsafe("invalid"), "validated", "{}"),
-          FunctionCall(FunctionCallId.unsafe("failing"), "broken", "{}")
+          FunctionCall(FunctionCallId.unsafe("unknown"), ToolKey.unsafe("missing"), "{}"),
+          FunctionCall(FunctionCallId.unsafe("unadvertised"), ToolKey.unsafe("hidden"), "{}"),
+          FunctionCall(FunctionCallId.unsafe("denied"), ToolKey.unsafe("guarded"), "{}"),
+          FunctionCall(FunctionCallId.unsafe("invalid"), ToolKey.unsafe("validated"), "{}"),
+          FunctionCall(FunctionCallId.unsafe("failing"), ToolKey.unsafe("broken"), "{}")
         )
         client = new Agent[Any] {
           override val id: AgentId = AgentId("test-client")
@@ -99,15 +100,19 @@ final class NativeFunctionAgentSuite extends FunSuite:
                 AgentTurnResponse(Chunk(Message.Assistant("Recovered.")), LlmStopReason.Stop)
             }
         }
-        hidden = countingTool("hidden", hiddenExecutions, ZIO.succeed(ExternalToolResult("unexpected")))
-        guardedBase = countingTool("guarded", deniedExecutions, ZIO.succeed(ExternalToolResult("unexpected")))
+        hidden = countingTool(ToolKey.unsafe("hidden"), hiddenExecutions, ZIO.succeed(ExternalToolResult("unexpected")))
+        guardedBase = countingTool(
+          ToolKey.unsafe("guarded"),
+          deniedExecutions,
+          ZIO.succeed(ExternalToolResult("unexpected"))
+        )
         approval = new ToolApproval[Agent[Any]] {
           override def approve(definition: AgentToolDefinition, call: ExternalToolCall): IO[YallmoError, Unit] =
             ZIO.fail(YallmoError.ToolApprovalDenied(definition.key, "not approved"))
         }
         guarded = ToolApproval.guard(guardedBase, approval)
         validatedDefinition = AgentToolDefinition(
-          "validated",
+          ToolKey.unsafe("validated"),
           "Requires a value",
           JsonSchema.ObjectSchema(
             Map("value" -> JsonSchema.StringSchema()),
@@ -121,14 +126,23 @@ final class NativeFunctionAgentSuite extends FunSuite:
             invalidExecutions.update(_ + 1).as(ExternalToolResult("unexpected"))
         }
         broken = countingTool(
-          "broken",
+          ToolKey.unsafe("broken"),
           failingExecutions,
           ZIO.fail(
-            YallmoError.ToolExecutionFailed("broken", "service unavailable", new RuntimeException("down"))
+            YallmoError.ToolExecutionFailed(
+              ToolKey.unsafe("broken"),
+              "service unavailable",
+              new RuntimeException("down")
+            )
           )
         )
         runner = new AgentRunner[Agent[Any]](
-          Map("hidden" -> hidden, "guarded" -> guarded, "validated" -> validated, "broken" -> broken),
+          Map(
+            ToolKey.unsafe("hidden") -> hidden,
+            ToolKey.unsafe("guarded") -> guarded,
+            ToolKey.unsafe("validated") -> validated,
+            ToolKey.unsafe("broken") -> broken
+          ),
           Map.empty
         )
         run <- runner
@@ -138,7 +152,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
             StaticContext[Agent[Any]](
               "System",
               tools = Chunk(
-                AgentToolDefinition("missing", "Advertised but unregistered"),
+                AgentToolDefinition(ToolKey.unsafe("missing"), "Advertised but unregistered"),
                 guarded.definition,
                 validated.definition,
                 broken.definition
@@ -169,7 +183,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
   }
 
   private def countingTool(
-      key: String,
+      key: ToolKey,
       executions: Ref[Int],
       result: IO[YallmoError, ExternalToolResult]
   ): AgentTool[Agent[Any]] =

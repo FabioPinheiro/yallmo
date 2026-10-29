@@ -1,6 +1,8 @@
 package fmgp.yallmo.provider.gemini
 import fmgp.yallmo.model.llm.ProviderGenerateOptions
 
+import fmgp.yallmo.model.ToolKey
+
 /** ASAR-owned generation controls. Keep these independent from google-genai Java SDK classes. */
 final case class GenAiConfig(
     model: String = GenAiConfig.DefaultModel,
@@ -31,10 +33,10 @@ object GenAiError {
   final case class JsonDecodeFailure(body: String, message: String)
       extends RuntimeException(s"Failed to decode JSON: $message\nBody: $body")
       with GenAiError
-  final case class UnknownTool(name: String)
+  final case class UnknownTool(name: ToolKey)
       extends RuntimeException(s"Gemini requested unknown tool: $name")
       with GenAiError
-  final case class ToolExecutionFailure(name: String, message: String, cause: Throwable)
+  final case class ToolExecutionFailure(name: ToolKey, message: String, cause: Throwable)
       extends RuntimeException(s"Tool '$name' failed: $message", cause)
       with GenAiError
   final case class ToolLoopLimitExceeded(limit: Int)

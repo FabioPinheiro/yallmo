@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.model.llm.JsonSchema
@@ -51,7 +52,7 @@ object RepositoryChangesTool {
   }
 
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "repositoryChanges",
+    key = ToolKey.RepositoryChanges,
     description =
       "Inspect Git repository status, unstaged changes, or staged changes without modifying the repository.",
     inputSchema = JsonSchema.ObjectSchema(
@@ -76,7 +77,7 @@ object RepositoryChangesTool {
       )
     )
 
-  private def toYallmoError(toolKey: String, error: GitError): YallmoError =
+  private def toYallmoError(toolKey: ToolKey, error: GitError): YallmoError =
     error match
       case GitError.Unavailable(_)   => YallmoError.ToolUnavailable(toolKey, error.getMessage)
       case GitError.CommandFailed(_) => YallmoError.ToolExecutionFailed(toolKey, error.getMessage, error)

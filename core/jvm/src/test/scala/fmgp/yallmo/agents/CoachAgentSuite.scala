@@ -24,7 +24,8 @@ final class CoachAgentSuite extends FunSuite {
   private val request = AgentTurnRequest(
     "test-model",
     Chunk(MessagePayload.User("Help me find a better role"), MessagePayload.Instructions("Be concise")),
-    tools = Chunk(FunctionToolDefinition("bash", "shell", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))),
+    tools =
+      Chunk(FunctionToolDefinition(ToolKey.Bash, "shell", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))),
     parallelToolCalls = true
   )
   private val answer =
@@ -123,7 +124,7 @@ final class CoachAgentSuite extends FunSuite {
       val invalid = makeCoach(delegate(_ => ZIO.dieMessage("Invalid request must not reach provider")), fs)
       assert(run(invalid.turn(request.copy(input = Chunk.empty)).either).isLeft)
       val toolResponse = AgentTurnResponse(
-        Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "bash", "{}"))),
+        Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.Bash, "{}"))),
         LlmStopReason.ToolUse
       )
       val agent = makeCoach(delegate(_ => ZIO.succeed(toolResponse)), fs)

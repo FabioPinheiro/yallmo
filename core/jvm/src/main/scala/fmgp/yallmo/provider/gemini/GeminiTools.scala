@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider.gemini
 
+import fmgp.yallmo.model.ToolKey
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.genai.Client as GoogleGenAiClient
 import com.google.genai.types.{Content, FunctionCall, GenerateContentResponse, GenerateContentConfig, Part}
@@ -71,7 +72,7 @@ object GenAiTools {
         model = selectedModel,
         prompt = prompt,
         options = options,
-        toolNames = tools.map(_.definition.name)
+        toolNames = tools.map(_.definition.name.value)
       )
       result <- (
         for {
@@ -141,26 +142,28 @@ object GenAiTools {
       call: FunctionCall,
       tools: Chunk[GeminiTool[R]]
   ): ZIO[R, Throwable, ToolCallResult] = {
-    val name = call.name().orElse("")
-    val args = call.args().orElse(Map.empty.asJava)
+    val rawName = call.name().orElse("")
+    ZIO.fromEither(ToolKey.from(rawName).left.map(GenAiError.JsonDecodeFailure(rawName, _))).flatMap { name =>
+      val args = call.args().orElse(Map.empty.asJava)
 
-    tools.find(_.definition.name == name) match {
-      case None =>
-        ZIO.logWarning(s"Gemini requested unknown tool: $name") *>
-          ZIO.fail(GenAiError.UnknownTool(name))
-      case Some(tool) =>
-        for {
-          argsJson <- ZIO.fromEither(stringifyJava(args))
-          request = ToolCallRequest(id = None, name = name, argsJson = argsJson)
-          _ <- ZIO.logInfo(s"Executing tool name=$name")
-          _ <- ZIO.logDebug(s"Tool call args=${request.argsJson}")
-          result <- tool.run(request).mapError { error =>
-            GenAiError.ToolExecutionFailure(name, error.getMessage, error)
-          }
-          _ <- ZIO.fromEither(parseResponseObject(result.responseJson))
-          _ <- ZIO.logInfo(s"Tool completed name=$name")
-          _ <- ZIO.logDebug(s"Tool response=${result.responseJson}")
-        } yield result
+      tools.find(_.definition.name == name) match {
+        case None =>
+          ZIO.logWarning(s"Gemini requested unknown tool: $name") *>
+            ZIO.fail(GenAiError.UnknownTool(name))
+        case Some(tool) =>
+          for {
+            argsJson <- ZIO.fromEither(stringifyJava(args))
+            request = ToolCallRequest(id = None, name = name, argsJson = argsJson)
+            _ <- ZIO.logInfo(s"Executing tool name=$name")
+            _ <- ZIO.logDebug(s"Tool call args=${request.argsJson}")
+            result <- tool.run(request).mapError { error =>
+              GenAiError.ToolExecutionFailure(name, error.getMessage, error)
+            }
+            _ <- ZIO.fromEither(parseResponseObject(result.responseJson))
+            _ <- ZIO.logInfo(s"Tool completed name=$name")
+            _ <- ZIO.logDebug(s"Tool response=${result.responseJson}")
+          } yield result
+      }
     }
   }
 
@@ -183,7 +186,7 @@ object GenAiTools {
         for {
           collected <- acc
           response <- parseResponseObject(result.responseJson)
-        } yield Part.fromFunctionResponse(result.name, response) :: collected
+        } yield Part.fromFunctionResponse(result.name.value, response) :: collected
       }
     } yield Content
       .builder()

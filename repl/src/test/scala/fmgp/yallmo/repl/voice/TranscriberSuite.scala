@@ -87,7 +87,7 @@ final class TranscriberSuite extends FunSuite {
   }
 
   test("calls, blank, unsupported payloads and non-stop results fail without another turn or assistant transcript") {
-    val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "forbidden", "{}"))
+    val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.unsafe("forbidden"), "{}"))
     val responses = List(
       AgentTurnResponse(Chunk(call), LlmStopReason.ToolUse),
       AgentTurnResponse(Chunk(MessagePayload.Assistant("text"), call), LlmStopReason.Stop),

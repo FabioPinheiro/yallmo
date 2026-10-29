@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import java.nio.file.{Files, Path}
 import munit.FunSuite
 import zio.*
@@ -71,7 +72,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.1"), Seq.empty) do {
         val result = run(
           new ScalaTool(dependencies = dependencies)
-            .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"42"}"""))
+            .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"42"}"""))
             .provide(ScalaCodeExecutor.layer(executable.toString))
         )
         val arguments = ujson.read(result.text)("output").str.linesIterator.toList
@@ -126,7 +127,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     withFakeCli("printf 'Checking compiler metadata\\n'; sleep 60\n") { executable =>
       val result = run(
         new ScalaTool(timeout = 300.millis)
-          .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"2 + 3"}"""))
+          .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
           .provide(ScalaCodeExecutor.layer(executable.toString))
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
@@ -184,7 +185,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
     val result = run(
       new ScalaTool(timeout = 1.second)
-        .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"2 + 3"}"""))
+        .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
         .provide(ScalaCodeExecutor.layer(realCli.get, scalaVersion = "3.nightly", offline = false))
         .timeoutFail(new RuntimeException("Scala CLI resolution did not respect its deadline"))(5.seconds)
     )

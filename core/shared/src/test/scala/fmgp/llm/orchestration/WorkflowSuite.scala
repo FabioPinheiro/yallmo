@@ -59,11 +59,12 @@ final class AgentRunnerSuite extends FunSuite:
             turns.updateAndGet(_ + 1).flatMap {
               case 1 =>
                 ZIO.succeed(
-                  AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))))
+                  AgentDecision
+                    .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
                 )
               case 2 =>
                 val toolResult = runContext.messages.collectFirst {
-                  case Message.ToolOutput(output) if output.name == "clock" =>
+                  case Message.ToolOutput(output) if output.name == ToolKey.unsafe("clock") =>
                     output.output
                 }
                 ZIO.succeed(AgentDecision.FinalAnswer(toolResult.getOrElse("missing tool result")))
@@ -71,7 +72,8 @@ final class AgentRunnerSuite extends FunSuite:
             }
         )
         tool = new AgentTool[Any] {
-          override val definition: AgentToolDefinition = AgentToolDefinition("clock", "Returns a fixed time")
+          override val definition: AgentToolDefinition =
+            AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
 
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z"))
@@ -91,8 +93,11 @@ final class AgentRunnerSuite extends FunSuite:
       val outputs = result._1.runContext.messages.collect { case Message.ToolOutput(output) => output }
       assertEquals(requests.size, 1)
       assert(FunctionCallId.from(requests.head.id.value).isRight)
-      assertEquals(result._2, Chunk(ExternalToolCall("clock", "{}", Some(requests.head.id))))
-      assertEquals(outputs, Chunk(FunctionCallOutput(requests.head.id, "clock", "2026-10-02T12:00:00Z")))
+      assertEquals(result._2, Chunk(ExternalToolCall(ToolKey.unsafe("clock"), "{}", Some(requests.head.id))))
+      assertEquals(
+        outputs,
+        Chunk(FunctionCallOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z"))
+      )
       val transcript = result._1.runContext.messages
       assert(
         transcript.indexOf(Message.ToolCall(requests.head)) < transcript.indexOf(
@@ -115,26 +120,28 @@ final class AgentRunnerSuite extends FunSuite:
               case 1 =>
                 AgentDecision.Actions(
                   Chunk(
-                    LlmAction.CallExternalTool(ExternalToolCall("clock", "{}")),
-                    LlmAction.CallExternalTool(ExternalToolCall("clock", "{}", Some(suppliedId))),
-                    LlmAction.CallExternalTool(ExternalToolCall("missing", "{}"))
+                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}")),
+                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}", Some(suppliedId))),
+                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("missing"), "{}"))
                   )
                 )
-              case 2 => AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))))
+              case 2 =>
+                AgentDecision
+                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
               case _ => AgentDecision.FinalAnswer("done")
             }
         )
         tool = new AgentTool[Any] {
-          override val definition = AgentToolDefinition("clock", "Returns a fixed time")
+          override val definition = AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             executions.update(_ :+ call).as(ExternalToolResult("12:00"))
         }
-        run <- new AgentRunner[Any](Map("clock" -> tool), Map.empty).runWithContext(
+        run <- new AgentRunner[Any](Map(ToolKey.unsafe("clock") -> tool), Map.empty).runWithContext(
           agent,
           AgentTask("Check repeatedly"),
           StaticContext[Any](
             "System",
-            tools = Chunk(tool.definition, AgentToolDefinition("missing", "Not registered"))
+            tools = Chunk(tool.definition, AgentToolDefinition(ToolKey.unsafe("missing"), "Not registered"))
           ),
           RunContext()
         )
@@ -153,7 +160,10 @@ final class AgentRunnerSuite extends FunSuite:
       assertEquals(outputs.take(2).map(_.output), Chunk("12:00", "12:00"))
       assert(outputs(2).output.contains("UnknownTool"))
       assertEquals(outputs(3).output, "12:00")
-      assertEquals(executed.map(_.callId), requests.filter(_.name == "clock").map(call => Some(call.id)))
+      assertEquals(
+        executed.map(_.callId),
+        requests.filter(_.name == ToolKey.unsafe("clock")).map(call => Some(call.id))
+      )
       requests.zip(outputs).foreach { case (call, output) =>
         assert(transcript.indexOf(Message.ToolCall(call)) < transcript.indexOf(Message.ToolOutput(output)))
       }
@@ -169,18 +179,22 @@ final class AgentRunnerSuite extends FunSuite:
           CoordinatorId,
           (_, _, runContext) =>
             turns.updateAndGet(_ + 1).map {
-              case 1 => AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("email", "{}"))))
+              case 1 =>
+                AgentDecision
+                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("email"), "{}"))))
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
-                    .collectFirst { case Message.ToolOutput(output) if output.name == "email" => output.output }
+                    .collectFirst {
+                      case Message.ToolOutput(output) if output.name == ToolKey.unsafe("email") => output.output
+                    }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
             }
         )
         tool = new AgentTool[Any] {
-          override val definition: AgentToolDefinition = AgentToolDefinition("email", "Sends an email")
+          override val definition: AgentToolDefinition = AgentToolDefinition(ToolKey.unsafe("email"), "Sends an email")
 
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             executions.update(_ + 1).as(ExternalToolResult("sent"))
@@ -219,7 +233,7 @@ final class AgentRunnerSuite extends FunSuite:
         executions <- Ref.make(0)
         turns <- Ref.make(0)
         toolDefinition = AgentToolDefinition(
-          "clock",
+          ToolKey.unsafe("clock"),
           "Returns a fixed time",
           fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(
             Map("timezone" -> fmgp.yallmo.model.llm.JsonSchema.StringSchema()),
@@ -236,17 +250,21 @@ final class AgentRunnerSuite extends FunSuite:
           CoordinatorId,
           (_, _, runContext) =>
             turns.updateAndGet(_ + 1).map {
-              case 1 => AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))))
+              case 1 =>
+                AgentDecision
+                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
-                    .collectFirst { case Message.ToolOutput(output) if output.name == "clock" => output.output }
+                    .collectFirst {
+                      case Message.ToolOutput(output) if output.name == ToolKey.unsafe("clock") => output.output
+                    }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
             }
         )
-        answer <- new AgentRunner[Any](Map("clock" -> tool), Map.empty).run(
+        answer <- new AgentRunner[Any](Map(ToolKey.unsafe("clock") -> tool), Map.empty).run(
           agent,
           AgentTask("What time is it?"),
           StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(toolDefinition))
@@ -274,7 +292,7 @@ final class AgentRunnerSuite extends FunSuite:
         AgentDecision.Actions(
           Chunk(
             LlmAction.RetrieveRag("knowledge", RagQuery("Faro beaches")),
-            LlmAction.CallExternalTool(ExternalToolCall("clock", "{}"))
+            LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))
           )
         )
       )

@@ -39,7 +39,7 @@ object ReplDebug {
         ujson.Obj(
           "role" -> "function_call",
           "callId" -> fmgp.yallmo.model.value(call.id),
-          "name" -> call.name,
+          "name" -> call.name.value,
           "arguments" -> call.argumentsJson,
           "timestamp" -> ujson.Num(timestamp.toDouble)
         )
@@ -47,7 +47,7 @@ object ReplDebug {
         ujson.Obj(
           "role" -> "function_call_output",
           "callId" -> fmgp.yallmo.model.value(output.callId),
-          "name" -> output.name,
+          "name" -> output.name.value,
           "output" -> output.output,
           "timestamp" -> ujson.Num(timestamp.toDouble)
         )

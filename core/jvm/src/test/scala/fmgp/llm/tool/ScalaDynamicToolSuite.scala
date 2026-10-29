@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall}
 import munit.FunSuite
@@ -11,7 +12,7 @@ final class ScalaDynamicToolSuite extends FunSuite {
 
   private val config = ScalaCodeDynamicExecutor.Config(apiDescription = "No services required")
   private val code = "ZIO.succeed(42)"
-  private val call = ExternalToolCall("scalaunsafe", ujson.write(ujson.Obj("code" -> code)))
+  private val call = ExternalToolCall(ToolKey.ScalaUnsafe, ujson.write(ujson.Obj("code" -> code)))
 
   private def executor(result: Task[CommandOutput]): ULayer[ScalaCodeDynamicExecutor] =
     ZLayer.succeed(new ScalaCodeDynamicExecutor {
@@ -26,8 +27,8 @@ final class ScalaDynamicToolSuite extends FunSuite {
 
   test("dynamic and restricted tools have independent definitions and executor requirements") {
     val tool: AgentTool[ScalaCodeDynamicExecutor] = new ScalaDynamicTool[Any](config)
-    assertEquals(tool.definition.key, "scalaunsafe")
-    assertEquals(ScalaTool.definition.key, "scalamode")
+    assertEquals(tool.definition.key, ToolKey.ScalaUnsafe)
+    assertEquals(ScalaTool.definition.key, ToolKey.Scalamode)
     assertNotEquals(tool.definition.key, ScalaTool.definition.key)
     assert(tool.definition.description.contains("ZIO effect with Throwable errors"))
     assert(tool.definition.description.contains(config.apiDescription))
@@ -58,7 +59,7 @@ final class ScalaDynamicToolSuite extends FunSuite {
     val results = run {
       ZIO
         .foreach(tools) { tool =>
-          val source = if tool.definition.key == "scalamode" then "6 * 7" else code
+          val source = if tool.definition.key == ToolKey.Scalamode then "6 * 7" else code
           tool.execute(ExternalToolCall(tool.definition.key, ujson.write(ujson.Obj("code" -> source))))
         }
         .provideLayer(restricted ++ executor(ZIO.succeed(CommandOutput(0, false, "in-process", false))))
@@ -87,7 +88,7 @@ final class ScalaDynamicToolSuite extends FunSuite {
   test("infrastructure failures identify the dynamic tool") {
     val failure = new RuntimeException("compiler could not start")
     val result = run(new ScalaDynamicTool[Any](config).execute(call).either.provide(executor(ZIO.fail(failure))))
-    assertEquals(result, Left(YallmoError.ToolExecutionFailed("scalaunsafe", failure.getMessage, failure)))
+    assertEquals(result, Left(YallmoError.ToolExecutionFailed(ToolKey.ScalaUnsafe, failure.getMessage, failure)))
   }
 
   test("compiler failures remain command results") {

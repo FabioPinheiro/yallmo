@@ -1,5 +1,6 @@
 package fmgp.yallmo.agents
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.agents.CoachApplicationTools.{Application, Record}
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall}
@@ -136,8 +137,8 @@ final class CoachApplicationToolsSuite extends FunSuite {
     }
   }
 
-  private def tool(tools: Chunk[AgentTool[Any]], key: String): AgentTool[Any] = tools.find(_.definition.key == key).get
-  private def invoke(tools: Chunk[AgentTool[Any]], key: String, json: String): String =
+  private def tool(tools: Chunk[AgentTool[Any]], key: ToolKey): AgentTool[Any] = tools.find(_.definition.key == key).get
+  private def invoke(tools: Chunk[AgentTool[Any]], key: ToolKey, json: String): String =
     run(tool(tools, key).execute(ExternalToolCall(key, json))).text
   private def saveJson(a: Application, revision: Int): String =
     s"{\"expectedRevision\":$revision,\"application\":${a.toJson}}"

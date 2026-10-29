@@ -163,8 +163,10 @@ final class OrchestratorInvokeSuite extends FunSuite {
             Message.Assistant(""),
             Message.Instructions("submitted instructions"),
             Message.Context("context", "forwarded data"),
-            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "scalamode", """{"code":"42"}""")),
-            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("previous"), "other", "previous output"))
+            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.Scalamode, """{"code":"42"}""")),
+            Message.ToolOutput(
+              FunctionCallOutput(FunctionCallId.unsafe("previous"), ToolKey.unsafe("other"), "previous output")
+            )
           )
           results <- ZIO.foreach(payloads) { payload =>
             val request = Message(input.data.copy(parentId = Some(parent.id), payload = payload))

@@ -77,7 +77,7 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(params.input.agentId, human)
     assertEquals(params.input.parentId, None)
     assertEquals(h.model.state.now().tool, ScalamodeTool.Safe)
-    assertEquals(call.name, "scalamode")
+    assertEquals(call.name, ToolKey.Scalamode)
     assertEquals(call.argumentsJson.fromJson[Json], Right(Json.Obj("code" -> Json.Str("List(1, 2, 3).map(_ * 2).sum"))))
     h.model.code("next draft")
     val response = h.response()
@@ -98,7 +98,7 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(h.model.state.now().tool, ScalamodeTool.Dynamic)
     assertEquals(h.model.state.now().code, source)
     val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
-    assertEquals(call.name, "scalaunsafe")
+    assertEquals(call.name, ToolKey.ScalaUnsafe)
     assertEquals(call.argumentsJson.fromJson[Json], Right(Json.Obj("code" -> Json.Str(source))))
     val response = h.response("42")
     h.requests.head._2.success(response)
@@ -110,7 +110,7 @@ final class ScalamodeModelSuite extends FunSuite {
       assertEquals(h.model.state.now().code, source)
       assertEquals(h.requests.size, 2)
       val safeCall = h.requests.last._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
-      assertEquals(safeCall.name, "scalamode")
+      assertEquals(safeCall.name, ToolKey.Scalamode)
       assertEquals(safeCall.argumentsJson, call.argumentsJson)
     }
   }
@@ -149,7 +149,7 @@ final class ScalamodeModelSuite extends FunSuite {
     val response = h.response()
     val output = response.payload.asInstanceOf[MessagePayload.ToolOutput].output
     h.requests.head._2
-      .success(Message(response.data.copy(payload = Message.ToolOutput(output.copy(name = "scalamode")))))
+      .success(Message(response.data.copy(payload = Message.ToolOutput(output.copy(name = ToolKey.Scalamode)))))
     tick().map { _ =>
       assertEquals(h.model.state.now().result, None)
       assert(h.model.state.now().notice.contains("Uncorrelated"))
@@ -225,13 +225,19 @@ final class ScalamodeModelSuite extends FunSuite {
       message =>
         Message(
           message.data
-            .copy(payload = Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("wrong"), "scalamode", "12")))
+            .copy(payload =
+              Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("wrong"), ToolKey.Scalamode, "12"))
+            )
         ),
       message =>
         Message(
           message.data.copy(payload =
             Message.ToolOutput(
-              FunctionCallOutput(message.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId, "wrong", "12")
+              FunctionCallOutput(
+                message.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId,
+                ToolKey.unsafe("wrong"),
+                "12"
+              )
             )
           )
         ),

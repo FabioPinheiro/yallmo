@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
@@ -621,7 +622,11 @@ final class RuntimeInstancesSuite extends FunSuite {
     val r = request.copy(
       tools = Chunk(
         fmgp.yallmo.model
-          .FunctionToolDefinition("shell", "commands", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))
+          .FunctionToolDefinition(
+            ToolKey.unsafe("shell"),
+            "commands",
+            fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty)
+          )
       ),
       toolChoice = fmgp.yallmo.model.ToolChoice.Required,
       parallelToolCalls = true

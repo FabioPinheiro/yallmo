@@ -1,5 +1,6 @@
 package fmgp.yallmo.provider
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.FunctionToolDefinition
 import fmgp.yallmo.model.llm.*
 import munit.FunSuite
@@ -11,7 +12,7 @@ abstract class JsonSchemaCharacterizationSuite extends FunSuite:
   protected def parameters(value: ujson.Value): ujson.Value
 
   private def definition(schema: JsonSchema.ObjectSchema): FunctionToolDefinition =
-    FunctionToolDefinition("inspect", "Inspect inputs", schema)
+    FunctionToolDefinition(ToolKey.unsafe("inspect"), "Inspect inputs", schema)
 
   private val nestedSchema = JsonSchema.ObjectSchema(
     Map(

@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import zio.*
 import zio.json.*
@@ -44,9 +45,10 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
             LlmAction.RetrieveRag(retrieverKey, RagQuery(query))
         }
       case "call_external_tool" =>
-        required(action.toolKey, "toolKey").map { toolKey =>
-          LlmAction.CallExternalTool(ExternalToolCall(toolKey, action.arguments.fold("{}")(_.toJson)))
-        }
+        for {
+          value <- required(action.toolKey, "toolKey")
+          toolKey <- ZIO.fromEither(ToolKey.from(value)).mapError(YallmoError.InvalidAgentDecision.apply)
+        } yield LlmAction.CallExternalTool(ExternalToolCall(toolKey, action.arguments.fold("{}")(_.toJson)))
       case unsupported =>
         ZIO.fail(YallmoError.InvalidAgentDecision(s"unsupported action kind '$unsupported'"))
 

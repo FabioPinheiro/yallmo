@@ -9,7 +9,7 @@ private[terminal] object TerminalMessageRenderer {
   /** Public wire projection only: never reconstruct persisted messages or private continuations. */
   def renderSnapshot(message: fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot): String = {
     def clean(value: String) = TerminalStatusLayout.sanitize(value)
-    val tool = message.toolName.fold("")(name => s" tool[${clean(name)}]")
+    val tool = message.toolName.fold("")(name => s" tool[${clean(name.value)}]")
     val blobs = message.blobIds.map(id => s" blob[${clean(fmgp.yallmo.model.BlobId.value(id))}]").mkString
     s"${clean(message.role)}[${clean(AgentId.value(message.agentId))}]$tool> ${sanitizeBody(message.content)}$blobs"
   }

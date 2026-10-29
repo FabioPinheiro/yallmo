@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.AgentTool
 import fmgp.yallmo.tool.*
 import zio.*
@@ -18,8 +19,8 @@ final case class StartupTools(
 
 /** Client-neutral tool availability retained from application startup. */
 final case class ToolAvailability(
-    available: Chunk[String],
-    unavailable: Chunk[(String, Chunk[String])]
+    available: Chunk[ToolKey],
+    unavailable: Chunk[(ToolKey, Chunk[String])]
 )
 
 /** Shared core tool composition for an explicitly supplied workspace. */
@@ -48,12 +49,12 @@ object ApplicationTools {
       // UNSAFE hasDynamicScala <- ZIO.serviceWithZIO[ScalaCodeDynamicExecutor](_.isAvailable)
       unavailable = Chunk.fromIterable(
         List(
-          Option.unless(hasWorkspace)("readFile" -> Chunk("workspace is not an accessible directory")),
-          Option.unless(hasWorkspace)("listFiles" -> Chunk("workspace is not an accessible directory")),
-          Option.unless(hasBash)("bash" -> Chunk("bash is not available on PATH")),
-          gitStatus.left.toOption.map(reason => "repositoryChanges" -> Chunk(reason)),
-          Option.unless(hasScala)("scalamode" -> Chunk("Scala CLI (scala-cli) is not available on PATH")),
-          // UNSAFE Option.unless(hasDynamicScala)("scalaunsafe" -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
+          Option.unless(hasWorkspace)(ToolKey.ReadFile -> Chunk("workspace is not an accessible directory")),
+          Option.unless(hasWorkspace)(ToolKey.ListFiles -> Chunk("workspace is not an accessible directory")),
+          Option.unless(hasBash)(ToolKey.Bash -> Chunk("bash is not available on PATH")),
+          gitStatus.left.toOption.map(reason => ToolKey.RepositoryChanges -> Chunk(reason)),
+          Option.unless(hasScala)(ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")),
+          // UNSAFE Option.unless(hasDynamicScala)(ToolKey.ScalaUnsafe -> Chunk("Scala CLI (scala-cli) is not available on PATH"))
         ).flatten
       )
       available = Chunk.fromIterable(

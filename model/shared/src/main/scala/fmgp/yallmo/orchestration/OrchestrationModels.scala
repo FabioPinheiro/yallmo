@@ -53,7 +53,7 @@ final case class RagQuery(text: String)
 
 /** A model-facing description of an external capability available to one agent. */
 final case class AgentToolDefinition(
-    key: String,
+    key: ToolKey,
     description: String,
     inputSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(Map.empty, additionalProperties = true)
 )
@@ -64,7 +64,7 @@ final case class AgentToolDefinition(
   * the invocation; tools and approval checks always receive the resolved ID.
   */
 final case class ExternalToolCall(
-    toolKey: String,
+    toolKey: ToolKey,
     argumentsJson: String,
     callId: Option[FunctionCallId] = None
 )

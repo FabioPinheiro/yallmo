@@ -53,7 +53,7 @@ val invocation: ZIO[ScalaCodeDynamicExecutor & ScriptFileSystem,
   fmgp.yallmo.model.YallmoError, fmgp.yallmo.orchestration.ExternalToolResult] =
   tool.execute(
     fmgp.yallmo.orchestration.ExternalToolCall(
-      "scalaunsafe",
+      fmgp.yallmo.model.ToolKey.ScalaUnsafe,
       """{"code":"ZIO.serviceWithZIO[fmgp.yallmo.scalacode.FileSystem](_.readUtf8(\"/tmp/example.txt\"))"}"""
     )
   )

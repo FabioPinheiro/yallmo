@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.{FunctionCallId, FunctionCallOutput, MessagePayload}
 import fmgp.yallmo.orchestration.RunContext
 import fmgp.yallmo.repl.ReplState
@@ -174,7 +175,9 @@ final class TerminalBrowserAudioSuite extends FunSuite {
       MessagePayload.Assistant("older"),
       MessagePayload.User("private user"),
       MessagePayload.Assistant("resumed reply"),
-      MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-tool"), "tool", "private tool")),
+      MessagePayload.ToolOutput(
+        FunctionCallOutput(FunctionCallId.unsafe("call-tool"), ToolKey.unsafe("tool"), "private tool")
+      ),
       MessagePayload.Assistant("  ")
     ).copy(sessionId = Some("resumed"), continuationStart = 5)
     assertEquals(TerminalBrowserAudio.latestAssistant(resumed), Some("resumed reply"))
@@ -184,7 +187,7 @@ final class TerminalBrowserAudioSuite extends FunSuite {
       TerminalBrowserAudio.latestAssistant(
         state(
           MessagePayload.User("user"),
-          MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-x"), "x", "tool"))
+          MessagePayload.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-x"), ToolKey.unsafe("x"), "tool"))
         )
       ),
       None

@@ -144,7 +144,7 @@ final class SessionSubmissionSuite extends FunSuite {
           runner,
           Some(agent),
           context.copy(
-            tools = Chunk(AgentToolDefinition("unavailable", "Must be filtered"))
+            tools = Chunk(AgentToolDefinition(ToolKey.unsafe("unavailable"), "Must be filtered"))
           )
         )
         first <- sessions.submit(None, "first")

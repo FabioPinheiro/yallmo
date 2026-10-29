@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
 import munit.FunSuite
 import zio.*
@@ -44,7 +45,7 @@ final class RepositoryChangesToolIntegrationSuite extends FunSuite {
   }
 
   private def execute(tool: RepositoryChangesTool, view: String) =
-    tool.execute(ExternalToolCall("repositoryChanges", s"""{"view":"$view"}""")).provide(GitClient.live)
+    tool.execute(ExternalToolCall(ToolKey.RepositoryChanges, s"""{"view":"$view"}""")).provide(GitClient.live)
 
   private def git(workspace: Path, arguments: String*): Unit = {
     val process = new ProcessBuilder((Seq("git", "-C", workspace.toString) ++ arguments)*)

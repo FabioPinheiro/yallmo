@@ -19,20 +19,20 @@ object FunctionCallId {
 /** A function invocation proposed by the model. It is data until the trusted runner validates and executes it. */
 final case class FunctionCall(
     id: FunctionCallId,
-    name: String,
+    name: ToolKey,
     argumentsJson: String,
     providerItemId: Option[String] = None
 ) derives JsonCodec {
   def validate: Either[String, FunctionCall] =
-    Either.cond(name.trim.nonEmpty, this, "function call name must not be blank")
+    Either.cond(name.value.trim.nonEmpty, this, "function call name must not be blank")
 }
 
 /** The trusted host's result for one [[FunctionCall]]. */
 final case class FunctionCallOutput(
     callId: FunctionCallId,
-    name: String,
+    name: ToolKey,
     output: String
 ) derives JsonCodec {
   def validate: Either[String, FunctionCallOutput] =
-    Either.cond(name.trim.nonEmpty, this, "function call output name must not be blank")
+    Either.cond(name.value.trim.nonEmpty, this, "function call output name must not be blank")
 }

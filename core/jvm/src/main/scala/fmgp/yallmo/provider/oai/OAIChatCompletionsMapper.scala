@@ -41,7 +41,7 @@ private[oai] object OAIChatCompletionsMapper {
     ujson.Obj(
       "type" -> "function",
       "function" -> ujson.Obj(
-        "name" -> definition.name,
+        "name" -> definition.name.value,
         "description" -> definition.description,
         "parameters" -> JsonSchemaEncoder.encode(definition.inputSchema)
       )
@@ -79,7 +79,7 @@ private[oai] object OAIChatCompletionsMapper {
         val toolCall = ujson.Obj(
           "id" -> call.id.value,
           "type" -> "function",
-          "function" -> ujson.Obj("name" -> call.name, "arguments" -> call.argumentsJson)
+          "function" -> ujson.Obj("name" -> call.name.value, "arguments" -> call.argumentsJson)
         )
         messages.lastOption.flatMap(_.objOpt).filter(_.get("role").flatMap(_.strOpt).contains("assistant")) match
           case Some(assistant) =>
@@ -143,7 +143,7 @@ private[oai] object OAIChatCompletionsMapper {
       case ToolChoice.None           => ujson.Str("none")
       case ToolChoice.Required       => ujson.Str("required")
       case ToolChoice.Function(name) =>
-        ujson.Obj("type" -> "function", "function" -> ujson.Obj("name" -> name))
+        ujson.Obj("type" -> "function", "function" -> ujson.Obj("name" -> name.value))
 
   private[oai] def requestBody[R](
       model: String,
@@ -205,7 +205,7 @@ private[oai] object OAIChatCompletionsMapper {
     ujson.Obj(
       "type" -> "function",
       "function" -> ujson.Obj(
-        "name" -> definition.name,
+        "name" -> definition.name.value,
         "description" -> definition.description,
         "parameters" -> parameters
       )
@@ -228,6 +228,7 @@ private[oai] object OAIChatCompletionsMapper {
       function
         .get("name")
         .flatMap(_.strOpt)
+        .flatMap(name => ToolKey.from(name).toOption)
         .getOrElse(throw IllegalArgumentException("tool call is missing function.name")),
       arguments
     )

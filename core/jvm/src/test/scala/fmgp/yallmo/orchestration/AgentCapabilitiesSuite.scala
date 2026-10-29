@@ -21,7 +21,10 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
   private val available = StaticContext[Any](
     "system",
-    tools = Chunk(AgentToolDefinition("clock", "time"), AgentToolDefinition("shell", "commands")),
+    tools = Chunk(
+      AgentToolDefinition(ToolKey.unsafe("clock"), "time"),
+      AgentToolDefinition(ToolKey.unsafe("shell"), "commands")
+    ),
     retrievers = Chunk(RetrieverDefinition("docs", "documents")),
     skills = Chunk(AgentSkill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS")),
     extensions = Chunk(extension)
@@ -30,10 +33,14 @@ final class AgentCapabilitiesSuite extends FunSuite {
     "model",
     Chunk(MessagePayload.Instructions("system")),
     tools = Chunk(
-      FunctionToolDefinition("clock", "time", JsonSchema.ObjectSchema(Map.empty)),
-      FunctionToolDefinition("shell", "commands", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))
+      FunctionToolDefinition(ToolKey.unsafe("clock"), "time", JsonSchema.ObjectSchema(Map.empty)),
+      FunctionToolDefinition(
+        ToolKey.unsafe("shell"),
+        "commands",
+        fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty)
+      )
     ),
-    toolChoice = ToolChoice.Function("shell"),
+    toolChoice = ToolChoice.Function(ToolKey.unsafe("shell")),
     parallelToolCalls = true
   )
 
@@ -42,7 +49,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assertEquals(decode("").capabilities, AgentCapabilities())
     assertEquals(decode(",\"capabilities\":{}").capabilities, AgentCapabilities())
     val partial = decode(",\"capabilities\":{\"tools\":[]}")
-    assertEquals(partial.capabilities.tools, Some(Set.empty[String]))
+    assertEquals(partial.capabilities.tools, Some(Set.empty[ToolKey]))
     val context = partial.capabilities.resolve(id, available).toOption.get
     assert(context.tools.isEmpty)
     assertEquals(context.retrievers, available.retrievers)
@@ -54,14 +61,23 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assert(empty.tools.isEmpty && empty.retrievers.isEmpty && empty.skills.isEmpty && empty.extensions.isEmpty)
   }
 
+  test("tool allowlists retain string JSON, support custom tools, and reject blank keys") {
+    val json = """{"tools":["clock"]}"""
+    val policy = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock"))))
+    assertEquals(json.fromJson[AgentCapabilities], Right(policy))
+    assertEquals(policy.toJson, json)
+    assert("""{"tools":[" "]}""".fromJson[AgentCapabilities].isLeft)
+    assert("""{"tools":[""]}""".fromJson[AgentCapabilities].isLeft)
+  }
+
   test("nonempty allowlists restrict each catalog and preserve ordering") {
-    val context = AgentCapabilities(tools = Some(Set("shell"))).resolve(id, available).toOption.get
-    assertEquals(context.tools.map(_.key), Chunk("shell"))
+    val context = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))).resolve(id, available).toOption.get
+    assertEquals(context.tools.map(_.key), Chunk(ToolKey.unsafe("shell")))
     assertEquals(context.skills, available.skills)
   }
 
   for (kind, policy) <- List(
-      "tools" -> AgentCapabilities(tools = Some(Set("typo"))),
+      "tools" -> AgentCapabilities(tools = Some(Set(ToolKey.unsafe("typo")))),
       "retrievers" -> AgentCapabilities(retrievers = Some(Set("typo"))),
       "skills" -> AgentCapabilities(skills = Some(Set("typo"))),
       "extensions" -> AgentCapabilities(extensions = Some(Set("typo")))
@@ -74,8 +90,8 @@ final class AgentCapabilitiesSuite extends FunSuite {
     }
 
   test("assembled request filtering removes forbidden definitions and forced choice; empty disables parallel calls") {
-    val filtered = AgentCapabilities(tools = Some(Set("clock"))).filterRequest(request)
-    assertEquals(filtered.tools.map(_.name), Chunk("clock"))
+    val filtered = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock")))).filterRequest(request)
+    assertEquals(filtered.tools.map(_.name), Chunk(ToolKey.unsafe("clock")))
     assertEquals(filtered.toolChoice, ToolChoice.None)
     val empty = disabled.filterRequest(request)
     assert(empty.tools.isEmpty)
@@ -95,7 +111,9 @@ final class AgentCapabilitiesSuite extends FunSuite {
               .set(Some(r))
               .as(
                 AgentTurnResponse(
-                  Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), "shell", "{}"))),
+                  Chunk(
+                    MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.unsafe("shell"), "{}"))
+                  ),
                   LlmStopReason.ToolUse
                 )
               )
@@ -179,7 +197,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
                     AgentDecision.Actions(
                       Chunk(
                         if retrieve then LlmAction.RetrieveRag("docs", RagQuery("query"))
-                        else LlmAction.CallExternalTool(ExternalToolCall("shell", "{}"))
+                        else LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("shell"), "{}"))
                       )
                     )
                   )
@@ -187,7 +205,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
             }
           }
           tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition("shell", "commands")
+            val definition = AgentToolDefinition(ToolKey.unsafe("shell"), "commands")
             def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = {
               val _ = call
               executed.set(true).as(ExternalToolResult("unsafe"))
@@ -200,7 +218,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
               executed.set(true).as(Chunk.empty)
             }
           }
-          outcome <- new AgentRunner[Any](Map("shell" -> tool), Map("docs" -> retriever))
+          outcome <- new AgentRunner[Any](Map(ToolKey.unsafe("shell") -> tool), Map("docs" -> retriever))
             .run(malicious, AgentTask("hello"), available)
             .either
           didExecute <- executed.get
@@ -268,9 +286,9 @@ final class AgentCapabilitiesSuite extends FunSuite {
       }
     }
     val program = NativeFunctionAgent[Agent[Any]](id, "model", capabilities = disabled)
-    val adapter = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set("clock"))))
+    val adapter = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock")))))
     run(new AgentRunner[Any](Map.empty, Map.empty).run(program.bind[Any](adapter), AgentTask("hello"), available))
-    val invalid = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set("typo"))))
+    val invalid = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set(ToolKey.unsafe("typo")))))
     val error = run(
       new AgentRunner[Any](Map.empty, Map.empty)
         .run(program.bind[Any](invalid), AgentTask("hello"), available)
@@ -280,12 +298,13 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
 
   test("configured nonempty tool allowlist preserves allowed calls and rejects unadvertised allowed IDs") {
-    val policy = AgentCapabilities(tools = Some(Set("clock")))
-    val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("allowed-call"), "clock", "{}"))
+    val policy = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock"))))
+    val call =
+      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("allowed-call"), ToolKey.unsafe("clock"), "{}"))
     val delegate = new Agent[Any] {
       val id = AgentCapabilitiesSuite.this.id
       def turn(r: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
-        assert(!r.tools.exists(_.name == "shell"))
+        assert(!r.tools.exists(_.name == ToolKey.unsafe("shell")))
         ZIO.succeed(AgentTurnResponse(Chunk(call), LlmStopReason.ToolUse))
       }
     }

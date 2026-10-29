@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
 import fmgp.yallmo.tool.*
 import fmgp.yallmo.scalacode.{FileSystem as ScriptFileSystem}
@@ -9,7 +10,14 @@ import zio.*
 
 final class ApplicationToolsSuite extends FunSuite {
   private val workspace = Path.of("/explicit/application-workspace")
-  private val allKeys = Chunk("readFile", "listFiles", "bash", "repositoryChanges", "scalamode", "scalaunsafe")
+  private val allKeys = Chunk(
+    ToolKey.ReadFile,
+    ToolKey.ListFiles,
+    ToolKey.Bash,
+    ToolKey.RepositoryChanges,
+    ToolKey.Scalamode,
+    ToolKey.ScalaUnsafe
+  )
 
   test("startup selects only tools whose requirements pass without executing tools") {
     val (tools, calls) = run {
@@ -21,13 +29,13 @@ final class ApplicationToolsSuite extends FunSuite {
     }
     assertEquals(
       tools.available.map(_.definition.key),
-      Chunk("readFile", "listFiles", "bash", "scalamode", "scalaunsafe")
+      Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe)
     )
     assertEquals(
       tools.availability,
       ToolAvailability(
-        Chunk("readFile", "listFiles", "bash", "scalamode", "scalaunsafe"),
-        Chunk("repositoryChanges" -> Chunk("git is not available on PATH"))
+        Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe),
+        Chunk(ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"))
       )
     )
     assertEquals(
@@ -78,12 +86,12 @@ final class ApplicationToolsSuite extends FunSuite {
       ToolAvailability(
         Chunk.empty,
         Chunk(
-          "readFile" -> Chunk("workspace is not an accessible directory"),
-          "listFiles" -> Chunk("workspace is not an accessible directory"),
-          "bash" -> Chunk("bash is not available on PATH"),
-          "repositoryChanges" -> Chunk("git is not available on PATH"),
-          "scalamode" -> Chunk("Scala CLI (scala-cli) is not available on PATH"),
-          "scalaunsafe" -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+          ToolKey.ReadFile -> Chunk("workspace is not an accessible directory"),
+          ToolKey.ListFiles -> Chunk("workspace is not an accessible directory"),
+          ToolKey.Bash -> Chunk("bash is not available on PATH"),
+          ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"),
+          ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH"),
+          ToolKey.ScalaUnsafe -> Chunk("Scala CLI (scala-cli) is not available on PATH")
         )
       )
     )
@@ -102,11 +110,11 @@ final class ApplicationToolsSuite extends FunSuite {
     }
     assertEquals(
       tools.available.map(_.definition.key),
-      Chunk("readFile", "listFiles", "bash", "scalamode", "scalaunsafe")
+      Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode, ToolKey.ScalaUnsafe)
     )
     assertEquals(
       tools.availability.unavailable,
-      Chunk("repositoryChanges" -> Chunk("workspace is not a Git work tree"))
+      Chunk(ToolKey.RepositoryChanges -> Chunk("workspace is not a Git work tree"))
     )
   }
 
@@ -119,10 +127,10 @@ final class ApplicationToolsSuite extends FunSuite {
         _ <- ZIO
           .foreachDiscard(
             Chunk(
-              ExternalToolCall("readFile", """{"path":"notes.txt"}"""),
-              ExternalToolCall("listFiles", """{"path":"src"}"""),
-              ExternalToolCall("bash", """{"command":"echo fake"}"""),
-              ExternalToolCall("repositoryChanges", """{"view":"status"}""")
+              ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""),
+              ExternalToolCall(ToolKey.ListFiles, """{"path":"src"}"""),
+              ExternalToolCall(ToolKey.Bash, """{"command":"echo fake"}"""),
+              ExternalToolCall(ToolKey.RepositoryChanges, """{"view":"status"}""")
             )
           )(call => tools.available.find(_.definition.key == call.toolKey).get.execute(call))
           .provideLayer(services.layer)
@@ -145,9 +153,9 @@ final class ApplicationToolsSuite extends FunSuite {
       for {
         services <- probes(allowExecution = true)
         tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        scala = tools.available.find(_.definition.key == "scalamode").get
+        scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
         result <- scala
-          .execute(ExternalToolCall("scalamode", """{"code":"(1 to 10).sum"}"""))
+          .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
           .provideLayer(services.layer)
         calls <- services.calls.get
       } yield (scala.definition, result, calls)
@@ -166,10 +174,12 @@ final class ApplicationToolsSuite extends FunSuite {
         } yield tools
       }
       val expected =
-        Chunk.fromIterable(List(Option.when(safe)("scalamode"), Option.when(dynamic)("scalaunsafe")).flatten)
+        Chunk.fromIterable(
+          List(Option.when(safe)(ToolKey.Scalamode), Option.when(dynamic)(ToolKey.ScalaUnsafe)).flatten
+        )
       assertEquals(tools.available.map(_.definition.key), expected)
-      assertEquals(tools.availability.unavailable.exists(_._1 == "scalamode"), !safe)
-      assertEquals(tools.availability.unavailable.exists(_._1 == "scalaunsafe"), !dynamic)
+      assertEquals(tools.availability.unavailable.exists(_._1 == ToolKey.Scalamode), !safe)
+      assertEquals(tools.availability.unavailable.exists(_._1 == ToolKey.ScalaUnsafe), !dynamic)
     }
   }
 
@@ -205,10 +215,10 @@ final class ApplicationToolsSuite extends FunSuite {
       for {
         services <- probes()
         tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        tool = tools.available.find(_.definition.key == "scalaunsafe").get
+        tool = tools.available.find(_.definition.key == ToolKey.ScalaUnsafe).get
         outputs <- ZIO.foreach(List("first host instance", "second host instance")) { content =>
           tool
-            .execute(ExternalToolCall("scalaunsafe", ujson.write(ujson.Obj("code" -> code))))
+            .execute(ExternalToolCall(ToolKey.ScalaUnsafe, ujson.write(ujson.Obj("code" -> code))))
             .provideLayer(
               services.layer
                 .map(_.add[WorkspaceFileSystem](filesystem(content)).add[ScalaCodeDynamicExecutor](executor))
@@ -242,9 +252,9 @@ final class ApplicationToolsSuite extends FunSuite {
           )
         services <- probes(allowExecution = true)
         tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-        tool = tools.available.find(_.definition.key == "scalaunsafe").get
+        tool = tools.available.find(_.definition.key == ToolKey.ScalaUnsafe).get
         result <- tool
-          .execute(ExternalToolCall("scalaunsafe", ujson.write(ujson.Obj("code" -> code))))
+          .execute(ExternalToolCall(ToolKey.ScalaUnsafe, ujson.write(ujson.Obj("code" -> code))))
           .provideLayer(services.layer.map(_.add[ScalaCodeDynamicExecutor](executor)))
         calls <- services.calls.get
       } yield (result, calls)

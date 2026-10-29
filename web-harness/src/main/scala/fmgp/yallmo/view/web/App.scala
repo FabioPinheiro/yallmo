@@ -459,7 +459,7 @@ object App {
         cls := "message-meta",
         span(cls := "role", child.text <-- message.map(_.role)),
         strong(child.text <-- message.map(value => AgentId.value(value.agentId))),
-        span(child.text <-- message.map(_.toolName.getOrElse(""))),
+        span(child.text <-- message.map(_.toolName.fold("")(_.value))),
         timeTag(child.text <-- message.map(_.timestamp.toString)),
         speech.buttonFor(message.map(_.content))
       ),

@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.model.llm.JsonSchema
@@ -24,7 +25,7 @@ final class ReadFileTool(workspace: Path = Path.of("").toAbsolutePath.normalize)
 
 object ReadFileTool {
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "readFile",
+    key = ToolKey.ReadFile,
     description = "Read a UTF-8 file at a path resolved against the workspace; parent traversal is allowed.",
     inputSchema = FileSystemTools.pathSchema
   )
@@ -47,7 +48,7 @@ final class ListFilesTool(workspace: Path = Path.of("").toAbsolutePath.normalize
 
 object ListFilesTool {
   val definition: AgentToolDefinition = AgentToolDefinition(
-    key = "listFiles",
+    key = ToolKey.ListFiles,
     description = "List direct entries at a path resolved against the workspace; parent traversal is allowed.",
     inputSchema = FileSystemTools.pathSchema
   )

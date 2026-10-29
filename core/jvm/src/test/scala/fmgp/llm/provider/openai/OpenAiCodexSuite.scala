@@ -64,12 +64,13 @@ final class OpenAiCodexSuite extends FunSuite:
     )
 
     assertEquals(response.map(_.text), Right(Some("done")))
-    assertEquals(response.map(_.functionCalls.map(_.name)), Right(Vector("current_time")))
+    assertEquals(response.map(_.functionCalls.map(_.name.value)), Right(Vector("current_time")))
     assertEquals(response.map(_.responseId), Right(Some("response-1")))
   }
 
   test("maps native Responses items while preserving call IDs and OpenAI continuations") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-1"), "read", "{\"path\":\"README.md\"}", Some("fc-1"))
+    val call =
+      FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{\"path\":\"README.md\"}", Some("fc-1"))
     val response = OpenAiCodexResponse(
       output = Vector(
         ujson.read(
@@ -184,10 +185,10 @@ final class OpenAiCodexSuite extends FunSuite:
   }
 
   test("native request preserves tool calls, results and only same-provider encrypted reasoning") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-1"), "read", "{}", Some("fc-1"))
+    val call = FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{}", Some("fc-1"))
     val continuation = ProviderContinuation(OpenAiCodexTurnMapper.providerId, Some("rs-1"), "encrypted")
     val definition = FunctionToolDefinition(
-      "read",
+      ToolKey.unsafe("read"),
       "Read a file",
       JsonSchema.ObjectSchema(Map("path" -> JsonSchema.StringSchema()), Set("path"), false)
     )
@@ -202,7 +203,7 @@ final class OpenAiCodexSuite extends FunSuite:
         MessagePayload.Instructions("Use the tools")
       ),
       tools = Chunk(definition),
-      toolChoice = ToolChoice.Function("read"),
+      toolChoice = ToolChoice.Function(ToolKey.unsafe("read")),
       parallelToolCalls = true
     )
     val body = OpenAiCodexTurnMapper.requestBody(request).toOption.get
@@ -346,7 +347,9 @@ final class OpenAiCodexSuite extends FunSuite:
           MessagePayload
             .Reasoning(None, ProviderContinuation(OpenAiCodexTurnMapper.providerId, Some("rs-1"), "encrypted")),
           MessagePayload.Assistant("streamed text"),
-          MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call-1"), "read", "{}", Some("fc-1")))
+          MessagePayload.ToolCall(
+            FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{}", Some("fc-1"))
+          )
         )
       )
     )

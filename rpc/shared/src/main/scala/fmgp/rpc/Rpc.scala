@@ -13,18 +13,46 @@ object RpcError {
   }
 }
 
+/** Total, pure policy for translating infrastructure failures into a service's exact error type. Implementations must
+  * handle every code and must not throw; throwing is a programmer defect. Domain failures are decoded directly and
+  * never passed through this policy.
+  */
+trait RpcErrorMapper[E] {
+  def apply(error: RpcError): E
+}
+object RpcErrorMapper {
+  def apply[E](map: RpcError => E): RpcErrorMapper[E] = new RpcErrorMapper[E] {
+    def apply(error: RpcError): E = map(error)
+  }
+  given RpcErrorMapper[Throwable] = RpcErrorMapper(error => error)
+}
+
+/** Service outcomes only; routing, codec and transport errors remain in the RpcError channel. */
+enum RpcResult {
+  case Success(value: Json)
+  case Failure(value: Json)
+}
+
 final case class RpcDescriptor(serviceId: String, version: Int, methods: Set[String])
 
-/** One connection is shared by any number of generated clients. No retry or reconnect is implied. */
+/** One connection is shared by any number of generated clients. No retry or reconnect is implied.
+  *
+  * Service outcomes are returned as RpcResult; only sanitized infrastructure failures use the error channel. This
+  * revision intentionally replaces the former Task[Json] boundary.
+  */
 trait RpcConnection {
-  def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): Task[Json]
+  def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult]
   def close: UIO[Unit]
 }
 
-/** A concrete trait's once-derived contract; transports do not participate in derivation. */
+/** A concrete trait's once-derived contract; transports do not participate in derivation. Methods must return ZIO[Any,
+  * E, A]. Except for exactly Throwable (sanitized ServiceFailure, no codec required), E needs JSON codecs and an
+  * explicit total RpcErrorMapper[E]. Codec-approved domain errors are not redacted and may appear in transport TRACE
+  * logs. Nothing, environment requirements and stream methods are unsupported.
+  */
 final class Rpc[A](
     val descriptor: RpcDescriptor,
-    handlers: A => Map[String, Chunk[Json] => IO[RpcError, Json]],
+    handlers: A => Map[String, Chunk[Json] => IO[RpcError, RpcResult]],
     makeClient: RpcConnection => A
 ) {
   def bind(service: A): RpcDispatcher = RpcDispatcher.single(descriptor, handlers(service))
@@ -46,7 +74,8 @@ final class RpcDispatcher private (private val services: Map[String, RpcDispatch
     if services.keySet.intersect(other.services.keySet).nonEmpty then Left(RpcError(RpcError.Code.DuplicateService))
     else Right(new RpcDispatcher(services ++ other.services))
 
-  def dispatch(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, Json] =
+  /** Routes a call, keeping encoded domain failures separate from infrastructure errors. */
+  def dispatch(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult] =
     services.get(serviceId) match {
       case None                                                   => ZIO.fail(RpcError(RpcError.Code.UnknownService))
       case Some(service) if service.descriptor.version != version =>
@@ -69,18 +98,18 @@ final class RpcDispatcher private (private val services: Map[String, RpcDispatch
 object RpcDispatcher {
   private final case class Service(
       descriptor: RpcDescriptor,
-      handlers: Map[String, Chunk[Json] => IO[RpcError, Json]]
+      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]]
   )
   private[rpc] def single(
       descriptor: RpcDescriptor,
-      handlers: Map[String, Chunk[Json] => IO[RpcError, Json]]
+      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]]
   ): RpcDispatcher =
     new RpcDispatcher(Map(descriptor.serviceId -> Service(descriptor, handlers)))
 }
 
 /** Public only for generated code at external call sites. */
 object RpcJson {
-  def encode[A: JsonEncoder](value: A): Task[Json] =
+  def encode[A: JsonEncoder](value: A): IO[RpcError, Json] =
     ZIO
       .attempt(summon[JsonEncoder[A]].toJsonAST(value))
       .flatMap(ZIO.fromEither(_))
@@ -91,9 +120,23 @@ object RpcJson {
     ZIO.fail(RpcError(code)).unless(value == Json.Null).unit
   def arity(arguments: Chunk[Json], expected: Int): IO[RpcError, Unit] =
     ZIO.fail(RpcError(RpcError.Code.InvalidArguments)).unless(arguments.size == expected).unit
-  def hostResult(effect: => Task[Json]): IO[RpcError, Json] =
-    ZIO.suspendSucceed(effect).catchAllCause { cause =>
-      if cause.isInterruptedOnly then ZIO.interrupt
-      else ZIO.fail(RpcError(RpcError.Code.ServiceFailure))
-    }
+  def hostResult[E, A](
+      effect: => IO[E, A],
+      failure: E => IO[RpcError, RpcResult],
+      success: A => IO[RpcError, Json]
+  ): IO[RpcError, RpcResult] =
+    ZIO
+      .suspendSucceed(effect)
+      .foldCauseZIO(
+        cause =>
+          if cause.isInterrupted then ZIO.interrupt
+          else if cause.defects.nonEmpty then ZIO.fail(RpcError(RpcError.Code.ServiceFailure))
+          else
+            cause.failureOption match {
+              case Some(error) => failure(error)
+              case None        => ZIO.fail(RpcError(RpcError.Code.ServiceFailure))
+            }
+        ,
+        value => success(value).map(RpcResult.Success(_))
+      )
 }

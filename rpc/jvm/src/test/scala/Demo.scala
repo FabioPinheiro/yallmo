@@ -7,11 +7,12 @@ case class AAA(n1: Int, n2: Int) derives JsonCodec
 // Shared contract, available to both server and client.
 trait Calculator {
   def add(left: Int, right: Int): Task[Int]
-  def minus(left: Int, right: Int): Task[Int]
+  def minus(left: Int, right: Int): ZIO[Any, String, Int]
   def addAAA(aaa: AAA): Task[Int]
 }
 
 object Calculator {
+  given RpcErrorMapper[String] = RpcErrorMapper(error => s"RPC: ${error.code}")
   val rpc: Rpc[Calculator] =
     Rpc.derived[Calculator]("demo.calculator", 1)
 }
@@ -20,7 +21,7 @@ object CalculatorLive extends Calculator {
   def add(left: Int, right: Int): Task[Int] =
     ZIO.succeed(left + right)
 
-  def minus(left: Int, right: Int): Task[Int] =
+  def minus(left: Int, right: Int): ZIO[Any, String, Int] =
     ZIO.succeed(left - right)
 
   def addAAA(aaa: AAA): Task[Int] =

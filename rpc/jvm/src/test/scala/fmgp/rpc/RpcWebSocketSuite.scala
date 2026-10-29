@@ -118,6 +118,75 @@ class RpcWebSocketSuite extends FunSuite {
     assertEquals(values, (1 to 8).reverse.map(_ * 11).toList)
   }
 
+  test("authenticated merged typed and Task services correlate concurrent domain, success and infrastructure replies") {
+    import RpcTypedErrorFixtures.{files, fileService, FsError}
+    val results = run {
+      for {
+        dispatcher <- ZIO.fromEither(calls.bind(service(ZIO.succeed(_))).merge(files.bind(fileService)))
+        port <- serveFixture(dispatcher)
+        connection <- connectFixture(port)
+        typed = files.client(connection)
+        task = calls.client(connection)
+        wrongVersion = files.client(
+          RpcTypedErrorFixtures.connection((id, _, method, args) => connection.call(id, 1, method, args))
+        )
+        results <- ZIO
+          .collectAllPar(
+            List(
+              typed.read("missing").either,
+              typed.read("exists").either,
+              wrongVersion.read("exists").either
+            )
+          )
+          .zipPar(task.echo("task survives"))
+        after <- typed.read("exists").either
+        _ <- connection.close
+        disconnected <- typed.read("exists").either
+      } yield (results, after, disconnected)
+    }
+    assertEquals(
+      results._1._1,
+      List(
+        Left(FsError.NotFound("missing")),
+        Right("contents"),
+        Left(FsError.Infrastructure(RpcError.Code.VersionMismatch))
+      )
+    )
+    assertEquals(results._1._2, "task survives")
+    assertEquals(results._2, Right("contents"))
+    assertEquals(results._3, Left(FsError.Infrastructure(RpcError.Code.Disconnected)))
+  }
+
+  test("typed timeout and interruption clean pending slots and leave merged Task calls usable") {
+    import RpcTypedErrorFixtures.{files, fileService, Files, FsError}
+    val result = run {
+      for {
+        entered <- Queue.bounded[Unit](2)
+        host = new Files {
+          def read(path: String): IO[FsError, String] = fileService.read(path)
+          def broken(): IO[FsError, String] = fileService.broken()
+          def thrown(): IO[FsError, String] = fileService.thrown()
+          def waitFor(): IO[FsError, String] = entered.offer(()) *> ZIO.never
+        }
+        dispatcher <- ZIO.fromEither(files.bind(host).merge(calls.bind(service(ZIO.succeed(_)))))
+        port <- serveFixture(dispatcher)
+        connection <- connectFixture(port, RpcWebSocket.Limits(maxPending = 1, timeout = 1.second))
+        typed = files.client(connection)
+        timed <- typed.waitFor().either
+        _ <- entered.take
+        pending <- typed.waitFor().fork
+        _ <- entered.take
+        _ <- pending.interrupt
+        healthy <- calls.client(connection).echo("healthy")
+        domain <- typed.read("missing").either
+      } yield (timed, healthy, domain)
+    }
+    assertEquals(
+      result,
+      (Left(FsError.Infrastructure(RpcError.Code.TimedOut)), "healthy", Left(FsError.NotFound("missing")))
+    )
+  }
+
   test(
     "wire calls reject unknown routes, versions, wrong arity and malformed arguments; sanitize failure and defects"
   ) {
@@ -308,15 +377,19 @@ class RpcWebSocketSuite extends FunSuite {
         connection <- RpcWebSocket.connect(port, token)
         client = calls.client(connection)
         first <- client.waitFor(1).either.fork
-        second <- client.waitFor(2).either.fork
+        second <- RpcTypedErrorFixtures.files.client(connection).waitFor().either.fork
         firstResult <- first.join
         secondResult <- second.join
         later <- client.echo("closed").either
-      } yield (code(firstResult), code(secondResult), code(later))
+      } yield (code(firstResult), secondResult, code(later))
     }
     assertEquals(
       result,
-      (Some(RpcError.Code.ProtocolError), Some(RpcError.Code.ProtocolError), Some(RpcError.Code.Disconnected))
+      (
+        Some(RpcError.Code.ProtocolError),
+        Left(RpcTypedErrorFixtures.FsError.Infrastructure(RpcError.Code.ProtocolError)),
+        Some(RpcError.Code.Disconnected)
+      )
     )
   }
 

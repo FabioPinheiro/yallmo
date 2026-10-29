@@ -8,7 +8,7 @@ import zio.json.ast.Json
 private[rpc] object RpcWire {
   final case class Request(id: String, service: String, version: Int, method: String, arguments: Chunk[Json])
       derives JsonCodec
-  final case class Response(id: String, result: Option[Json], error: Option[RpcError.Code]) derives JsonCodec
+  final case class Response(id: String, outcome: Either[RpcError, RpcResult])
 
   private def document(input: String): Either[RpcError, Json] = {
     // Bound parser recursion before zio-json sees the document. Brackets inside strings do not count.
@@ -56,21 +56,35 @@ private[rpc] object RpcWire {
 
   def response(input: String): Either[RpcError, Response] =
     for {
-      json <- envelope(input, Set(Set("id", "result"), Set("id", "error")))
-      response <- json.as[Response].left.map(_ => RpcError(RpcError.Code.ProtocolError))
-      // A null result represents Unit and must remain Some(Json.Null), not a missing optional field.
-      result = json match {
-        case Json.Obj(fields) => fields.find(_._1 == "result").map(_._2)
-        case _                => None
+      json <- envelope(input, Set(Set("id", "result"), Set("id", "failure"), Set("id", "error")))
+      response <- json match {
+        case Json.Obj(fields) =>
+          val values = fields.toMap
+          values("id") match {
+            case Json.Str(id) if validId(id) =>
+              values.get("result") match {
+                case Some(value) => Right(Response(id, Right(RpcResult.Success(value))))
+                case None        =>
+                  values.get("failure") match {
+                    case Some(value) => Right(Response(id, Right(RpcResult.Failure(value))))
+                    case None        =>
+                      values("error")
+                        .as[RpcError.Code]
+                        .left
+                        .map(_ => RpcError(RpcError.Code.ProtocolError))
+                        .map(code => Response(id, Left(RpcError(code))))
+                  }
+              }
+            case _ => Left(RpcError(RpcError.Code.ProtocolError))
+          }
+        case _ => Left(RpcError(RpcError.Code.ProtocolError))
       }
-      _ <- Either.cond(
-        validId(response.id) && (result.isDefined != response.error.isDefined),
-        (),
-        RpcError(RpcError.Code.ProtocolError)
-      )
-    } yield response.copy(result = result)
+    } yield response
 
-  def success(id: String, result: Json): String =
-    Json.Obj("id" -> Json.Str(id), "result" -> result).toJson
-  def failure(id: String, error: RpcError): String = Response(id, None, Some(error.code)).toJson
+  def success(id: String, result: RpcResult): String = result match {
+    case RpcResult.Success(value) => Json.Obj("id" -> Json.Str(id), "result" -> value).toJson
+    case RpcResult.Failure(value) => Json.Obj("id" -> Json.Str(id), "failure" -> value).toJson
+  }
+  def failure(id: String, error: RpcError): String =
+    s"""{"id":${id.toJson},"error":${error.code.toJson}}"""
 }

@@ -36,17 +36,21 @@ object RpcMacros {
     if methods.isEmpty then reject("expected at least one abstract Task method")
     if methods.map(_.name).distinct.size != methods.size then reject("overloaded methods are unsupported")
 
-    final case class Method(symbol: Symbol, parameters: List[TypeRepr], result: TypeRepr)
-    def checkCodec(tpe: TypeRepr, member: String): Unit = {
+    final case class Method(symbol: Symbol, parameters: List[TypeRepr], error: TypeRepr, result: TypeRepr)
+    def checkCodec(tpe: TypeRepr, member: String, unitAsNull: Boolean = true): Unit = {
       if tpe.dealias.isFunctionType || tpe.dealias.isContextFunctionType ||
         (0 to 22).exists(arity => tpe.baseClasses.contains(defn.FunctionClass(arity)))
       then reject(s"$member: callbacks are unsupported")
-      if tpe =:= TypeRepr.of[Unit] then ()
+      if unitAsNull && tpe =:= TypeRepr.of[Unit] then ()
       else
         tpe.asType match {
           case '[t] =>
-            if Expr.summon[JsonEncoder[t]].isEmpty || Expr.summon[JsonDecoder[t]].isEmpty then
-              reject(s"$member requires JSON encoder and decoder for ${tpe.show}; callbacks are unsupported")
+            val missing = List(
+              Option.when(Expr.summon[JsonEncoder[t]].isEmpty)("JsonEncoder"),
+              Option.when(Expr.summon[JsonDecoder[t]].isEmpty)("JsonDecoder")
+            ).flatten
+            if missing.nonEmpty then
+              reject(s"$member requires JSON encoder and decoder for ${tpe.show}; missing ${missing.mkString(" and ")}")
         }
     }
     val checked = methods.map { method =>
@@ -76,30 +80,40 @@ object RpcMacros {
           reject(s"${method.name}: repeated parameters are unsupported")
         checkCodec(param, method.name)
       }
-      val value = result match {
+      val (error, value) = result match {
         case AppliedType(base, List(env, error, value))
             if base.typeSymbol == TypeRepr.of[ZIO].typeSymbol &&
-              env =:= TypeRepr.of[Any] && error =:= TypeRepr.of[Throwable] =>
-          value
+              env =:= TypeRepr.of[Any] =>
+          (error.dealias, value)
         case _ =>
           reject(
-            s"${method.name}: expected Task[A] (no environment requirements or typed errors), found ${result.show}"
+            s"${method.name}: expected Task[A] or ZIO[Any, E, A] (no environment requirements), found ${result.show}"
           )
       }
       checkCodec(value, method.name)
-      Method(method, params, value)
+      if error =:= TypeRepr.of[Nothing] then
+        reject(s"${method.name}: Nothing cannot map infrastructure RpcError failures")
+      if !(error =:= TypeRepr.of[Throwable]) then {
+        checkCodec(error, s"${method.name} error", unitAsNull = false)
+      }
+      error.asType match {
+        case '[e] =>
+          if Expr.summon[RpcErrorMapper[e]].isEmpty then
+            reject(s"${method.name}: requires RpcErrorMapper[${error.show}] for infrastructure failures")
+      }
+      Method(method, params, error, value)
     }
 
-    def encode(tpe: TypeRepr, value: Term): Expr[Task[Json]] =
-      if tpe =:= TypeRepr.of[Unit] then '{ ZIO.succeed(Json.Null) }
+    def encode(tpe: TypeRepr, value: Term, unitAsNull: Boolean = true): Expr[IO[RpcError, Json]] =
+      if unitAsNull && tpe =:= TypeRepr.of[Unit] then '{ ZIO.succeed(Json.Null) }
       else
         tpe.asType match {
           case '[t] =>
             val encoder = Expr.summon[JsonEncoder[t]].get
             '{ RpcJson.encode[t](${ value.asExprOf[t] })(using $encoder) }
         }
-    def decode(tpe: TypeRepr, value: Expr[Json], code: Expr[RpcError.Code]): Term =
-      if tpe =:= TypeRepr.of[Unit] then '{ RpcJson.unit($value, $code) }.asTerm
+    def decode(tpe: TypeRepr, value: Expr[Json], code: Expr[RpcError.Code], unitAsNull: Boolean = true): Term =
+      if unitAsNull && tpe =:= TypeRepr.of[Unit] then '{ RpcJson.unit($value, $code) }.asTerm
       else
         tpe.asType match {
           case '[t] =>
@@ -107,10 +121,10 @@ object RpcMacros {
             '{ RpcJson.decode[t]($value, $code)(using $decoder) }.asTerm
         }
 
-    def host(service: Expr[A]): Expr[Map[String, Chunk[Json] => IO[RpcError, Json]]] = {
+    def host(service: Expr[A]): Expr[Map[String, Chunk[Json] => IO[RpcError, RpcResult]]] = {
       val entries = checked.map { method =>
-        def body(args: Expr[Chunk[Json]]): Expr[IO[RpcError, Json]] = {
-          def loop(remaining: List[TypeRepr], values: List[Term], index: Int): Expr[IO[RpcError, Json]] =
+        def body(args: Expr[Chunk[Json]]): Expr[IO[RpcError, RpcResult]] = {
+          def loop(remaining: List[TypeRepr], values: List[Term], index: Int): Expr[IO[RpcError, RpcResult]] =
             remaining match {
               case Nil =>
                 val selected = Select(service.asTerm, method.symbol)
@@ -118,12 +132,22 @@ object RpcMacros {
                   case _: MethodType => Apply(selected, values)
                   case _             => selected
                 }
-                method.result.asType match {
-                  case '[r] =>
-                    '{
-                      RpcJson.hostResult(${
-                        call.asExprOf[Task[r]]
-                      }.flatMap(value => ${ encode(method.result, 'value.asTerm) }))
+                method.error.asType match {
+                  case '[e] =>
+                    method.result.asType match {
+                      case '[r] =>
+                        def failure(error: Expr[e]): Expr[IO[RpcError, RpcResult]] =
+                          if method.error =:= TypeRepr.of[Throwable] then
+                            '{ ZIO.fail(RpcError(RpcError.Code.ServiceFailure)) }
+                          else
+                            '{ ${ encode(method.error, error.asTerm, unitAsNull = false) }.map(RpcResult.Failure(_)) }
+                        '{
+                          RpcJson.hostResult[e, r](
+                            ${ call.asExprOf[IO[e, r]] },
+                            error => ${ failure('error) },
+                            value => ${ encode(method.result, 'value.asTerm) }
+                          )
+                        }
                     }
                 }
               case head :: tail =>
@@ -162,18 +186,37 @@ object RpcMacros {
           paramLists => {
             val parameters = paramLists.flatten.map(_.asInstanceOf[Term])
             val encoded = Expr.ofList(method.parameters.zip(parameters).map((tpe, arg) => encode(tpe, arg)))
-            val call = method.result.asType match {
-              case '[r] =>
-                '{
-                  ZIO
-                    .collectAll($encoded)
-                    .flatMap { values =>
-                      $connection.call($id, $version, ${ Expr(method.symbol.name) }, Chunk.fromIterable(values))
-                    }
-                    .flatMap(value =>
-                      ${ decode(method.result, 'value, '{ RpcError.Code.ProtocolError }).asExprOf[Task[r]] }
-                    )
-                }.asTerm
+            val call = method.error.asType match {
+              case '[e] =>
+                method.result.asType match {
+                  case '[r] =>
+                    val mapper = Expr.summon[RpcErrorMapper[e]].get
+                    def failure(value: Expr[Json]): Expr[IO[e, r]] =
+                      if method.error =:= TypeRepr.of[Throwable] then
+                        '{ ZIO.fail($mapper(RpcError(RpcError.Code.ProtocolError))) }
+                      else {
+                        val decoded =
+                          decode(method.error, value, '{ RpcError.Code.ProtocolError }, unitAsNull = false)
+                            .asExprOf[IO[RpcError, e]]
+                        '{ $decoded.mapError(error => $mapper(error)).flatMap(error => ZIO.fail(error)) }
+                      }
+                    '{
+                      ZIO
+                        .collectAll($encoded)
+                        .flatMap { values =>
+                          $connection.call($id, $version, ${ Expr(method.symbol.name) }, Chunk.fromIterable(values))
+                        }
+                        .mapError(error => $mapper(error))
+                        .flatMap {
+                          case RpcResult.Success(value) =>
+                            ${
+                              decode(method.result, 'value, '{ RpcError.Code.ProtocolError }).asExprOf[IO[RpcError, r]]
+                            }
+                              .mapError(error => $mapper(error))
+                          case RpcResult.Failure(value) => ${ failure('value) }
+                        }
+                    }.asTerm
+                }
             }
             Some(call.changeOwner(implementation))
           }

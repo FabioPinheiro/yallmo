@@ -44,7 +44,7 @@ class RpcSuite extends FunSuite {
   test("generated host and typed client support multiple, zero and parameterless args, Unit and DTOs") {
     val dispatcher = numbers.bind(numberService).merge(greetings.bind(greetingService)).toOption.get
     val connection = new RpcConnection {
-      def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): Task[Json] =
+      def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult] =
         dispatcher.dispatch(serviceId, version, method, arguments)
       def close: UIO[Unit] = ZIO.unit
     }
@@ -95,7 +95,10 @@ class RpcSuite extends FunSuite {
     assert(RpcWire.response("""{"id":"1","result":1,"error":null}""").isLeft)
     assert(RpcWire.request("""{"id":"1","service":"example.numbers","version":1,"method":"current"}""").isLeft)
     assert(RpcWire.response("""{"id":"1","result":1,"unexpected":true}""").isLeft)
-    assertEquals(RpcWire.response(RpcWire.success("1", Json.Null)).toOption.flatMap(_.result), Some(Json.Null))
+    assertEquals(
+      RpcWire.response(RpcWire.success("1", RpcResult.Success(Json.Null))).toOption.map(_.outcome),
+      Some(Right(RpcResult.Success(Json.Null)))
+    )
   }
   test("macro rejects unsupported argument lists, generic traits, concrete members and missing codecs") {
     val curried = typeCheckErrors("""
@@ -156,7 +159,7 @@ class RpcSuite extends FunSuite {
     assert(concreteField.exists(_.message.contains("vals/vars")), concreteField.toString)
     assert(typeMember.exists(_.message.contains("type members")), typeMember.toString)
   }
-  test("macro rejects polymorphic, overloaded, callback, environment, typed error and val contracts") {
+  test("macro rejects polymorphic, overloaded, callback, environment, unmapped error and val contracts") {
     val polymorphic = typeCheckErrors("""
       trait Bad { def apply[A](a: A): zio.Task[A] }
       fmgp.rpc.Rpc.derived[Bad]
@@ -185,7 +188,7 @@ class RpcSuite extends FunSuite {
     assert(overloaded.exists(_.message.contains("overloaded")), overloaded.toString)
     assert(callback.exists(_.message.contains("callbacks")), callback.toString)
     assert(environment.exists(_.message.contains("expected Task")), environment.toString)
-    assert(typedError.exists(_.message.contains("expected Task")), typedError.toString)
+    assert(typedError.exists(_.message.contains("RpcErrorMapper")), typedError.toString)
     assert(field.exists(_.message.contains("vals/vars")), field.toString)
   }
 }

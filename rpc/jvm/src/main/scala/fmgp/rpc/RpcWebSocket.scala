@@ -248,7 +248,8 @@ object RpcWebSocket {
         .onError(_ => scope.close(Exit.unit))
         .map { connection =>
           new RpcConnection {
-            override def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): Task[Json] =
+            override def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json])
+                : IO[RpcError, RpcResult] =
               connection.call(serviceId, version, method, arguments)
             override def close: UIO[Unit] = scope.close(Exit.unit).uninterruptible
           }
@@ -257,7 +258,7 @@ object RpcWebSocket {
 
   private final case class State(
       nextId: Long = 1,
-      pending: Map[String, Promise[RpcError, Json]] = Map.empty,
+      pending: Map[String, Promise[RpcError, RpcResult]] = Map.empty,
       closed: Boolean = false
   )
   private def disconnect(state: Ref[State], error: RpcError): UIO[Unit] =
@@ -319,10 +320,7 @@ object RpcWebSocket {
                     )
                     .when(promise.isEmpty)
                   _ <- ZIO.foreachDiscard(promise) { pending =>
-                    response.error match {
-                      case Some(code) => pending.fail(RpcError(code)).unit
-                      case None       => pending.succeed(response.result.get).unit
-                    }
+                    pending.done(Exit.fromEither(response.outcome)).unit
                   }
                 } yield ()).uninterruptible.catchAll(error =>
                   ZIO.logTrace(
@@ -365,10 +363,15 @@ object RpcWebSocket {
       connection = new RpcConnection {
         override def close: UIO[Unit] =
           (disconnect(state, RpcError(RpcError.Code.Disconnected)) *> channel.shutdown).uninterruptible
-        override def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): Task[Json] =
+        override def call(
+            serviceId: String,
+            version: Int,
+            method: String,
+            arguments: Chunk[Json]
+        ): IO[RpcError, RpcResult] =
           ZIO.uninterruptibleMask { restore =>
             for {
-              promise <- Promise.make[RpcError, Json]
+              promise <- Promise.make[RpcError, RpcResult]
               id <- state
                 .modify { current =>
                   if current.closed then (Left(RpcError(RpcError.Code.Disconnected)), current)

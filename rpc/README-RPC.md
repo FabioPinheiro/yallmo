@@ -61,6 +61,67 @@ object Demo extends ZIOAppDefault {
 The example can be placed in `rpc/jvm/src/test/scala/Demo.scala` and run using
 `sbt 'rpc/Test/runMain Demo'` (test compilation is separate from macro compilation).
 
+## Typed service errors
+
+Methods can return `IO[E, A]` / `ZIO[Any, E, A]` without widening their error type:
+
+```scala
+import fmgp.rpc.*
+import zio.*
+import zio.json.*
+
+enum FsError derives JsonCodec {
+  case NotFound(path: String)
+  case Infrastructure(code: RpcError.Code)
+}
+object FsError {
+  // Explicit, total and pure: handle every infrastructure code; never throw.
+  given RpcErrorMapper[FsError] = RpcErrorMapper(error => FsError.Infrastructure(error.code))
+}
+trait Files {
+  def read(path: String): IO[FsError, String]
+}
+val files: Rpc[Files] = Rpc.derived[Files]("example.files", 2)
+val host: Files = new Files {
+  def read(path: String): IO[FsError, String] = ZIO.fail(FsError.NotFound(path))
+}
+// With an existing connection authorized for files.bind(host):
+def recover(connection: RpcConnection): UIO[String] =
+  files.client(connection).read("missing").catchAll {
+    case FsError.NotFound(path) => ZIO.succeed(s"Missing: $path")
+    case FsError.Infrastructure(code) => ZIO.succeed(s"RPC unavailable: $code")
+  }
+```
+
+`E` must have both zio-json `JsonEncoder[E]` and `JsonDecoder[E]` and an explicit
+**invariant** `RpcErrorMapper[E]` available at derivation. For example, `IO[String, A]`
+needs a policy such as `given RpcErrorMapper[String] = RpcErrorMapper(e => s"RPC: ${e.code}")`.
+Serializable means codec-approved JSON, **not** `java.io.Serializable`. Domain errors
+round-trip through those codecs and fail the client with exactly `E`; `either` and
+`catchAll` work normally. JSON `null` is retained for success and domain failure alike
+(e.g. `None`), never confused with a missing envelope field.
+
+Exactly `E = Throwable` (`Task[A]`) is special: no Throwable codec is required, and
+all typed Throwable failures become fixed sanitized `RpcError(ServiceFailure)` values.
+No exception class, message, stack, cause or Java serialization crosses the wire and
+no remote exception is reconstructed. Concrete Throwable subtypes are **not** covered
+by that special case; they require their own explicit codecs and mapper. `E = Nothing`
+is rejected: an infrastructure failure cannot be mapped totally into `Nothing`.
+
+Routing/version failures, disconnects, timeouts, malformed envelopes or payloads, and
+codec failures/throws map through the policy. Bad success/error payload decoding maps
+`ProtocolError`, never an unchecked cast to `E`. Failed/thrown encoders also produce
+sanitized infrastructure `ProtocolError`, not a valid domain failure. Host defects and
+method-construction throws become infrastructure `ServiceFailure`; interruption stays
+interruption, not a domain error. A mapper that itself throws is a programmer defect;
+the library does not fabricate an `E`. Mappers must be total and pure, not logging,
+throwing, or dependent on external mutable state. There are no automatic retries.
+
+**Domain payloads are caller-selected data, not globally redacted.** Their codecs may
+serialize sensitive fields (including fields of a caller-approved Throwable subtype).
+Existing TRACE logging includes domain failure payloads, unlike the default sanitized
+Throwable representation. Choose codecs and log levels accordingly.
+
 ## Bring your own HTTP server
 
 `RpcWebSocket.route()` creates a scoped `RpcRoute`: its `routes` value is ordinary
@@ -127,9 +188,9 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
   `bind(actualService)` creates a dispatcher; `client(connection)` creates an `A`.
 - `RpcDispatcher.merge(other): Either[RpcError, RpcDispatcher]` rejects duplicate service
   IDs, **including identical IDs with different versions**. It never silently overwrites.
-  `dispatch(serviceId, version, method, Chunk[Json]): IO[RpcError, Json]` validates routing
+  `dispatch(serviceId, version, method, Chunk[Json]): IO[RpcError, RpcResult]` validates routing
   and decoded arguments before invoking host code.
-- `RpcConnection.call(serviceId, version, method, arguments): Task[Json]` is the transport
+- `RpcConnection.call(serviceId, version, method, arguments): IO[RpcError, RpcResult]` is the transport
   boundary, independent of the macro. `close: UIO[Unit]` is idempotent. Typed clients
   share the connection; constructing a client never opens a socket or receive loop.
 - `RpcWebSocket.route(limits = Limits(), auth = AuthConfig()): URIO[Scope, RpcRoute]`
@@ -189,14 +250,16 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
 ## Contract restrictions and wire identity
 
 Supported: non-generic traits with public **abstract** methods returning exactly
-`Task[A]` (`ZIO[Any, Throwable, A]`), zero arguments (`def x` or `def x()`), or a single
+`ZIO[Any, E, A]` (including `IO[E, A]` and `Task[A]`), zero arguments (`def x` or `def x()`), or a single
 ordinary parameter list with multiple arguments. Every parameter and result needs both
 zio-json `JsonEncoder` and `JsonDecoder` in derivation scope. DTOs can `derive JsonCodec`.
-`Unit` is encoded as JSON `null`, including when it is an argument.
+`Unit` uses the built-in JSON `null` representation, including when it is an argument.
+Error types additionally follow the codec/mapper policy above.
 
 Compile-time errors reject polymorphic/overloaded methods, vals/vars, concrete service
 methods, type members, callbacks, contextual/by-name/repeated/default parameters, multiple
-parameter lists, non-Task results, environment requirements and typed errors. This is a
+parameter lists, non-ZIO results, environment requirements and errors without the required codecs/mapper.
+`ZStream` methods are not supported; typed errors are only a prerequisite for future work. This is a
 small proof of concept, not a universal Scala interface serializer.
 
 Prefer explicit literal IDs and positive integer versions as above. The no-argument
@@ -208,9 +271,17 @@ method and argument arity/types. **Bump the version for any incompatible signatu
 codec change.** There is no schema negotiation/fingerprint: reusing an ID/version for a
 different schema is a contract violation, not something the PoC can detect automatically.
 
-The private wire protocol is not JSON-RPC 2.0: one text message per request/response.
+The private custom PoC wire protocol is **revision 2**, incompatible with the previous
+Task-only shape; deploy matching library versions at both ends. This is not JSON-RPC 2.0
+and there is no protocol negotiation: one text message per request/response.
 Requests contain string `id`, `service`, integer `version`, `method`, and positional JSON
-`arguments`; replies contain the same `id` and exactly one `result` or sanitized `error`.
+`arguments`; replies contain the same `id` and **exactly one** of `result` (success JSON),
+`failure` (domain-error JSON), or `error` (sanitized infrastructure `RpcError.Code`).
+The intentional low-level API change is `IO[RpcError, RpcResult]` for both
+`RpcConnection.call` and `RpcDispatcher.dispatch`: `RpcResult.Success(Json)` and
+`RpcResult.Failure(Json)` are service outcomes, not infrastructure failures. Custom
+connections and handlers must adapt. Bump service contract versions when changing
+error signatures/codecs; changing a Task method to a domain-error method is incompatible.
 Unknown envelope fields, duplicate JSON object keys, nesting over 32, invalid IDs and
 ambiguous envelopes are rejected. Binary/fragmented messages are deliberately rejected;
 senders must emit a complete text frame. This keeps aggregation bounded and avoids
@@ -226,15 +297,16 @@ partial UTF-8 handling in the PoC.
   error replies), rejected messages/calls, ignored late replies, timeouts and interruptions.
   Wire logs carry the local `connectionId` and JSON envelope, including the request ID.
   Payloads are JSON-string escaped to avoid multiline log injection. **TRACE exposes
-  arguments/results and has no application-data redaction; use it only for debugging.**
+  arguments/results/domain failures and has no application-data redaction; use it only for debugging.**
   INFO does not log RPC payloads.
 - Monotonic per-connection IDs correlate concurrent/out-of-order responses. Late replies
   after a timeout/interruption are ignored; IDs are never reused. Duplicate *active*
   request IDs are rejected by the host. No retry, reconnect, replay, batching or streaming.
-- Failures are `RpcError` Throwables (typed `Task` APIs stay usable). Unknown service,
-  version mismatch, unknown method and invalid arguments have distinct error codes.
-  Host typed failures, thrown exceptions and defects become `ServiceFailure`; messages,
-  stack traces and internal transport exceptions are not returned to callers.
+- Infrastructure failures are sanitized `RpcError` codes, mapped into each method's exact
+  `E` by its policy. Unknown service, version mismatch, unknown method and invalid
+  arguments have distinct codes. Task failures and host defects/construction throws
+  become `ServiceFailure`; their messages, causes, stack traces and internal transport
+  exceptions are not returned. Codec-approved domain failures are separate JSON payloads.
 - A local deadline or fiber interruption removes its pending promise. It **does not undo
   or cancel server execution**; an abandoned operation may still have side effects. Server
   workers are interrupted when their connection ends, subject to normal ZIO cooperative
@@ -282,6 +354,8 @@ timeout 180s sbt 'rpc/testOnly fmgp.rpc.*; rpcJS/compile; rpcJS/Test/compile'
 timeout 180s sbt 'rpc/scalafmt; rpc/Test/scalafmt; rpcJS/scalafmt; rpcJS/Test/scalafmt'
 ```
 
+MUnit also covers String/ADT typed errors, null failure payloads, explicit infrastructure
+mapping, throwing/failing codecs, mapper defects and compile-negative error policies.
 MUnit covers positive derivation, DTO/Unit codecs, compile-negative contracts, strict wire
 validation, real ephemeral loopback WebSockets, two merged services on one connection,
 reversed concurrent responses, route/argument errors, sanitized failures/defects,

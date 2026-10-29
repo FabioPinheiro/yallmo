@@ -2,6 +2,7 @@ package fmgp.rpc
 
 import scala.quoted.*
 import zio.*
+import zio.stream.*
 import zio.json.*
 import zio.json.ast.Json
 
@@ -36,8 +37,21 @@ object RpcMacros {
     if methods.isEmpty then reject("expected at least one abstract Task method")
     if methods.map(_.name).distinct.size != methods.size then reject("overloaded methods are unsupported")
 
-    final case class Method(symbol: Symbol, parameters: List[TypeRepr], error: TypeRepr, result: TypeRepr)
+    final case class Method(
+        symbol: Symbol,
+        parameters: List[TypeRepr],
+        error: TypeRepr,
+        result: TypeRepr,
+        stream: Boolean
+    )
+    def containsEffect(tpe: TypeRepr): Boolean = {
+      val value = tpe.dealias
+      value.typeSymbol == TypeRepr.of[ZIO].typeSymbol || value.typeSymbol == TypeRepr.of[ZStream].typeSymbol ||
+      value.typeArgs.exists(containsEffect)
+    }
     def checkCodec(tpe: TypeRepr, member: String, unitAsNull: Boolean = true): Unit = {
+      if containsEffect(tpe) then
+        reject(s"$member: nested effects and stream arguments/elements/errors are unsupported")
       if tpe.dealias.isFunctionType || tpe.dealias.isContextFunctionType ||
         (0 to 22).exists(arity => tpe.baseClasses.contains(defn.FunctionClass(arity)))
       then reject(s"$member: callbacks are unsupported")
@@ -80,14 +94,17 @@ object RpcMacros {
           reject(s"${method.name}: repeated parameters are unsupported")
         checkCodec(param, method.name)
       }
-      val (error, value) = result match {
+      val (error, value, stream) = result match {
         case AppliedType(base, List(env, error, value))
             if base.typeSymbol == TypeRepr.of[ZIO].typeSymbol &&
               env =:= TypeRepr.of[Any] =>
-          (error.dealias, value)
+          (error.dealias, value, false)
+        case AppliedType(base, List(env, error, value))
+            if base.typeSymbol == TypeRepr.of[ZStream].typeSymbol && env =:= TypeRepr.of[Any] =>
+          (error.dealias, value, true)
         case _ =>
           reject(
-            s"${method.name}: expected Task[A] or ZIO[Any, E, A] (no environment requirements), found ${result.show}"
+            s"${method.name}: expected Task[A], ZIO[Any, E, A] or ZStream[Any, E, A] (no environment requirements), found ${result.show}"
           )
       }
       checkCodec(value, method.name)
@@ -101,7 +118,7 @@ object RpcMacros {
           if Expr.summon[RpcErrorMapper[e]].isEmpty then
             reject(s"${method.name}: requires RpcErrorMapper[${error.show}] for infrastructure failures")
       }
-      Method(method, params, error, value)
+      Method(method, params, error, value, stream)
     }
 
     def encode(tpe: TypeRepr, value: Term, unitAsNull: Boolean = true): Expr[IO[RpcError, Json]] =
@@ -122,7 +139,7 @@ object RpcMacros {
         }
 
     def host(service: Expr[A]): Expr[Map[String, Chunk[Json] => IO[RpcError, RpcResult]]] = {
-      val entries = checked.map { method =>
+      val entries = checked.filterNot(_.stream).map { method =>
         def body(args: Expr[Chunk[Json]]): Expr[IO[RpcError, RpcResult]] = {
           def loop(remaining: List[TypeRepr], values: List[Term], index: Int): Expr[IO[RpcError, RpcResult]] =
             remaining match {
@@ -165,6 +182,104 @@ object RpcMacros {
       '{ Map.from(${ Expr.ofList(entries) }) }
     }
 
+    def hostStreams(
+        service: Expr[A]
+    ): Expr[Map[String, Chunk[Json] => ZStream[Any, RpcStreamError, RpcStreamChunk]]] = {
+      val entries = checked.filter(_.stream).map { method =>
+        def body(args: Expr[Chunk[Json]]): Expr[ZStream[Any, RpcStreamError, RpcStreamChunk]] = {
+          def loop(
+              remaining: List[TypeRepr],
+              values: List[Term],
+              index: Int
+          ): Expr[ZStream[Any, RpcStreamError, RpcStreamChunk]] = remaining match {
+            case Nil =>
+              val selected = Select(service.asTerm, method.symbol)
+              val call = serviceType.memberType(method.symbol) match {
+                case _: MethodType => Apply(selected, values)
+                case _             => selected
+              }
+              method.error.asType match {
+                case '[e] =>
+                  def failure(error: Expr[e]): Expr[IO[RpcError, Json]] =
+                    if method.error =:= TypeRepr.of[Throwable] then
+                      '{ ZIO.fail(RpcError(RpcError.Code.ServiceFailure)) }
+                    else encode(method.error, error.asTerm, unitAsNull = false)
+                  if method.result =:= TypeRepr.of[Byte] then
+                    '{
+                      RpcStreams.hostBytes[e](${ call.asExprOf[ZStream[Any, e, Byte]] }, error => ${ failure('error) })
+                    }
+                  else
+                    method.result.asType match {
+                      case '[r] =>
+                        '{
+                          RpcStreams.hostJson[e, r](
+                            ${ call.asExprOf[ZStream[Any, e, r]] },
+                            error => ${ failure('error) },
+                            value => ${ encode(method.result, 'value.asTerm) }
+                          )
+                        }
+                    }
+              }
+            case head :: tail =>
+              head.asType match {
+                case '[t] =>
+                  val decoded = decode(head, '{ $args(${ Expr(index) }) }, '{ RpcError.Code.InvalidArguments })
+                    .asExprOf[IO[RpcError, t]]
+                  '{
+                    ZStream
+                      .fromZIO($decoded.mapError(RpcStreamError.Infrastructure(_)))
+                      .flatMap(value => ${ loop(tail, values :+ 'value.asTerm, index + 1) })
+                  }
+              }
+          }
+          '{
+            ZStream.fromZIO(
+              RpcJson.arity($args, ${ Expr(method.parameters.size) }).mapError(RpcStreamError.Infrastructure(_))
+            ) *> ${ loop(method.parameters, Nil, 0) }
+          }
+        }
+        '{ (${ Expr(method.symbol.name) }, (args: Chunk[Json]) => ${ body('args) }) }
+      }
+      '{ Map.from(${ Expr.ofList(entries) }) }
+    }
+
+    def streamClient(method: Method, encoded: Expr[List[IO[RpcError, Json]]], connection: Expr[RpcConnection]): Term =
+      method.error.asType match {
+        case '[e] =>
+          val mapper = Expr.summon[RpcErrorMapper[e]].get
+          def errorDecode(value: Expr[Json]): Expr[IO[RpcError, e]] =
+            if method.error =:= TypeRepr.of[Throwable] then '{ ZIO.fail(RpcError(RpcError.Code.ProtocolError)) }
+            else
+              decode(method.error, value, '{ RpcError.Code.ProtocolError }, unitAsNull = false)
+                .asExprOf[IO[RpcError, e]]
+          val raw = '{
+            ZStream.fromZIO(ZIO.collectAll($encoded).mapError(RpcStreamError.Infrastructure(_))).flatMap { values =>
+              $connection.stream(
+                $id,
+                $version,
+                ${ Expr(method.symbol.name) },
+                Chunk.fromIterable(values),
+                ${ Expr(method.result =:= TypeRepr.of[Byte]) }
+              )
+            }
+          }
+          if method.result =:= TypeRepr.of[Byte] then
+            '{ RpcStreams.clientBytes[e]($raw, $mapper, value => ${ errorDecode('value) }) }.asTerm
+          else
+            method.result.asType match {
+              case '[r] =>
+                '{
+                  RpcStreams.clientJson[e, r](
+                    $raw,
+                    $mapper,
+                    value => ${ errorDecode('value) },
+                    value =>
+                      ${ decode(method.result, 'value, '{ RpcError.Code.ProtocolError }).asExprOf[IO[RpcError, r]] }
+                  )
+                }.asTerm
+            }
+      }
+
     def client(connection: Expr[RpcConnection]): Expr[A] = {
       val parents = List(TypeRepr.of[Object], serviceType)
       var generated = List.empty[Symbol]
@@ -186,38 +301,41 @@ object RpcMacros {
           paramLists => {
             val parameters = paramLists.flatten.map(_.asInstanceOf[Term])
             val encoded = Expr.ofList(method.parameters.zip(parameters).map((tpe, arg) => encode(tpe, arg)))
-            val call = method.error.asType match {
-              case '[e] =>
-                method.result.asType match {
-                  case '[r] =>
-                    val mapper = Expr.summon[RpcErrorMapper[e]].get
-                    def failure(value: Expr[Json]): Expr[IO[e, r]] =
-                      if method.error =:= TypeRepr.of[Throwable] then
-                        '{ ZIO.fail($mapper(RpcError(RpcError.Code.ProtocolError))) }
-                      else {
-                        val decoded =
-                          decode(method.error, value, '{ RpcError.Code.ProtocolError }, unitAsNull = false)
-                            .asExprOf[IO[RpcError, e]]
-                        '{ $decoded.mapError(error => $mapper(error)).flatMap(error => ZIO.fail(error)) }
-                      }
-                    '{
-                      ZIO
-                        .collectAll($encoded)
-                        .flatMap { values =>
-                          $connection.call($id, $version, ${ Expr(method.symbol.name) }, Chunk.fromIterable(values))
+            val call = if method.stream then streamClient(method, encoded, connection)
+            else
+              method.error.asType match {
+                case '[e] =>
+                  method.result.asType match {
+                    case '[r] =>
+                      val mapper = Expr.summon[RpcErrorMapper[e]].get
+                      def failure(value: Expr[Json]): Expr[IO[e, r]] =
+                        if method.error =:= TypeRepr.of[Throwable] then
+                          '{ ZIO.fail($mapper(RpcError(RpcError.Code.ProtocolError))) }
+                        else {
+                          val decoded =
+                            decode(method.error, value, '{ RpcError.Code.ProtocolError }, unitAsNull = false)
+                              .asExprOf[IO[RpcError, e]]
+                          '{ $decoded.mapError(error => $mapper(error)).flatMap(error => ZIO.fail(error)) }
                         }
-                        .mapError(error => $mapper(error))
-                        .flatMap {
-                          case RpcResult.Success(value) =>
-                            ${
-                              decode(method.result, 'value, '{ RpcError.Code.ProtocolError }).asExprOf[IO[RpcError, r]]
-                            }
-                              .mapError(error => $mapper(error))
-                          case RpcResult.Failure(value) => ${ failure('value) }
-                        }
-                    }.asTerm
-                }
-            }
+                      '{
+                        ZIO
+                          .collectAll($encoded)
+                          .flatMap { values =>
+                            $connection.call($id, $version, ${ Expr(method.symbol.name) }, Chunk.fromIterable(values))
+                          }
+                          .mapError(error => $mapper(error))
+                          .flatMap {
+                            case RpcResult.Success(value) =>
+                              ${
+                                decode(method.result, 'value, '{ RpcError.Code.ProtocolError })
+                                  .asExprOf[IO[RpcError, r]]
+                              }
+                                .mapError(error => $mapper(error))
+                            case RpcResult.Failure(value) => ${ failure('value) }
+                          }
+                      }.asTerm
+                  }
+              }
             Some(call.changeOwner(implementation))
           }
         )
@@ -228,11 +346,15 @@ object RpcMacros {
     }
 
     val names = Expr.ofList(checked.map(m => Expr(m.symbol.name)))
+    val streamNames = Expr.ofList(
+      checked.filter(_.stream).map(m => '{ (${ Expr(m.symbol.name) }, ${ Expr(m.result =:= TypeRepr.of[Byte]) }) })
+    )
     '{
       new Rpc[A](
-        RpcDescriptor($id, $version, $names.toSet),
+        RpcDescriptor($id, $version, $names.toSet, $streamNames.toMap),
         (service: A) => ${ host('service) },
-        (connection: RpcConnection) => ${ client('connection) }
+        (connection: RpcConnection) => ${ client('connection) },
+        (service: A) => ${ hostStreams('service) }
       )
     }
   }

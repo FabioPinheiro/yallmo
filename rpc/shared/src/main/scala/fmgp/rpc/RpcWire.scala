@@ -10,7 +10,7 @@ private[rpc] object RpcWire {
       derives JsonCodec
   final case class Response(id: String, outcome: Either[RpcError, RpcResult])
 
-  private def document(input: String): Either[RpcError, Json] = {
+  private[rpc] def document(input: String): Either[RpcError, Json] = {
     // Bound parser recursion before zio-json sees the document. Brackets inside strings do not count.
     var depth = 0
     var quoted = false
@@ -80,6 +80,115 @@ private[rpc] object RpcWire {
         case _ => Left(RpcError(RpcError.Code.ProtocolError))
       }
     } yield response
+
+  enum Control {
+    case Open(request: Request, binary: Boolean)
+    case Pull(override val id: String)
+    case Cancel(override val id: String)
+    def id: String = this match {
+      case Open(request, _) => request.id
+      case Pull(id)         => id
+      case Cancel(id)       => id
+    }
+  }
+  enum StreamReply {
+    case Opened, End, Cancelled
+    case Chunk(values: zio.Chunk[Json])
+    case Failure(value: Json)
+    case Error(error: RpcError)
+  }
+  private def protocol = RpcError(RpcError.Code.ProtocolError)
+  def isStream(input: String): Either[RpcError, Boolean] = document(input).map {
+    case Json.Obj(fields) => fields.exists(_._1 == "stream")
+    case _                => false
+  }
+  def control(input: String): Either[RpcError, Control] = document(input).flatMap {
+    case Json.Obj(fields) =>
+      val m = fields.toMap
+      (m.get("id"), m.get("stream"), m.get("op")) match {
+        case (Some(Json.Str(id)), Some(Json.Num(revision)), Some(Json.Str(op)))
+            if validId(id) && revision == java.math.BigDecimal.valueOf(2) =>
+          val base = Set("id", "stream", "op")
+          if op == "open" && m.keySet == base ++ Set("service", "version", "method", "arguments", "binary") then
+            for {
+              req <- request(
+                Json.Obj(Chunk.fromIterable(fields.filterNot(x => Set("stream", "op", "binary").contains(x._1)))).toJson
+              )
+              binary <- m("binary") match { case Json.Bool(value) => Right(value); case _ => Left(protocol) }
+            } yield Control.Open(req, binary)
+          else if m.keySet == base && op == "pull" then Right(Control.Pull(id))
+          else if m.keySet == base && op == "cancel" then Right(Control.Cancel(id))
+          else Left(protocol)
+        case _ => Left(protocol)
+      }
+    case _ => Left(protocol)
+  }
+  def streamControl(control: Control): String = {
+    val fields: Chunk[(String, Json)] = control match {
+      case Control.Open(req, binary) =>
+        Chunk(
+          "op" -> Json.Str("open"),
+          "service" -> Json.Str(req.service),
+          "version" -> Json.Num(req.version),
+          "method" -> Json.Str(req.method),
+          "arguments" -> Json.Arr(req.arguments),
+          "binary" -> Json.Bool(binary)
+        )
+      case Control.Pull(_)   => Chunk("op" -> Json.Str("pull"))
+      case Control.Cancel(_) => Chunk("op" -> Json.Str("cancel"))
+    }
+    Json.Obj(Chunk("id" -> Json.Str(control.id), "stream" -> Json.Num(2)) ++ fields).toJson
+  }
+  def streamResponse(id: String, reply: StreamReply): String = {
+    val (op, extra) = reply match {
+      case StreamReply.Opened         => ("opened", Chunk.empty)
+      case StreamReply.End            => ("end", Chunk.empty)
+      case StreamReply.Cancelled      => ("cancelled", Chunk.empty)
+      case StreamReply.Chunk(values)  => ("chunk", Chunk("values" -> Json.Arr(values)))
+      case StreamReply.Failure(value) => ("failure", Chunk("failure" -> value))
+      case StreamReply.Error(error)   => ("error", Chunk("error" -> error.code.toJsonAST.toOption.get))
+    }
+    Json.Obj(Chunk("id" -> Json.Str(id), "stream" -> Json.Num(2), "op" -> Json.Str(op)) ++ extra).toJson
+  }
+  def streamReply(input: String): Either[RpcError, (String, StreamReply)] = document(input).flatMap {
+    case Json.Obj(fields) =>
+      val m = fields.toMap
+      val base = Set("id", "stream", "op")
+      (m.get("id"), m.get("stream"), m.get("op")) match {
+        case (Some(Json.Str(id)), Some(Json.Num(revision)), Some(Json.Str(op)))
+            if validId(id) && revision == java.math.BigDecimal.valueOf(2) =>
+          val reply = op match {
+            case "opened" if m.keySet == base           => Right(StreamReply.Opened)
+            case "end" if m.keySet == base              => Right(StreamReply.End)
+            case "cancelled" if m.keySet == base        => Right(StreamReply.Cancelled)
+            case "chunk" if m.keySet == base + "values" =>
+              m("values") match {
+                case Json.Arr(values) => Right(StreamReply.Chunk(values))
+                case _                => Left(protocol)
+              }
+            case "failure" if m.keySet == base + "failure" => Right(StreamReply.Failure(m("failure")))
+            case "error" if m.keySet == base + "error"     =>
+              m("error").as[RpcError.Code].left.map(_ => protocol).map(code => StreamReply.Error(RpcError(code)))
+            case _ => Left(protocol)
+          }
+          reply.map(id -> _)
+        case _ => Left(protocol)
+      }
+    case _ => Left(protocol)
+  }
+
+  // Revision/type magic followed by a positive, big-endian 64-bit stream ID. No payload encoding.
+  val binaryHeaderBytes = 12
+  def binary(id: String, bytes: Chunk[Byte]): Chunk[Byte] = {
+    val value = id.toLong
+    Chunk[Byte](82, 80, 2, 66) ++ Chunk.fromIterable((7 to 0 by -1).map(i => (value >>> (i * 8)).toByte)) ++ bytes
+  }
+  def binaryReply(bytes: Chunk[Byte]): Either[RpcError, (String, Chunk[Byte])] =
+    if bytes.size < binaryHeaderBytes || bytes.take(4) != Chunk[Byte](82, 80, 2, 66) then Left(protocol)
+    else {
+      val id = bytes.slice(4, 12).foldLeft(0L)((acc, byte) => (acc << 8) | (byte.toLong & 255L))
+      if id <= 0 then Left(protocol) else Right(id.toString -> bytes.drop(12))
+    }
 
   def success(id: String, result: RpcResult): String = result match {
     case RpcResult.Success(value) => Json.Obj("id" -> Json.Str(id), "result" -> value).toJson

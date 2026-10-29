@@ -1,6 +1,7 @@
 package fmgp.rpc
 
 import zio.*
+import zio.stream.*
 import zio.json.*
 import zio.json.ast.Json
 
@@ -33,7 +34,25 @@ enum RpcResult {
   case Failure(value: Json)
 }
 
-final case class RpcDescriptor(serviceId: String, version: Int, methods: Set[String])
+/** A bounded transport batch. Byte streams never use JSON encoding. */
+enum RpcStreamChunk {
+  case Bytes(values: Chunk[Byte])
+  case Values(values: Chunk[Json])
+}
+
+/** Exact encoded domain errors are separate from sanitized infrastructure errors, including after partial output. */
+enum RpcStreamError {
+  case Domain(value: Json)
+  case Infrastructure(error: RpcError)
+}
+
+/** Stream method metadata maps method names to true only for exact Byte elements (binary encoding). */
+final case class RpcDescriptor(
+    serviceId: String,
+    version: Int,
+    methods: Set[String],
+    streamMethods: Map[String, Boolean] = Map.empty
+)
 
 /** One connection is shared by any number of generated clients. No retry or reconnect is implied.
   *
@@ -42,20 +61,37 @@ final case class RpcDescriptor(serviceId: String, version: Int, methods: Set[Str
   */
 trait RpcConnection {
   def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult]
+
+  /** Lazy, independently materialized server stream. Scope exit cancels pending remote demand/resources. Backpressure
+    * permits one bounded reply per pull; errors may follow already-consumed output. Legacy custom transports explicitly
+    * reject streaming rather than treating it as a unary call.
+    */
+  @scala.annotation.nowarn("msg=unused explicit parameter")
+  def stream(
+      serviceId: String,
+      version: Int,
+      method: String,
+      arguments: Chunk[Json],
+      binary: Boolean
+  ): ZStream[Any, RpcStreamError, RpcStreamChunk] =
+    ZStream.fail(RpcStreamError.Infrastructure(RpcError(RpcError.Code.ProtocolError)))
   def close: UIO[Unit]
 }
 
 /** A concrete trait's once-derived contract; transports do not participate in derivation. Methods must return ZIO[Any,
-  * E, A]. Except for exactly Throwable (sanitized ServiceFailure, no codec required), E needs JSON codecs and an
-  * explicit total RpcErrorMapper[E]. Codec-approved domain errors are not redacted and may appear in transport TRACE
-  * logs. Nothing, environment requirements and stream methods are unsupported.
+  * E, A] or ZStream[Any, E, A]. Except for exactly Throwable (sanitized ServiceFailure, no codec required), E needs
+  * JSON codecs and an explicit total RpcErrorMapper[E]. Codec-approved domain errors are not redacted and may appear in
+  * transport TRACE logs. Nothing and environment requirements are unsupported. Streams are lazy, pull-driven and cancel
+  * on scope exit; partial output precedes a domain failure. Byte elements use binary batches. No upload/replay is
+  * implied.
   */
 final class Rpc[A](
     val descriptor: RpcDescriptor,
     handlers: A => Map[String, Chunk[Json] => IO[RpcError, RpcResult]],
-    makeClient: RpcConnection => A
+    makeClient: RpcConnection => A,
+    streamHandlers: A => Map[String, Chunk[Json] => ZStream[Any, RpcStreamError, RpcStreamChunk]] = (_: A) => Map.empty
 ) {
-  def bind(service: A): RpcDispatcher = RpcDispatcher.single(descriptor, handlers(service))
+  def bind(service: A): RpcDispatcher = RpcDispatcher.single(descriptor, handlers(service), streamHandlers(service))
   def client(connection: RpcConnection): A = makeClient(connection)
 }
 object Rpc {
@@ -73,6 +109,35 @@ final class RpcDispatcher private (private val services: Map[String, RpcDispatch
   def merge(other: RpcDispatcher): Either[RpcError, RpcDispatcher] =
     if services.keySet.intersect(other.services.keySet).nonEmpty then Left(RpcError(RpcError.Code.DuplicateService))
     else Right(new RpcDispatcher(services ++ other.services))
+
+  /** Routes only stream methods with their declared encoding; no service code runs on invalid routing. */
+  def dispatchStream(
+      serviceId: String,
+      version: Int,
+      method: String,
+      arguments: Chunk[Json],
+      binary: Boolean
+  ): ZStream[Any, RpcStreamError, RpcStreamChunk] = {
+    val handler = for {
+      service <- services.get(serviceId).toRight(RpcError(RpcError.Code.UnknownService))
+      _ <- Either.cond(service.descriptor.version == version, (), RpcError(RpcError.Code.VersionMismatch))
+      run <- service.streamHandlers.get(method).toRight(RpcError(RpcError.Code.UnknownMethod))
+      _ <- Either.cond(
+        service.descriptor.streamMethods.get(method).contains(binary),
+        (),
+        RpcError(RpcError.Code.ProtocolError)
+      )
+    } yield run
+    ZStream
+      .fromZIO(ZIO.fromEither(handler).mapError(RpcStreamError.Infrastructure(_)))
+      .flatMap(run => ZStream.suspend(run(arguments)))
+      .catchAllCause(cause =>
+        if cause.isInterruptedOnly then ZStream.failCause(cause)
+        else if cause.defects.nonEmpty then
+          ZStream.fail(RpcStreamError.Infrastructure(RpcError(RpcError.Code.ServiceFailure)))
+        else ZStream.failCause(cause)
+      )
+  }
 
   /** Routes a call, keeping encoded domain failures separate from infrastructure errors. */
   def dispatch(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult] =
@@ -98,13 +163,15 @@ final class RpcDispatcher private (private val services: Map[String, RpcDispatch
 object RpcDispatcher {
   private final case class Service(
       descriptor: RpcDescriptor,
-      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]]
+      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]],
+      streamHandlers: Map[String, Chunk[Json] => ZStream[Any, RpcStreamError, RpcStreamChunk]]
   )
   private[rpc] def single(
       descriptor: RpcDescriptor,
-      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]]
+      handlers: Map[String, Chunk[Json] => IO[RpcError, RpcResult]],
+      streamHandlers: Map[String, Chunk[Json] => ZStream[Any, RpcStreamError, RpcStreamChunk]]
   ): RpcDispatcher =
-    new RpcDispatcher(Map(descriptor.serviceId -> Service(descriptor, handlers)))
+    new RpcDispatcher(Map(descriptor.serviceId -> Service(descriptor, handlers, streamHandlers)))
 }
 
 /** Public only for generated code at external call sites. */

@@ -5,14 +5,28 @@ import io.netty.handler.codec.http.websocketx.CorruptedWebSocketFrameException
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import zio.*
+import zio.stream.*
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.*
 
 /** JVM-only authenticated RPC routes and client transport; HTTP hosting belongs to the caller. */
 object RpcWebSocket {
-  final case class Limits(maxFrameBytes: Int = 65536, maxPending: Int = 32, timeout: Duration = 10.seconds) {
+
+  /** Per-connection bounds. maxPending is unary-only; maxStreams includes cancelling streams until cleanup.
+    * maxChunkElements also bounds byte payload elements, in addition to the binary frame's 12-byte header. timeout is a
+    * client connect/unary/open/per-pull deadline, not a total stream lifetime or idle TTL.
+    */
+  final case class Limits(
+      maxFrameBytes: Int = 65536,
+      maxPending: Int = 32,
+      timeout: Duration = 10.seconds,
+      maxStreams: Int = 16,
+      maxChunkElements: Int = 65524
+  ) {
     require(maxFrameBytes > 0 && maxFrameBytes <= 1024 * 1024, "maxFrameBytes must be 1..1048576")
+    require(maxStreams > 0 && maxStreams <= 1024, "maxStreams must be 1..1024")
+    require(maxChunkElements > 0 && maxChunkElements <= 65536, "maxChunkElements must be 1..65536")
     require(maxPending > 0 && maxPending <= 1024, "maxPending must be 1..1024")
     require(timeout > Duration.Zero && timeout < Duration.Infinity, "timeout must be finite and positive")
   }
@@ -167,6 +181,21 @@ object RpcWebSocket {
                   channel.send(ChannelEvent.Read(WebSocketFrame.Text(output))) *>
                     traceMessage("server", "response sent", connectionId, output)
                 )
+            streams <- RpcServerStreams.make(
+              dispatcher,
+              limits,
+              scope,
+              active,
+              send,
+              (id, bytes) =>
+                writes.withPermit(
+                  channel.send(ChannelEvent.Read(WebSocketFrame.Binary(RpcWire.binary(id, bytes)))) *>
+                    ZIO.logTrace(
+                      s"RpcWebSocket server RPC binary sent connectionId=$connectionId streamId=$id bytes=${bytes.size}"
+                    )
+                ),
+              channel.shutdown
+            )
             _ <- channel
               .receiveAll {
                 case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
@@ -178,34 +207,42 @@ object RpcWebSocket {
                   val work = for {
                     input <- text(frame, limits)
                     _ <- traceMessage("server", "request received", connectionId, input)
-                    request <- ZIO.fromEither(RpcWire.request(input))
-                    admitted <- active.modify { ids =>
-                      if ids.contains(request.id) then (Left(1002), ids)
-                      else if ids.size >= limits.maxPending then (Left(1013), ids)
-                      else (Right(()), ids + request.id)
-                    }
-                    _ <- admitted match {
-                      case Left(status) =>
-                        ZIO.logTrace(
-                          s"RpcWebSocket server RPC request rejected connectionId=$connectionId requestId=${request.id} closeStatus=$status"
-                        ) *> reject(channel, writes, status)
-                      case Right(()) =>
-                        val run = dispatcher
-                          .dispatch(request.service, request.version, request.method, request.arguments)
-                          .fold(
-                            error => RpcWire.failure(request.id, error),
-                            result => RpcWire.success(request.id, result)
-                          )
-                          .flatMap(send)
-                          .onInterrupt(
-                            ZIO.logTrace(
-                              s"RpcWebSocket server RPC call interrupted connectionId=$connectionId requestId=${request.id}"
-                            )
-                          )
-                          .catchAllCause(_ => channel.shutdown)
-                          .ensuring(active.update(_ - request.id))
-                        run.interruptible.forkIn(scope).unit
-                    }
+                    isStream <- ZIO.fromEither(RpcWire.isStream(input))
+                    _ <-
+                      if isStream then ZIO.fromEither(RpcWire.control(input)).flatMap(streams.control)
+                      else
+                        for {
+                          request <- ZIO.fromEither(RpcWire.request(input))
+                          streamCollision <- streams.contains(request.id)
+                          _ <- ZIO.fail(RpcError(RpcError.Code.ProtocolError)).when(streamCollision)
+                          admitted <- active.modify { ids =>
+                            if ids.contains(request.id) then (Left(1002), ids)
+                            else if ids.size >= limits.maxPending then (Left(1013), ids)
+                            else (Right(()), ids + request.id)
+                          }
+                          _ <- admitted match {
+                            case Left(status) =>
+                              ZIO.logTrace(
+                                s"RpcWebSocket server RPC request rejected connectionId=$connectionId requestId=${request.id} closeStatus=$status"
+                              ) *> reject(channel, writes, status)
+                            case Right(()) =>
+                              val run = dispatcher
+                                .dispatch(request.service, request.version, request.method, request.arguments)
+                                .fold(
+                                  error => RpcWire.failure(request.id, error),
+                                  result => RpcWire.success(request.id, result)
+                                )
+                                .flatMap(send)
+                                .onInterrupt(
+                                  ZIO.logTrace(
+                                    s"RpcWebSocket server RPC call interrupted connectionId=$connectionId requestId=${request.id}"
+                                  )
+                                )
+                                .catchAllCause(_ => channel.shutdown)
+                                .ensuring(active.update(_ - request.id))
+                              run.interruptible.forkIn(scope).unit
+                          }
+                        } yield ()
                   } yield ()
                   work.catchAll(error =>
                     ZIO.logTrace(
@@ -230,8 +267,10 @@ object RpcWebSocket {
   def connect(port: Int, token: RpcToken): ZIO[Scope, RpcError, RpcConnection] =
     connect(s"ws://127.0.0.1:$port/rpc", token)
 
-  /** One receiver and correlation map per connection, not per typed client. Explicit close releases the owned HTTP
-    * client scope; the caller's scope remains open. No retry/replay.
+  /** One receiver and correlation state per connection, not per typed client. Streams are lazy, stop-and-wait,
+    * independently materialized and cancel on scope exit. A pending producer/finalizer never blocks the receiver.
+    * Remote finalization uses cooperative ZIO interruption; idle materialized streams have no global TTL. Explicit
+    * close releases the owned HTTP client scope; the caller's scope remains open. No retry/replay.
     */
   def connect(endpoint: String, token: RpcToken, limits: Limits = Limits()): ZIO[Scope, RpcError, RpcConnection] =
     connectWithClient(endpoint, token, limits, Client.default)
@@ -251,6 +290,14 @@ object RpcWebSocket {
             override def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json])
                 : IO[RpcError, RpcResult] =
               connection.call(serviceId, version, method, arguments)
+            override def stream(
+                serviceId: String,
+                version: Int,
+                method: String,
+                arguments: Chunk[Json],
+                binary: Boolean
+            ): ZStream[Any, RpcStreamError, RpcStreamChunk] =
+              connection.stream(serviceId, version, method, arguments, binary)
             override def close: UIO[Unit] = scope.close(Exit.unit).uninterruptible
           }
         }
@@ -288,7 +335,29 @@ object RpcWebSocket {
       connected <- Ref.make(false)
       writes <- Semaphore.make(1)
       ready <- Promise.make[RpcError, WebSocketChannel]
-      _ <- ZIO.addFinalizer(disconnect(state, RpcError(RpcError.Code.Disconnected)))
+      streams <- RpcClientStreams.make(
+        limits,
+        state
+          .modify { current =>
+            if current.closed then (Left(RpcError(RpcError.Code.Disconnected)), current)
+            else if current.nextId == Long.MaxValue then (Left(RpcError(RpcError.Code.LimitExceeded)), current)
+            else (Right(current.nextId.toString), current.copy(nextId = current.nextId + 1))
+          }
+          .flatMap(ZIO.fromEither),
+        writes,
+        output =>
+          for {
+            _ <- ZIO.fail(RpcError(RpcError.Code.LimitExceeded)).when(size(output) > limits.maxFrameBytes)
+            channel <- ready.await
+            _ <- channel
+              .send(ChannelEvent.Read(WebSocketFrame.Text(output)))
+              .mapError(_ => RpcError(RpcError.Code.Disconnected))
+            _ <- traceMessage("client", "stream control sent", connectionId, output)
+          } yield (),
+        error => disconnect(state, error) *> ready.await.flatMap(_.shutdown).ignore
+      )
+      disconnectAll = (error: RpcError) => disconnect(state, error) *> streams.disconnect(error)
+      _ <- ZIO.addFinalizer(disconnectAll(RpcError(RpcError.Code.Disconnected)))
       http <- clientLayer.build.map(_.get[Client]).mapError(_ => RpcError(RpcError.Code.Disconnected))
       app = Handler
         .webSocket { channel =>
@@ -305,36 +374,57 @@ object RpcWebSocket {
                   case 1009 | 1013        => RpcError.Code.LimitExceeded
                   case _                  => RpcError.Code.Disconnected
                 }
-                disconnect(state, RpcError(code)) *> channel.shutdown
+                disconnectAll(RpcError(code)) *> channel.shutdown
               case ChannelEvent.Read(frame) =>
-                (for {
-                  input <- text(frame, limits)
-                  _ <- traceMessage("client", "response received", connectionId, input)
-                  response <- ZIO.fromEither(RpcWire.response(input))
-                  promise <- state.modify(current =>
-                    (current.pending.get(response.id), current.copy(pending = current.pending - response.id))
-                  )
-                  _ <- ZIO
-                    .logTrace(
-                      s"RpcWebSocket client RPC response ignored connectionId=$connectionId requestId=${response.id}"
-                    )
-                    .when(promise.isEmpty)
-                  _ <- ZIO.foreachDiscard(promise) { pending =>
-                    pending.done(Exit.fromEither(response.outcome)).unit
-                  }
-                } yield ()).uninterruptible.catchAll(error =>
+                (frame match {
+                  case value: WebSocketFrame.Binary if value.isFinal && value.bytes.size <= limits.maxFrameBytes =>
+                    for {
+                      reply <- ZIO.fromEither(RpcWire.binaryReply(value.bytes))
+                      _ <- ZIO.logTrace(
+                        s"RpcWebSocket client RPC binary received connectionId=$connectionId streamId=${reply._1} bytes=${reply._2.size}"
+                      )
+                      _ <- streams.receiveBytes(reply._1, reply._2)
+                    } yield ()
+                  case _ =>
+                    for {
+                      input <- text(frame, limits)
+                      _ <- traceMessage("client", "response received", connectionId, input)
+                      isStream <- ZIO.fromEither(RpcWire.isStream(input))
+                      _ <-
+                        if isStream then
+                          ZIO.fromEither(RpcWire.streamReply(input)).flatMap { (id, reply) =>
+                            state.get.flatMap(current =>
+                              ZIO
+                                .fail(RpcError(RpcError.Code.ProtocolError))
+                                .when(current.pending.contains(id) || id.toLong >= current.nextId)
+                            ) *>
+                              streams.receive(id, reply)
+                          }
+                        else
+                          for {
+                            response <- ZIO.fromEither(RpcWire.response(input))
+                            collision <- streams.contains(response.id)
+                            _ <- ZIO.fail(RpcError(RpcError.Code.ProtocolError)).when(collision)
+                            promise <- state.modify(current =>
+                              (current.pending.get(response.id), current.copy(pending = current.pending - response.id))
+                            )
+                            _ <- ZIO.foreachDiscard(promise)(_.done(Exit.fromEither(response.outcome)))
+                          } yield ()
+                    } yield ()
+                }).uninterruptible.catchAll(error =>
                   ZIO.logTrace(
                     s"RpcWebSocket client RPC response rejected connectionId=$connectionId code=${error.code}"
-                  ) *> disconnect(state, error) *> channel.shutdown
+                  ) *>
+                    disconnectAll(error) *> channel.shutdown
                 )
-              case ChannelEvent.ExceptionCaught(error) => disconnect(state, transportError(error)) *> channel.shutdown
+              case ChannelEvent.ExceptionCaught(error) => disconnectAll(transportError(error)) *> channel.shutdown
               case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) => channel.shutdown
               case _                                                                        => ZIO.unit
             }
             .catchAllCause(_ => ZIO.unit)
             .ensuring(
               ready.fail(RpcError(RpcError.Code.Disconnected)).unit *>
-                disconnect(state, RpcError(RpcError.Code.Disconnected)) *> channel.shutdown *>
+                disconnectAll(RpcError(RpcError.Code.Disconnected)) *> channel.shutdown *>
                 connected.get
                   .flatMap(established =>
                     ZIO.logInfo(s"RpcWebSocket client disconnected connectionId=$connectionId").when(established)
@@ -361,8 +451,15 @@ object RpcWebSocket {
         channel <- ready.await
       } yield channel).timeoutFail(RpcError(RpcError.Code.TimedOut))(limits.timeout)
       connection = new RpcConnection {
+        override def stream(
+            serviceId: String,
+            version: Int,
+            method: String,
+            arguments: Chunk[Json],
+            binary: Boolean
+        ): ZStream[Any, RpcStreamError, RpcStreamChunk] = streams.stream(serviceId, version, method, arguments, binary)
         override def close: UIO[Unit] =
-          (disconnect(state, RpcError(RpcError.Code.Disconnected)) *> channel.shutdown).uninterruptible
+          (disconnectAll(RpcError(RpcError.Code.Disconnected)) *> channel.shutdown).uninterruptible
         override def call(
             serviceId: String,
             version: Int,
@@ -403,7 +500,7 @@ object RpcWebSocket {
                         traceMessage("client", "request sent", connectionId, output)
                     )
                     .mapError(_ => RpcError(RpcError.Code.Disconnected))
-                    .tapError(error => disconnect(state, error) *> channel.shutdown)
+                    .tapError(error => disconnectAll(error) *> channel.shutdown)
                   result <- promise.await
                 } yield result).timeoutFail(RpcError(RpcError.Code.TimedOut))(limits.timeout)
               }

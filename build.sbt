@@ -189,6 +189,7 @@ lazy val rpc = crossProject(JSPlatform, JVMPlatform)
     name := "yallmo-rpc",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % "2.1.27",
+      "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),

@@ -61,6 +61,78 @@ object Demo extends ZIOAppDefault {
 The example can be placed in `rpc/jvm/src/test/scala/Demo.scala` and run using
 `sbt 'rpc/Test/runMain Demo'` (test compilation is separate from macro compilation).
 
+## Server-to-client streams
+
+Methods may also return **`ZStream[Any, E, A]`**, preserving that exact client signature:
+
+```scala
+import fmgp.rpc.*
+import zio.*
+import zio.json.*
+import zio.stream.*
+
+enum FsError derives JsonCodec {
+  case NotFound(path: String)
+  case Infrastructure(code: RpcError.Code)
+}
+object FsError {
+  given RpcErrorMapper[FsError] = RpcErrorMapper(e => FsError.Infrastructure(e.code))
+}
+trait Files {
+  def readBytes(path: String): ZStream[Any, FsError, Byte]
+}
+val files = Rpc.derived[Files]("example.streaming.files", 1)
+val host: Files = new Files {
+  def readBytes(path: String): ZStream[Any, FsError, Byte] =
+    ZStream.fromFile(new java.io.File(path)).mapError(_ => FsError.NotFound(path))
+}
+// Register files.bind(host) on the same authenticated, caller-hosted routes as unary services.
+def preview(connection: RpcConnection): IO[FsError, Chunk[Int]] =
+  files.client(connection).readBytes("example.bin").map(_ & 0xff).take(100).runCollect
+```
+
+`map`, `take` and `runCollect` above are **local consumer choices**; the transport never
+collects the stream. This standalone example uses its own serializable error fixture.
+The filesystem module's real `FsError` currently has no `JsonCodec`: applications must
+supply its encoder/decoder and total `RpcErrorMapper` just as for unary typed errors.
+RPC has no filesystem dependency and does not authorize paths; the caller/service must.
+
+- Constructing a client stream, including `take(0)`, does not send, open or invoke anything.
+  Every consumption opens a fresh, never-reused ID and independently invokes the host.
+- One receiver multiplexes unary calls and streams on the same connection. An admitted
+  stream has one worker and a single bounded pull-command slot, not a push queue. The
+  generated client issues only one PULL at a time and requests its next batch only when
+  consumed. No background producer read-ahead: one producer-owned upstream chunk may be
+  retained while splitting it, plus bounded codec/frame batches. User-provided upstream
+  chunk sizes and producer-internal buffering remain the service's responsibility.
+- Exactly `Byte` elements use raw binary **batches**, not per-byte frames, JSON or base64.
+  Other JSON-serializable elements (including Unit and nullable values) use bounded JSON
+  batches; this initial implementation sends one JSON element per batch. JSON codec work
+  is split into at most 64 elements; an individually oversized encoded element fails with
+  mapped `LimitExceeded`. Empty chunks may be suppressed without changing element output.
+- Output already consumed is retained if a later typed domain failure occurs. The same
+  codec/mapper rules as unary calls apply, including sanitized exact `Throwable`, defects
+  and construction failures. Malformed codecs yield sanitized infrastructure errors.
+- Scope exit, `take(n)`, consumer failure, interruption, decoding failure and open/pull
+  timeout send CANCEL. Server cancellation interrupts a pending pull and closes its scope;
+  unrelated calls/streams do not wait for that producer or its finalizers. Cancellation
+  and finalization are **cooperative ZIO interruption**, not OS/process isolation. An
+  uninterruptible producer/finalizer can retain its server slot indefinitely.
+- A cancelling client slot stays reserved until CANCELLED acknowledges remote cleanup;
+  late in-flight batches are discarded only for that closing stream, never reassigned.
+  Client capacity is reserved atomically before waiting to send OPEN; excess materializations
+  fail with `LimitExceeded` without entering the write wait queue. Reservations without an ID
+  are released locally on interruption; assigned IDs are cancelled even when OPEN transmission
+  is uncertain. Thus immediate replacement at a saturated client may briefly get `LimitExceeded`.
+  Normal end/failure closes the server scope before the terminal reply; its slot is
+  freed when terminal delivery completes.
+  Connection loss interrupts all remote workers and fails outstanding client demands.
+- `Limits.timeout` applies separately to open and each pull (including sending/waiting),
+  **not** to the whole stream. Sending cancellation also has a bounded deadline. There is
+  no idle-stream/global TTL; an idle materialized stream retains its scope/slot until
+  consumed/cancelled or disconnected. No upload/client/bidirectional streams, stream
+  arguments, nested `Task[ZStream]`, exported environments, retry/reconnect/resume.
+
 ## Typed service errors
 
 Methods can return `IO[E, A]` / `ZIO[Any, E, A]` without widening their error type:
@@ -113,7 +185,9 @@ codec failures/throws map through the policy. Bad success/error payload decoding
 `ProtocolError`, never an unchecked cast to `E`. Failed/thrown encoders also produce
 sanitized infrastructure `ProtocolError`, not a valid domain failure. Host defects and
 method-construction throws become infrastructure `ServiceFailure`; interruption stays
-interruption, not a domain error. A mapper that itself throws is a programmer defect;
+interruption, not a domain error. Any interruption still present in the cause at the RPC
+boundary takes precedence over domain failures or defects; upstream ZIO combinators may
+already have normalized a mixed cause, which RPC cannot reconstruct. A mapper that itself throws is a programmer defect;
 the library does not fabricate an `E`. Mappers must be total and pure, not logging,
 throwing, or dependent on external mutable state. There are no automatic retries.
 
@@ -250,7 +324,7 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
 ## Contract restrictions and wire identity
 
 Supported: non-generic traits with public **abstract** methods returning exactly
-`ZIO[Any, E, A]` (including `IO[E, A]` and `Task[A]`), zero arguments (`def x` or `def x()`), or a single
+`ZIO[Any, E, A]` (including `IO[E, A]` and `Task[A]`) or `ZStream[Any, E, A]`, zero arguments (`def x` or `def x()`), or a single
 ordinary parameter list with multiple arguments. Every parameter and result needs both
 zio-json `JsonEncoder` and `JsonDecoder` in derivation scope. DTOs can `derive JsonCodec`.
 `Unit` uses the built-in JSON `null` representation, including when it is an argument.
@@ -258,9 +332,8 @@ Error types additionally follow the codec/mapper policy above.
 
 Compile-time errors reject polymorphic/overloaded methods, vals/vars, concrete service
 methods, type members, callbacks, contextual/by-name/repeated/default parameters, multiple
-parameter lists, non-ZIO results, environment requirements and errors without the required codecs/mapper.
-`ZStream` methods are not supported; typed errors are only a prerequisite for future work. This is a
-small proof of concept, not a universal Scala interface serializer.
+parameter lists, non-effect results, nested effects/streams, stream arguments, environment requirements and errors without the required codecs/mapper.
+This is a small proof of concept, not a universal Scala interface serializer.
 
 Prefer explicit literal IDs and positive integer versions as above. The no-argument
 `Rpc.derived[A]` defaults to the compiler's fully qualified trait symbol name (including
@@ -273,7 +346,8 @@ different schema is a contract violation, not something the PoC can detect autom
 
 The private custom PoC wire protocol is **revision 2**, incompatible with the previous
 Task-only shape; deploy matching library versions at both ends. This is not JSON-RPC 2.0
-and there is no protocol negotiation: one text message per request/response.
+and there is no protocol negotiation. Unary calls retain one text message per request/response;
+revision-2 stream control envelopes use an explicit `stream: 2` and `op` discriminator.
 Requests contain string `id`, `service`, integer `version`, `method`, and positional JSON
 `arguments`; replies contain the same `id` and **exactly one** of `result` (success JSON),
 `failure` (domain-error JSON), or `error` (sanitized infrastructure `RpcError.Code`).
@@ -283,9 +357,21 @@ The intentional low-level API change is `IO[RpcError, RpcResult]` for both
 connections and handlers must adapt. Bump service contract versions when changing
 error signatures/codecs; changing a Task method to a domain-error method is incompatible.
 Unknown envelope fields, duplicate JSON object keys, nesting over 32, invalid IDs and
-ambiguous envelopes are rejected. Binary/fragmented messages are deliberately rejected;
-senders must emit a complete text frame. This keeps aggregation bounded and avoids
-partial UTF-8 handling in the PoC.
+ambiguous envelopes are rejected. Fragmented messages and client-to-server binary messages are rejected.
+Stream controls are OPEN (service/version/method/arguments/binary), PULL and CANCEL;
+replies are OPENED, CHUNK (`values`), END, FAILURE, ERROR and CANCELLED. Method kind and
+encoding are checked before executing service code. Stream IDs increase across opens;
+duplicate opens, unsolicited pulls and concurrent pull floods close with protocol error.
+CANCEL for an unseen ID is acknowledged and advances the stream-ID retirement watermark:
+an interrupted OPEN may never have reached the server, and any delayed OPEN at or below
+that watermark is rejected. Stream OPEN allocation/transmission is serialized; this keeps
+retirement bounded without retaining an unbounded set of cancelled IDs.
+Byte CHUNK frames start with bytes `52 50 02 42` (hex: RP, revision 2, byte-chunk type),
+then an eight-byte positive big-endian stream ID and the raw payload. Receivers validate
+magic/version/type, full-frame size, ID, encoding and outstanding-demand state. There is
+no unsafe byte/JSON cast. Unrecognized binary replies close the connection; bounded late
+binary replies for an explicitly cancelling stream are discarded until CANCELLED.
+Only complete frames are accepted, keeping aggregation and UTF-8 handling bounded.
 
 ## Failure, concurrency and limits
 
@@ -298,16 +384,17 @@ partial UTF-8 handling in the PoC.
   Wire logs carry the local `connectionId` and JSON envelope, including the request ID.
   Payloads are JSON-string escaped to avoid multiline log injection. **TRACE exposes
   arguments/results/domain failures and has no application-data redaction; use it only for debugging.**
+  Binary logs contain only stream ID and byte length, never raw byte payloads. Tokens are never logged.
   INFO does not log RPC payloads.
 - Monotonic per-connection IDs correlate concurrent/out-of-order responses. Late replies
   after a timeout/interruption are ignored; IDs are never reused. Duplicate *active*
-  request IDs are rejected by the host. No retry, reconnect, replay, batching or streaming.
+  request IDs are rejected by the host. No retry, reconnect or replay.
 - Infrastructure failures are sanitized `RpcError` codes, mapped into each method's exact
   `E` by its policy. Unknown service, version mismatch, unknown method and invalid
   arguments have distinct codes. Task failures and host defects/construction throws
   become `ServiceFailure`; their messages, causes, stack traces and internal transport
   exceptions are not returned. Codec-approved domain failures are separate JSON payloads.
-- A local deadline or fiber interruption removes its pending promise. It **does not undo
+- For **unary calls**, a local deadline or fiber interruption removes its pending promise. It **does not undo
   or cancel server execution**; an abandoned operation may still have side effects. Server
   workers are interrupted when their connection ends, subject to normal ZIO cooperative
   interruption. Do not retry a side-effecting call based only on a lost reply.
@@ -318,7 +405,12 @@ partial UTF-8 handling in the PoC.
   the remaining HTTP-client resources; there is no automatic reconnect.
 - Defaults: 64 KiB UTF-8 frames/messages, 32 client pending/server active requests per
   connection, 10-second connect/request deadline, up to 64 wire arguments and JSON nesting
-  32. Limits are configurable (1 MiB / 1024 requests maximum). Outgoing client overflow is
+  32. Streams additionally default to 16 active/client slots and 65524 elements per
+  batch (`maxStreams`, `maxChunkElements`); maxima are 1024 streams and 65536 elements.
+  Byte batches also fit `maxFrameBytes - 12`; JSON batches fit encoded UTF-8 frame bytes.
+  At most one demand promise, one command slot and a bounded in-flight batch per stream
+  are held (plus one upstream producer chunk). `maxPending` remains unary-only.
+  Limits are configurable (1 MiB / 1024 unary requests maximum). Outgoing client overflow is
   local; server request/response overflow closes the connection. No unbounded application
   work queue: overload rejects/closes instead of accumulating waiting fibers.
 

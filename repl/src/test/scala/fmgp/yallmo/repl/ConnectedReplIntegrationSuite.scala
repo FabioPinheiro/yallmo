@@ -370,10 +370,21 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     }
     val scala = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(false)
-      def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] = unexpected
+      def execute(
+          code: String,
+          timeout: Duration,
+          maxOutputBytes: Int,
+          dependencies: Seq[String]
+      ): Task[CommandOutput] = unexpected
+    }
+    val dynamicScala = new ScalaCodeDynamicExecutor {
+      def isAvailable: UIO[Boolean] = ZIO.succeed(false)
+      def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
+        unexpected
     }
     ZLayer.succeed[WorkspaceFileSystem](fs) ++ ZLayer.succeed[BashExecutor](bash) ++
-      ZLayer.succeed[GitClient](git) ++ ZLayer.succeed[ScalaCodeExecutor](scala)
+      ZLayer.succeed[GitClient](git) ++ ZLayer.succeed[ScalaCodeExecutor](scala) ++
+      ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicScala)
   }
 
   private def fakeClient(respond: Request => Task[Response]): Client =

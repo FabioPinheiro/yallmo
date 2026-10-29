@@ -10,9 +10,15 @@ final class ScalaToolSuite extends FunSuite {
 
   private val executor = ZLayer.succeed(new ScalaCodeExecutor {
     def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-    def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] = {
+    def execute(
+        code: String,
+        timeout: Duration,
+        maxOutputBytes: Int,
+        dependencies: Seq[String]
+    ): Task[CommandOutput] = {
       assertEquals(code, "(1 to 10).sum")
       assertEquals(timeout, 45.seconds)
+      assertEquals(dependencies, Seq("dev.zio::zio:2.1.27"))
       assert(timeout < fmgp.yallmo.orchestration.AgentBudget.default.timeout && maxOutputBytes > 0)
       ZIO.succeed(CommandOutput(0, false, "55\n", false))
     }
@@ -27,9 +33,23 @@ final class ScalaToolSuite extends FunSuite {
     assert(!json("timedOut").bool && !json("truncated").bool)
   }
 
+  test("restricted timeout hints describe the external compiler deadline") {
+    val output = CommandOutput(124, true, "deadline", false)
+    val restricted = ujson.read(ScalaTool.render(output))
+    assert(restricted("hint").str.contains("pinned and offline"))
+    assert(!restricted("hint").str.contains("cooperative"))
+  }
+
   test("invalid arguments are rejected before executing anything") {
-    for arguments <- List("{}", "[]", """{"code":1}""", """{"code":""}""", """{"code":"1", "scalamode":"3"}""") do
-      assert(run(new ScalaTool().execute(ExternalToolCall("scalamode", arguments)).either.provide(executor)).isLeft)
+    for arguments <- List(
+        "{}",
+        "[]",
+        """{"code":1}""",
+        """{"code":""}""",
+        """{"code":"1", "scalamode":"3"}""",
+        """{"code":"1", "dependencies":["dev.zio::zio:2.1.27"]}"""
+      )
+    do assert(run(new ScalaTool().execute(ExternalToolCall("scalamode", arguments)).either.provide(executor)).isLeft)
   }
 
   test("compiler escape hatches and directives are rejected conservatively") {
@@ -75,12 +95,18 @@ final class ScalaToolSuite extends FunSuite {
   test("compilation and runtime errors remain tool results, not infrastructure failures") {
     val errors = ZLayer.succeed(new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-      def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] = {
-        val _ = (code, timeout, maxOutputBytes)
+      def execute(
+          code: String,
+          timeout: Duration,
+          maxOutputBytes: Int,
+          dependencies: Seq[String]
+      ): Task[CommandOutput] = {
+        val _ = (code, timeout, maxOutputBytes, dependencies)
         ZIO.succeed(CommandOutput(1, false, "Compilation failed", false))
       }
     })
-    val result = run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"unknown"}""")).provide(errors))
+    val result =
+      run(new ScalaTool().execute(ExternalToolCall("scalamode", """{"code":"unknown"}""")).provide(errors))
     assertEquals(ujson.read(result.text)("exitCode").num.toInt, 1)
     assertEquals(ujson.read(result.text)("output").str, "Compilation failed")
   }

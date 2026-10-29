@@ -45,6 +45,66 @@ final class ApplicationRuntimeSuite extends FunSuite {
     providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
   )
 
+  test("workspace assembly registers the restricted Scala tool without executing snippets") {
+    run {
+      ZIO.scoped {
+        for {
+          root <- temporaryRoot
+          events <- Ref.make(Vector.empty[String])
+          alive <- Ref.make(false)
+          runtime <- ApplicationRuntime.make(Config(), Chunk.empty)
+          executor = new ScalaCodeExecutor {
+            def isAvailable: UIO[Boolean] = ZIO.succeed(true)
+            def execute(
+                code: String,
+                timeout: Duration,
+                maxOutputBytes: Int,
+                dependencies: Seq[String]
+            ): Task[CommandOutput] =
+              ZIO.dieMessage("Assembly must not execute snippets")
+          }
+          services = toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
+          opened <- runtime.openWorkspace(None, root, services)
+        } yield {
+          val definition = opened._1.context(None).tools.find(_.key == "scalamode").get
+          assertEquals(definition, ScalaTool.definition)
+          assert(opened._2.available.contains("scalamode"))
+        }
+      }
+    }
+  }
+
+  test("workspace assembly advertises the injected dynamic executor and filesystem API without executing snippets") {
+    run {
+      ZIO.scoped {
+        for {
+          root <- temporaryRoot
+          events <- Ref.make(Vector.empty[String])
+          alive <- Ref.make(false)
+          runtime <- ApplicationRuntime.make(Config(), Chunk.empty)
+          executor = new ScalaCodeDynamicExecutor {
+            def isAvailable: UIO[Boolean] = ZIO.succeed(true)
+            def execute[R: EnvironmentTag](
+                code: String,
+                timeout: Duration,
+                maxOutputBytes: Int
+            ): RIO[R, CommandOutput] =
+              ZIO.dieMessage("Assembly must not execute dynamic snippets")
+          }
+          services = toolServices(events, alive).map(_.add[ScalaCodeDynamicExecutor](executor))
+          opened <- runtime.openWorkspace(None, root, services)
+        } yield {
+          val definition = opened._1.context(None).tools.find(_.key == "scalaunsafe").get
+          assert(definition.description.contains("fmgp.yallmo.scalacode.FileSystem"))
+          assert(definition.description.contains(root.toString))
+          assert(definition.description.contains("not a sandbox"))
+          assert(opened._2.available.contains("scalaunsafe"))
+          assert(!opened._2.available.contains("scalamode"))
+        }
+      }
+    }
+  }
+
   test("coach submits with scoped notebook tools and persists drafts without exposing other roots") {
     run {
       ZIO.scoped {
@@ -604,15 +664,26 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
     val scala = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(false)
-      def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] =
+      def execute(
+          code: String,
+          timeout: Duration,
+          maxOutputBytes: Int,
+          dependencies: Seq[String]
+      ): Task[CommandOutput] =
         ZIO.dieMessage(s"Unexpected Scala: $code $timeout $maxOutputBytes")
+    }
+    val dynamicScala = new ScalaCodeDynamicExecutor {
+      def isAvailable: UIO[Boolean] = ZIO.succeed(false)
+      def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
+        ZIO.dieMessage(s"Unexpected dynamic Scala: $code $timeout $maxOutputBytes")
     }
     val filesystemLayer: ULayer[WorkspaceFileSystem] = ZLayer.scoped(
       ZIO.acquireRelease(record("acquire") *> alive.set(true).as(filesystem))(_ =>
         alive.set(false) *> record("release")
       )
     )
-    filesystemLayer ++ ZLayer.succeed(bash) ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala)
+    filesystemLayer ++ ZLayer.succeed(bash) ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala) ++
+      ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicScala)
   }
 
   private def toolClient(requests: Ref[Int]): Client =

@@ -203,8 +203,8 @@ Unavailable tools, invalid arguments and approval denials become correlated tool
 implementation. Merely seeing a `ToolCall` in history, or submitting a `ToolOutput`, does not execute it.
 No provider inference or session is needed for direct tools.
 
-The Scala tool key is now `scalamode` (formerly `scala`); update explicit configured tool allowlists accordingly.
-Its arguments remain `{"code":"..."}`. The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this generic flow.
+The restricted Scala tool key is `scalamode`; the trusted in-process dynamic tool uses `scalaunsafe`. Update callers and explicit tool allowlists according to the intended executor; these keys are not aliases and grant different capabilities.
+Both accept `{"code":"..."}`. The browser's [Scalamode page](../web-harness/README.md#scalamode) invokes either key through this generic flow using separate **Run scalamode** and **Run scalaunsafe** buttons. The server still checks tool availability and authorization.
 
 Both input and final output are visible through `messages.list` and survive filesystem reopen. Neither creates a
 session/sidebar conversation or advances an existing session. Message puts validate content addresses and existing

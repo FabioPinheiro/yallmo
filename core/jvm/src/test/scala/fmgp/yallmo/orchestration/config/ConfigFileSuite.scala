@@ -56,6 +56,20 @@ final class ConfigFileSuite extends FunSuite {
     }
   }
 
+  test("removed scalaMode is ignored without rewriting or re-serializing it") {
+    withDirectory { root =>
+      val path = root.resolve("yallmo.json")
+      for value <- List("\"restricted\"", "\"dynamic\"", "true", "{}") do {
+        val json = s"""{"scalaMode":$value}"""
+        Files.writeString(path, json)
+        val loaded = run(ConfigFile.loadOrInitialize(path))
+        assertEquals(loaded, Config())
+        assert(!loaded.toJson.contains("scalaMode"))
+        assertEquals(Files.readString(path), json)
+      }
+    }
+  }
+
   test("per-agent filesystem roots round-trip without opening directories; older configs need no filesystem") {
     withDirectory { root =>
       val path = root.resolve("yallmo.json")

@@ -13,6 +13,11 @@ ThisBuild / scalacOptions ++= Seq(
   "-Wunused:all",
   "-Werror",
 )
+// Tests intentionally cover the deprecated unsafe Scala APIs, including ZIO inline macro expansions.
+// Keep production deprecation warnings and all other test warnings fatal.
+lazy val unsafeScalaTestSettings = Seq(
+  Test / scalacOptions += "-Wconf:cat=deprecation&msg=(ScalaCodeDynamicExecutor|ScalaDynamicTool):s"
+)
 ThisBuild / libraryDependencySchemes ++= Seq(
   "dev.zio" %% "zio-json" % "always",
 )
@@ -35,6 +40,8 @@ lazy val root = project
     modelJS,
     filesystemJVM,
     filesystemJS,
+    scalaCodeApiJVM,
+    scalaCodeApiJS,
     coreJVM,
     coreJS,
     protocolJVM,
@@ -92,6 +99,24 @@ lazy val model = crossProject(JSPlatform, JVMPlatform)
 lazy val modelJVM = model.jvm
 lazy val modelJS = model.js
 
+/** Portable script/service contracts; compilation and host implementations remain JVM-only. */
+lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
+  .withoutSuffixFor(JVMPlatform)
+  .crossType(CrossType.Full)
+  .in(file("scalacode-api"))
+  .settings(
+    name := "yallmo-scalacode-api",
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio" % "2.1.27",
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+    ),
+  )
+  .jsSettings(
+    libraryDependencies += "io.github.cquiroz" %% "scala-java-time" % "2.8.0",
+  )
+lazy val scalaCodeApiJVM = scalaCodeApi.jvm
+lazy val scalaCodeApiJS = scalaCodeApi.js
+
 // Rooted capabilities/JSONL helpers are shared; FileSystem's NIO implementation is JVM-only.
 lazy val filesystem = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
@@ -114,7 +139,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
   .in(file("core"))
-  .dependsOn(model, filesystem)
+  .dependsOn(model, filesystem, scalaCodeApi)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(
@@ -123,6 +148,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
     ),
   )
   .jvmSettings(jvmSettings)
+  .jvmSettings(unsafeScalaTestSettings)
   .jvmSettings(
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-http" % "3.11.6",
@@ -167,6 +193,7 @@ lazy val repl = project
   .in(file("repl"))
   .dependsOn(coreJVM, server, clientHarnessJVM)
   .settings(jvmSettings)
+  .settings(unsafeScalaTestSettings)
   .settings(
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
@@ -240,6 +267,7 @@ lazy val server = project
   .in(file("server"))
   .dependsOn(coreJVM, protocolJVM)
   .settings(jvmSettings)
+  .settings(unsafeScalaTestSettings)
   .settings(
     name := "yallmo-server",
     Compile / mainClass := Some("fmgp.yallmo.server.OrchestratorServerMain"),

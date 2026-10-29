@@ -580,12 +580,19 @@ final class ServerApplicationSuite extends FunSuite {
     }
     val compiler = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(scala)
-      def execute(code: String, timeout: Duration, maxOutputBytes: Int): Task[CommandOutput] = unexpected
+      def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
+          : Task[CommandOutput] = unexpected
+    }
+    val dynamicCompiler = new ScalaCodeDynamicExecutor {
+      def isAvailable: UIO[Boolean] = ZIO.succeed(false)
+      def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
+        unexpected
     }
     Probes(
       calls,
       ZLayer.succeed[WorkspaceFileSystem](filesystem) ++ ZLayer.succeed[BashExecutor](shell) ++
-        ZLayer.succeed[GitClient](repository) ++ ZLayer.succeed[ScalaCodeExecutor](compiler)
+        ZLayer.succeed[GitClient](repository) ++ ZLayer.succeed[ScalaCodeExecutor](compiler) ++
+        ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicCompiler)
     )
   }
 

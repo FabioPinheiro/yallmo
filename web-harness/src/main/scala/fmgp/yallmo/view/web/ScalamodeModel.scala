@@ -15,8 +15,14 @@ private[web] final case class ScalamodeResult(message: Message) {
   val fields: Option[ToolResultContent.Result] = ToolResultContent.parse(output)
 }
 
+private[web] enum ScalamodeTool(val key: String) {
+  case Safe extends ScalamodeTool("scalamode")
+  case Dynamic extends ScalamodeTool("scalaunsafe")
+}
+
 private[web] final case class ScalamodeState(
     code: String = "tool.api\nval numbers = List(1, 2, 3)\nnumbers.map(_ * 2).sum",
+    tool: ScalamodeTool = ScalamodeTool.Safe,
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Boolean = false,
@@ -25,7 +31,7 @@ private[web] final case class ScalamodeState(
 ) {
   def blockedReason(agent: Option[AgentId]): Option[String] =
     if !enabled then Some("Connect as an operator to a server supporting agents.invoke.")
-    else if pending then Some("Waiting for scalamode. Execution is not cancelled by leaving this page.")
+    else if pending then Some(s"Waiting for ${tool.key}. Execution is not cancelled by leaving this page.")
     else if !agent.exists(agents.contains) then Some("Choose a configured agent in the toolbar.")
     else if code.trim.isEmpty then Some("Enter a Scala block.")
     else if code.length > 65536 then Some("Scala code exceeds 65,536 characters.")
@@ -73,7 +79,7 @@ private[web] final class ScalamodeModel(
 
   def code(value: String): Unit = state.update(_.copy(code = value))
 
-  def run(): Unit = {
+  def run(tool: ScalamodeTool = ScalamodeTool.Safe): Unit = {
     val current = state.now()
     val selected = selectedAgent()
     current.blockedReason(selected) match {
@@ -81,14 +87,14 @@ private[web] final class ScalamodeModel(
       case None         =>
         val agent = selected.get
         val call = FunctionCall(
-          FunctionCallId.unsafe(s"scalamode-${UUID.randomUUID()}"),
-          "scalamode",
+          FunctionCallId.unsafe(s"${tool.key}-${UUID.randomUUID()}"),
+          tool.key,
           Json.Obj("code" -> Json.Str(current.code)).toJson
         )
         val input = Message(MessageData(identity.get, None, Instant.now(), MessagePayload.ToolCall(call)))
         version += 1
         val requestVersion = version
-        state.update(_.copy(pending = true, result = None, notice = ""))
+        state.update(_.copy(tool = tool, pending = true, result = None, notice = ""))
         Try(invoke(AgentsInvoke.Params(agent, input))).fold(Future.failed, value => value).onComplete {
           case Success(message) if requestVersion == version =>
             val correlated = message.agentId == agent && message.parentId.contains(input.id) && (message.payload match {

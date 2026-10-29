@@ -26,6 +26,9 @@ Yallmo is now a personal laboratory for learning how to manage context and knowl
   - Tasks fail in the first interaction many times because of the same reason. We should be able to analyze and detect those deficient. 
 - Live collaboration working space.
   - Can two/multiple people work on a project among side automated agents?
+- Research
+  - What is a Durable Agent harness
+    - [Pi.dev Durable](https://earendil.com/posts/pi-durable/)
 
 The project aims to keep the important boundaries small and explicit: transcripts, providers, capabilities, approval, orchestration, and storage. It is exploratory software; APIs and experiments may change.
 
@@ -49,6 +52,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - `model/` — JVM/JS provider-neutral models and orchestration state.
 - `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
+- `scalacode-api/` — JVM/JS script and service contracts with portable string paths; no application-module dependencies.
 - `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG.
 - `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
 - `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
@@ -73,11 +77,13 @@ flowchart BT
     server -->|JVM| protocol
     core --> model["model · JVM / JS"]
     core --> filesystem["filesystem · JVM / JS"]
+    core --> scalaApi["scalacode-api · JVM / JS"]
     protocol --> model
 ```
 
 This is a build graph, not a deployment diagram: the connected REPL and website communicate with a separately running
 server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
+`scalacode-api` has no application-module dependencies; generated scripts compile against it and Scala/ZIO, not the whole host classpath.
 `browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.
 
 ## WIP & TODO & IDEAS
@@ -101,7 +107,9 @@ local fallback. Existing audio/voice, debug and other local feature implementati
 ### TODO other
 
 - Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
-- TerminalVoiceModeStatus.remoteConnection Remove! 
+- TerminalVoiceModeStatus.remoteConnection Remove!
+- Rename package fmgp.yallmo.view.web to package fmgp.yallmo.webharness
+- Review ServerApplication graceful-shutdown See https://zio.dev/reference/core/zioapp#graceful-shutdown-timeout
 
 ### TODO - Agent Comands
 

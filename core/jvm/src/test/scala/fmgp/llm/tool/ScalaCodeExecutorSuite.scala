@@ -35,11 +35,57 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assert(result.left.toOption.exists(_.getMessage.contains("full nightly version")))
   }
 
+  test("compiler classpath contains only the compiled API module") {
+    val arguments = ScalaCodeExecutor.arguments()
+    val classpath = arguments(arguments.indexOf("--classpath") + 1)
+    val apiLocation =
+      Path.of(classOf[fmgp.yallmo.scalacode.ScalaScript].getProtectionDomain.getCodeSource.getLocation.toURI)
+    val coreLocation = Path.of(classOf[ScalaCodeExecutor].getProtectionDomain.getCodeSource.getLocation.toURI)
+    assertEquals(classpath, apiLocation.toAbsolutePath.toString)
+    assert(Files.exists(apiLocation))
+    assertNotEquals(classpath, coreLocation.toAbsolutePath.toString)
+    assert(ScalaCodeExecutor.snippet("api").contains("import fmgp.yallmo.scalacode.{ScalaToolApi as tool}"))
+  }
+
+  test("CLI arguments include pinned ZIO in both offline and online modes") {
+    for offline <- List(true, false) do {
+      val arguments = ScalaCodeExecutor.arguments(offline = offline)
+      val dependencyIndex = arguments.indexOf("--dependency")
+      assert(dependencyIndex >= 0)
+      assertEquals(arguments(dependencyIndex + 1), "dev.zio::zio:2.1.27")
+      assertEquals(arguments.contains("--offline"), offline)
+    }
+  }
+
+  test("custom dependencies replace defaults and each gets a separate CLI flag") {
+    val dependencies = Seq("dev.zio::zio-streams:2.1.27", "dev.zio::zio-json:1.1.1")
+    val arguments = ScalaCodeExecutor.arguments(dependencies = dependencies)
+    val actual = arguments.sliding(2).collect { case Seq("--dependency", dependency) => dependency }.toList
+    assertEquals(actual, dependencies.toList)
+    assert(!arguments.contains("dev.zio::zio:2.1.27"))
+    assert(!ScalaCodeExecutor.arguments(dependencies = Seq.empty).contains("--dependency"))
+  }
+
+  test("ScalaTool forwards configured dependencies to the CLI, including an empty sequence") {
+    withFakeCli("printf '%s\\n' \"$@\"\n") { executable =>
+      for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.1"), Seq.empty) do {
+        val result = run(
+          new ScalaTool(dependencies = dependencies)
+            .execute(fmgp.yallmo.orchestration.ExternalToolCall("scalamode", """{"code":"42"}"""))
+            .provide(ScalaCodeExecutor.layer(executable.toString))
+        )
+        val arguments = ujson.read(result.text)("output").str.linesIterator.toList
+        val actual = arguments.sliding(2).collect { case List("--dependency", dependency) => dependency }.toList
+        assertEquals(actual, dependencies.toList)
+      }
+    }
+  }
+
   test("isolated temporary sources are removed after execution") {
     withFakeCli(
       "test \"$1\" = run && test \"$2\" = . || exit 8\n" +
-        "test -f Snippet.scala && test -f Main.scala && test -f ScalaToolApi.scala || exit 9\n" +
-        "grep -q 'def api: Unit' ScalaToolApi.scala || exit 10\n" +
+        "test -f Snippet.scala && test -f Main.scala && test ! -f ScalaToolApi.scala || exit 9\n" +
+        "grep -q 'import fmgp.yallmo.scalacode.{ScalaToolApi as tool}' Snippet.scala || exit 10\n" +
         "grep -q 'import tool.\\*' Snippet.scala || exit 11\npwd\n"
     ) { executable =>
       val first = execute(executable)
@@ -156,8 +202,8 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       )
       assertEquals(result.exitCode, 0, result.output)
       val lines = result.output.linesIterator.toList
-      if code == "api" then assertEquals(lines, List("Yes API is available", "()"))
-      else assertEquals(lines, List("Yes API is available", "Yes API is available", "42"))
+      if code == "api" then assertEquals(lines, List("Yes Tool API is available", "()"))
+      else assertEquals(lines, List("Yes Tool API is available", "Yes Tool API is available", "42"))
     }
   }
 
@@ -177,6 +223,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
     for code <- List(
         "doesNotExist",
+        "new fmgp.yallmo.tool.ScalaTool()",
         "java.nio.file.Files.readString(java.nio.file.Path.of(\"/etc/passwd\"))",
         "java.nio.file.Files.writeString(java.nio.file.Path.of(\"forbidden.txt\"), \"no\")",
         "java.lang.System.getenv()",

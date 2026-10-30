@@ -11,6 +11,10 @@ import zio.json.*
 import zio.json.ast.Json
 
 private[web] final case class ScalamodeResult(message: Message) {
+  val logs: Seq[String] = message.payload match {
+    case MessagePayload.ToolOutput(output) => output.logs
+    case _                                 => Seq.empty
+  }
   val output: String = message.payload.contentStr
   val fields: Option[ToolResultContent.Result] = ToolResultContent.parse(output)
 }

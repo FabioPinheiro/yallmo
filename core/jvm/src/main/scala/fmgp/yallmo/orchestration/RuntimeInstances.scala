@@ -1,7 +1,7 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.agents.{CoachAgent, FolderStructureAgent}
-import fmgp.yallmo.fs.FileSystem
+import fmgp.yallmo.fs.{FileSystem, FsRead}
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
 import fmgp.yallmo.model.llm.LlmProvider
 import fmgp.yallmo.model.som.SOMProvider
@@ -44,7 +44,7 @@ final class RuntimeInstances[-R] private (
 ) {
 
   /** Environment-bound agents constructed lazily from config.agents; supplied agents retain R in registeredAgents. */
-  private var initializedAgents = Map.empty[AgentId, Agent[Any]]
+  private var initializedAgents = Map.empty[AgentId, (Agent[Any], Option[FsRead])]
 
   /** Connections constructed lazily from config.providers and shared by agents referencing the same provider ID. */
   private var initializedProviders = Map.empty[ProviderId, LlmProvider | SOMProvider]
@@ -105,20 +105,31 @@ final class RuntimeInstances[-R] private (
     *   ID of a supplied agent or definition in config.agents
     */
   def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
+    getAgentWithFilesystem(id).map(_._1)
+
+  /** Retains the exact configured capability; None means no private root, not a failed open. */
+  def getAgentWithFilesystem(id: AgentId): IO[YallmoError, (Agent[R], Option[FsRead])] =
     initializationLock.withPermit {
       ZIO.suspendSucceed {
-        registeredAgents.get(id).orElse(initializedAgents.get(id)) match {
-          case Some(agent) => ZIO.succeed(agent)
+        registeredAgents.get(id).map(agent => (agent, None)).orElse(initializedAgents.get(id)) match {
+          case Some(entry) => ZIO.succeed(entry)
           case None        =>
             for {
               definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
-              underlying <- initializeAgent(id, definition)
+              fs <-
+                if definition.filesystem.nonEmpty || Set("CoachAgent", "FolderStructureAgent").contains(
+                    definition.agentType
+                  )
+                then openAgentFileSystem(id, definition).map(Some(_))
+                else ZIO.none
+              underlying <- initializeAgent(id, definition, fs)
               policy =
                 if definition.agentType == "CoachAgent" then CoachAgent.Capabilities.intersect(definition.capabilities)
                 else definition.capabilities
               agent = ConfiguredAgent(underlying, policy)
-              _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, agent) }
-            } yield agent
+              entry = (agent, fs)
+              _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, entry) }
+            } yield entry
         }
       }
     }
@@ -184,7 +195,11 @@ final class RuntimeInstances[-R] private (
       }
     } yield provider
 
-  private def initializeAgent(id: AgentId, definition: AgentConfig): IO[YallmoError, Agent[Any]] =
+  private def initializeAgent(
+      id: AgentId,
+      definition: AgentConfig,
+      filesystem: Option[FileSystem]
+  ): IO[YallmoError, Agent[Any]] =
     definition.agentType match {
       case "OAIAgent" => // TODO make it type safe
         for {
@@ -213,11 +228,14 @@ final class RuntimeInstances[-R] private (
             case connection: OpenAiCodexClient => ZIO.succeed(new ChatGPTAgent(id, connection))
             case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires an OAI or ChatGPT provider"))
           }
-          fs <- openAgentFileSystem(id, definition)
+          fs <- ZIO.fromOption(filesystem).orElseFail(YallmoError.InvalidConfig("CoachAgent requires filesystem.root"))
           agent <- CoachAgent.make(delegate, fs)
         } yield agent
       case "FolderStructureAgent" =>
-        openAgentFileSystem(id, definition).map(fs => FolderStructureAgent.make(id, fs))
+        ZIO
+          .fromOption(filesystem)
+          .orElseFail(YallmoError.InvalidConfig("FolderStructureAgent requires filesystem.root"))
+          .map(fs => FolderStructureAgent.make(id, fs))
       case name =>
         ZIO.fail(
           YallmoError.InvalidConfig(

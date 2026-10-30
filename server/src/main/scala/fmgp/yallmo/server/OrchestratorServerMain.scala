@@ -5,6 +5,8 @@ import java.util.Locale
 import scala.util.Try
 import fmgp.yallmo.server.application.ServerApplication
 import zio.*
+import fmgp.rpc.RpcWebSocket
+import zio.http.Server
 
 /** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
   * Embedded applications should supply their existing master instead.
@@ -38,7 +40,23 @@ object OrchestratorServerMain extends ZIOAppDefault {
       _ <- ZIO.logDebug(s"Opening storage ${options.storage.toAbsolutePath.normalize()}")
       _ <- ZIO
         .scoped(for {
-          application <- ServerApplication.open(options.storage, options.config, options.workspace)
+          application <- options.config match {
+            case None    => ServerApplication.open(options.storage, options.config, options.workspace)
+            case Some(_) =>
+              for {
+                route <- RpcWebSocket.route()
+                http <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
+                port <- Server.install(route.routes).provideEnvironment(http)
+                application <- ServerApplication
+                  .openRpc(
+                    options.storage,
+                    options.config,
+                    options.workspace,
+                    s"ws://127.0.0.1:$port/rpc"
+                  )
+                  .provideSomeEnvironment[Scope & ServerApplication.Environment](_.add[RpcWebSocket.RpcRoute](route))
+              } yield application
+          }
           bound <- new OrchestratorWSServer(application.master, application.configured)
             .start(options.port)
           _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)")

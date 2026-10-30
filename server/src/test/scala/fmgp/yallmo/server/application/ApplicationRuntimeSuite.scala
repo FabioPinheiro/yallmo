@@ -74,6 +74,111 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
   }
 
+  test("RPC assembly binds selected private roots consistently for invoke and session tools without duplicate keys") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        oneRoot <- ZIO.attempt(Files.createDirectory(root.resolve("one")))
+        twoRoot <- ZIO.attempt(Files.createDirectory(root.resolve("two")))
+        _ <- ZIO.attempt {
+          Files.writeString(root.resolve("notes.txt"), "workspace")
+          Files.writeString(oneRoot.resolve("notes.txt"), "one")
+          Files.writeString(twoRoot.resolve("notes.txt"), "two")
+        }
+        events <- Ref.make(Vector.empty[String])
+        alive <- Ref.make(false)
+        seen <- Ref.make(Vector.empty[fmgp.yallmo.fs.FsRead])
+        route <- fmgp.rpc.RpcWebSocket.route()
+        executor = new ScalaCodeExecutor {
+          def isAvailable: UIO[Boolean] = ZIO.succeed(true)
+          def execute(
+              code: String,
+              timeout: Duration,
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
+          ): Task[CommandOutput] =
+            ZIO.dieMessage("Expected explicit filesystem mode")
+          override def executeFilesystem(
+              code: String,
+              endpoint: String,
+              timeout: Duration,
+              maxOutputBytes: Int
+          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, CommandOutput] =
+            for {
+              fs <- ZIO.service[fmgp.yallmo.fs.FsRead]
+              supplied <- ZIO.service[fmgp.rpc.RpcWebSocket.RpcRoute]
+              _ <- ZIO.attempt { assert(supplied eq route); assertEquals(endpoint, "ws://127.0.0.1:1/rpc") }
+              _ <- seen.update(_ :+ fs)
+              text <- fs.readUtf8("notes.txt").mapError(error => new Exception(error.toString))
+            } yield CommandOutput(0, false, text, false)
+        }
+        coachId = AgentId("coach-private")
+        folderId = AgentId("folder-private")
+        fallback = AgentId("workspace")
+        invalid = AgentId("invalid")
+        runtime <- ApplicationRuntime
+          .make(
+            config.copy(agents =
+              Map(
+                first -> definition().copy(filesystem = Some(FileSystemConfig(oneRoot.toString))),
+                second -> definition().copy(filesystem = Some(FileSystemConfig(twoRoot.toString))),
+                fallback -> definition(),
+                coachId -> definition()
+                  .copy(agentType = "CoachAgent", filesystem = Some(FileSystemConfig(oneRoot.toString))),
+                folderId -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(twoRoot.toString))),
+                invalid -> definition().copy(filesystem = Some(FileSystemConfig(root.resolve("absent").toString)))
+              )
+            ),
+            Chunk(human)
+          )
+          .provideEnvironment(ZEnvironment(selectedFilesystemClient))
+        opened <- runtime
+          .openWorkspaceRpc(
+            None,
+            root,
+            toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor)),
+            "ws://127.0.0.1:1/rpc"
+          )
+          .provideSomeEnvironment[Scope](_.add[fmgp.rpc.RpcWebSocket.RpcRoute](route))
+        one <- runtime.resolve(first)
+        two <- runtime.resolve(second)
+        workspace <- runtime.resolve(fallback)
+        again <- runtime.resolve(first)
+        failed <- runtime.resolve(invalid).either
+        results <- ZIO.foreachPar(List(one -> "one", two -> "two", workspace -> "workspace")) { (binding, expected) =>
+          val input = Message(MessageData(human.id, None, java.time.Instant.EPOCH, MessagePayload.User("read")))
+          opened._1.invoke(input, binding).map { message =>
+            assertEquals(message.payload.contentStr, expected)
+          }
+        }
+        submission = opened._1.submission(human.id, Some(two))
+        session <- submission.create(Some("private-root"))
+        turn <- submission.submit(Some(session.id.value), "read")
+        coach <- runtime.resolve(coachId)
+        folder <- runtime.resolve(folderId)
+        input = Message(MessageData(human.id, None, java.time.Instant.EPOCH, MessagePayload.User("review")))
+        folderReply <- opened._1.invoke(input, folder)
+        capabilities <- seen.get
+      } yield {
+        assert(!coach.adapter.asInstanceOf[HasAgentCapabilities].capabilities.tools.get.contains(ToolKey.Scalamode))
+        assert(folderReply.payload.contentStr.contains("notes.txt"))
+        assertEquals(capabilities.size, 4, "Folder execution must not invoke scalamode")
+        assertEquals(results.size, 3)
+        assertEquals(turn.result, AgentResult(second, "two"))
+        assert(failed.isLeft, "An invalid explicit private root must not fall back to workspace")
+        assert(one.filesystem.get eq again.filesystem.get)
+        assert(capabilities.exists(_ eq one.filesystem.get))
+        assertEquals(capabilities.count(_ eq two.filesystem.get), 2)
+        val keys = opened._1.context(Some(one)).tools.map(_.key)
+        assertEquals(keys.distinct, keys)
+        assertEquals(
+          opened._1.context(Some(one)).tools.find(_.key == ToolKey.Scalamode).get,
+          ScalaTool.filesystemDefinition
+        )
+      }
+    })
+  }
+
   test("coach submits with scoped notebook tools and persists drafts without exposing other roots") {
     run {
       ZIO.scoped {
@@ -167,8 +272,8 @@ final class ApplicationRuntimeSuite extends FunSuite {
           calls <- requests.get
         } yield {
           def model(binding: ConfiguredAgentBinding): String = binding match {
-            case ConfiguredAgentBinding.Native(_, _, program, _) => program.model
-            case _                                               => fail("Coach must use a native program")
+            case ConfiguredAgentBinding.Native(_, _, program, _, _) => program.model
+            case _                                                  => fail("Coach must use a native program")
           }
           assertEquals(model(selected), fmgp.yallmo.provider.openai.OpenAiCodexConfig.Model)
           assertEquals(model(explicit), "explicit-model")
@@ -594,6 +699,65 @@ final class ApplicationRuntimeSuite extends FunSuite {
           Response.text(
             if count == 1 && firstReply.nonEmpty then firstReply.get
             else """{"choices":[{"message":{"role":"assistant","content":"local answer"},"finish_reason":"stop"}]}"""
+          )
+        }
+      }
+      override def socket[Env1 <: Any](version: Version, url: URL, headers: Headers, app: WebSocketApp[Env1])(using
+          Trace,
+          Scope =:= Scope
+      ): ZIO[Env1, Throwable, Response] = {
+        val _ = (version, url, headers, app)
+        ZIO.dieMessage("Unexpected WebSocket request")
+      }
+    })
+
+  private def selectedFilesystemClient: Client =
+    Client.fromDriver(new ZClient.Driver[Any, Scope, Throwable] {
+      override def request(
+          version: Version,
+          method: Method,
+          url: URL,
+          headers: Headers,
+          body: Body,
+          sslConfig: Option[ClientSSLConfig],
+          proxy: Option[Proxy]
+      )(using Trace): Task[Response] = {
+        val _ = (version, method, url, headers, sslConfig, proxy)
+        body.asString.map { text =>
+          val request = ujson.read(text)
+          val messages = request("messages").arr
+          val outputs = messages.filter(_("role").str == "tool").map(_("content").str)
+          val response = if outputs.nonEmpty then {
+            assertEquals(outputs.size, 3)
+            val read = outputs(0)
+            assert(outputs(1).contains("notes.txt"))
+            assertEquals(ujson.read(outputs(2))("output").str, read)
+            ujson.Obj("role" -> "assistant", "content" -> read)
+          } else {
+            val calls = List(
+              ("readFile", ujson.Obj("path" -> "notes.txt")),
+              ("listFiles", ujson.Obj("path" -> ".")),
+              ("scalamode", ujson.Obj("code" -> "fs.readUtf8(\"notes.txt\")", "mode" -> "filesystem"))
+            ).zipWithIndex.map { case ((name, arguments), index) =>
+              ujson.Obj(
+                "id" -> s"call-$index",
+                "type" -> "function",
+                "function" -> ujson.Obj("name" -> name, "arguments" -> ujson.write(arguments))
+              )
+            }
+            ujson.Obj("role" -> "assistant", "tool_calls" -> ujson.Arr.from(calls))
+          }
+          Response.text(
+            ujson.write(
+              ujson.Obj(
+                "choices" -> ujson.Arr(
+                  ujson.Obj(
+                    "message" -> response,
+                    "finish_reason" -> (if outputs.nonEmpty then "stop" else "tool_calls")
+                  )
+                )
+              )
+            )
           )
         }
       }

@@ -5,9 +5,13 @@ import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.stream.ZStream
 
 object RpcFixtures {
   final case class Greeting(message: String, count: Int) derives JsonCodec
+  trait Collections {
+    def echo(values: Chunk[String]): Task[Chunk[String]]
+  }
   trait Numbers {
     def add(left: Int, right: Int): Task[Int]
     def reset(): Task[Unit]
@@ -21,6 +25,17 @@ object RpcFixtures {
     def repeat(input: Greeting): Task[Greeting]
     def acknowledge(value: Unit): Task[Unit]
   }
+  trait Defaults {
+    private[rpc] def internalHelper: String = "helper"
+    protected def helper: String = internalHelper
+    def unary(): Task[String] = ZIO.succeed(helper)
+    def stream(): ZStream[Any, Throwable, String] = ZStream("default stream")
+  }
+  trait InheritedDefaults extends Defaults {
+    def abstractMethod(): Task[String]
+  }
+  val defaults: Rpc[Defaults] = Rpc.derived[Defaults]
+  val inheritedDefaults: Rpc[InheritedDefaults] = Rpc.derived[InheritedDefaults]
   val numbers: Rpc[Numbers] = Rpc.derived[Numbers]("example.numbers", 1)
   val greetings: Rpc[Greetings] = Rpc.derived[Greetings]
   val numberService: Numbers = new Numbers {
@@ -58,6 +73,53 @@ class RpcSuite extends FunSuite {
     assertEquals(run(greeter.acknowledge(())), ())
     assertEquals(run(greeter.inherited()), "inherited")
     assertEquals(greetings.descriptor.serviceId, "fmgp.rpc.RpcFixtures$.Greetings")
+  }
+  test("default-only and inherited concrete unary/stream methods are remote and preserve host overrides") {
+    val seen = scala.collection.mutable.ListBuffer.empty[String]
+    def connection(dispatcher: RpcDispatcher): RpcConnection = new RpcConnection {
+      def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] = {
+        seen += method
+        dispatcher.dispatch(service, version, method, args)
+      }
+      override def stream(
+          service: String,
+          version: Int,
+          method: String,
+          args: Chunk[Json],
+          binary: Boolean
+      ): ZStream[Any, RpcStreamError, RpcStreamChunk] = {
+        seen += method
+        dispatcher.dispatchStream(service, version, method, args, binary)
+      }
+      def close: UIO[Unit] = ZIO.unit
+    }
+    val defaultClient = defaults.client(connection(defaults.bind(new Defaults {})))
+    assertEquals(run(defaultClient.unary()), "helper")
+    assertEquals(run(defaultClient.stream().runCollect), Chunk("default stream"))
+    val inheritedClient = inheritedDefaults.client(connection(inheritedDefaults.bind(new InheritedDefaults {
+      def abstractMethod(): Task[String] = ZIO.succeed("abstract host")
+      override def unary(): Task[String] = ZIO.succeed("host override")
+      override def stream(): ZStream[Any, Throwable, String] = ZStream("host stream override")
+    })))
+    assertEquals(run(inheritedClient.unary()), "host override")
+    assertEquals(run(inheritedClient.stream().runCollect), Chunk("host stream override"))
+    assertEquals(run(inheritedClient.abstractMethod()), "abstract host")
+    assertEquals(seen.toList, List("unary", "stream", "unary", "stream", "abstractMethod"))
+    assertEquals(defaults.descriptor.methods, Set("unary", "stream"))
+    assertEquals(inheritedDefaults.descriptor.methods, Set("abstractMethod", "unary", "stream"))
+    assertEquals(inheritedDefaults.descriptor.streamMethods, Map("stream" -> false))
+  }
+  test("codec-backed Chunk arguments and results are data, not callbacks") {
+    val rpc = Rpc.derived[Collections]
+    val dispatcher = rpc.bind(new Collections {
+      def echo(values: Chunk[String]): Task[Chunk[String]] = ZIO.succeed(values.reverse)
+    })
+    val client = rpc.client(new RpcConnection {
+      def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] =
+        dispatcher.dispatch(service, version, method, args)
+      def close: UIO[Unit] = ZIO.unit
+    })
+    assertEquals(run(client.echo(Chunk("one", "two"))), Chunk("two", "one"))
   }
   test("routing and malformed argument failures remain explicit; merging duplicate IDs fails") {
     val dispatcher = numbers.bind(numberService)
@@ -100,7 +162,7 @@ class RpcSuite extends FunSuite {
       Some(Right(RpcResult.Success(Json.Null)))
     )
   }
-  test("macro rejects unsupported argument lists, generic traits, concrete members and missing codecs") {
+  test("macro rejects unsupported argument lists, generic traits, final methods and missing codecs") {
     val curried = typeCheckErrors("""
       trait Bad { def call(a: Int)(b: Int): zio.Task[Int] }
       fmgp.rpc.Rpc.derived[Bad]
@@ -121,8 +183,14 @@ class RpcSuite extends FunSuite {
       trait Bad[A] { def call(a: A): zio.Task[A] }
       fmgp.rpc.Rpc.derived[Bad[Int]]
     """)
-    val concrete = typeCheckErrors("""
-      trait Bad { def call(): zio.Task[Int] = zio.ZIO.succeed(1) }
+    val finalMethod = typeCheckErrors("""
+      trait Parent { final def call(): zio.Task[Int] = zio.ZIO.succeed(1) }
+      trait Bad extends Parent
+      fmgp.rpc.Rpc.derived[Bad]
+    """)
+    val concreteDefaults = typeCheckErrors("""
+      trait Parent { def call(a: Int = 1): zio.Task[Int] = zio.ZIO.succeed(a) }
+      trait Bad extends Parent
       fmgp.rpc.Rpc.derived[Bad]
     """)
     val defaults = typeCheckErrors("""
@@ -152,7 +220,8 @@ class RpcSuite extends FunSuite {
     assert(byName.exists(_.message.contains("by-name")), byName.toString)
     assert(repeated.exists(_.message.contains("repeated parameters")), repeated.toString)
     assert(generic.exists(_.message.contains("non-generic")), generic.toString)
-    assert(concrete.exists(_.message.contains("concrete service methods")), concrete.toString)
+    assert(finalMethod.exists(_.message.contains("final service methods")), finalMethod.toString)
+    assert(concreteDefaults.exists(_.message.contains("default parameters")), concreteDefaults.toString)
     assert(codec.exists(_.message.contains("JSON encoder and decoder")), codec.toString)
     assert(defaults.exists(_.message.contains("default parameters")), defaults.toString)
     assert(notTrait.exists(_.message.contains("non-generic service trait")), notTrait.toString)
@@ -172,6 +241,11 @@ class RpcSuite extends FunSuite {
       trait Bad { def call(a: Int => Int): zio.Task[Int] }
       fmgp.rpc.Rpc.derived[Bad]
     """)
+    val callbackSubtype = typeCheckErrors("""
+      trait Callback extends (Int => Int)
+      trait Bad { def call(a: Callback): zio.Task[Int] }
+      fmgp.rpc.Rpc.derived[Bad]
+    """)
     val environment = typeCheckErrors("""
       trait Bad { def call(): zio.ZIO[String, Throwable, Int] }
       fmgp.rpc.Rpc.derived[Bad]
@@ -187,6 +261,7 @@ class RpcSuite extends FunSuite {
     assert(polymorphic.exists(_.message.contains("polymorphic")), polymorphic.toString)
     assert(overloaded.exists(_.message.contains("overloaded")), overloaded.toString)
     assert(callback.exists(_.message.contains("callbacks")), callback.toString)
+    assert(callbackSubtype.exists(_.message.contains("callbacks")), callbackSubtype.toString)
     assert(environment.exists(_.message.contains("expected Task")), environment.toString)
     assert(typedError.exists(_.message.contains("RpcErrorMapper")), typedError.toString)
     assert(field.exists(_.message.contains("vals/vars")), field.toString)

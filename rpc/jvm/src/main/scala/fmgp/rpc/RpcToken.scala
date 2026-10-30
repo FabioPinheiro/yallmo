@@ -37,14 +37,15 @@ object RpcToken {
       .mapError(_ => RpcError(RpcError.Code.ServiceFailure))
 }
 
-/** Pending tickets only: expiry/revocation never affect established connections. */
+/** Pending tickets only: expiry/revocation never affect established connections. Scoped tickets carry caller authority.
+  */
 private[rpc] final class RpcTickets private (
     state: Ref[RpcTickets.State],
     config: RpcWebSocket.AuthConfig,
     now: UIO[Long]
 ) {
   import RpcTickets.*
-  def register(dispatcher: RpcDispatcher, ttl: Duration): IO[RpcError, RpcToken] =
+  def register(dispatcher: RpcDispatcher, ttl: Duration, scope: Option[Scope] = None): IO[RpcError, RpcToken] =
     if ttl <= Duration.Zero || ttl > config.maxTtl then ZIO.fail(RpcError(RpcError.Code.InvalidArguments))
     else
       for {
@@ -56,21 +57,24 @@ private[rpc] final class RpcTickets private (
           else if live.size >= config.maxPendingTickets then
             (Left(RpcError(RpcError.Code.LimitExceeded)), current.copy(tickets = live))
           else
-            (Right(token), current.copy(tickets = live.updated(token.digest, Ticket(dispatcher, time + ttl.toNanos))))
+            (
+              Right(token),
+              current.copy(tickets = live.updated(token.digest, Ticket(dispatcher, time + ttl.toNanos, scope)))
+            )
         }
         value <- ZIO.fromEither(result)
       } yield value
 
-  def redeem(token: RpcToken): IO[RpcError, RpcDispatcher] =
+  def redeem(token: RpcToken): IO[RpcError, Ticket] =
     for {
       time <- now
       result <- state.modify { current =>
         val live = current.tickets.filter { case (_, ticket) => time - ticket.expires < 0 }
-        val dispatcher = if current.closed then None else live.get(token.digest).map(_.dispatcher)
-        (dispatcher.toRight(RpcError(RpcError.Code.Unauthorized)), current.copy(tickets = live - token.digest))
+        val ticket = if current.closed then None else live.get(token.digest)
+        (ticket.toRight(RpcError(RpcError.Code.Unauthorized)), current.copy(tickets = live - token.digest))
       }
-      dispatcher <- ZIO.fromEither(result)
-    } yield dispatcher
+      ticket <- ZIO.fromEither(result)
+    } yield ticket
 
   def revoke(token: RpcToken): UIO[Boolean] =
     for {
@@ -84,7 +88,7 @@ private[rpc] final class RpcTickets private (
   def close: UIO[Unit] = state.set(State(Map.empty, closed = true))
 }
 private[rpc] object RpcTickets {
-  private final case class Ticket(dispatcher: RpcDispatcher, expires: Long)
+  final case class Ticket(dispatcher: RpcDispatcher, expires: Long, scope: Option[Scope])
   private final case class State(tickets: Map[String, Ticket], closed: Boolean = false)
   def make(config: RpcWebSocket.AuthConfig, now: UIO[Long] = Clock.nanoTime): UIO[RpcTickets] =
     Ref.make(State(Map.empty)).map(new RpcTickets(_, config, now))

@@ -6,6 +6,10 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
 import java.nio.file.Path
 import zio.*
+import fmgp.rpc.RpcWebSocket
+import fmgp.yallmo.fs.FsRead
+import fmgp.yallmo.tool.{ScalaTool, ReadFileTool, ListFilesTool}
+import fmgp.yallmo.model.ToolKey
 import zio.http.Client
 import zio.json.ast.Json
 
@@ -70,7 +74,9 @@ final class ApplicationRuntime private (
       definition.agentType match {
         case "OAIAgent" | "ChatGPTAgent" | "CoachAgent" => resolveNative(definition, id)
         case "FolderStructureAgent"                     =>
-          instances.getAgent(id).map(adapter => ConfiguredAgentBinding.Folder(adapter, definition.capabilities))
+          instances.getAgentWithFilesystem(id).map { case (adapter, fs) =>
+            ConfiguredAgentBinding.Folder(adapter, definition.capabilities, fs)
+          }
         case name =>
           ZIO.fail(
             YallmoError.InvalidConfig(
@@ -98,6 +104,25 @@ final class ApplicationRuntime private (
       workspace: Path,
       services: ULayer[ApplicationTools.Environment]
   ): ZIO[Scope, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
+    openWorkspaceConfigured(storageRoot, workspace, services, None)
+
+  /** Enables filesystem effects only when the caller supplies its own live route and trusted endpoint. */
+  private[application] def openWorkspaceRpc(
+      storageRoot: Option[Path],
+      workspace: Path,
+      services: ULayer[ApplicationTools.Environment],
+      endpoint: String
+  ): ZIO[Scope & RpcWebSocket.RpcRoute, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
+    ZIO.serviceWithZIO[RpcWebSocket.RpcRoute] { route =>
+      openWorkspaceConfigured(storageRoot, workspace, services, Some(route -> endpoint))
+    }
+
+  private def openWorkspaceConfigured(
+      storageRoot: Option[Path],
+      workspace: Path,
+      services: ULayer[ApplicationTools.Environment],
+      rpc: Option[(RpcWebSocket.RpcRoute, String)]
+  ): ZIO[Scope, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
     for {
       environment <- services.build
       startup <- ApplicationTools.evaluate(workspace).provideEnvironment(environment)
@@ -109,7 +134,16 @@ final class ApplicationRuntime private (
         }
       }
       assembled <- open[Any](storageRoot, tools)
-    } yield (assembled, startup.availability)
+    } yield (
+      new Assembly(
+        assembled.orchestrator,
+        tools,
+        StaticContext[Any](DefaultSystemPrompt, tools = tools.map(_.definition)),
+        startup.filesystem,
+        rpc.map { case (route, endpoint) => (environment.add[RpcWebSocket.RpcRoute](route), endpoint) }
+      ),
+      startup.availability
+    )
 
   /** Validates available capabilities before opening the single storage owner and assembling its runner. */
   def open[R](
@@ -157,7 +191,8 @@ final class ApplicationRuntime private (
           )
         )
         .mapError(error => YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}"))
-      adapter <- instances.getAgent(id)
+      entry <- instances.getAgentWithFilesystem(id)
+      (adapter, filesystem) = entry
       providerId <- ZIO
         .fromOption(definition.providerIds.headOption)
         .orElseFail(YallmoError.InvalidConfig("Selected agent requires one provider"))
@@ -170,7 +205,8 @@ final class ApplicationRuntime private (
         ProviderGenerateOptions(responseMimeType = None, thinkingLevel = settings.thinkingLevel),
         settings.parallelToolCalls
       ),
-      settings.systemPrompt
+      settings.systemPrompt,
+      filesystem
     )
 }
 
@@ -221,13 +257,42 @@ object ApplicationRuntime {
   final class Assembly[R] private[application] (
       val orchestrator: OrchestratorLive[Any],
       availableTools: Chunk[AgentTool[R]],
-      availableContext: StaticContext[R]
+      availableContext: StaticContext[R],
+      workspaceFilesystem: Option[FsRead] = None,
+      scalaRpc: Option[(ZEnvironment[ApplicationTools.Environment & RpcWebSocket.RpcRoute], String)] = None
   ) {
     def context(selection: Option[ConfiguredAgentBinding]): StaticContext[R] =
       availableContext.copy(
         systemPrompt = selection.fold(DefaultSystemPrompt)(_.systemPrompt),
-        tools = availableContext.tools ++ localTools(selection).map(_.definition)
+        tools = selectedTools(selection).map(_.definition)
       )
+
+    private def selectedTools(selection: Option[ConfiguredAgentBinding]): Chunk[AgentTool[R]] = {
+      val base = scalaRpc match {
+        case None                          => availableTools
+        case Some((environment, endpoint)) =>
+          val filesystem = selection.flatMap(_.filesystem).orElse(workspaceFilesystem)
+          availableTools.map { tool =>
+            filesystem match {
+              case Some(fs) if tool.definition.key == ToolKey.ReadFile =>
+                ApplicationTools.bindFilesystem(new ReadFileTool, fs)
+              case Some(fs) if tool.definition.key == ToolKey.ListFiles =>
+                ApplicationTools.bindFilesystem(new ListFilesTool, fs)
+              case Some(fs) if tool.definition.key == ToolKey.Scalamode =>
+                val selected = ScalaTool.filesystem(endpoint)
+                new AgentTool[Any] {
+                  override val definition = selected.definition
+                  override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+                    selected.execute(call).provideEnvironment(environment.add[FsRead](fs))
+                }
+              case _ => tool
+            }
+          }
+      }
+      // Local tools replace matching keys; the context and runner share exactly one definition per key.
+      val local = localTools(selection)
+      base.filterNot(tool => local.exists(_.definition.key == tool.definition.key)) ++ local
+    }
 
     private def localTools(selection: Option[ConfiguredAgentBinding]): Chunk[AgentTool[Any]] =
       selection.fold(Chunk.empty[AgentTool[Any]]) { binding =>
@@ -248,7 +313,7 @@ object ApplicationRuntime {
 
     private def runner(selection: Option[ConfiguredAgentBinding]): AgentRunner[R] =
       new AgentRunner[R](
-        (availableTools ++ localTools(selection)).map(tool => tool.definition.key -> tool).toMap,
+        selectedTools(selection).map(tool => tool.definition.key -> tool).toMap,
         Map.empty
       )
 

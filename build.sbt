@@ -141,7 +141,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
   .in(file("core"))
-  .dependsOn(model, filesystem, scalaCodeApi)
+  .dependsOn(model, filesystem, scalaCodeApi, rpc)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(

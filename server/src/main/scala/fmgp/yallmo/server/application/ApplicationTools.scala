@@ -15,7 +15,8 @@ import java.nio.file.Path
   */
 final case class StartupTools(
     available: Chunk[AgentTool[ApplicationTools.Environment]],
-    availability: ToolAvailability
+    availability: ToolAvailability,
+    filesystem: Option[FsRead] = None
 )
 
 /** Client-neutral tool availability retained from application startup. */
@@ -63,7 +64,7 @@ object ApplicationTools {
           Option.when(hasScala)(new ScalaTool()),
         ).flatten
       )
-      startupTools = StartupTools(available, ToolAvailability(available.map(_.definition.key), unavailable))
+      startupTools = StartupTools(available, ToolAvailability(available.map(_.definition.key), unavailable), filesystem)
       _ <- ZIO.logDebug(s"Startup tool availability: ${startupTools.availability}")
       _ <- ZIO.logInfo(
         s"Available tools (${available.size}): ${available.map(_.definition.key).mkString(", ")}"
@@ -71,7 +72,7 @@ object ApplicationTools {
     } yield startupTools
 
   /** Bind a read-only capability once; callers cannot substitute a different workspace at invocation time. */
-  private def bindFilesystem(tool: AgentTool[FsRead], fs: FsRead): AgentTool[Any] =
+  private[application] def bindFilesystem(tool: AgentTool[FsRead], fs: FsRead): AgentTool[Any] =
     new AgentTool[Any] {
       override val definition: AgentToolDefinition = tool.definition
       override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =

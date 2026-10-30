@@ -76,7 +76,7 @@ final class AgentRunnerSuite extends FunSuite:
             AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
 
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z"))
+            calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z", Seq("clock diagnostic")))
         }
         runner = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
         answer <- runner.runWithContext(
@@ -96,7 +96,9 @@ final class AgentRunnerSuite extends FunSuite:
       assertEquals(result._2, Chunk(ExternalToolCall(ToolKey.unsafe("clock"), "{}", Some(requests.head.id))))
       assertEquals(
         outputs,
-        Chunk(FunctionCallOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z"))
+        Chunk(
+          FunctionCallOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z", Seq("clock diagnostic"))
+        )
       )
       val transcript = result._1.runContext.messages
       assert(

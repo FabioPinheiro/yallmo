@@ -59,6 +59,8 @@ private[web] object ScalamodeView {
                 )
               case None => pre(result.output)
             },
+            if result.logs.isEmpty then emptyNode
+            else detailsTag(summaryTag(s"Logs (${result.logs.size})"), pre(result.logs.mkString("\n"))),
             p(cls := "muted", s"Saved response: ${result.message.id}")
           )
       }

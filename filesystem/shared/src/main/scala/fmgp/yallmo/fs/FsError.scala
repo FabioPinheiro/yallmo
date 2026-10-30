@@ -1,7 +1,9 @@
 package fmgp.yallmo.fs
 
+import zio.json.JsonCodec
+
 /** Expected filesystem and JSONL failures. Public errors contain no unrestricted filesystem handles. */
-enum FsError {
+enum FsError derives JsonCodec {
   case InvalidPath(path: String, reason: String)
   case NotFound(path: String)
   case AlreadyExists(path: String)

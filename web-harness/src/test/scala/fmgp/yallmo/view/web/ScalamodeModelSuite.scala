@@ -38,7 +38,7 @@ final class ScalamodeModelSuite extends FunSuite {
     )
     model.configure(info)
 
-    def response(output: String = "12\n"): Message = {
+    def response(output: String = "12\n", logs: Seq[String] = Seq.empty): Message = {
       val input = requests.last._1.input
       val call = input.payload.asInstanceOf[MessagePayload.ToolCall].call
       Message(
@@ -57,7 +57,8 @@ final class ScalamodeModelSuite extends FunSuite {
                   "truncated" -> Json.Bool(false),
                   "output" -> Json.Str(output)
                 )
-                .toJson
+                .toJson,
+              logs
             )
           )
         )
@@ -87,6 +88,15 @@ final class ScalamodeModelSuite extends FunSuite {
       assertEquals(h.model.state.now().code, "next draft")
       assertEquals(h.model.state.now().result.map(_.message), Some(response))
     }
+  }
+
+  test("diagnostics stay separate from the displayed result") {
+    val h = new Harness
+    h.model.run()
+    val result = ScalamodeResult(h.response("42\n", Seq("connected", "disconnected")))
+    assertEquals(result.logs, Seq("connected", "disconnected"))
+    assertEquals(result.fields.get.blocks.find(_.name == "output").map(_.text), Some("42\n"))
+    assert(!result.output.contains("connected"))
   }
 
   test("each run button submits its own tool key without changing source") {

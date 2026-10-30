@@ -11,7 +11,8 @@ final case class CommandOutput(
     exitCode: Int,
     timedOut: Boolean,
     output: String,
-    truncated: Boolean
+    truncated: Boolean,
+    logs: Seq[String] = Seq.empty
 )
 
 /** Executes a Bash command in a workspace. */

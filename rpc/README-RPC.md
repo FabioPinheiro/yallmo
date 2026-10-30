@@ -225,7 +225,11 @@ ZIO.scoped {
 
 Keep the route scope alive while serving it. Closing that scope invalidates pending tickets
 and rejects new registrations/upgrades; it does **not** stop the caller-owned HTTP server
-or existing sockets. Their lifetime belongs to your server/connection scopes. Different
+or existing sockets registered with `register`. Their lifetime belongs to your server/connection scopes.
+For execution-limited authority use `registerScoped` in the execution's scope: its exit also
+closes that registration's redeemed socket and interrupts/awaits its unary and stream work.
+This remains safe if closure races with redemption or handshake. Cleanup uses cooperative
+ZIO interruption; uninterruptible service work can delay scope closure. Different
 `route()` invocations have independent registries: a ticket from one cannot be redeemed
 or revoked through another. Install each instance's routes only where you intend its
 tickets to be accepted. Authentication and Origin checks apply unchanged on custom hosts.
@@ -273,6 +277,10 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
   `rpc.register(dispatcher, ttl = 60.seconds): IO[RpcError, RpcToken]` may be called at
   any later time; each ticket binds exactly that dispatcher, with no global route table
   or fallback. Distinct tickets may bind different host instances with identical service IDs.
+- `rpc.registerScoped(dispatcher, ttl = 60.seconds): ZIO[Scope, RpcError, RpcToken]`
+  uses the caller's scope for authority lifetime, invalidating the pending ticket or closing
+  the redeemed socket and finalizing its work on scope exit. TTL still bounds redemption,
+  not connected lifetime. Other registrations are unaffected unless they share that scope.
 - `rpc.revoke(ticket): UIO[Boolean]` removes an unclaimed, unexpired ticket only.
   `RpcWebSocket.connect(endpoint, ticket, limits)` or `connect(port, ticket)` returns a
   scoped `RpcConnection`. Route-scope exit clears pending tickets; your HTTP-server and
@@ -323,14 +331,18 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
 
 ## Contract restrictions and wire identity
 
-Supported: non-generic traits with public **abstract** methods returning exactly
+Supported: non-generic traits with public abstract or overridable concrete/default methods
+(including inherited trait methods) returning exactly
 `ZIO[Any, E, A]` (including `IO[E, A]` and `Task[A]`) or `ZStream[Any, E, A]`, zero arguments (`def x` or `def x()`), or a single
 ordinary parameter list with multiple arguments. Every parameter and result needs both
 zio-json `JsonEncoder` and `JsonDecoder` in derivation scope. DTOs can `derive JsonCodec`.
 `Unit` uses the built-in JSON `null` representation, including when it is an argument.
 Error types additionally follow the codec/mapper policy above.
 
-Compile-time errors reject polymorphic/overloaded methods, vals/vars, concrete service
+All service methods are proxied remotely, including defaults; host overrides win rather than
+running inherited default bodies on the client. Object/nontrait methods are not service methods.
+
+Compile-time errors reject polymorphic/overloaded methods, vals/vars, final service
 methods, type members, callbacks, contextual/by-name/repeated/default parameters, multiple
 parameter lists, non-effect results, nested effects/streams, stream arguments, environment requirements and errors without the required codecs/mapper.
 This is a small proof of concept, not a universal Scala interface serializer.

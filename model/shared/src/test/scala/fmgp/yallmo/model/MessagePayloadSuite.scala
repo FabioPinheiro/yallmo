@@ -35,6 +35,16 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(Message.ToolOutput(output).contentStr, "result")
   }
 
+  test("tool logs round-trip independently of the result and legacy outputs default to no logs") {
+    val output = FunctionCallOutput(callId, ToolKey.unsafe("tool"), "42", Seq("connected", "disconnected"))
+    assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
+    assertEquals(Message.ToolOutput(output).contentStr, "42")
+    assertEquals(
+      """{"callId":"call-1","name":"tool","output":"42"}""".fromJson[FunctionCallOutput],
+      Right(output.copy(logs = Seq.empty))
+    )
+  }
+
   test("removed ToolResult JSON is rejected rather than silently reinterpreted") {
     assert("""{"ToolResult":{"toolKey":"tool","text":"result"}}""".fromJson[MessagePayload].isLeft)
   }

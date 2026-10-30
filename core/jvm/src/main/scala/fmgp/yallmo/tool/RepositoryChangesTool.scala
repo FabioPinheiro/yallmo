@@ -23,7 +23,7 @@ final class RepositoryChangesTool(workspace: Path = Path.of("").toAbsolutePath.n
       operation
         .mapError(error => RepositoryChangesTool.toYallmoError(definition.key, error))
         .map(RepositoryChangesTool.render(selectedView, _))
-        .map(ExternalToolResult.apply)
+        .map(text => ExternalToolResult(text))
     }
 
   private def view(call: ExternalToolCall): IO[YallmoError, RepositoryChangesTool.View] =

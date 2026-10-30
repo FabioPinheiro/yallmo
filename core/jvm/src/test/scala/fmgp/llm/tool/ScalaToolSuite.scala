@@ -21,7 +21,7 @@ final class ScalaToolSuite extends FunSuite {
       assertEquals(timeout, 45.seconds)
       assertEquals(dependencies, Seq("dev.zio::zio:2.1.27"))
       assert(timeout < fmgp.yallmo.orchestration.AgentBudget.default.timeout && maxOutputBytes > 0)
-      ZIO.succeed(CommandOutput(0, false, "55\n", false))
+      ZIO.succeed(CommandOutput(0, false, "55\n", false, Seq("connected", "disconnected")))
     }
   })
 
@@ -30,6 +30,7 @@ final class ScalaToolSuite extends FunSuite {
       run(
         new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}""")).provide(executor)
       )
+    assertEquals(result.logs, Seq("connected", "disconnected"))
     val json = ujson.read(result.text)
     assertEquals(json("output").str, "55\n")
     assertEquals(json("exitCode").num.toInt, 0)
@@ -41,6 +42,18 @@ final class ScalaToolSuite extends FunSuite {
     val restricted = ujson.read(ScalaTool.render(output))
     assert(restricted("hint").str.contains("pinned and offline"))
     assert(!restricted("hint").str.contains("cooperative"))
+  }
+
+  test("failed and timed-out evaluations expose diagnostics alongside any partial output") {
+    for (exitCode, timedOut) <- List((1, false), (0, true)) do {
+      val result = CommandOutput(exitCode, timedOut, "partial value", false, Seq("[E006] Not Found Error", "missing"))
+      assertEquals(
+        ujson.read(ScalaTool.render(result))("output").str,
+        "partial value\n[E006] Not Found Error\nmissing"
+      )
+    }
+    val success = CommandOutput(0, false, "42\n", false, Seq("connected", "disconnected"))
+    assertEquals(ujson.read(ScalaTool.render(success))("output").str, "42\n")
   }
 
   test("invalid arguments are rejected before executing anything") {
@@ -81,6 +94,8 @@ final class ScalaToolSuite extends FunSuite {
     assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY")
     assert(arguments.contains("--power") && arguments.contains("--offline"))
     assert(arguments.contains("--server=false"))
+    assert(arguments.contains("--java-opt=--enable-native-access=ALL-UNNAMED"))
+    assert(arguments.contains("--java-opt=--sun-misc-unsafe-memory-access=allow"))
     assert(ScalaCodeExecutor.snippet("42").startsWith("import scala.language.experimental.safe\n"))
   }
 
@@ -108,12 +123,13 @@ final class ScalaToolSuite extends FunSuite {
           dependencies: Seq[String]
       ): Task[CommandOutput] = {
         val _ = (code, timeout, maxOutputBytes, dependencies)
-        ZIO.succeed(CommandOutput(1, false, "Compilation failed", false))
+        ZIO.succeed(CommandOutput(1, false, "", false, Seq("Compilation failed")))
       }
     })
     val result =
       run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"unknown"}""")).provide(errors))
     assertEquals(ujson.read(result.text)("exitCode").num.toInt, 1)
     assertEquals(ujson.read(result.text)("output").str, "Compilation failed")
+    assertEquals(result.logs, Seq("Compilation failed"))
   }
 }

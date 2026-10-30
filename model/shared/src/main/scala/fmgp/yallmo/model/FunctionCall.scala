@@ -27,11 +27,14 @@ final case class FunctionCall(
     Either.cond(name.value.trim.nonEmpty, this, "function call name must not be blank")
 }
 
-/** The trusted host's result for one [[FunctionCall]]. */
+/** The trusted host's result for one [[FunctionCall]]. Logs are diagnostics, not part of the returned value. Empty logs
+  * are omitted from JSON to preserve content addresses of previously stored messages.
+  */
 final case class FunctionCallOutput(
     callId: FunctionCallId,
     name: ToolKey,
-    output: String
+    output: String,
+    @zio.json.jsonExplicitEmptyCollections(encoding = false) logs: Seq[String] = Seq.empty
 ) derives JsonCodec {
   def validate: Either[String, FunctionCallOutput] =
     Either.cond(name.value.trim.nonEmpty, this, "function call output name must not be blank")

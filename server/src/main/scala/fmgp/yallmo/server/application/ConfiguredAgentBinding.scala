@@ -5,6 +5,7 @@ import fmgp.yallmo.model.llm.AgentTurnRequest
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, ProviderId}
 import zio.*
+import fmgp.yallmo.fs.FsRead
 
 /** Configured execution binding; non-model agents do not decode native generation settings. */
 enum ConfiguredAgentBinding(val adapter: Agent[Any], val systemPrompt: String) {
@@ -12,17 +13,25 @@ enum ConfiguredAgentBinding(val adapter: Agent[Any], val systemPrompt: String) {
       override val adapter: Agent[Any],
       providerId: ProviderId,
       program: NativeFunctionAgent[Agent[Any]],
-      override val systemPrompt: String
+      override val systemPrompt: String,
+      override val filesystem: Option[FsRead] = None
   ) extends ConfiguredAgentBinding(adapter, systemPrompt)
 
-  case Folder(override val adapter: Agent[Any], policy: AgentCapabilities) extends ConfiguredAgentBinding(adapter, "")
+  case Folder(
+      override val adapter: Agent[Any],
+      policy: AgentCapabilities,
+      override val filesystem: Option[FsRead] = None
+  ) extends ConfiguredAgentBinding(adapter, "")
+
+  def filesystem: Option[FsRead]
 
   def bind[R](readBlob: BlobId => IO[YallmoError, Blob]): AgentInstance[R] = this match {
-    case Native(adapter, _, program, _) => program.bind[R](adapter, readBlob)
-    case Folder(adapter, policy)        =>
+    case Native(adapter, _, program, _, _) => program.bind[R](adapter, readBlob)
+    case Folder(adapter, policy, _)        =>
       new AgentInstance[R] {
         override val id: AgentId = adapter.id
-        override val capabilities: AgentCapabilities = policy
+        // Direct tool invocation bypasses next, so the no-tool policy must also live on the binding.
+        override val capabilities: AgentCapabilities = policy.copy(tools = Some(Set.empty))
 
         override def next(
             task: AgentTask,

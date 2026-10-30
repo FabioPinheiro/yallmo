@@ -42,6 +42,15 @@ object RpcWebSocket {
     def register(dispatcher: RpcDispatcher, ttl: Duration = 60.seconds): IO[RpcError, RpcToken] =
       tickets.register(dispatcher, ttl)
 
+    /** Issues a single-use ticket whose authority ends with the caller's scope. Scope exit revokes an unclaimed ticket,
+      * closes a redeemed socket and interrupts its unary/stream work, including during handshake. Finalization awaits
+      * cooperative interruption; uninterruptible service work can delay scope closure.
+      */
+    def registerScoped(dispatcher: RpcDispatcher, ttl: Duration = 60.seconds): ZIO[Scope, RpcError, RpcToken] =
+      ZIO.serviceWithZIO[Scope] { scope =>
+        ZIO.acquireRelease(tickets.register(dispatcher, ttl, Some(scope)))(token => tickets.revoke(token).unit)
+      }
+
     /** Revokes an unclaimed, unexpired ticket; established connections are unaffected. */
     def revoke(token: RpcToken): UIO[Boolean] = tickets.revoke(token)
 
@@ -90,8 +99,9 @@ object RpcWebSocket {
     * the accepted handshake subsequently fails.
     *
     * Keep this scope alive while serving the routes. Closing it clears pending tickets and rejects registrations and
-    * new upgrades; it does not stop your HTTP server or close established sockets. The caller owns the HTTP server and
-    * its connection lifetime. Authentication and Origin checks are unchanged; non-loopback/TLS deployments require
+    * new upgrades; it does not stop your HTTP server or close established sockets issued by `register`. Independently,
+    * `registerScoped` binds its socket and work to its caller's scope. The caller owns the HTTP server and its
+    * connection lifetime. Authentication and Origin checks are unchanged; non-loopback/TLS deployments require
     * caller-supplied security configuration.
     *
     * For example, build and install your own server (pass a bound or merged dispatcher to `run`):
@@ -132,8 +142,8 @@ object RpcWebSocket {
         val accepted = for {
           _ <- ZIO.fail(RpcError(RpcError.Code.Unauthorized)).unless(validUpgrade(request))
           token <- ZIO.fromEither(authorization)
-          dispatcher <- tickets.redeem(token)
-          response <- socket(dispatcher, limits).toResponse
+          ticket <- tickets.redeem(token)
+          response <- socket(ticket.dispatcher, limits, ticket.scope).toResponse
         } yield response
         accepted.catchAll(_ => ZIO.succeed(Response.status(Status.Unauthorized)))
       })
@@ -161,10 +171,14 @@ object RpcWebSocket {
     header("Sec-WebSocket-Version").contains("13") && keyValid
   }
 
-  private def socket(dispatcher: RpcDispatcher, limits: Limits): WebSocketApp[Any] =
+  private[rpc] def socket(
+      dispatcher: RpcDispatcher,
+      limits: Limits,
+      authority: Option[Scope] = None
+  ): WebSocketApp[Any] =
     Handler
       .webSocket { channel =>
-        ZIO.scoped {
+        val session = ZIO.scoped {
           for {
             scope <- ZIO.service[Scope]
             connectionId <- Random.nextUUID
@@ -261,6 +275,16 @@ object RpcWebSocket {
                   .unit
               )
           } yield ()
+        }
+        authority match {
+          case None        => session
+          case Some(scope) =>
+            ZIO.uninterruptibleMask { restore =>
+              // Scope.addFinalizer also runs immediately on a closed scope. Install socket cleanup before forking:
+              // closure between redemption, handler start and forkIn must never leave an upgraded socket alive.
+              scope.addFinalizer(channel.shutdown) *>
+                restore(session).forkIn(scope).flatMap(fiber => restore(fiber.join))
+            }
         }
       }
       .withConfig(config(limits))

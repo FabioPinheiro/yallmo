@@ -2,10 +2,25 @@ package fmgp.yallmo.fs
 
 import munit.FunSuite
 import scala.compiletime.testing.typeCheckErrors
+import zio.json.*
 import zio.ZIO
 import zio.stream.ZStream
 
 final class FsApiSuite extends FunSuite {
+  test("FsError JSON codec roundtrips every filesystem error case") {
+    val errors: List[FsError] = List(
+      FsError.InvalidPath("../secret", "outside root"),
+      FsError.NotFound("missing"),
+      FsError.AlreadyExists("present"),
+      FsError.DirectoryNotEmpty("folder"),
+      FsError.WrongType("file", "directory"),
+      FsError.InvalidArgument("invalid mode"),
+      FsError.InvalidJson("events.jsonl", Long.MaxValue, "invalid JSON: \"🙂\"\n"),
+      FsError.IoFailure("file", "access denied")
+    )
+    errors.foreach(error => assertEquals(error.toJson.fromJson[FsError], Right(error)))
+  }
+
   test("read interfaces exclude mutation and mutations require explicit modes") {
     val errors = typeCheckErrors("""
       import fmgp.yallmo.fs.*

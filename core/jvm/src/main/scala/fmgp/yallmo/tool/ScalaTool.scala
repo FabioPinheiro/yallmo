@@ -5,6 +5,8 @@ import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
 import zio.*
+import fmgp.rpc.RpcWebSocket
+import fmgp.yallmo.fs.FsRead
 
 /** One-shot restricted Scala evaluation through an external Scala CLI process.
   *
@@ -26,10 +28,49 @@ final class ScalaTool(
       .executeWith(call, definition.key) { code =>
         ZIO.serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, maxOutputBytes, dependencies))
       }
-      .map(result => ExternalToolResult(ScalaTool.render(result)))
+      .map(result => ExternalToolResult(ScalaTool.render(result), result.logs))
 }
 
 object ScalaTool {
+
+  /** Caller-owned route and selected read capability are required only by the explicitly enabled variant. */
+  def filesystem(
+      endpoint: String,
+      timeout: Duration = 45.seconds,
+      maxOutputBytes: Int = 64 * 1024
+  ): AgentTool[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] = {
+    require(timeout > Duration.Zero, "timeout must be positive")
+    require(maxOutputBytes > 0, "maxOutputBytes must be positive")
+    new AgentTool[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] {
+      override val definition = filesystemDefinition
+      override def execute(
+          call: ExternalToolCall
+      ): ZIO[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead, YallmoError, ExternalToolResult] =
+        for {
+          parsed <- ZIO
+            .attempt {
+              val args = ujson.read(call.argumentsJson).obj
+              require(
+                args.keySet.subsetOf(Set("code", "mode")) && args.contains("code"),
+                "Expected code and optional mode"
+              )
+              val mode = args.get("mode").map(_.str).getOrElse("pure")
+              require(mode == "pure" || mode == "filesystem", "Expected pure or filesystem mode")
+              (args("code").str, mode)
+            }
+            .mapError(error => YallmoError.InvalidToolArguments(call.toolKey, error.getMessage))
+          result <- executeWith(
+            call.copy(argumentsJson = ujson.write(ujson.Obj("code" -> parsed._1))),
+            definition.key
+          ) { code =>
+            ZIO.serviceWithZIO[ScalaCodeExecutor] { executor =>
+              if parsed._2 == "filesystem" then executor.executeFilesystem(code, endpoint, timeout, maxOutputBytes)
+              else executor.execute(code, timeout, maxOutputBytes)
+            }
+          }
+        } yield ExternalToolResult(render(result), result.logs)
+    }
+  }
 
   val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
@@ -57,7 +98,13 @@ object ScalaTool {
     } yield result
 
   private[tool] def render(result: CommandOutput): String = {
-    val json = ujson.read(BashTool.render(result))
+    // Providers receive result text, not the separate logs. On failure they need the diagnostics to fix the code.
+    val output =
+      if (result.exitCode != 0 || result.timedOut) && result.logs.nonEmpty then
+        val separator = if result.output.isEmpty || result.output.endsWith("\n") then "" else "\n"
+        result.output + separator + result.logs.mkString("\n")
+      else result.output
+    val json = ujson.read(BashTool.render(result.copy(output = output)))
     if result.timedOut then
       json("hint") = "Scala CLI exceeded its compilation/execution deadline. " +
         "The default compiler is pinned and offline; check the captured output for compiler or runtime diagnostics."
@@ -70,9 +117,28 @@ object ScalaTool {
       "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
       "No direct file, network, process, environment access or println. " +
       "No user-supplied dependencies, directives or annotations. " +
-      "Returns exitCode, output (value, trusted API output or compiler/runtime errors), timedOut and truncated.",
+      "Returns exitCode, output (the returned value on success, diagnostics on failure), timedOut and truncated. " +
+      "Successful execution logs are separate from output.",
     inputSchema = JsonSchema.ObjectSchema(
       Map("code" -> JsonSchema.StringSchema(Some("Scala block body; its last expression is the result"))),
+      required = Set("code"),
+      additionalProperties = false
+    )
+  )
+
+  val filesystemDefinition: AgentToolDefinition = definition.copy(
+    description = definition.description +
+      " Optional mode=filesystem: code must return ZIO[Any, FsError, A], with selected read-only fs: FsRead injected. " +
+      "Example: fs.readUtf8(\"notes.txt\").map(_.length). " +
+      "Supports fs.list and fs.readBytes; use fold for error recovery. Trace and CanFail are supplied. " +
+      "No runtime execution in code; trusted Main connects once and runs the effect. Default mode=pure is unchanged.",
+    inputSchema = JsonSchema.ObjectSchema(
+      Map(
+        "code" -> JsonSchema.StringSchema(
+          Some("Pure block, or filesystem-mode effect body returning ZIO[Any, FsError, A]")
+        ),
+        "mode" -> JsonSchema.StringSchema(Some("Explicit result mode; defaults to pure"), Chunk("pure", "filesystem"))
+      ),
       required = Set("code"),
       additionalProperties = false
     )

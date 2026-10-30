@@ -241,18 +241,37 @@ object ServerApplication {
   val live: ZLayer[Any, Throwable, Environment] =
     Client.default ++ ApplicationTools.live
 
+  /** The caller owns the loopback listener, route lifetime and trusted endpoint. */
+  def openRpc(
+      storage: Path,
+      configPath: Option[Path],
+      workspace: Option[Path],
+      endpoint: String
+  ): ZIO[Scope & Environment & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ServerApplication] =
+    ZIO.serviceWithZIO[fmgp.rpc.RpcWebSocket.RpcRoute] { route =>
+      openConfigured(storage, configPath, workspace, Some(route -> endpoint))
+    }
+
   /** Viewer mode never loads configuration or probes tools. All standalone modes acquire the same scoped lease. */
   def open(
       storage: Path,
       configPath: Option[Path] = None,
       workspace: Option[Path] = None
   ): ZIO[Scope & Environment, Throwable, ServerApplication] =
+    openConfigured(storage, configPath, workspace, None)
+
+  private def openConfigured(
+      storage: Path,
+      configPath: Option[Path],
+      workspace: Option[Path],
+      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)]
+  ): ZIO[Scope & Environment, Throwable, ServerApplication] =
     ZIO.uninterruptibleMask { restore =>
       for {
         parent <- ZIO.service[Scope]
         // Failed opens release ownership immediately, even if the caller catches the failure in a longer-lived scope.
         ownership <- parent.fork
-        application <- restore(compose(storage, configPath, workspace))
+        application <- restore(compose(storage, configPath, workspace, rpc))
           .provideSomeEnvironment[Scope & Environment](_.add[Scope](ownership))
           .onExit {
             case Exit.Success(_) => ZIO.unit
@@ -264,7 +283,8 @@ object ServerApplication {
   private def compose(
       storage: Path,
       configPath: Option[Path],
-      workspace: Option[Path]
+      workspace: Option[Path],
+      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)]
   ): ZIO[Scope & Environment, Throwable, ServerApplication] =
     for {
       _ <- ZIO
@@ -293,14 +313,18 @@ object ServerApplication {
             config <- ConfigFile.loadOrInitialize(path)
             runtime <- ApplicationRuntime.make(config, Chunk.empty)
             environment <- ZIO.environment[ToolEnvironment]
-            opened <- runtime
-              .openWorkspace(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment))
-              .mapError(error =>
-                new IllegalStateException(
-                  "Unable to initialize configured application; see cause for storage or capability validation details",
-                  error
-                )
+            opened <- (rpc match {
+              case None => runtime.openWorkspace(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment))
+              case Some((route, endpoint)) =>
+                runtime
+                  .openWorkspaceRpc(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment), endpoint)
+                  .provideSomeEnvironment[Scope](_.add[fmgp.rpc.RpcWebSocket.RpcRoute](route))
+            }).mapError(error =>
+              new IllegalStateException(
+                "Unable to initialize configured application; see cause for storage or capability validation details",
+                error
               )
+            )
             (assembly, _) = opened
             // Registered after storage/tools: all application work finalizes before their ownership is released.
             scope <- ZIO.service[Scope].flatMap(_.fork)

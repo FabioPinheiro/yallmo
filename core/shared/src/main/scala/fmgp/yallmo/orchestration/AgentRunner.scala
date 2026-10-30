@@ -243,16 +243,15 @@ final class AgentRunner[R](
                   .fromOption(tools.get(call.toolKey))
                   .orElseFail(YallmoError.UnknownTool(call.toolKey))
                   .flatMap(_.execute(call))
-                  .map(_.text)
               )
 
         execute.fold(
-          error => toolMessage(functionCall, toolErrorOutput(error)),
+          error => toolMessage(functionCall, ExternalToolResult(toolErrorOutput(error))),
           output => toolMessage(functionCall, output)
         )
 
-  private def toolMessage(call: FunctionCall, output: String): MessagePayload =
-    MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, output))
+  private def toolMessage(call: FunctionCall, result: ExternalToolResult): MessagePayload =
+    MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, result.text, result.logs))
 
   private def toolErrorOutput(error: YallmoError): String =
     ujson.write(

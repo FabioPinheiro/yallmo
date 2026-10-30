@@ -31,7 +31,7 @@ final class BashTool(
         .execute(value, workspace, timeout, maxOutputBytes)
         .mapError(error => YallmoError.ToolExecutionFailed(definition.key, error.getMessage, error))
         .map(BashTool.render)
-        .map(ExternalToolResult.apply)
+        .map(text => ExternalToolResult(text))
     }
 
   private def command(call: ExternalToolCall): IO[YallmoError, String] =

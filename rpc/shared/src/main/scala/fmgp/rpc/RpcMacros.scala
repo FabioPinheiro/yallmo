@@ -28,13 +28,16 @@ object RpcMacros {
     if symbol.fieldMembers.nonEmpty then reject("vals/vars are unsupported; use Task methods")
     if symbol.methodMembers.exists(_.paramSymss.flatten.exists(_.flags.is(Flags.HasDefault))) then
       reject("default parameters are unsupported")
-    if symbol.methodMembers.exists(m =>
-        m.owner.flags.is(Flags.Trait) && !m.flags.is(Flags.Deferred) &&
-          !m.flags.is(Flags.Synthetic) && !m.isClassConstructor
+    def isPublic(method: Symbol): Boolean =
+      !method.flags.is(Flags.Private) && !method.flags.is(Flags.Protected) &&
+        method.privateWithin.isEmpty && method.protectedWithin.isEmpty
+    val methods = symbol.methodMembers
+      .filter(m =>
+        m.owner.flags.is(Flags.Trait) && !m.flags.is(Flags.Synthetic) && !m.isClassConstructor &&
+          (isPublic(m) || m.flags.is(Flags.Deferred))
       )
-    then reject("concrete service methods are unsupported; use abstract Task methods")
-    val methods = symbol.methodMembers.filter(_.flags.is(Flags.Deferred)).sortBy(_.name)
-    if methods.isEmpty then reject("expected at least one abstract Task method")
+      .sortBy(_.name)
+    if methods.isEmpty then reject("expected at least one public service method")
     if methods.map(_.name).distinct.size != methods.size then reject("overloaded methods are unsupported")
 
     final case class Method(
@@ -52,8 +55,10 @@ object RpcMacros {
     def checkCodec(tpe: TypeRepr, member: String, unitAsNull: Boolean = true): Unit = {
       if containsEffect(tpe) then
         reject(s"$member: nested effects and stream arguments/elements/errors are unsupported")
+      // Codec-backed collections (including Chunk/Seq/Map) may themselves extend Function/PartialFunction.
       if tpe.dealias.isFunctionType || tpe.dealias.isContextFunctionType ||
-        (0 to 22).exists(arity => tpe.baseClasses.contains(defn.FunctionClass(arity)))
+        (!(tpe <:< TypeRepr.of[Iterable[Any]]) &&
+          (0 to 22).exists(arity => tpe.baseClasses.contains(defn.FunctionClass(arity))))
       then reject(s"$member: callbacks are unsupported")
       if unitAsNull && tpe =:= TypeRepr.of[Unit] then ()
       else
@@ -68,8 +73,8 @@ object RpcMacros {
         }
     }
     val checked = methods.map { method =>
-      if method.flags.is(Flags.Protected) || method.flags.is(Flags.Private) then
-        reject(s"${method.name}: service methods must be public")
+      if !isPublic(method) then reject(s"${method.name}: service methods must be public")
+      if method.flags.is(Flags.Final) then reject(s"${method.name}: final service methods cannot be proxied")
       if method.name.length > 160 then reject(s"${method.name}: method names must be at most 160 characters")
       val member = serviceType.memberType(method).dealias
       val (params, result) = member match {

@@ -69,8 +69,8 @@ final case class ExternalToolCall(
     callId: Option[FunctionCallId] = None
 )
 
-/** The normalized outcome of an external-tool invocation. */
-final case class ExternalToolResult(text: String)
+/** The normalized outcome of an external-tool invocation, with diagnostics kept separate from result text. */
+final case class ExternalToolResult(text: String, logs: Seq[String] = Seq.empty)
 
 /** Model guidance made available to an agent for this run. */
 final case class AgentSkill(

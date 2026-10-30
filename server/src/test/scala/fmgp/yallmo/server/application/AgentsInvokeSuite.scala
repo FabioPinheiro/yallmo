@@ -201,7 +201,7 @@ final class AgentsInvokeSuite extends FunSuite {
           def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
             executions
               .update(_ :+ call)
-              .as(ExternalToolResult("""{"exitCode":0,"timedOut":false,"output":"42\\n","truncated":false}"""))
+              .as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("42\n")))
         }
         allowed = config.copy(agents =
           Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))))
@@ -225,11 +225,7 @@ final class AgentsInvokeSuite extends FunSuite {
         assertEquals(
           response.payload,
           Message.ToolOutput(
-            FunctionCallOutput(
-              function.id,
-              function.name,
-              """{"exitCode":0,"timedOut":false,"output":"42\\n","truncated":false}"""
-            )
+            ScalaModeOutput(function.id, ScalaModeResult.Executed("42\n"))
           )
         )
         assertEquals(calls, Chunk(ExternalToolCall(function.name, function.argumentsJson, Some(function.id))))
@@ -294,7 +290,9 @@ final class AgentsInvokeSuite extends FunSuite {
             Message.Assistant("forwarded text"),
             Message.Context("submitted", "data"),
             Message.Instructions("not a configured system prompt"),
-            Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("forwarded"), ToolKey.unsafe("other"), "data"))
+            Message.ToolOutput(
+              FunctionGenericOutput(FunctionCallId.unsafe("forwarded"), ToolKey.unsafe("other"), "data")
+            )
           )
         ) { payload =>
           invoke(fixture, Message(input.data.copy(parentId = Some(input.id), payload = payload)))

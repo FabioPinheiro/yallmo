@@ -28,7 +28,7 @@ final class AgentInvocationSuite extends FunSuite {
       _ <- runner.runWithContext(agent, AgentTask("continue"), context, RunContext(Chunk(Message.ToolCall(call))))
       reply <- runner
         .execution(agent, context)
-        .invoke(Message.ToolOutput(FunctionCallOutput(call.id, call.name, "data")))
+        .invoke(Message.ToolOutput(FunctionGenericOutput(call.id, call.name, "data")))
       count <- calls.get
     } yield {
       assertEquals(count, 0)

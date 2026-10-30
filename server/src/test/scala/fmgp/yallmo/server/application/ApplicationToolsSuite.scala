@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
+import fmgp.yallmo.orchestration.{ExternalToolCall, ExternalToolResult}
 import fmgp.yallmo.tool.*
 import java.nio.file.{Files, Path}
 import java.util.Comparator
@@ -172,7 +172,7 @@ final class ApplicationToolsSuite extends FunSuite {
         } yield (scala.definition, result, calls, tools)
       }
       assertEquals(definition, ScalaTool.definition)
-      assertEquals(ujson.read(result.text)("output").str, "fake output")
+      assertEquals(result.text, "fake output")
       assert(calls.contains("scala:(1 to 10).sum"))
       assert(!calls.contains("dynamic.available"))
       assert(!tools.available.exists(_.definition.key == ToolKey.ScalaUnsafe))
@@ -224,9 +224,9 @@ final class ApplicationToolsSuite extends FunSuite {
     val compiler = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(scala)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
-          : Task[CommandOutput] = {
+          : Task[ExternalToolResult.ScalaMode] = {
         val _ = (code, timeout, maxOutputBytes)
-        execution(s"scala:$code")
+        execution(s"scala:$code").map(command => ExternalToolResult.ScalaMode(ScalaModeResult.Executed(command.output)))
       }
     }
     val dynamicCompiler = new ScalaCodeDynamicExecutor {

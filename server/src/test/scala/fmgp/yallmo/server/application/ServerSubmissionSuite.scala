@@ -1246,7 +1246,7 @@ final class ServerSubmissionSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[CommandOutput] = unexpected
+      ): Task[ExternalToolResult.ScalaMode] = unexpected
     }
     val dynamicScala = new ScalaCodeDynamicExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(false)

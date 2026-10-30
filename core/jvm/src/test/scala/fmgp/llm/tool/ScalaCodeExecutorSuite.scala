@@ -1,6 +1,7 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
+import fmgp.yallmo.orchestration.ExternalToolResult
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
 import java.nio.file.{Files, Path}
@@ -21,7 +22,11 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     } finally Files.deleteIfExists(executable)
   }
 
-  private def execute(executable: Path, timeout: Duration = 10.seconds, limit: Int = 1024): CommandOutput =
+  private def execute(
+      executable: Path,
+      timeout: Duration = 10.seconds,
+      limit: Int = 1024
+  ): ExternalToolResult.ScalaMode =
     run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute("42", timeout, limit))
@@ -77,7 +82,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
             .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"42"}"""))
             .provide(ScalaCodeExecutor.layer(executable.toString))
         )
-        val arguments = ujson.read(result.text)("output").str.linesIterator.toList
+        val arguments = result.text.linesIterator.toList
         val actual = arguments.sliding(2).collect { case List("--dependency", dependency) => dependency }.toList
         assertEquals(actual, dependencies.toList)
       }
@@ -95,7 +100,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val second = execute(executable)
       for result <- List(first, second) do {
         assertEquals(result.exitCode, 0)
-        assert(!Files.exists(Path.of(result.output.trim)))
+        assert(!Files.exists(Path.of(result.output.trim.linesIterator.toList.last)))
       }
       assertNotEquals(first.output.trim, second.output.trim)
     }
@@ -118,11 +123,33 @@ final class ScalaCodeExecutorSuite extends FunSuite {
             .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"missing"}"""))
             .provide(ScalaCodeExecutor.layer(executable.toString))
         )
-        val json = ujson.read(result.text)
-        assertEquals(json("exitCode").num.toInt, 1)
-        assert(json("output").str.contains("[E006] Not Found Error"))
-        assert(json("output").str.contains("Not found: missing"))
-        assert(result.logs.nonEmpty)
+        val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+        assertEquals(typed.exitCode, 1)
+        assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
+        assert(typed.output.contains("[E006] Not Found Error"))
+        assert(typed.output.contains("Not found: missing"))
+        assert(typed.logs.nonEmpty)
+    }
+  }
+
+  test("trusted Main marker survives exhausted logs without leaking into captured results") {
+    withFakeCli("i=0; while [ $i -lt 1000 ]; do printf x >&2; i=$((i+1)); done\ntouch .execution-started\nexit 1\n") {
+      executable =>
+        val result = execute(executable, limit = 32)
+        assert(result.result.isInstanceOf[ScalaModeResult.Executed])
+        assert(result.truncated)
+        assertEquals(result.output, "x" * 32)
+        assertEquals(result.logs, Seq("x" * 32))
+        assert(!result.output.contains(ScalaCodeExecutor.ExecutionStartedFile))
+    }
+  }
+
+  test("pre-Main nonzero exit is a compiler or launch diagnostic, not a runtime failure") {
+    withFakeCli("printf 'Compiler dependency unavailable' >&2\nexit 1\n") { executable =>
+      assertEquals(execute(executable).result, ScalaModeResult.CompilationError("Compiler dependency unavailable"))
+    }
+    withFakeCli("touch .execution-started\nprintf 'Runtime failure' >&2\nexit 1\n") { executable =>
+      assertEquals(execute(executable).result, ScalaModeResult.Executed("Runtime failure"))
     }
   }
 
@@ -168,10 +195,11 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           .provide(ScalaCodeExecutor.layer(executable.toString))
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
-      val json = ujson.read(result.text)
-      assert(json("timedOut").bool)
-      assert(json("output").str.contains("Checking compiler metadata"))
-      assert(json("hint").str.contains("deadline"))
+      val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+      assert(typed.timedOut)
+      assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
+      assert(typed.output.contains("Checking compiler metadata"))
+      assert(typed.output.contains("deadline"))
     }
   }
 
@@ -179,7 +207,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     withFakeCli("sleep 60 &\necho $!\nwait\n") { executable =>
       val result = execute(executable, timeout = 300.millis)
       assert(result.timedOut)
-      assert(!isRunning(result.output.trim.toLong))
+      assert(!isRunning(result.output.trim.linesIterator.toList.last.toLong))
     }
   }
 
@@ -247,7 +275,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
             _ <- ZIO.attempt {
               assert(result.timedOut)
               assert(!isRunning(Files.readString(marker).linesIterator.next().toLong))
-              assert(!Files.exists(Path.of(result.output.trim)))
+              assert(!Files.exists(Path.of(result.output.trim.linesIterator.toList.last)))
               Files.writeString(marker, "")
             }
             token <- route.register(FsReadRpc.contract.bind(unusedFilesystem))
@@ -471,8 +499,8 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         .provide(ScalaCodeExecutor.layer(realCli.get, scalaVersion = "3.nightly", offline = false))
         .timeoutFail(new RuntimeException("Scala CLI resolution did not respect its deadline"))(5.seconds)
     )
-    val json = ujson.read(result.text)
-    if json("timedOut").bool then assert(json("hint").str.contains("deadline"))
+    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    if typed.timedOut then assert(typed.output.contains("deadline"))
   }
 
   test("nightly returns E006 compilation diagnostics in the tool output") {
@@ -482,10 +510,11 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"doesNotExist"}"""))
         .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
     )
-    val json = ujson.read(result.text)
-    assertEquals(json("exitCode").num.toInt, 1)
-    assert(json("output").str.contains("[E006] Not Found Error"), result.text)
-    assert(json("output").str.contains("Not found: doesNotExist"), result.text)
+    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    assertEquals(typed.exitCode, 1)
+    assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
+    assert(typed.output.contains("[E006] Not Found Error"), result.text)
+    assert(typed.output.contains("Not found: doesNotExist"), result.text)
   }
 
   test("nightly provides the trusted runtime API on every fresh invocation") {
@@ -511,7 +540,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("nightly accepts pure code and rejects ambient JVM authority") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
-    def evaluate(code: String, timeout: Duration = 120.seconds): CommandOutput = run(
+    def evaluate(code: String, timeout: Duration = 120.seconds): ExternalToolResult.ScalaMode = run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, 16 * 1024))
         .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
@@ -544,10 +573,12 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     do {
       val rejected = evaluate(code)
       assert(!rejected.timedOut && rejected.exitCode != 0, s"Unexpectedly accepted: $code\n${rejected.output}")
-      assertEquals(rejected.output, "")
+      assert(rejected.result.isInstanceOf[ScalaModeResult.CompilationError])
       assert(rejected.logs.exists(_.contains("Compilation failed")), rejected.logs.mkString("\n"))
     }
     val runtimeError = evaluate("1 / 0")
+    assert(runtimeError.result.isInstanceOf[ScalaModeResult.Executed])
+    assert(runtimeError.output.contains("ArithmeticException"))
     assert(
       runtimeError.exitCode != 0 && runtimeError.logs.exists(_.contains("ArithmeticException")),
       runtimeError.logs.mkString("\n")

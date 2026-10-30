@@ -63,7 +63,7 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
             val message = if outputs.nonEmpty then
               ujson.Obj(
                 "role" -> "assistant",
-                "content" -> ujson.read(outputs.head("content").str)("output").str.linesIterator.toList.last
+                "content" -> outputs.head("content").str.linesIterator.toList.last
               )
             else
               ujson.Obj(

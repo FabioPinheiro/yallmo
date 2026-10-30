@@ -103,7 +103,7 @@ final class OpenAiCodexSuite extends FunSuite:
       .input(
         Chunk(
           MessagePayload.ToolCall(call),
-          MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "contents"))
+          MessagePayload.ToolOutput(FunctionGenericOutput(call.id, call.name, "contents"))
         )
       )
       .toOption
@@ -199,7 +199,7 @@ final class OpenAiCodexSuite extends FunSuite:
         MessagePayload.Reasoning(Some("summary"), continuation),
         MessagePayload.Reasoning(None, continuation.copy(provider = ProviderId.unsafe("other-provider"))),
         MessagePayload.ToolCall(call),
-        MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "file contents")),
+        MessagePayload.ToolOutput(FunctionGenericOutput(call.id, call.name, "file contents")),
         MessagePayload.Instructions("Use the tools")
       ),
       tools = Chunk(definition),

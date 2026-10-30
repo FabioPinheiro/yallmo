@@ -47,19 +47,20 @@ final class ScalamodeModelSuite extends FunSuite {
           Some(input.id),
           Instant.EPOCH,
           Message.ToolOutput(
-            FunctionCallOutput(
-              call.id,
-              call.name,
-              Json
-                .Obj(
-                  "exitCode" -> Json.Num(0),
-                  "timedOut" -> Json.Bool(false),
-                  "truncated" -> Json.Bool(false),
-                  "output" -> Json.Str(output)
-                )
-                .toJson,
-              logs
-            )
+            if call.name == ToolKey.Scalamode then ScalaModeOutput(call.id, ScalaModeResult.Executed(output), logs)
+            else
+              FunctionGenericOutput(
+                call.id,
+                call.name,
+                Json
+                  .Obj(
+                    "exitCode" -> Json.Num(0),
+                    "timedOut" -> Json.Bool(false),
+                    "truncated" -> Json.Bool(false),
+                    "output" -> Json.Str(output)
+                  )
+                  .toJson
+              )
           )
         )
       )
@@ -97,6 +98,34 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(result.logs, Seq("connected", "disconnected"))
     assertEquals(result.fields.get.blocks.find(_.name == "output").map(_.text), Some("42\n"))
     assert(!result.output.contains("connected"))
+  }
+
+  test("typed compilation diagnostics and metadata are displayed without parsing returned JSON") {
+    val h = new Harness
+    h.model.run()
+    val response = h.response()
+    val callId = response.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId
+    val diagnostic = "[E006] Not Found Error\nNot found: missing"
+    val output =
+      ScalaModeOutput(callId, ScalaModeResult.CompilationError(diagnostic), Seq("compiler"), 1, truncated = true)
+    val result = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(output))))
+    assertEquals(result.output, diagnostic)
+    assertEquals(result.logs, Seq("compiler"))
+    assert(result.title.contains("diagnostics"))
+    assert(result.fields.get.metadata.contains(ToolResultContent.Field("exitCode", "1")))
+    assert(result.fields.get.metadata.contains(ToolResultContent.Field("truncated", "true")))
+    val returnedJson = ScalaModeOutput(callId, ScalaModeResult.Executed("{\"logs\":[\"value-not-logs\"]}"))
+    val success = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(returnedJson))))
+    assertEquals(success.logs, Seq.empty)
+    assertEquals(success.fields.get.blocks, List(ToolResultContent.Field("output", returnedJson.output)))
+  }
+
+  test("generic scalaunsafe output has no separate logs") {
+    val h = new Harness
+    h.model.run(ScalamodeTool.Dynamic)
+    val result = ScalamodeResult(h.response("42"))
+    assertEquals(result.logs, Seq.empty)
+    assertEquals(result.fields.get.blocks.find(_.name == "output").map(_.text), Some("42"))
   }
 
   test("each run button submits its own tool key without changing source") {
@@ -159,7 +188,13 @@ final class ScalamodeModelSuite extends FunSuite {
     val response = h.response()
     val output = response.payload.asInstanceOf[MessagePayload.ToolOutput].output
     h.requests.head._2
-      .success(Message(response.data.copy(payload = Message.ToolOutput(output.copy(name = ToolKey.Scalamode)))))
+      .success(
+        Message(
+          response.data.copy(payload =
+            Message.ToolOutput(ScalaModeOutput(output.callId, ScalaModeResult.Executed(output.output)))
+          )
+        )
+      )
     tick().map { _ =>
       assertEquals(h.model.state.now().result, None)
       assert(h.model.state.now().notice.contains("Uncorrelated"))
@@ -236,14 +271,14 @@ final class ScalamodeModelSuite extends FunSuite {
         Message(
           message.data
             .copy(payload =
-              Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("wrong"), ToolKey.Scalamode, "12"))
+              Message.ToolOutput(ScalaModeOutput(FunctionCallId.unsafe("wrong"), ScalaModeResult.Executed("12")))
             )
         ),
       message =>
         Message(
           message.data.copy(payload =
             Message.ToolOutput(
-              FunctionCallOutput(
+              FunctionGenericOutput(
                 message.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId,
                 ToolKey.unsafe("wrong"),
                 "12"

@@ -19,14 +19,14 @@ final class MessagePayloadSuite extends FunSuite {
       """{"Reasoning":{"summary":"summary","continuation":{"provider":"provider","encryptedContent":"opaque"}}}""",
     MessagePayload.ToolCall(FunctionCall(callId, ToolKey.unsafe("tool"), "{}")) ->
       """{"ToolCall":{"call":{"id":"call-1","name":"tool","argumentsJson":"{}"}}}""",
-    MessagePayload.ToolOutput(FunctionCallOutput(callId, ToolKey.unsafe("tool"), "result")) ->
+    MessagePayload.ToolOutput(FunctionGenericOutput(callId, ToolKey.unsafe("tool"), "result")) ->
       """{"ToolOutput":{"output":{"callId":"call-1","name":"tool","output":"result"}}}""",
     MessagePayload.Instructions("system") -> """{"Instructions":{"text":"system"}}"""
   )
 
   test("tool message exports retain their roles and content projections") {
     val call = FunctionCall(callId, ToolKey.unsafe("tool"), "{}")
-    val output = FunctionCallOutput(callId, ToolKey.unsafe("tool"), "result")
+    val output = FunctionGenericOutput(callId, ToolKey.unsafe("tool"), "result")
     assertEquals(Message.ToolCall(call), MessagePayload.ToolCall(call))
     assertEquals(Message.ToolOutput(output), MessagePayload.ToolOutput(output))
     assertEquals(Message.ToolCall(call).role, "tool_call")
@@ -35,14 +35,57 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(Message.ToolOutput(output).contentStr, "result")
   }
 
-  test("tool logs round-trip independently of the result and legacy outputs default to no logs") {
-    val output = FunctionCallOutput(callId, ToolKey.unsafe("tool"), "42", Seq("connected", "disconnected"))
-    assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
+  test("ScalaModeOutput round-trips flat JSON with a fixed key and no duplicated output") {
+    val output = ScalaModeOutput(callId, ScalaModeResult.Executed("42"), Seq("connected", "disconnected"))
+    val json = output.toJson
+    assertEquals(json.fromJson[ScalaModeOutput], Right(output))
+    assertEquals(json.fromJson[FunctionCallOutput], Right(output))
+    assertEquals((output: FunctionCallOutput).toJson, json)
     assertEquals(Message.ToolOutput(output).contentStr, "42")
+    assert(json.contains("\"name\":\"scalamode\""))
+    assert(!json.contains("\"output\""))
+    assert(!json.contains("ScalaModeOutput"))
     assertEquals(
-      """{"callId":"call-1","name":"tool","output":"42"}""".fromJson[FunctionCallOutput],
-      Right(output.copy(logs = Seq.empty))
+      (Message.ToolOutput(output): MessagePayload).toJson.fromJson[MessagePayload],
+      Right(Message.ToolOutput(output))
     )
+  }
+
+  test("name exclusively dispatches subtypes and malformed scalamode never falls back") {
+    val generic = FunctionGenericOutput(callId, ToolKey.ScalaUnsafe, "42")
+    assertEquals(generic.toJson.fromJson[FunctionCallOutput], Right(generic))
+    assert(!generic.toJson.contains("logs"))
+    val reserved = """{"callId":"call-1","name":"scalamode","output":"42"}"""
+    assert(reserved.fromJson[FunctionCallOutput].isLeft)
+    assert(reserved.fromJson[FunctionGenericOutput].isLeft)
+    val wrongKey = ScalaModeOutput(callId, ScalaModeResult.Executed("42")).toJson.replace("scalamode", "other")
+    assert(wrongKey.fromJson[ScalaModeOutput].isLeft)
+    assert(wrongKey.fromJson[FunctionCallOutput].isLeft)
+    for result <- List("null", "{}", "42", "{\"Executed\":{}}") do
+      assert(
+        s"""{"callId":"call-1","name":"scalamode","output":"fallback","result":$result}"""
+          .fromJson[FunctionCallOutput]
+          .isLeft
+      )
+  }
+
+  test("Scala timeout metadata round-trips and the reserved name is not a constructor argument") {
+    val output = ScalaModeOutput(callId, ScalaModeResult.Executed("deadline exceeded"), exitCode = 137, timedOut = true)
+    assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
+    assertEquals(output.toJson.fromJson[ScalaModeOutput], Right(output))
+    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
+      fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
+      name = fmgp.yallmo.model.ToolKey.ScalaUnsafe)"""))
+  }
+
+  test("compilation diagnostics are the complete provider-facing output") {
+    val diagnostics = "[E006] Not Found Error: Snippet.scala:6:1\nNot found: missing\nCompilation failed"
+    val output = ScalaModeOutput(callId, ScalaModeResult.CompilationError(diagnostics), exitCode = 1, truncated = true)
+    assertEquals(output.output, diagnostics)
+    assertEquals(Message.ToolOutput(output).contentStr, diagnostics)
+    assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
+    assert(output.validate.isRight)
+    assert(FunctionGenericOutput(callId, ToolKey.unsafe(" "), "").validate.isLeft)
   }
 
   test("removed ToolResult JSON is rejected rather than silently reinterpreted") {

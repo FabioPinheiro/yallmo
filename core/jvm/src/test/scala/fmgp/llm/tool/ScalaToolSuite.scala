@@ -1,7 +1,7 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
+import fmgp.yallmo.orchestration.{ExternalToolCall, ExternalToolResult}
 import munit.FunSuite
 import zio.*
 
@@ -16,12 +16,12 @@ final class ScalaToolSuite extends FunSuite {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String]
-    ): Task[CommandOutput] = {
+    ): Task[ExternalToolResult.ScalaMode] = {
       assertEquals(code, "(1 to 10).sum")
       assertEquals(timeout, 45.seconds)
       assertEquals(dependencies, Seq("dev.zio::zio:2.1.27"))
       assert(timeout < fmgp.yallmo.orchestration.AgentBudget.default.timeout && maxOutputBytes > 0)
-      ZIO.succeed(CommandOutput(0, false, "55\n", false, Seq("connected", "disconnected")))
+      ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("55\n"), Seq("connected", "disconnected")))
     }
   })
 
@@ -30,30 +30,30 @@ final class ScalaToolSuite extends FunSuite {
       run(
         new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}""")).provide(executor)
       )
-    assertEquals(result.logs, Seq("connected", "disconnected"))
-    val json = ujson.read(result.text)
-    assertEquals(json("output").str, "55\n")
-    assertEquals(json("exitCode").num.toInt, 0)
-    assert(!json("timedOut").bool && !json("truncated").bool)
+    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    assertEquals(typed.logs, Seq("connected", "disconnected"))
+    assertEquals(typed.result, ScalaModeResult.Executed("55\n"))
+    assertEquals(typed.exitCode, 0)
+    assert(!typed.timedOut && !typed.truncated)
   }
 
-  test("restricted timeout hints describe the external compiler deadline") {
-    val output = CommandOutput(124, true, "deadline", false)
-    val restricted = ujson.read(ScalaTool.render(output))
-    assert(restricted("hint").str.contains("pinned and offline"))
-    assert(!restricted("hint").str.contains("cooperative"))
+  test("timeouts are actionable execution attempts, not compilation errors") {
+    val result = ScalaCodeExecutor.result(CommandOutput(124, true, "deadline", false), started = false)
+    assert(result.result.isInstanceOf[ScalaModeResult.Executed])
+    assert(result.output.contains("deadline"))
+    assert(result.timedOut)
   }
 
-  test("failed and timed-out evaluations expose diagnostics alongside any partial output") {
-    for (exitCode, timedOut) <- List((1, false), (0, true)) do {
-      val result = CommandOutput(exitCode, timedOut, "partial value", false, Seq("[E006] Not Found Error", "missing"))
-      assertEquals(
-        ujson.read(ScalaTool.render(result))("output").str,
-        "partial value\n[E006] Not Found Error\nmissing"
-      )
-    }
-    val success = CommandOutput(0, false, "42\n", false, Seq("connected", "disconnected"))
-    assertEquals(ujson.read(ScalaTool.render(success))("output").str, "42\n")
+  test("trusted start boundary separates compilation diagnostics from runtime errors") {
+    val command = CommandOutput(1, false, "partial value", true, Seq("[E006] Not Found Error", "missing"))
+    val compilation = ScalaCodeExecutor.result(command, started = false)
+    assertEquals(compilation.result, ScalaModeResult.CompilationError("partial value\n[E006] Not Found Error\nmissing"))
+    val runtime = ScalaCodeExecutor.result(command, started = true)
+    assertEquals(runtime.result, ScalaModeResult.Executed(compilation.output))
+    assert(runtime.truncated && runtime.exitCode == 1)
+    val success = ScalaCodeExecutor.result(CommandOutput(0, false, "42\n", false, Seq("connected")), started = true)
+    assertEquals(success.output, "42\n")
+    assertEquals(success.logs, Seq("connected"))
   }
 
   test("invalid arguments are rejected before executing anything") {
@@ -121,15 +121,22 @@ final class ScalaToolSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[CommandOutput] = {
+      ): Task[ExternalToolResult.ScalaMode] = {
         val _ = (code, timeout, maxOutputBytes, dependencies)
-        ZIO.succeed(CommandOutput(1, false, "", false, Seq("Compilation failed")))
+        ZIO.succeed(
+          ExternalToolResult.ScalaMode(
+            ScalaModeResult.CompilationError("Compilation failed"),
+            Seq("Compilation failed"),
+            exitCode = 1
+          )
+        )
       }
     })
     val result =
       run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"unknown"}""")).provide(errors))
-    assertEquals(ujson.read(result.text)("exitCode").num.toInt, 1)
-    assertEquals(ujson.read(result.text)("output").str, "Compilation failed")
-    assertEquals(result.logs, Seq("Compilation failed"))
+    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    assertEquals(typed.exitCode, 1)
+    assertEquals(typed.result, ScalaModeResult.CompilationError("Compilation failed"))
+    assertEquals(typed.logs, Seq("Compilation failed"))
   }
 }

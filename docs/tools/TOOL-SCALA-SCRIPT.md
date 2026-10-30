@@ -39,8 +39,22 @@ The `scalamode` agent tool accepts one JSON argument:
 {"code":"val numbers = List(1, 2, 3); numbers.map(_ * 2).sum"}
 ```
 
-It returns `{"exitCode":0,"timedOut":false,"output":"12\n","truncated":false}`.
-Successful evaluations keep application logs in `FunctionCallOutput.logs: Seq[String]`, separate from `output`. On a nonzero exit or timeout, captured diagnostics (including compiler errors such as `[E006] Not Found Error` and runtime exceptions) also appear in `output` so the caller/model can diagnose the failure. Older stored outputs without `logs` decode with an empty sequence.
+The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
+
+```json
+{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"12\n"}},"logs":[],"exitCode":0,"timedOut":false,"truncated":false}
+```
+
+`ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
+`CompilationError(diagnostics)` contains the complete retained compiler/launch-stage diagnostics when the CLI exits
+nonzero before trusted Main starts (including compiler setup/dependency-resolution failures). A private fixed-size
+Main-start file marks this boundary independently of the bounded log capture. It is never included in results.
+`Executed(value)` represents an execution **attempt**, not guaranteed success: runtime exceptions, timeouts (including
+pre-Main timeouts), and host infrastructure/validation failures carry actionable text here. Inspect `exitCode`,
+`timedOut`, and `truncated`. Providers continue to receive the computed `output`, including compiler diagnostics.
+Successful `output` contains only the returned value; informational messages remain in `ScalaModeOutput.logs`.
+Other tools, including `scalaunsafe`, use `FunctionGenericOutput(callId,name,output)` with no logs field.
+Malformed `scalamode` JSON is rejected; there is no legacy JSON fallback or migration.
 Use the **last expression**, not `println`, to return a value.
 
 ### Compiled runtime API

@@ -99,7 +99,7 @@ final class OAISuite extends FunSuite:
 
   test("maps native calls, outputs, tool choice, and schemas to chat completions") {
     val call = FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("current_time"), "{\"timezone\":\"UTC\"}")
-    val output = FunctionCallOutput(call.id, call.name, "12:00")
+    val output = FunctionGenericOutput(call.id, call.name, "12:00")
     val request = AgentTurnRequest(
       "test",
       Chunk(

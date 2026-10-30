@@ -1,6 +1,8 @@
 package fmgp.yallmo.tool
 
 import fmgp.yallmo.scalacode.ScalaScript
+import fmgp.yallmo.model.ScalaModeResult
+import fmgp.yallmo.orchestration.ExternalToolResult
 import zio.*
 import fmgp.rpc.*
 import fmgp.yallmo.fs.FsRead
@@ -30,8 +32,8 @@ trait ScalaCodeExecutor {
     *   Combined process deadline, including compiler resolution/downloads, compilation and execution.
     * @param maxOutputBytes
     *   Positive shared byte budget for the result and logs. Keeps the first bytes, not the last. If output exceeds this
-    *   limit, the remainder is drained and discarded and `CommandOutput.truncated` is true; otherwise it is false.
-    *   Retained bytes are decoded as UTF-8; this is a byte limit, not a character limit.
+    *   limit, the remainder is drained and discarded and `truncated` is true; otherwise it is false. Retained bytes are
+    *   decoded as UTF-8; this is a byte limit, not a character limit.
     * @param dependencies
     *   Trusted host-supplied Scala CLI dependency coordinates, never model-supplied tool arguments.
     */
@@ -40,7 +42,7 @@ trait ScalaCodeExecutor {
       timeout: Duration,
       maxOutputBytes: Int,
       dependencies: Seq[String] = ScalaTool.DefaultDependencies
-  ): Task[CommandOutput]
+  ): Task[ExternalToolResult.ScalaMode]
 
   /** Explicit effect mode; pure/custom executors need not support a capability listener. */
   @scala.annotation.nowarn("msg=unused explicit parameter")
@@ -49,7 +51,7 @@ trait ScalaCodeExecutor {
       endpoint: String,
       timeout: Duration,
       maxOutputBytes: Int
-  ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, CommandOutput] =
+  ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
     ZIO.fail(new UnsupportedOperationException("Filesystem Scala execution is not enabled"))
 }
 
@@ -71,14 +73,14 @@ object ScalaCodeExecutor {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String]
-    ): Task[CommandOutput] = run(code, timeout, maxOutputBytes, dependencies, None)
+    ): Task[ExternalToolResult.ScalaMode] = run(code, timeout, maxOutputBytes, dependencies, None)
 
     override def executeFilesystem(
         code: String,
         endpoint: String,
         timeout: Duration,
         maxOutputBytes: Int
-    ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, CommandOutput] = ZIO.scoped {
+    ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] = ZIO.scoped {
       for {
         fs <- ZIO.service[FsRead]
         route <- ZIO.service[RpcWebSocket.RpcRoute]
@@ -94,7 +96,7 @@ object ScalaCodeExecutor {
         maxOutputBytes: Int,
         dependencies: Seq[String],
         bootstrap: Option[(String, RpcToken)]
-    ): Task[CommandOutput] =
+    ): Task[ExternalToolResult.ScalaMode] =
       ZIO
         .fail(new IllegalArgumentException("Offline mode requires a full nightly version"))
         .when(offline && !scalaVersion.endsWith("-NIGHTLY")) *>
@@ -199,16 +201,46 @@ object ScalaCodeExecutor {
               captured <- output.join
               logs <- diagnostics.join
               _ <- ZIO.logInfo(s"Scala CLI finished exitCode=${process.exitValue()} timedOut=${!completed}")
-            } yield CommandOutput(
-              process.exitValue(),
-              timedOut = !completed,
-              captured._1,
-              captured._2 || logs._2,
-              logs._1.linesIterator.toVector
+              started <- ZIO.attemptBlocking(Files.exists(directory.resolve(ExecutionStartedFile)))
+            } yield result(
+              CommandOutput(
+                process.exitValue(),
+                !completed,
+                captured._1,
+                captured._2 || logs._2,
+                logs._1.linesIterator.toVector
+              ),
+              started
             )
           }
           .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))
   })
+
+  // A private fixed-size filesystem marker is independent of stdout/stderr retention and cannot leak into results.
+  // Safe snippets have no filesystem authority; only trusted Main writes it, before evaluating user code.
+  private[tool] val ExecutionStartedFile = ".execution-started"
+
+  private[tool] def result(command: CommandOutput, started: Boolean): ExternalToolResult.ScalaMode = {
+    val failed = command.exitCode != 0 || command.timedOut
+    val diagnostics = (Seq(command.output).filter(_.nonEmpty) ++ command.logs).mkString("\n")
+    val outcome =
+      if command.timedOut then
+        ScalaModeResult.Executed(
+          "Scala CLI exceeded its compilation/execution deadline." + (if diagnostics.isEmpty then ""
+                                                                      else "\n" + diagnostics)
+        )
+      else if command.exitCode != 0 && !started then
+        ScalaModeResult.CompilationError(
+          if diagnostics.nonEmpty then diagnostics
+          else s"Scala compiler/launch stage failed (exit ${command.exitCode})."
+        )
+      else if failed then
+        ScalaModeResult.Executed(
+          if diagnostics.nonEmpty then diagnostics else s"Scala execution failed (exit ${command.exitCode})."
+        )
+      else ScalaModeResult.Executed(command.output)
+    ExternalToolResult.ScalaMode(outcome, command.logs, command.exitCode, command.timedOut, command.truncated)
+  }
 
   private def validateFilesystemEndpoint(endpoint: String): Unit = {
     require(
@@ -299,6 +331,7 @@ object ScalaCodeExecutor {
     |import zio.*
     |object ScalaToolMain {
     |  def main(args: Array[String]): Unit = {
+    |    java.nio.file.Files.createFile(java.nio.file.Path.of(".execution-started"))
     |    val resultOut = java.lang.System.out
     |    java.lang.System.setOut(java.lang.System.err)
     |    val endpoint = scala.io.StdIn.readLine()
@@ -314,8 +347,8 @@ object ScalaCodeExecutor {
     |      } yield value
     |    }
     |    Unsafe.unsafe { implicit unsafe =>
-    |      Runtime.default.unsafe.run(effect).fold(
-    |        cause => { println("Filesystem execution failed"); java.lang.System.exit(1) },
+    |      Runtime.default.unsafe.run(effect).foldCause(
+    |        cause => { java.lang.System.err.println("Filesystem execution failed: " + cause.prettyPrint); java.lang.System.exit(1) },
     |        value => resultOut.println(value)
     |      )
     |    }
@@ -326,6 +359,7 @@ object ScalaCodeExecutor {
   // Kept in a separate source file: the trusted runner prints the result; snippets use the narrow runtime API.
   private val main = """object ScalaToolMain {
     |  def main(args: Array[String]): Unit = {
+    |    java.nio.file.Files.createFile(java.nio.file.Path.of(".execution-started"))
     |    val resultOut = java.lang.System.out
     |    java.lang.System.setOut(java.lang.System.err)
     |    resultOut.println(ScalaToolSnippet.result)

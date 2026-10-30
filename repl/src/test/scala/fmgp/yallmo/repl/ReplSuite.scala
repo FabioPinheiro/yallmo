@@ -451,7 +451,9 @@ final class ReplSuite extends FunSuite {
       Chunk(
         Message.User("hello"),
         Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "{}")),
-        Message.ToolOutput(FunctionCallOutput(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "12:00")),
+        Message.ToolOutput(
+          FunctionGenericOutput(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "12:00")
+        ),
         Message.Context("request-metadata", "request-id=42")
       ),
       timestamp = 42L

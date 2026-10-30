@@ -47,7 +47,7 @@ private[web] object ScalamodeView {
         case Some(result) =>
           sectionTag(
             cls := "message scalamode-result",
-            h2("Last tool output"),
+            h2(result.title),
             result.fields match {
               case Some(fields) =>
                 div(

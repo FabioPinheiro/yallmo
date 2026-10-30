@@ -69,8 +69,26 @@ final case class ExternalToolCall(
     callId: Option[FunctionCallId] = None
 )
 
-/** The normalized outcome of an external-tool invocation, with diagnostics kept separate from result text. */
-final case class ExternalToolResult(text: String, logs: Seq[String] = Seq.empty)
+/** Typed host boundary; only restricted Scala results carry logs and process metadata. */
+sealed trait ExternalToolResult {
+  def text: String
+}
+
+object ExternalToolResult {
+  final case class Generic(text: String) extends ExternalToolResult
+  final case class ScalaMode(
+      result: ScalaModeResult,
+      logs: Seq[String] = Seq.empty,
+      exitCode: Int = 0,
+      timedOut: Boolean = false,
+      truncated: Boolean = false
+  ) extends ExternalToolResult {
+    def output: String = result.output
+    def text: String = output
+  }
+
+  def apply(text: String): ExternalToolResult = Generic(text)
+}
 
 /** Model guidance made available to an agent for this run. */
 final case class AgentSkill(

@@ -28,7 +28,6 @@ final class ScalaTool(
       .executeWith(call, definition.key) { code =>
         ZIO.serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, maxOutputBytes, dependencies))
       }
-      .map(result => ExternalToolResult(ScalaTool.render(result), result.logs))
 }
 
 object ScalaTool {
@@ -68,16 +67,16 @@ object ScalaTool {
               else executor.execute(code, timeout, maxOutputBytes)
             }
           }
-        } yield ExternalToolResult(render(result), result.logs)
+        } yield result
     }
   }
 
   val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
   /** Shared argument/error boundary for the two Scala tools, independent of their execution backend. */
-  private[tool] def executeWith[R](call: ExternalToolCall, toolKey: ToolKey)(
-      execute: String => RIO[R, CommandOutput]
-  ): ZIO[R, YallmoError, CommandOutput] =
+  private[tool] def executeWith[R, A](call: ExternalToolCall, toolKey: ToolKey)(
+      execute: String => RIO[R, A]
+  ): ZIO[R, YallmoError, A] =
     for {
       code <- ZIO
         .fromEither(
@@ -97,28 +96,14 @@ object ScalaTool {
         .mapError(error => YallmoError.ToolExecutionFailed(toolKey, error.getMessage, error))
     } yield result
 
-  private[tool] def render(result: CommandOutput): String = {
-    // Providers receive result text, not the separate logs. On failure they need the diagnostics to fix the code.
-    val output =
-      if (result.exitCode != 0 || result.timedOut) && result.logs.nonEmpty then
-        val separator = if result.output.isEmpty || result.output.endsWith("\n") then "" else "\n"
-        result.output + separator + result.logs.mkString("\n")
-      else result.output
-    val json = ujson.read(BashTool.render(result.copy(output = output)))
-    if result.timedOut then
-      json("hint") = "Scala CLI exceeded its compilation/execution deadline. " +
-        "The default compiler is pinned and offline; check the captured output for compiler or runtime diagnostics."
-    ujson.write(json)
-  }
-
   val definition: AgentToolDefinition = AgentToolDefinition(
     key = ToolKey.Scalamode,
     description = "Evaluate a Scala block with a pinned Scala 3 nightly, offline. The last expression is returned. " +
       "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
       "No direct file, network, process, environment access or println. " +
       "No user-supplied dependencies, directives or annotations. " +
-      "Returns exitCode, output (the returned value on success, diagnostics on failure), timedOut and truncated. " +
-      "Successful execution logs are separate from output.",
+      "Returns only the value on success, or actionable compiler/runtime diagnostics on failure. " +
+      "The host retains typed results, exitCode, timedOut, truncated and separate execution logs.",
     inputSchema = JsonSchema.ObjectSchema(
       Map("code" -> JsonSchema.StringSchema(Some("Scala block body; its last expression is the result"))),
       required = Set("code"),

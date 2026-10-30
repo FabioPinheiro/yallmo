@@ -165,7 +165,7 @@ final class OrchestratorInvokeSuite extends FunSuite {
             Message.Context("context", "forwarded data"),
             Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.Scalamode, """{"code":"42"}""")),
             Message.ToolOutput(
-              FunctionCallOutput(FunctionCallId.unsafe("previous"), ToolKey.unsafe("other"), "previous output")
+              FunctionGenericOutput(FunctionCallId.unsafe("previous"), ToolKey.unsafe("other"), "previous output")
             )
           )
           results <- ZIO.foreach(payloads) { payload =>

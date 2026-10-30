@@ -1,8 +1,8 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall}
+import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall, ExternalToolResult}
 import munit.FunSuite
 import zio.*
 
@@ -49,11 +49,11 @@ final class ScalaDynamicToolSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[CommandOutput] = {
+      ): Task[ExternalToolResult.ScalaMode] = {
         assertEquals(actual, "6 * 7")
         assertEquals(timeout, 45.seconds)
         assertEquals(maxOutputBytes, 64 * 1024)
-        ZIO.succeed(CommandOutput(0, false, "external", false))
+        ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("external")))
       }
     })
     val results = run {
@@ -64,7 +64,9 @@ final class ScalaDynamicToolSuite extends FunSuite {
         }
         .provideLayer(restricted ++ executor(ZIO.succeed(CommandOutput(0, false, "in-process", false))))
     }
-    assertEquals(results.map(result => ujson.read(result.text)("output").str), List("external", "in-process"))
+    assertEquals(results.head.text, "external")
+    assertEquals(ujson.read(results.last.text)("output").str, "in-process")
+    assert(results.last.isInstanceOf[ExternalToolResult.Generic])
   }
 
   test("the same tool resolves the current executor on every invocation") {

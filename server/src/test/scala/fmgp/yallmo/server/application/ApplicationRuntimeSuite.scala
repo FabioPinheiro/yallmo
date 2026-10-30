@@ -60,7 +60,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
                 timeout: Duration,
                 maxOutputBytes: Int,
                 dependencies: Seq[String]
-            ): Task[CommandOutput] =
+            ): Task[ExternalToolResult.ScalaMode] =
               ZIO.dieMessage("Assembly must not execute snippets")
           }
           services = toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
@@ -96,21 +96,21 @@ final class ApplicationRuntimeSuite extends FunSuite {
               timeout: Duration,
               maxOutputBytes: Int,
               dependencies: Seq[String]
-          ): Task[CommandOutput] =
+          ): Task[ExternalToolResult.ScalaMode] =
             ZIO.dieMessage("Expected explicit filesystem mode")
           override def executeFilesystem(
               code: String,
               endpoint: String,
               timeout: Duration,
               maxOutputBytes: Int
-          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, CommandOutput] =
+          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
             for {
               fs <- ZIO.service[fmgp.yallmo.fs.FsRead]
               supplied <- ZIO.service[fmgp.rpc.RpcWebSocket.RpcRoute]
               _ <- ZIO.attempt { assert(supplied eq route); assertEquals(endpoint, "ws://127.0.0.1:1/rpc") }
               _ <- seen.update(_ :+ fs)
               text <- fs.readUtf8("notes.txt").mapError(error => new Exception(error.toString))
-            } yield CommandOutput(0, false, text, false)
+            } yield ExternalToolResult.ScalaMode(ScalaModeResult.Executed(text))
         }
         coachId = AgentId("coach-private")
         folderId = AgentId("folder-private")
@@ -731,7 +731,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
             assertEquals(outputs.size, 3)
             val read = outputs(0)
             assert(outputs(1).contains("notes.txt"))
-            assertEquals(ujson.read(outputs(2))("output").str, read)
+            assertEquals(outputs(2), read)
             ujson.Obj("role" -> "assistant", "content" -> read)
           } else {
             val calls = List(
@@ -791,7 +791,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[CommandOutput] =
+      ): Task[ExternalToolResult.ScalaMode] =
         ZIO.dieMessage(s"Unexpected Scala: $code $timeout $maxOutputBytes")
     }
     val dynamicScala = new ScalaCodeDynamicExecutor {

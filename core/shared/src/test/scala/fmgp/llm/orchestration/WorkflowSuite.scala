@@ -76,7 +76,7 @@ final class AgentRunnerSuite extends FunSuite:
             AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
 
           override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z", Seq("clock diagnostic")))
+            calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z"))
         }
         runner = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
         answer <- runner.runWithContext(
@@ -97,7 +97,7 @@ final class AgentRunnerSuite extends FunSuite:
       assertEquals(
         outputs,
         Chunk(
-          FunctionCallOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z", Seq("clock diagnostic"))
+          FunctionGenericOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z")
         )
       )
       val transcript = result._1.runContext.messages
@@ -106,6 +106,65 @@ final class AgentRunnerSuite extends FunSuite:
           Message.ToolOutput(outputs.head)
         )
       )
+    }
+  }
+
+  test("runner propagates typed Scala results and metadata without rendering JSON") {
+    val call = FunctionCall(FunctionCallId.unsafe("scala-1"), ToolKey.Scalamode, "{}")
+    val results = List(
+      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("42\n"), Seq("info")),
+      ExternalToolResult.ScalaMode(ScalaModeResult.CompilationError("[E006] Not found: missing"), Seq("diagnostic"), 1),
+      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("ArithmeticException"), Seq("stack"), 1, truncated = true),
+      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("deadline exceeded"), exitCode = 137, timedOut = true)
+    )
+    val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
+    runZIO(ZIO.foreach(results) { result =>
+      val tool = new AgentTool[Any] {
+        val definition = AgentToolDefinition(ToolKey.Scalamode, "Scala")
+        def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = ZIO.succeed(result)
+      }
+      new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
+        .execution(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+        .invoke(Message.ToolCall(call))
+    }) { outputs =>
+      assertEquals(
+        outputs,
+        results.map(result =>
+          Message.ToolOutput(
+            ScalaModeOutput(call.id, result.result, result.logs, result.exitCode, result.timedOut, result.truncated)
+          )
+        )
+      )
+    }
+  }
+
+  test("runner represents Scala host infrastructure and argument failures as execution attempts") {
+    val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
+    val tool = new AgentTool[Any] {
+      val definition = AgentToolDefinition(ToolKey.Scalamode, "Scala")
+      def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+        ZIO.fail(
+          YallmoError.ToolExecutionFailed(call.toolKey, "CLI unavailable", new java.io.IOException("CLI unavailable"))
+        )
+    }
+    val execution = new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
+      .execution(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+    runZIO(ZIO.foreach(List("{}", "not-json")) { arguments =>
+      execution.invoke(
+        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), ToolKey.Scalamode, arguments))
+      )
+    }) { outputs =>
+      outputs.foreach {
+        case Message.ToolOutput(output: ScalaModeOutput) =>
+          assert(output.result.isInstanceOf[ScalaModeResult.Executed])
+          assertEquals(output.name, ToolKey.Scalamode)
+          assertEquals(output.exitCode, 1)
+          assert(output.output.contains("error"))
+          assertEquals(output.logs, Seq.empty)
+        case other => fail(s"Expected ScalaModeOutput, got $other")
+      }
+      assert(outputs.head.contentStr.contains("CLI unavailable"))
+      assert(outputs.last.contentStr.contains("InvalidToolArguments"))
     }
   }
 

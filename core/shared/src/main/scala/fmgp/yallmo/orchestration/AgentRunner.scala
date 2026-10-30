@@ -250,8 +250,17 @@ final class AgentRunner[R](
           output => toolMessage(functionCall, output)
         )
 
-  private def toolMessage(call: FunctionCall, result: ExternalToolResult): MessagePayload =
-    MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, result.text, result.logs))
+  private def toolMessage(call: FunctionCall, result: ExternalToolResult): MessagePayload = {
+    val output = if call.name == ToolKey.Scalamode then
+      result match {
+        case value: ExternalToolResult.ScalaMode =>
+          ScalaModeOutput(call.id, value.result, value.logs, value.exitCode, value.timedOut, value.truncated)
+        case ExternalToolResult.Generic(text) =>
+          ScalaModeOutput(call.id, ScalaModeResult.Executed(text), exitCode = 1)
+      }
+    else FunctionGenericOutput(call.id, call.name, result.text)
+    MessagePayload.ToolOutput(output)
+  }
 
   private def toolErrorOutput(error: YallmoError): String =
     ujson.write(

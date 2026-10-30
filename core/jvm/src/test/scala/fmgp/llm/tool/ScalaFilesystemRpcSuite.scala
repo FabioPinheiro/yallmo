@@ -1,6 +1,8 @@
 package fmgp.yallmo.tool
 
 import fmgp.rpc.*
+import fmgp.yallmo.model.ScalaModeResult
+import fmgp.yallmo.orchestration.ExternalToolResult
 import fmgp.yallmo.fs.*
 import java.nio.file.{Files, Path}
 import munit.FunSuite
@@ -24,14 +26,20 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
       assert(!paths.contains(Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString))
   }
 
-  test("filesystem tool preserves default pure JSON and rejects invalid modes and extra arguments") {
+  test("filesystem tool preserves typed pure and filesystem results and rejects invalid modes and extra arguments") {
     run(ZIO.scoped {
       for {
         route <- RpcWebSocket.route()
         executor = new ScalaCodeExecutor {
           def isAvailable = ZIO.succeed(true)
           def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
-            ZIO.succeed(CommandOutput(0, false, "pure:" + code, false))
+            ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("pure:" + code)))
+          override def executeFilesystem(code: String, endpoint: String, timeout: Duration, maxOutputBytes: Int) = {
+            assertEquals(endpoint, "ws://127.0.0.1:1/rpc")
+            assertEquals(timeout, 45.seconds)
+            assertEquals(maxOutputBytes, 64 * 1024)
+            ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("filesystem:" + code), Seq("connected")))
+          }
         }
         fs = new FsRead {
           def readBytes(path: String) = zio.stream.ZStream.empty
@@ -43,6 +51,14 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
             .execute(fmgp.yallmo.orchestration.ExternalToolCall(fmgp.yallmo.model.ToolKey.Scalamode, arguments))
             .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
         }
+        filesystem <- tool
+          .execute(
+            fmgp.yallmo.orchestration.ExternalToolCall(
+              fmgp.yallmo.model.ToolKey.Scalamode,
+              """{"code":"42","mode":"filesystem"}"""
+            )
+          )
+          .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
         invalid <- ZIO.foreach(
           List(
             """{"code":"42","mode":"unknown"}""",
@@ -56,7 +72,11 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
             .either
         }
       } yield {
-        results.foreach(result => assertEquals(ujson.read(result.text)("output").str, "pure:42"))
+        results.foreach(result => assertEquals(result.text, "pure:42"))
+        assertEquals(
+          filesystem,
+          ExternalToolResult.ScalaMode(ScalaModeResult.Executed("filesystem:42"), Seq("connected"))
+        )
         assert(invalid.forall(_.isLeft))
       }
     })
@@ -107,6 +127,28 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           assert(result.logs.exists(_.contains("RpcWebSocket client connected")), result.logs.mkString("\n"))
           assert(result.logs.exists(_.contains("RpcWebSocket client disconnected")), result.logs.mkString("\n"))
           assert(!result.logs.exists(_.startsWith("WARNING:")), result.logs.mkString("\n"))
+        }
+    }
+  }
+
+  test("filesystem runtime failures are typed execution attempts with actionable diagnostics") {
+    withExecutor { (executor, endpoint, fs, route) =>
+      ScalaTool
+        .filesystem(endpoint, timeout = 120.seconds)
+        .execute(
+          fmgp.yallmo.orchestration.ExternalToolCall(
+            fmgp.yallmo.model.ToolKey.Scalamode,
+            """{"code":"fs.readUtf8(\"missing\")","mode":"filesystem"}"""
+          )
+        )
+        .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
+        .map { result =>
+          val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+          assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
+          assertEquals(typed.exitCode, 1)
+          assert(!typed.timedOut)
+          assert(typed.output.contains("NotFound(missing)"), typed.output)
+          assert(typed.logs.exists(_.contains("Filesystem execution failed")))
         }
     }
   }
@@ -213,7 +255,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
             Files.writeString(Path.of(s"/tmp/yallmo-phase2-denied-$index.log"), diagnostics)
             assert(!result.timedOut, s"probe $index timed out")
             assertNotEquals(result.exitCode, 0, s"probe $index accepted: ${result.output}")
-            assertEquals(result.output, "")
+            assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
             assert(result.logs.exists(_.contains("Compilation failed")), result.logs.mkString("\n"))
             assert(
               diagnostics.contains("from safe code") || diagnostics.contains("is not a member") ||

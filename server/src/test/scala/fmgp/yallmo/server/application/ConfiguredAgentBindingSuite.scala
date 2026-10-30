@@ -6,7 +6,7 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities, ProviderId}
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
-import fmgp.yallmo.tool.{CommandOutput, ReadFileTool, ScalaCodeExecutor, ScalaTool}
+import fmgp.yallmo.tool.{ReadFileTool, ScalaCodeExecutor, ScalaTool}
 import munit.FunSuite
 import zio.*
 
@@ -122,15 +122,15 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
               timeout: Duration,
               maxOutputBytes: Int,
               dependencies: Seq[String]
-          ): Task[CommandOutput] =
-            used.set(true).as(CommandOutput(0, false, "unexpected", false))
-          def executeFilesystem(
+          ): Task[ExternalToolResult.ScalaMode] =
+            used.set(true).as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
+          override def executeFilesystem(
               code: String,
               endpoint: String,
               timeout: Duration,
               maxOutputBytes: Int
-          ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, CommandOutput] =
-            used.set(true).as(CommandOutput(0, false, "unexpected", false))
+          ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
+            used.set(true).as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
         }
         route <- RpcWebSocket.route()
         scalaTool = ScalaTool.filesystem("ws://127.0.0.1:1/rpc")

@@ -56,9 +56,9 @@ final class ToolKeySuite extends FunSuite {
   test("tool calls and outputs retain their existing JSON shape") {
     val id = FunctionCallId.unsafe("call-1")
     val call = FunctionCall(id, ToolKey.Scalamode, "{}")
-    val output = FunctionCallOutput(id, ToolKey.Scalamode, "42")
+    val output = FunctionGenericOutput(id, ToolKey.ScalaUnsafe, "42")
     assertEquals(call.toJson, """{"id":"call-1","name":"scalamode","argumentsJson":"{}"}""")
-    assertEquals(output.toJson, """{"callId":"call-1","name":"scalamode","output":"42"}""")
+    assertEquals(output.toJson, """{"callId":"call-1","name":"scalaunsafe","output":"42"}""")
     assertEquals(call.toJson.fromJson[FunctionCall], Right(call))
     assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
     assert("""{"id":"call-1","name":" ","argumentsJson":"{}"}""".fromJson[FunctionCall].isLeft)

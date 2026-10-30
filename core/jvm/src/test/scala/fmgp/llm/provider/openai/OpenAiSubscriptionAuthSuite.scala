@@ -1,7 +1,7 @@
 package fmgp.yallmo.provider.openai
 
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
-import fmgp.yallmo.model.{AgentId, FunctionCallOutput, MessagePayload}
+import fmgp.yallmo.model.{AgentId, FunctionGenericOutput, MessagePayload}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, LlmStopReason, ProviderGenerateOptions}
 import munit.FunSuite
 import zio.*
@@ -418,7 +418,7 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
           AgentTurnRequest(
             "account-model",
             Chunk(MessagePayload.User("Read README")) ++ first.output ++ Chunk(
-              MessagePayload.ToolOutput(FunctionCallOutput(call.id, call.name, "README contents")),
+              MessagePayload.ToolOutput(FunctionGenericOutput(call.id, call.name, "README contents")),
               MessagePayload.Instructions("Stay concise")
             )
           )

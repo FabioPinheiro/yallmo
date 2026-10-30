@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.orchestration.SessionId
+import fmgp.yallmo.orchestration.{SessionId, ExternalToolResult}
 import fmgp.yallmo.orchestration.config.{
   AgentCapabilities,
   AgentConfig,
@@ -582,7 +582,7 @@ final class ServerApplicationSuite extends FunSuite {
     val compiler = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(scala)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
-          : Task[CommandOutput] = unexpected
+          : Task[ExternalToolResult.ScalaMode] = unexpected
     }
     val dynamicCompiler = new ScalaCodeDynamicExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(false)

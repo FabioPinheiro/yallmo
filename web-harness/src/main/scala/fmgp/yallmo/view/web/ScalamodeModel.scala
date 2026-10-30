@@ -11,12 +11,31 @@ import zio.json.*
 import zio.json.ast.Json
 
 private[web] final case class ScalamodeResult(message: Message) {
-  val logs: Seq[String] = message.payload match {
-    case MessagePayload.ToolOutput(output) => output.logs
-    case _                                 => Seq.empty
+  private val scalaOutput = message.payload match {
+    case MessagePayload.ToolOutput(output: ScalaModeOutput) => Some(output)
+    case _                                                  => None
   }
+  val logs: Seq[String] = scalaOutput.toSeq.flatMap(_.logs)
   val output: String = message.payload.contentStr
-  val fields: Option[ToolResultContent.Result] = ToolResultContent.parse(output)
+  val title: String = scalaOutput
+    .map(_.result match {
+      case ScalaModeResult.CompilationError(_) => "Compilation / launch diagnostics"
+      case ScalaModeResult.Executed(_)         => "Execution attempt"
+    })
+    .getOrElse("Last tool output")
+  val fields: Option[ToolResultContent.Result] = scalaOutput
+    .map { value =>
+      import ToolResultContent.{Field, Result}
+      Result(
+        List(
+          Field("exitCode", value.exitCode.toString),
+          Field("timedOut", value.timedOut.toString),
+          Field("truncated", value.truncated.toString)
+        ),
+        List(Field("output", value.output))
+      )
+    }
+    .orElse(ToolResultContent.parse(output))
 }
 
 private[web] enum ScalamodeTool(val key: ToolKey) {

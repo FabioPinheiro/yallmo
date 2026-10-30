@@ -13,11 +13,6 @@ ThisBuild / scalacOptions ++= Seq(
   "-Wunused:all",
   "-Werror",
 )
-// Tests intentionally cover the deprecated unsafe Scala APIs, including ZIO inline macro expansions.
-// Keep production deprecation warnings and all other test warnings fatal.
-lazy val unsafeScalaTestSettings = Seq(
-  Test / scalacOptions += "-Wconf:cat=deprecation&msg=(ScalaCodeDynamicExecutor|ScalaDynamicTool):s"
-)
 ThisBuild / libraryDependencySchemes ++= Seq(
   "dev.zio" %% "zio-json" % "always",
 )
@@ -101,7 +96,7 @@ lazy val model = crossProject(JSPlatform, JVMPlatform)
 lazy val modelJVM = model.jvm
 lazy val modelJS = model.js
 
-/** Portable script/service contracts; compilation and host implementations remain JVM-only. */
+/** Runtime API for restricted Scala snippets; compilation and execution remain JVM-only. */
 lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
@@ -150,7 +145,6 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
     ),
   )
   .jvmSettings(jvmSettings)
-  .jvmSettings(unsafeScalaTestSettings)
   .jvmSettings(
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-http" % "3.11.6",
@@ -217,7 +211,6 @@ lazy val repl = project
   .in(file("repl"))
   .dependsOn(coreJVM, server, clientHarnessJVM)
   .settings(jvmSettings)
-  .settings(unsafeScalaTestSettings)
   .settings(
     name := "yallmo-repl",
     Compile / mainClass := Some("fmgp.yallmo.repl.ReplMain"),
@@ -291,7 +284,6 @@ lazy val server = project
   .in(file("server"))
   .dependsOn(coreJVM, protocolJVM)
   .settings(jvmSettings)
-  .settings(unsafeScalaTestSettings)
   .settings(
     name := "yallmo-server",
     Compile / mainClass := Some("fmgp.yallmo.server.OrchestratorServerMain"),

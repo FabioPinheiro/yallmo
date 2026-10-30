@@ -7,15 +7,6 @@ private[web] object ScalamodeView {
   def apply(model: ScalamodeModel, selectedAgent: Signal[Option[AgentId]]): HtmlElement = {
     val state = model.state.signal
     val blockedReason = state.combineWith(selectedAgent).map { case (s, agent) => s.blockedReason(agent) }
-    def runButton(tool: ScalamodeTool): HtmlElement = button(
-      idAttr := s"${tool.key}-run",
-      typ := "button",
-      disabled <-- blockedReason.map(_.nonEmpty),
-      child.text <-- state.map(s =>
-        if s.pending && s.tool == tool then s"Running ${tool.key}…" else s"Run ${tool.key}"
-      ),
-      onClick --> (_ => model.run(tool))
-    )
     div(
       cls := "page scalamode-page",
       h1("Scalamode"),
@@ -37,8 +28,13 @@ private[web] object ScalamodeView {
       ),
       div(
         cls := "composer-actions",
-        runButton(ScalamodeTool.Safe),
-        runButton(ScalamodeTool.Dynamic)
+        button(
+          idAttr := "scalamode-run",
+          typ := "button",
+          disabled <-- blockedReason.map(_.nonEmpty),
+          child.text <-- state.map(s => if s.pending then "Running scalamode…" else "Run scalamode"),
+          onClick --> (_ => model.run())
+        )
       ),
       p(cls := "muted", role := "status", child.text <-- blockedReason.map(_.getOrElse(""))),
       p(cls := "error", role := "alert", hidden <-- state.map(_.notice.isEmpty), child.text <-- state.map(_.notice)),

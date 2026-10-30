@@ -47,7 +47,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     val arguments = ScalaCodeExecutor.arguments()
     val classpath = arguments(arguments.indexOf("--classpath") + 1)
     val apiLocation =
-      Path.of(classOf[fmgp.yallmo.scalacode.ScalaScript].getProtectionDomain.getCodeSource.getLocation.toURI)
+      Path.of(fmgp.yallmo.scalacode.ScalaToolApi.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     val coreLocation = Path.of(classOf[ScalaCodeExecutor].getProtectionDomain.getCodeSource.getLocation.toURI)
     assertEquals(classpath, apiLocation.toAbsolutePath.toString)
     assert(Files.exists(apiLocation))

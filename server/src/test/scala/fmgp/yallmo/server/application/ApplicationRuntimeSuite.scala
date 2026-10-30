@@ -794,16 +794,10 @@ final class ApplicationRuntimeSuite extends FunSuite {
       ): Task[ExternalToolResult.ScalaMode] =
         ZIO.dieMessage(s"Unexpected Scala: $code $timeout $maxOutputBytes")
     }
-    val dynamicScala = new ScalaCodeDynamicExecutor {
-      def isAvailable: UIO[Boolean] = ZIO.succeed(false)
-      def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
-        ZIO.dieMessage(s"Unexpected dynamic Scala: $code $timeout $maxOutputBytes")
-    }
     val bashLayer: ULayer[BashExecutor] = ZLayer.scoped(
       ZIO.acquireRelease(record("acquire") *> alive.set(true).as(bash))(_ => alive.set(false) *> record("release"))
     )
-    bashLayer ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala) ++
-      ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicScala)
+    bashLayer ++ ZLayer.succeed(git) ++ ZLayer.succeed(scala)
   }
 
   private def toolClient(requests: Ref[Int]): Client =

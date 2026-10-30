@@ -47,20 +47,7 @@ final class ScalamodeModelSuite extends FunSuite {
           Some(input.id),
           Instant.EPOCH,
           Message.ToolOutput(
-            if call.name == ToolKey.Scalamode then ScalaModeOutput(call.id, ScalaModeResult.Executed(output), logs)
-            else
-              FunctionGenericOutput(
-                call.id,
-                call.name,
-                Json
-                  .Obj(
-                    "exitCode" -> Json.Num(0),
-                    "timedOut" -> Json.Bool(false),
-                    "truncated" -> Json.Bool(false),
-                    "output" -> Json.Str(output)
-                  )
-                  .toJson
-              )
+            ScalaModeOutput(call.id, ScalaModeResult.Executed(output), logs)
           )
         )
       )
@@ -78,7 +65,6 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(params.agentId, agent)
     assertEquals(params.input.agentId, human)
     assertEquals(params.input.parentId, None)
-    assertEquals(h.model.state.now().tool, ScalamodeTool.Safe)
     assertEquals(call.name, ToolKey.Scalamode)
     assertEquals(call.argumentsJson.fromJson[Json], Right(Json.Obj("code" -> Json.Str("List(1, 2, 3).map(_ * 2).sum"))))
     h.model.code("next draft")
@@ -120,86 +106,14 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(success.fields.get.blocks, List(ToolResultContent.Field("output", returnedJson.output)))
   }
 
-  test("generic scalaunsafe output has no separate logs") {
+  test("Run cannot duplicate a pending request") {
     val h = new Harness
-    h.model.run(ScalamodeTool.Dynamic)
-    val result = ScalamodeResult(h.response("42"))
-    assertEquals(result.logs, Seq.empty)
-    assertEquals(result.fields.get.blocks.find(_.name == "output").map(_.text), Some("42"))
-  }
-
-  test("each run button submits its own tool key without changing source") {
-    val h = new Harness
-    val source = "ZIO.succeed(42)"
-    h.model.code(source)
-    assertEquals(h.requests.size, 0)
-    h.model.run(ScalamodeTool.Dynamic)
-    assertEquals(h.model.state.now().tool, ScalamodeTool.Dynamic)
-    assertEquals(h.model.state.now().code, source)
-    val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
-    assertEquals(call.name, ToolKey.ScalaUnsafe)
-    assertEquals(call.argumentsJson.fromJson[Json], Right(Json.Obj("code" -> Json.Str(source))))
-    val response = h.response("42")
-    h.requests.head._2.success(response)
-    tick().map { _ =>
-      assertEquals(h.model.state.now().result.map(_.message), Some(response))
-      assert(!h.model.state.now().pending)
-      h.model.run(ScalamodeTool.Safe)
-      assertEquals(h.model.state.now().tool, ScalamodeTool.Safe)
-      assertEquals(h.model.state.now().code, source)
-      assertEquals(h.requests.size, 2)
-      val safeCall = h.requests.last._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
-      assertEquals(safeCall.name, ToolKey.Scalamode)
-      assertEquals(safeCall.argumentsJson, call.argumentsJson)
-    }
-  }
-
-  test("neither run button can retarget or duplicate a pending request") {
-    Future.sequence(ScalamodeTool.values.toList.map { tool =>
-      val h = new Harness
-      h.model.run(tool)
-      ScalamodeTool.values.foreach(h.model.run)
-      assertEquals(h.model.state.now().tool, tool)
-      assertEquals(h.requests.size, 1)
-      assert(h.model.state.now().blockedReason(Some(agent)).exists(_.contains(s"Waiting for ${tool.key}")))
-      h.requests.head._2.success(h.response())
-      tick().map { _ => assert(!h.model.state.now().pending) }
-    })
-  }
-
-  test("last submitted tool and source survive reconnect without replay or automatic fallback") {
-    val h = new Harness
-    h.model.code("ZIO.succeed(42)")
-    h.model.run(ScalamodeTool.Dynamic)
-    h.model.disable()
-    h.model.configure(info)
+    h.model.run()
+    h.model.run()
+    assertEquals(h.requests.size, 1)
+    assert(h.model.state.now().blockedReason(Some(agent)).exists(_.contains("Waiting for scalamode")))
     h.requests.head._2.success(h.response())
-    tick().map { _ =>
-      assertEquals(h.model.state.now().tool, ScalamodeTool.Dynamic)
-      assertEquals(h.model.state.now().code, "ZIO.succeed(42)")
-      assertEquals(h.model.state.now().result, None)
-      assertEquals(h.requests.size, 1)
-    }
-  }
-
-  test("a dynamic call rejects a response naming the restricted tool") {
-    val h = new Harness
-    h.model.run(ScalamodeTool.Dynamic)
-    val response = h.response()
-    val output = response.payload.asInstanceOf[MessagePayload.ToolOutput].output
-    h.requests.head._2
-      .success(
-        Message(
-          response.data.copy(payload =
-            Message.ToolOutput(ScalaModeOutput(output.callId, ScalaModeResult.Executed(output.output)))
-          )
-        )
-      )
-    tick().map { _ =>
-      assertEquals(h.model.state.now().result, None)
-      assert(h.model.state.now().notice.contains("Uncorrelated"))
-      assertEquals(h.requests.size, 1)
-    }
+    tick().map { _ => assert(!h.model.state.now().pending) }
   }
 
   test("viewers, missing methods, unknown agents, empty and oversized code never invoke") {

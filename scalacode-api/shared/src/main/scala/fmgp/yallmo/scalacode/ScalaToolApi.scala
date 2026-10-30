@@ -6,10 +6,10 @@ import scala.annotation.experimental
   *
   * Keep privileged implementations narrow: submitted code cannot declare its own `@assumeSafe` methods.
   */
-@experimental
 object ScalaToolApi {
 
   /** Prints a fixed greeting without granting general console or JVM access to the caller. */
+  @experimental
   @caps.assumeSafe
   def api: Unit = println("Yes Tool API is available")
 }

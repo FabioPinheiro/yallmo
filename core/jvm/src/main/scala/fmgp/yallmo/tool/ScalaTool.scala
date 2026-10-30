@@ -130,7 +130,7 @@ object ScalaTool {
   )
 
   // Deliberately conservative, including inside literals/comments. These checks protect compiler configuration.
-  // Restricted execution relies on compiler safe mode, not an API blacklist; dynamic execution is explicitly trusted.
+  // Restricted execution relies on compiler safe mode, not an API blacklist.
   private[tool] def validate(code: String): Either[String, Unit] =
     if code.trim.isEmpty then Left("code must not be empty")
     else if code.length > 64 * 1024 then Left("code exceeds 65,536 characters")

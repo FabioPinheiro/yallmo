@@ -31,7 +31,7 @@ EOF
 
 ## Minimal implementation
 
-The following describes the restricted `ScalaTool` (`scalamode`). Trusted in-process execution is a separate `ScalaDynamicTool` (`scalaunsafe`). `ApplicationTools` currently registers the restricted tool only; dynamic registration is disabled. Agent capability allowlists control access to registered tools. See [dynamic executor usage and security limitations](SCALA-DYNAMIC-EXECUTOR.md).
+The restricted `ScalaTool` (`scalamode`) is registered by `ApplicationTools`. Agent capability allowlists control access to registered tools.
 
 The `scalamode` agent tool accepts one JSON argument:
 
@@ -53,7 +53,7 @@ Main-start file marks this boundary independently of the bounded log capture. It
 pre-Main timeouts), and host infrastructure/validation failures carry actionable text here. Inspect `exitCode`,
 `timedOut`, and `truncated`. Providers continue to receive the computed `output`, including compiler diagnostics.
 Successful `output` contains only the returned value; informational messages remain in `ScalaModeOutput.logs`.
-Other tools, including `scalaunsafe`, use `FunctionGenericOutput(callId,name,output)` with no logs field.
+Other tools use `FunctionGenericOutput(callId,name,output)` with no logs field.
 Malformed `scalamode` JSON is rejected; there is no legacy JSON fallback or migration.
 Use the **last expression**, not `println`, to return a value.
 

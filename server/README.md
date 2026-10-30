@@ -56,7 +56,7 @@ An existing parent is allowed without inheriting its history. An input can refer
 Conversational agents retain their normal text-loop behavior. A direct `ToolCall` executes through the selected
 agent's authorized runner and returns a correlated `ToolOutput` without inference. Registered approval gates,
 argument validation and deadlines still apply. No session is required or created.
-The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path with separate **Run scalamode** (restricted) and **Run scalaunsafe** (trusted dynamic) buttons. `ApplicationTools` currently registers only `scalamode`; dynamic registration is disabled. Custom trusted host wiring can explicitly supply the `filesystem` module's read-only `fmgp.yallmo.fs.FsRead` capability and matching compiler classpath; no script-specific filesystem API or adapter remains. Neither button bypasses server permissions. Agents without a tool allowlist can use registered `scalaunsafe`; exclude it from an explicit `capabilities.tools` allowlist to deny trusted in-process execution.
+The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path with the **Run scalamode** button for restricted Scala execution. `ApplicationTools` registers `scalamode`; server tool availability and agent permissions still apply.
 
 Failures can leave accepted input; disconnect abandons the local wait, not admitted execution. Repeating an invocation
 can repeat provider/tool side effects. Inspect message history before manually repeating uncertain requests.

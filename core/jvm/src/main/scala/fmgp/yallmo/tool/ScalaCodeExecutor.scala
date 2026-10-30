@@ -1,6 +1,6 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.scalacode.ScalaScript
+import fmgp.yallmo.scalacode.ScalaToolApi
 import fmgp.yallmo.model.ScalaModeResult
 import fmgp.yallmo.orchestration.ExternalToolResult
 import zio.*
@@ -302,9 +302,9 @@ object ScalaCodeExecutor {
       code + "\n  }\n}\n"
 
   // Expose only scalacode-api, not the application classpath or model-supplied dependencies.
-  // Use its stable ScalaScript contract as the location anchor so the host need not opt into the experimental API.
+  // The stable API object is the location anchor; only its privileged methods are experimental.
   private[tool] def apiClasspath: String =
-    Path.of(classOf[ScalaScript].getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString
+    Path.of(ScalaToolApi.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString
 
   private[tool] val filesystemDependencies = Seq(
     "dev.zio::zio-streams:2.1.27",
@@ -313,7 +313,7 @@ object ScalaCodeExecutor {
   )
 
   private[tool] def filesystemClasspath: String =
-    Seq(classOf[ScalaScript], classOf[FsRead], classOf[RpcConnection])
+    Seq(ScalaToolApi.getClass, classOf[FsRead], classOf[RpcConnection])
       .map(cls => Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString)
       .distinct
       .mkString(java.io.File.pathSeparator)

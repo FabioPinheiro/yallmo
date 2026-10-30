@@ -158,24 +158,22 @@ final class ApplicationToolsSuite extends FunSuite {
     }
   }
 
-  test("startup registers restricted Scala but does not probe or register disabled scalaunsafe") {
+  test("startup registers and executes restricted Scala") {
     withWorkspace { workspace =>
-      val (definition, result, calls, tools) = run {
+      val (definition, result, calls) = run {
         for {
-          services <- probes(allowExecution = true, dynamicScala = true)
+          services <- probes(allowExecution = true)
           tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
           scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
           result <- scala
             .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
             .provideLayer(services.layer)
           calls <- services.calls.get
-        } yield (scala.definition, result, calls, tools)
+        } yield (scala.definition, result, calls)
       }
       assertEquals(definition, ScalaTool.definition)
       assertEquals(result.text, "fake output")
       assert(calls.contains("scala:(1 to 10).sum"))
-      assert(!calls.contains("dynamic.available"))
-      assert(!tools.available.exists(_.definition.key == ToolKey.ScalaUnsafe))
     }
   }
 
@@ -199,7 +197,6 @@ final class ApplicationToolsSuite extends FunSuite {
       git: Boolean = true,
       worktree: Boolean = true,
       scala: Boolean = true,
-      dynamicScala: Boolean = true,
       allowExecution: Boolean = false
   ): UIO[Probes] = Ref.make(Vector.empty[String]).map { calls =>
     def record(value: String): UIO[Unit] = calls.update(_ :+ value)
@@ -229,15 +226,9 @@ final class ApplicationToolsSuite extends FunSuite {
         execution(s"scala:$code").map(command => ExternalToolResult.ScalaMode(ScalaModeResult.Executed(command.output)))
       }
     }
-    val dynamicCompiler = new ScalaCodeDynamicExecutor {
-      def isAvailable: UIO[Boolean] = record("dynamic.available").as(dynamicScala)
-      def execute[R: EnvironmentTag](code: String, timeout: Duration, maxOutputBytes: Int): RIO[R, CommandOutput] =
-        execution(s"dynamic:$code $timeout $maxOutputBytes")
-    }
     Probes(
       calls,
-      ZLayer.succeed(shell) ++ ZLayer.succeed(repository) ++ ZLayer.succeed(compiler) ++
-        ZLayer.succeed[ScalaCodeDynamicExecutor](dynamicCompiler)
+      ZLayer.succeed(shell) ++ ZLayer.succeed(repository) ++ ZLayer.succeed(compiler)
     )
   }
 

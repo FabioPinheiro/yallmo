@@ -52,7 +52,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 
 - `model/` — JVM/JS provider-neutral models and orchestration state.
 - `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
-- `scalacode-api/` — JVM/JS script and service contracts with portable string paths; no application-module dependencies.
+- `scalacode-api/` — JVM/JS runtime API for restricted Scala snippets; no application-module dependencies.
 - `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG.
 - `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
 - `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
@@ -83,7 +83,7 @@ flowchart BT
 
 This is a build graph, not a deployment diagram: the connected REPL and website communicate with a separately running
 server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
-`scalacode-api` has no application-module dependencies; generated scripts compile against it and Scala/ZIO, not the whole host classpath.
+`scalacode-api` has no application-module dependencies; restricted snippets compile against it and Scala/ZIO, not the whole host classpath.
 `browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.
 
 ## WIP & TODO & IDEAS

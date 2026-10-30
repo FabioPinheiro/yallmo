@@ -15,7 +15,6 @@ object ToolKey {
   val Bash: ToolKey = "bash"
   val RepositoryChanges: ToolKey = "repositoryChanges"
   val Scalamode: ToolKey = "scalamode"
-  val ScalaUnsafe: ToolKey = "scalaunsafe"
   val CoachListApplications: ToolKey = "coach_list_applications"
   val CoachGetApplication: ToolKey = "coach_get_application"
   val CoachSaveApplication: ToolKey = "coach_save_application"

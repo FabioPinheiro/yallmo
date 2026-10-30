@@ -51,24 +51,19 @@ There is no direct source inclusion, JVM core dependency or duplicate browser DT
 ## Scalamode
 
 Open **Scalamode** (`#/scalamode`, NORMAL shortcut `7`) to run a Scala string without asking an LLM to generate or execute
-a conversation turn. Choose an agent using the **same toolbar picker as Chat**, edit the code, and use either button:
-**Run scalamode** for restricted Scala, or **Run scalaunsafe** for trusted ZIO execution. Each button submits the same editor
-text to its named tool; there is no tool-selection dropdown. `scalaunsafe` runs inside the server JVM: it is not a sandbox and
-cancellation is cooperative. Return a ZIO effect such as `ZIO.succeed(42)` when using it.
-Both views use the current conversation's selected agent; Scalamode has no separate agent selection. The shared agent picker
-and both run buttons are disabled while a request is pending. The page sends an
-ordinary `agents.invoke` message containing `ToolCall(name = clickedToolKey, argumentsJson = {"code":"..."})` and displays its
-correlated `ToolOutput`: stdout/result, compiler/runtime diagnostics, exit code, timeout and truncation metadata.
+a conversation turn. Choose an agent using the **same toolbar picker as Chat**, edit the code, and use
+**Run scalamode** for restricted Scala execution. Both views use the current conversation's selected agent;
+Scalamode has no separate agent selection. The shared agent picker and run button are disabled while a request is pending.
+The page sends an ordinary `agents.invoke` message containing
+`ToolCall(name = scalamode, argumentsJson = {"code":"..."})` and displays its correlated `ToolOutput`:
+stdout/result, compiler/runtime diagnostics, exit code, timeout and truncation metadata.
 Editor text is treated only as text; no Markdown/HTML is executed by the browser.
 
 A configured backend, initialized Operator and advertised `agents.invoke` method are required. Tool availability and
 the selected agent's capability allowlist are checked by the server, not inferred from the agent selector. Scala CLI
 must exist on the backend; restricted execution also needs the pinned offline compiler cache. `ApplicationTools`
-currently registers only the restricted tool; dynamic registration is disabled. Restricted-tool allowlists must use `scalamode` instead of
-`scalasafemode`. Dynamic-tool allowlists must use `scalaunsafe` instead of the former dynamic `scalamode` key.
-Trusted `scalaunsafe` must be authorized for the selected agent;
-exclude it from an explicit tool allowlist to deny in-process execution. Its run button does not bypass server checks. Unavailable or denied
-tools return server errors; the client does not fall back to another tool. Restricted execution still accepts
+registers the restricted tool.
+Unavailable or denied tools return server errors. Restricted execution still accepts
 only `{"code":"..."}`, with the same compiler restrictions, injected `tool.api` helper and execution limits.
 
 Source, pending state and the last result live at application root and survive tab navigation, not

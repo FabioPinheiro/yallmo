@@ -52,7 +52,7 @@ final class MessagePayloadSuite extends FunSuite {
   }
 
   test("name exclusively dispatches subtypes and malformed scalamode never falls back") {
-    val generic = FunctionGenericOutput(callId, ToolKey.ScalaUnsafe, "42")
+    val generic = FunctionGenericOutput(callId, ToolKey.Bash, "42")
     assertEquals(generic.toJson.fromJson[FunctionCallOutput], Right(generic))
     assert(!generic.toJson.contains("logs"))
     val reserved = """{"callId":"call-1","name":"scalamode","output":"42"}"""
@@ -75,7 +75,7 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(output.toJson.fromJson[ScalaModeOutput], Right(output))
     assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
       fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
-      name = fmgp.yallmo.model.ToolKey.ScalaUnsafe)"""))
+      name = fmgp.yallmo.model.ToolKey.Bash)"""))
   }
 
   test("compilation diagnostics are the complete provider-facing output") {

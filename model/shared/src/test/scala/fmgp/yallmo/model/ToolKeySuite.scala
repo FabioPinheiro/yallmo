@@ -11,14 +11,13 @@ final class ToolKeySuite extends FunSuite {
     ToolKey.Bash -> "bash",
     ToolKey.RepositoryChanges -> "repositoryChanges",
     ToolKey.Scalamode -> "scalamode",
-    ToolKey.ScalaUnsafe -> "scalaunsafe",
     ToolKey.CoachListApplications -> "coach_list_applications",
     ToolKey.CoachGetApplication -> "coach_get_application",
     ToolKey.CoachSaveApplication -> "coach_save_application"
   )
 
   test("built-in keys are unique and retain their wire values") {
-    assertEquals(builtins.map(_._1).distinct.size, 9)
+    assertEquals(builtins.map(_._1).distinct.size, 8)
     builtins.foreach { (key, wire) =>
       assertEquals(key.value, wire)
       assertEquals(key.toJson, s"\"$wire\"")
@@ -56,9 +55,9 @@ final class ToolKeySuite extends FunSuite {
   test("tool calls and outputs retain their existing JSON shape") {
     val id = FunctionCallId.unsafe("call-1")
     val call = FunctionCall(id, ToolKey.Scalamode, "{}")
-    val output = FunctionGenericOutput(id, ToolKey.ScalaUnsafe, "42")
+    val output = FunctionGenericOutput(id, ToolKey.Bash, "42")
     assertEquals(call.toJson, """{"id":"call-1","name":"scalamode","argumentsJson":"{}"}""")
-    assertEquals(output.toJson, """{"callId":"call-1","name":"scalaunsafe","output":"42"}""")
+    assertEquals(output.toJson, """{"callId":"call-1","name":"bash","output":"42"}""")
     assertEquals(call.toJson.fromJson[FunctionCall], Right(call))
     assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
     assert("""{"id":"call-1","name":" ","argumentsJson":"{}"}""".fromJson[FunctionCall].isLeft)

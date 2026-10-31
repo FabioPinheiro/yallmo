@@ -10,6 +10,14 @@ import zio.json.*
 object ScalaToolRuntime {
   val LogFile: String = "runtime.jsonl"
 
+  /** Overload resolution preserves the inferred snippet type: plain values are evaluated, effects are executed.
+    * Only effects with no environment requirement are executed, without runtime type tests or casts.
+    */
+  def evaluate(value: => Any): Task[Any] = ZIO.attempt(value)
+
+  @scala.annotation.targetName("evaluateEffect")
+  def evaluate[E, A](effect: => ZIO[Any, E, A]): ZIO[Any, E, A] = ZIO.suspendSucceed(effect)
+
   /** ZIOApp supplies the positive byte limit as its sole argument. No endpoint or secret is logged here. */
   val bootstrap: ZLayer[ZIOAppArgs, Throwable, Unit] =
     Runtime.removeDefaultLoggers >>> ZLayer.scoped {

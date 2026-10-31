@@ -14,6 +14,13 @@ Runtime API for restricted `scalamode` snippets, separate from the application c
 `ScalaToolApi.api` prints a fixed API availability message directly to stderr, without changing global stdout. This method is `@experimental` because it uses
 `caps.assumeSafe`; the API object itself is a stable anchor for locating the compiled module.
 
+`ScalaToolApi.ZIO` is a restricted facade, automatically imported as `ZIO` alongside the matching type alias.
+It exposes `succeed`, `fail`, `attempt`, `fromEither`, `foreach` and `unit`, not the full unsafe library companion.
+Each constructor is a narrow `@caps.assumeSafe` boundary; supplied expressions/callbacks are still checked by the
+snippet compiler. The host supplies Trace evidence. For example, `ZIO.succeed(1 + 1)` returns `2`: the trusted
+runner executes returned environment-free effects, retaining inferred types rather than recovering effects from
+`Any` with casts. Plain values still work. Direct `import zio.ZIO`, runtime access and ambient I/O remain rejected.
+
 `ScalaCodeExecutor` supplies this module's classes directory or JAR to Scala CLI and imports `ScalaToolApi` as
 `tool`, along with its members. No API source resource is copied into snippets. Both `core` variants depend
 on the matching API variant; compilation and execution remain JVM-only.

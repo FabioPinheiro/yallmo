@@ -97,7 +97,7 @@ object ScalaCodeExecutor {
         dependencies: Seq[String],
         bootstrap: Option[(String, RpcToken)]
     ): Task[ExternalToolResult.ScalaMode] =
-      ZIO
+      (ZIO
         .fail(new IllegalArgumentException("Offline mode requires a full nightly version"))
         .when(offline && !scalaVersion.endsWith("-NIGHTLY")) *>
         ZIO.fromEither(ScalaTool.validate(code).left.map(new IllegalArgumentException(_))) *>
@@ -127,18 +127,18 @@ object ScalaCodeExecutor {
               remaining <- ZIO.succeed(new AtomicInteger(maxOutputBytes))
               classpath = if bootstrap.isDefined then filesystemClasspath else apiClasspath
               _ <- ZIO.logInfo(s"Scala CLI compiling compiler=$scalaVersion offline=$offline timeout=$timeout")
-              compilation <- runProcess(
+              (compilationDuration, compilation) <- runProcess(
                 compileArguments(executable, scalaVersion, offline, dependencies, classpath),
                 directory,
                 deadline,
                 remaining,
                 None
-              )
+              ).timed
               compiled = compilation.exitCode == 0 && !compilation.timedOut
-              command <-
-                if !compiled then ZIO.succeed(compilation)
+              (executionDuration, command) <-
+                if !compiled then ZIO.succeed((Duration.Zero, compilation))
                 else
-                  for {
+                  (for {
                     runtime <- runProcess(
                       arguments(executable, scalaVersion, offline, dependencies, classpath, maxOutputBytes),
                       directory,
@@ -150,13 +150,14 @@ object ScalaCodeExecutor {
                   } yield runtime.copy(
                     logs = compilation.logs ++ compilation.output.linesIterator.toVector ++ runtime.logs ++ fileLogs._1,
                     truncated = compilation.truncated || runtime.truncated || fileLogs._2
-                  )
+                  )).timed
             } yield result(
               displayDiagnostics(command, code, bootstrap.isDefined, compiled, maxOutputBytes),
               compiled
-            )
+            ).copy(compilationTime = compilationDuration.toMillis, executionTime = executionDuration.toMillis)
           }
-          .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))
+          .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))).timed
+        .map { case (duration, output) => output.copy(totalTime = duration.toMillis) }
   })
 
   /** Every phase owns its process and stream readers; both phases share the deadline and byte budget. */
@@ -268,7 +269,7 @@ object ScalaCodeExecutor {
     val diagnostics = (Seq(command.output).filter(_.nonEmpty) ++ command.logs).mkString("\n")
     val outcome =
       if command.timedOut then
-        ScalaModeResult.Executed(
+        ScalaModeResult.TimedOut(
           "Scala CLI exceeded its compilation/execution deadline." + (if diagnostics.isEmpty then ""
                                                                       else "\n" + diagnostics)
         )
@@ -284,7 +285,7 @@ object ScalaCodeExecutor {
       else ScalaModeResult.Executed(command.output)
     // Failure diagnostics own the captured logs; successful execution logs stay separate from the returned value.
     val logs = if failed then Seq.empty else command.logs
-    ExternalToolResult.ScalaMode(outcome, logs, command.exitCode, command.timedOut, command.truncated)
+    ExternalToolResult.ScalaMode(outcome, logs, command.exitCode, command.truncated)
   }
 
   private def validateFilesystemEndpoint(endpoint: String): Unit = {
@@ -354,7 +355,7 @@ object ScalaCodeExecutor {
   private val purePreamble =
     "import scala.language.experimental.safe\n" +
       "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
-      "object ScalaToolSnippet {\n  import tool.*\n  def result: Any = {\n"
+      "object ScalaToolSnippet {\n  import tool.*\n  def result(using zio.Trace) = {\n"
 
   private[tool] def snippet(code: String): String = purePreamble + code + "\n  }\n}\n"
 
@@ -474,9 +475,9 @@ object ScalaCodeExecutor {
   private val filesystemPreamble =
     "import scala.language.experimental.safe\n" +
       "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
-      "import fmgp.yallmo.fs.{FsRead, FsError}\nimport zio.ZIO\n" +
+      "import fmgp.yallmo.fs.{FsRead, FsError}\nimport fmgp.yallmo.scalacode.ScalaToolApi.ZIO\n" +
       "object ScalaToolSnippet {\n  import tool.*\n" +
-      "  def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): ZIO[Any, FsError, Any] = {\n"
+      "  def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): zio.ZIO[Any, FsError, Any] = {\n"
 
   private[tool] def filesystemSnippet(code: String): String = filesystemPreamble + code + "\n  }\n}\n"
 
@@ -509,7 +510,7 @@ object ScalaCodeExecutor {
     |import zio.*
     |object ScalaToolMain extends ZIOAppDefault {
     |  override val bootstrap = ScalaToolRuntime.bootstrap
-    |  def run = ZIO.attempt(ScalaToolSnippet.result).flatMap(value => Console.printLine(value))
+    |  def run = ScalaToolRuntime.evaluate(ScalaToolSnippet.result).flatMap(value => Console.printLine(value))
     |}
     |""".stripMargin
 

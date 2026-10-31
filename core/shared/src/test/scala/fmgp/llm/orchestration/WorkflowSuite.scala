@@ -115,8 +115,8 @@ final class AgentRunnerSuite extends FunSuite:
       ExternalToolResult.ScalaMode(ScalaModeResult.Executed("42\n"), Seq("info")),
       ExternalToolResult.ScalaMode(ScalaModeResult.CompilationError("[E006] Not found: missing"), Seq("diagnostic"), 1),
       ExternalToolResult.ScalaMode(ScalaModeResult.Executed("ArithmeticException"), Seq("stack"), 1, truncated = true),
-      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("deadline exceeded"), exitCode = 137, timedOut = true)
-    )
+      ExternalToolResult.ScalaMode(ScalaModeResult.TimedOut("deadline exceeded"), exitCode = 137)
+    ).map(_.copy(compilationTime = 1200L, executionTime = 250L, totalTime = 1500L))
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
     runZIO(ZIO.foreach(results) { result =>
       val tool = new AgentTool[Any] {
@@ -131,7 +131,16 @@ final class AgentRunnerSuite extends FunSuite:
         outputs,
         results.map(result =>
           Message.ToolOutput(
-            ScalaModeOutput(call.id, result.result, result.logs, result.exitCode, result.timedOut, result.truncated)
+            ScalaModeOutput(
+              call.id,
+              result.result,
+              result.logs,
+              result.exitCode,
+              result.truncated,
+              result.compilationTime,
+              result.executionTime,
+              result.totalTime
+            )
           )
         )
       )

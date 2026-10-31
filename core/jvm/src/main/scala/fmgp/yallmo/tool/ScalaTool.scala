@@ -100,6 +100,9 @@ object ScalaTool {
   val definition: AgentToolDefinition = AgentToolDefinition(
     key = ToolKey.Scalamode,
     description = "Evaluate a Scala block with a pinned Scala 3 nightly, offline. The last expression is returned. " +
+      "Returned ZIO effects are executed by the host. Automatically imported restricted ZIO constructors: " +
+      "ZIO.succeed, fail, attempt, fromEither, foreach and unit (not the full zio.ZIO companion). " +
+      "Example: ZIO.succeed(1 + 1) returns 2. Trace is supplied; do not import zio.ZIO. " +
       "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
       "No direct file, network, process, environment access or println. " +
       "No user-supplied dependencies, directives or annotations. " +

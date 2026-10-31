@@ -40,26 +40,33 @@ sealed trait FunctionCallOutput {
 
 final case class FunctionGenericOutput(callId: FunctionCallId, name: ToolKey, output: String) extends FunctionCallOutput
 
-/** CompilationError includes compiler setup/launch-stage diagnostics before trusted Main starts. Executed is an attempt
-  * outcome, not a success guarantee: inspect exitCode and timedOut.
+/** CompilationError includes compiler setup/launch-stage diagnostics. TimedOut covers the shared compilation/execution
+  * deadline. Executed is an attempt outcome, not a success guarantee: inspect exitCode.
   */
 enum ScalaModeResult derives JsonCodec {
   case CompilationError(diagnostics: String)
   case Executed(value: String)
+  case TimedOut(diagnostics: String)
 
   def output: String = this match {
     case CompilationError(diagnostics) => diagnostics
     case Executed(value)               => value
+    case TimedOut(diagnostics)         => diagnostics
   }
 }
 
+/** Host-measured elapsed times are milliseconds. Execution includes Scala CLI/JVM startup and any run-stage
+  * compilation; total also includes source setup, diagnostics and cleanup. Unmeasured/skipped times default to zero.
+  */
 final case class ScalaModeOutput(
     callId: FunctionCallId,
     result: ScalaModeResult,
     logs: Seq[String] = Seq.empty,
     exitCode: Int = 0,
-    timedOut: Boolean = false,
-    truncated: Boolean = false
+    truncated: Boolean = false,
+    compilationTime: Long = 0L,
+    executionTime: Long = 0L,
+    totalTime: Long = 0L
 ) extends FunctionCallOutput {
   def name: ToolKey = ToolKey.Scalamode
   def output: String = result.output
@@ -86,15 +93,29 @@ object ScalaModeOutput {
       result: ScalaModeResult,
       logs: Seq[String] = Seq.empty,
       exitCode: Int = 0,
-      timedOut: Boolean = false,
-      truncated: Boolean = false
+      // Read old persisted flags, but never duplicate timeout state in new output JSON.
+      @jsonField("timedOut") legacyTimedOut: Option[Boolean] = None,
+      truncated: Boolean = false,
+      compilationTime: Long = 0L,
+      executionTime: Long = 0L,
+      totalTime: Long = 0L
   ) derives JsonCodec
 
   given JsonCodec[ScalaModeOutput] = summon[JsonCodec[Fields]].transformOrFail(
     fields =>
       Either.cond(
         fields.name == ToolKey.Scalamode,
-        ScalaModeOutput(fields.callId, fields.result, fields.logs, fields.exitCode, fields.timedOut, fields.truncated),
+        ScalaModeOutput(
+          fields.callId,
+          if fields.legacyTimedOut.contains(true) then ScalaModeResult.TimedOut(fields.result.output)
+          else fields.result,
+          fields.logs,
+          fields.exitCode,
+          fields.truncated,
+          fields.compilationTime,
+          fields.executionTime,
+          fields.totalTime
+        ),
         "ScalaModeOutput requires name=scalamode"
       ),
     output =>
@@ -104,8 +125,11 @@ object ScalaModeOutput {
         output.result,
         output.logs,
         output.exitCode,
-        output.timedOut,
-        output.truncated
+        legacyTimedOut = None,
+        output.truncated,
+        output.compilationTime,
+        output.executionTime,
+        output.totalTime
       )
   )
 }

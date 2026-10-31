@@ -111,9 +111,10 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           """for {
           |  text <- fs.readUtf8("hello.txt")
           |  entries <- fs.list(".")
+          |  names <- ZIO.foreach(entries.toList)(name => ZIO.succeed(name))
           |  bytes <- fs.readBytes("hello.txt").take(3).runCollect
           |  recovered <- fs.readUtf8("missing").fold((error: FsError) => error.toString, identity)
-          |} yield text + "|" + entries.mkString(",") + "|" + bytes.map(_.toInt).mkString(",") + "|" + recovered
+          |} yield text + "|" + names.mkString(",") + "|" + bytes.map(_.toInt).mkString(",") + "|" + recovered
           |""".stripMargin,
           endpoint,
           120.seconds,
@@ -121,7 +122,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         )
         .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](fs, route))
         .map { result =>
-          assert(!result.timedOut && !result.truncated, result.output)
+          assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut] && !result.truncated, result.output)
           assertEquals(result.exitCode, 0, result.output)
           assertEquals(result.output, "hello|hello.txt|104,101,108|NotFound(missing)\n")
           assert(result.logs.exists(_.contains("RpcWebSocket client connected")), result.logs.mkString("\n"))
@@ -197,7 +198,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
           assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
           assertEquals(typed.exitCode, 1)
-          assert(!typed.timedOut)
+          assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut])
           assert(typed.output.contains("NotFound(missing)"), typed.output)
           assert(typed.output.contains("Scala execution failed"), typed.output)
           assertEquals(typed.logs, Seq.empty[String])
@@ -265,7 +266,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
             _ <- ZIO.attempt {
               if mode == "missing" then assert(result.isLeft)
               else if mode == "failure" then assertEquals(result.toOption.get.exitCode, 7)
-              else assert(result.toOption.get.timedOut)
+              else assert(result.toOption.get.result.isInstanceOf[ScalaModeResult.TimedOut])
             }
             // With capacity one, successful registration proves the execution released its pending ticket.
             token <- route.register(FsReadRpc.contract.bind(fs))
@@ -307,7 +308,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           .map { result =>
             val diagnostics = result.output
             Files.writeString(Path.of(s"/tmp/yallmo-phase2-denied-$index.log"), diagnostics)
-            assert(!result.timedOut, s"probe $index timed out")
+            assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut], s"probe $index timed out")
             assertNotEquals(result.exitCode, 0, s"probe $index accepted: ${result.output}")
             assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
             assert(diagnostics.contains("Compilation failed"), diagnostics)

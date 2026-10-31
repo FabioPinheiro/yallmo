@@ -101,6 +101,51 @@ final class ScalamodeModelSuite extends FunSuite {
     assert(!result.output.contains("connected"))
   }
 
+  test("phase timings are displayed with millisecond units for every result type") {
+    val h = new Harness
+    h.model.run()
+    val response = h.response()
+    val callId = response.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId
+    val results = List(
+      ScalaModeResult.Executed("42"),
+      ScalaModeResult.CompilationError("compiler error"),
+      ScalaModeResult.TimedOut("deadline exceeded")
+    )
+    results.foreach { outcome =>
+      val output = ScalaModeOutput(
+        callId,
+        outcome,
+        compilationTime = 1200L,
+        executionTime = 250L,
+        totalTime = 1500L
+      )
+      val result = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(output))))
+      assertEquals(
+        result.fields.get.metadata.take(3),
+        List(
+          ToolResultContent.Field("compilationTime", "1200 ms"),
+          ToolResultContent.Field("executionTime", "250 ms"),
+          ToolResultContent.Field("totalTime", "1500 ms")
+        )
+      )
+      assertEquals(result.output, outcome.output)
+    }
+  }
+
+  test("unmeasured or skipped phase timings display zero milliseconds") {
+    val h = new Harness
+    h.model.run()
+    val result = ScalamodeResult(h.response())
+    assertEquals(
+      result.fields.get.metadata.take(3),
+      List(
+        ToolResultContent.Field("compilationTime", "0 ms"),
+        ToolResultContent.Field("executionTime", "0 ms"),
+        ToolResultContent.Field("totalTime", "0 ms")
+      )
+    )
+  }
+
   test("typed compilation diagnostics and metadata are displayed without parsing returned JSON") {
     val h = new Harness
     h.model.run()
@@ -119,6 +164,19 @@ final class ScalamodeModelSuite extends FunSuite {
     val success = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(returnedJson))))
     assertEquals(success.logs, Seq.empty)
     assertEquals(success.fields.get.blocks, List(ToolResultContent.Field("output", returnedJson.output)))
+  }
+
+  test("typed timeout diagnostics are displayed without a timeout flag") {
+    val h = new Harness
+    h.model.run()
+    val response = h.response()
+    val callId = response.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId
+    val output = ScalaModeOutput(callId, ScalaModeResult.TimedOut("deadline exceeded"), exitCode = 137)
+    val result = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(output))))
+    assertEquals(result.title, "Compilation / execution timed out")
+    assertEquals(result.output, "deadline exceeded")
+    assert(!result.fields.get.metadata.exists(_.name == "timedOut"))
+    assert(result.fields.get.metadata.contains(ToolResultContent.Field("exitCode", "137")))
   }
 
   test("Run cannot duplicate a pending request") {

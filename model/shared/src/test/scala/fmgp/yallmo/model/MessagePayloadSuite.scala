@@ -36,18 +36,36 @@ final class MessagePayloadSuite extends FunSuite {
   }
 
   test("ScalaModeOutput round-trips flat JSON with a fixed key and no duplicated output") {
-    val output = ScalaModeOutput(callId, ScalaModeResult.Executed("42"), Seq("connected", "disconnected"))
+    val output = ScalaModeOutput(
+      callId,
+      ScalaModeResult.Executed("42"),
+      Seq("connected", "disconnected"),
+      compilationTime = 1200L,
+      executionTime = 250L,
+      totalTime = 1500L
+    )
     val json = output.toJson
     assertEquals(json.fromJson[ScalaModeOutput], Right(output))
     assertEquals(json.fromJson[FunctionCallOutput], Right(output))
     assertEquals((output: FunctionCallOutput).toJson, json)
     assertEquals(Message.ToolOutput(output).contentStr, "42")
     assert(json.contains("\"name\":\"scalamode\""))
+    assert(json.contains("\"compilationTime\":1200"))
+    assert(json.contains("\"executionTime\":250"))
+    assert(json.contains("\"totalTime\":1500"))
     assert(!json.contains("\"output\""))
     assert(!json.contains("ScalaModeOutput"))
     assertEquals(
       (Message.ToolOutput(output): MessagePayload).toJson.fromJson[MessagePayload],
       Right(Message.ToolOutput(output))
+    )
+  }
+
+  test("Scala outputs without timing fields decode with zero defaults") {
+    val json = """{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"42"}}}"""
+    assertEquals(
+      json.fromJson[FunctionCallOutput],
+      Right(ScalaModeOutput(callId, ScalaModeResult.Executed("42")))
     )
   }
 
@@ -61,7 +79,7 @@ final class MessagePayloadSuite extends FunSuite {
     val wrongKey = ScalaModeOutput(callId, ScalaModeResult.Executed("42")).toJson.replace("scalamode", "other")
     assert(wrongKey.fromJson[ScalaModeOutput].isLeft)
     assert(wrongKey.fromJson[FunctionCallOutput].isLeft)
-    for result <- List("null", "{}", "42", "{\"Executed\":{}}") do
+    for result <- List("null", "{}", "42", "{\"Executed\":{}}", "{\"TimedOut\":{}}") do
       assert(
         s"""{"callId":"call-1","name":"scalamode","output":"fallback","result":$result}"""
           .fromJson[FunctionCallOutput]
@@ -70,12 +88,38 @@ final class MessagePayloadSuite extends FunSuite {
   }
 
   test("Scala timeout metadata round-trips and the reserved name is not a constructor argument") {
-    val output = ScalaModeOutput(callId, ScalaModeResult.Executed("deadline exceeded"), exitCode = 137, timedOut = true)
+    val output = ScalaModeOutput(
+      callId,
+      ScalaModeResult.TimedOut("deadline exceeded"),
+      exitCode = 137,
+      compilationTime = 120L,
+      executionTime = 300L,
+      totalTime = 450L
+    )
+    assertEquals(output.output, "deadline exceeded")
+    assertEquals(Message.ToolOutput(output).contentStr, "deadline exceeded")
+    assert(output.toJson.contains("\"TimedOut\":{\"diagnostics\":\"deadline exceeded\"}"))
+    assert(!output.toJson.contains("\"timedOut\""))
+    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
+      fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
+      timedOut = true)"""))
     assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
     assertEquals(output.toJson.fromJson[ScalaModeOutput], Right(output))
     assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
       fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
       name = fmgp.yallmo.model.ToolKey.Bash)"""))
+  }
+
+  test("saved timeout flags decode into the typed result but are never emitted") {
+    for timedOut <- List(true, false) do {
+      val json =
+        s"""{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"deadline exceeded"}},"timedOut":$timedOut}"""
+      val result = if timedOut then ScalaModeResult.TimedOut("deadline exceeded")
+      else ScalaModeResult.Executed("deadline exceeded")
+      val expected = ScalaModeOutput(callId, result)
+      assertEquals(json.fromJson[FunctionCallOutput], Right(expected))
+      assert(!expected.toJson.contains("\"timedOut\""))
+    }
   }
 
   test("compilation diagnostics are the complete provider-facing output") {

@@ -35,7 +35,7 @@ final class ScalaToolSuite extends FunSuite {
     assertEquals(typed.logs, Seq("connected", "disconnected"))
     assertEquals(typed.result, ScalaModeResult.Executed("55\n"))
     assertEquals(typed.exitCode, 0)
-    assert(!typed.timedOut && !typed.truncated)
+    assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut] && !typed.truncated)
   }
 
   test("compilation diagnostics are preserved once through result conversion and JSON serialization") {
@@ -51,13 +51,12 @@ final class ScalaToolSuite extends FunSuite {
     assertEquals(result.output, diagnostics)
     assertEquals(result.logs, Seq.empty[String])
     assertEquals(result.exitCode, 1)
-    assert(!result.timedOut && !result.truncated)
+    assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut] && !result.truncated)
     val output = ScalaModeOutput(
       FunctionCallId.unsafe("scala-compilation-error"),
       result.result,
       result.logs,
       result.exitCode,
-      result.timedOut,
       result.truncated
     )
     val json = output.toJson
@@ -72,13 +71,13 @@ final class ScalaToolSuite extends FunSuite {
     )
     assertEquals(
       result.result,
-      ScalaModeResult.Executed(
+      ScalaModeResult.TimedOut(
         "Scala CLI exceeded its compilation/execution deadline.\npartial value\nchecking compiler\nchecking compiler"
       )
     )
     assertEquals(result.logs, Seq.empty[String])
     assertEquals(result.exitCode, 124)
-    assert(result.timedOut && result.truncated)
+    assert(result.result.isInstanceOf[ScalaModeResult.TimedOut] && result.truncated)
   }
 
   test("explicit compile result separates compilation diagnostics from runtime errors") {
@@ -86,11 +85,13 @@ final class ScalaToolSuite extends FunSuite {
     val compilation = ScalaCodeExecutor.result(command, compiled = false)
     assertEquals(compilation.result, ScalaModeResult.CompilationError("partial value\n[E006] Not Found Error\nmissing"))
     assertEquals(compilation.logs, Seq.empty[String])
-    assert(compilation.truncated && compilation.exitCode == 1 && !compilation.timedOut)
+    assert(
+      compilation.truncated && compilation.exitCode == 1 && !compilation.result.isInstanceOf[ScalaModeResult.TimedOut]
+    )
     val runtime = ScalaCodeExecutor.result(command, compiled = true)
     assertEquals(runtime.result, ScalaModeResult.Executed(compilation.output))
     assertEquals(runtime.logs, Seq.empty[String])
-    assert(runtime.truncated && runtime.exitCode == 1 && !runtime.timedOut)
+    assert(runtime.truncated && runtime.exitCode == 1 && !runtime.result.isInstanceOf[ScalaModeResult.TimedOut])
     val success = ScalaCodeExecutor.result(
       CommandOutput(0, false, "42", false, Seq("connected", "42", "connected")),
       compiled = true
@@ -153,6 +154,10 @@ final class ScalaToolSuite extends FunSuite {
     assert(ScalaCodeExecutor.snippet("api").contains("import tool.*"))
     assert(ScalaTool.definition.description.contains("def api: Unit"))
     assert(ScalaTool.definition.description.contains("tool.api"))
+    assert(ScalaTool.definition.description.contains("ZIO.succeed"))
+    assert(ScalaTool.definition.description.contains("effects are executed"))
+    assert(ScalaCodeExecutor.snippet("ZIO.succeed(2)").contains("def result(using zio.Trace) ="))
+    assert(!ScalaCodeExecutor.filesystemSnippet("ZIO.succeed(2)").contains("import zio.ZIO"))
     assert(!ScalaTool.definition.description.contains("println(\"Yes API is available\")"))
   }
 

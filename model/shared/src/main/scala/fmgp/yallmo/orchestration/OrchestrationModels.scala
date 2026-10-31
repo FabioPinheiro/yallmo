@@ -76,12 +76,16 @@ sealed trait ExternalToolResult {
 
 object ExternalToolResult {
   final case class Generic(text: String) extends ExternalToolResult
+
+  /** Host timings in milliseconds, with the same phase boundaries as [[ScalaModeOutput]]. */
   final case class ScalaMode(
       result: ScalaModeResult,
       logs: Seq[String] = Seq.empty,
       exitCode: Int = 0,
-      timedOut: Boolean = false,
-      truncated: Boolean = false
+      truncated: Boolean = false,
+      compilationTime: Long = 0L,
+      executionTime: Long = 0L,
+      totalTime: Long = 0L
   ) extends ExternalToolResult {
     def output: String = result.output
     def text: String = output

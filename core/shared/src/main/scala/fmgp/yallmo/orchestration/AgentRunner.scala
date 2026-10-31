@@ -254,7 +254,16 @@ final class AgentRunner[R](
     val output = if call.name == ToolKey.Scalamode then
       result match {
         case value: ExternalToolResult.ScalaMode =>
-          ScalaModeOutput(call.id, value.result, value.logs, value.exitCode, value.timedOut, value.truncated)
+          ScalaModeOutput(
+            call.id,
+            value.result,
+            value.logs,
+            value.exitCode,
+            value.truncated,
+            value.compilationTime,
+            value.executionTime,
+            value.totalTime
+          )
         case ExternalToolResult.Generic(text) =>
           ScalaModeOutput(call.id, ScalaModeResult.Executed(text), exitCode = 1)
       }

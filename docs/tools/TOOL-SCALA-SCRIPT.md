@@ -42,20 +42,28 @@ The `scalamode` agent tool accepts one JSON argument:
 The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
 
 ```json
-{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"12\n"}},"logs":[],"exitCode":0,"timedOut":false,"truncated":false}
+{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"12\n"}},"logs":[],"exitCode":0,"truncated":false,"compilationTime":1200,"executionTime":250,"totalTime":1500}
 ```
 
 `ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
+Host-measured timings use a monotonic clock and are integer **milliseconds**:
+- `compilationTime`: the explicit `scala-cli compile` phase, including CLI startup and dependency resolution.
+- `executionTime`: the `scala-cli run` phase and runtime-log collection, including CLI/JVM startup and any run-stage compilation; not just snippet evaluation. Zero when compilation fails or times out.
+- `totalTime`: the complete executor invocation, including validation, source setup, both phases, diagnostics and temporary-directory cleanup (excluding RPC registration/transport).
+Failures and timeouts retain elapsed phase timings. Missing timing fields decode as zero for older saved outputs;
+custom executors and host failures without measurements also default to zero.
 `CompilationError(diagnostics)` contains formatted retained diagnostics when the explicit `scala-cli compile` stage
 fails, including compiler setup/dependency-resolution failures. Only successful compilation proceeds to execution.
 The completed stage distinguishes compilation from execution even if output is truncated; no start-marker file is used.
-`Executed(value)` represents an execution **attempt**, not guaranteed success: runtime exceptions, timeouts (including
-pre-Main timeouts), and host infrastructure/validation failures carry actionable text here. Inspect `exitCode`,
-`timedOut`, and `truncated`. Providers continue to receive the computed `output`, including compiler diagnostics.
+`TimedOut(diagnostics)` represents the compilation/execution deadline being exceeded, including pre-Main timeouts;
+retained diagnostics remain available through `output`. `Executed(value)` represents an execution **attempt**, not
+guaranteed success: runtime exceptions and host infrastructure/validation failures carry actionable text here.
+Inspect `result`, `exitCode`, and `truncated`. The former `timedOut` boolean is no longer emitted or exposed on the
+Scala output types; older saved flags decode into `TimedOut` results. Providers continue to receive the computed `output`, including compiler diagnostics.
 Successful `output` contains only the returned value; informational messages remain in `ScalaModeOutput.logs`.
 On compilation failure, runtime failure or timeout, captured logs are included in the diagnostic result only, leaving `logs` empty.
 Other tools use `FunctionGenericOutput(callId,name,output)` with no logs field.
-Malformed `scalamode` JSON is rejected; there is no legacy JSON fallback or migration.
+Malformed `scalamode` JSON is rejected; it never falls back to a generic tool result.
 Use the **last expression**, not `println`, to return a value.
 
 ### Submitted source and diagnostic lines
@@ -86,9 +94,20 @@ tool.api // prints "Yes Tool API is available" through the trusted API
 
 The result is `42\n`; `logs` contains `Yes Tool API is available`.
 
-The model sees only the public contract in the tool description: `def api: Unit` prints a fixed API availability message. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/jvm/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.scalacode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
+The model sees only the public contract in the tool description: the fixed API availability message and restricted effect constructors. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/shared/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.scalacode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
 
-Only the API availability helper implementation uses `@caps.assumeSafe` to cross the compiler's trust boundary. The method is marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
+The greeting helper and a narrow `ScalaToolApi.ZIO` facade use `@caps.assumeSafe` to cross the compiler's trust boundary. These methods are marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
+
+`ZIO` is automatically imported from that facade, **not** from `zio.ZIO` (the library companion is not safe-mode compatible). It supplies `succeed`, `fail`, `attempt`, `fromEither`, `foreach` and `unit`; callbacks remain compiler-checked safe code. Trace evidence is injected by the host. Do not import `zio.ZIO` yourself. For example:
+
+```scala
+for {
+  a <- ZIO.succeed(1)
+  b <- ZIO.succeed(1)
+} yield a + b
+```
+
+The default mode now executes a returned `ZIO[Any, E, A]` and returns its success value (`2\n` above), while ordinary values still work unchanged. The snippet result type is inferred so the trusted runner selects a typed evaluation overload; there are no runtime type tests or casts to recover effects from `Any`. Typed failures, defects and finalizers are handled by ZIOApp. No runtime, environment service lookup or ambient I/O constructors are exposed. Existing restrictions on automatic `CanFail` materialization still apply.
 
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
 - Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.2-RC1-bin-20261021-a98b104-NIGHTLY` compiler with `--offline --jvm system --server=false --quiet`. Quiet mode suppresses CLI housekeeping notices, not compiler diagnostics. The main project's Scala version is unchanged. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
@@ -136,7 +155,7 @@ This avoids `3.nightly` resolution, which contacts `repo.scala-lang.org` even wh
 
 [ATC](https://github.com/lampepfl/atc) and [TACIT](https://github.com/lampepfl/tacit) combine compiler safe mode, capture checking, lexical validation, and trusted capability APIs. Their permission checks govern operations exposed by those APIs; **they do not lock down the JVM**. An allowed external command still runs with the user's OS privileges. See ATC's README security model and both projects' `CodeValidator` / REPL implementations.
 
-The default pure mode supplies a **fixed-message output helper**; configured server execution additionally supports the explicitly selected read-only filesystem effect mode below. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI, trusted runtime API and trusted runner remain part of the trusted computing base.
+The default pure mode supplies a **fixed-message output helper and restricted ZIO constructors**; configured server execution additionally supports the explicitly selected read-only filesystem effect mode below. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI, trusted runtime API and trusted runner remain part of the trusted computing base.
 
 [Pi codemode](https://pi.dev) is inspiration for code-in/result-out and returning only the computation result to the agent. Its QuickJS sandbox lacks Node/filesystem/network APIs; ordinary Scala/JVM does not have that property. There is no general `tools` bridge: filesystem mode exports only `FsRead`.
 
@@ -189,7 +208,7 @@ Filesystem-enabled `scalamode` keeps existing `{ "code": "..." }` callers unchan
 def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): zio.ZIO[Any, FsError, Any]
 ```
 
-The effect's success type is widened covariantly, never erased and cast back into ZIO. `FsRead`, `FsError`, `ZIO`, `api` and `tool.api` are imported; there is no ambient service environment. Return an effect, not its executed value. Use `fold` for error recovery; automatic trace/CanFail materialization and FsError case extractors retain the Phase-1 compiler limitations. Pure mode still prints the last expression without executing returned effects.
+The effect's success type is widened covariantly, never erased and cast back into ZIO. `FsRead`, `FsError`, `ZIO`, `api` and `tool.api` are imported; there is no ambient service environment. Return an effect, not its executed value. Use `fold` for error recovery; automatic trace/CanFail materialization and FsError case extractors retain the Phase-1 compiler limitations. Pure mode prints ordinary last expressions or executes returned environment-free ZIO effects, using the same restricted constructors.
 
 Each effect invocation exports only `Rpc.derived[FsRead]` (default fully-qualified identity, version 1). The trusted child Main reads endpoint and single-use bearer from **stdin**, connects once, constructs a typed proxy locally, runs the typed effect and closes its connection. Stdin forwarding was verified with the real pinned/offline Scala CLI. Credentials are absent from submitted/generated sources, command arguments, URLs and logs/output. The proxy exposes no connection or bearer. No uploads, FsWrite, reconnect or retry are added.
 

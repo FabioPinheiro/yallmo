@@ -21,6 +21,27 @@ final class ScalaToolRuntimeSuite extends FunSuite {
     }
   }
 
+  test("evaluation returns plain values and executes returned effects lazily") {
+    var evaluated = 0
+    val plain = ScalaToolRuntime.evaluate { evaluated += 1; 42 }
+    assertEquals(evaluated, 0)
+    assertEquals(run(plain), 42)
+    val effect = ScalaToolRuntime.evaluate(ZIO.succeed { evaluated += 1; 2 })
+    assertEquals(evaluated, 1)
+    assertEquals(run(effect), 2)
+    assertEquals(evaluated, 2)
+    assertEquals(run(ScalaToolRuntime.evaluate(ZIO.fail("expected")).either), Left("expected"))
+  }
+
+  test("evaluation suspends effect construction and preserves finalizers") {
+    var finalized = false
+    val effect = ScalaToolRuntime.evaluate(ZIO.succeed(2).ensuring(ZIO.succeed { finalized = true }))
+    assert(!finalized)
+    assertEquals(run(effect), 2)
+    assert(finalized)
+    assert(run(ScalaToolRuntime.evaluate { throw new IllegalStateException("construction") }.exit).isFailure)
+  }
+
   test("runtime logger writes structured JSON lines with escaping, annotations and failure causes") {
     withLog { path =>
       val message = "quoted \"value\", slash \\, tab\tand newline\nUnicode: λ"

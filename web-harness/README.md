@@ -56,7 +56,10 @@ a conversation turn. Choose an agent using the **same toolbar picker as Chat**, 
 Scalamode has no separate agent selection. The shared agent picker and run button are disabled while a request is pending.
 The page sends an ordinary `agents.invoke` message containing
 `ToolCall(name = scalamode, argumentsJson = {"code":"...","mode":"filesystem"})` and displays its correlated `ToolOutput`:
-stdout/result, compiler/runtime diagnostics, exit code, timeout and truncation metadata.
+stdout/result, compiler/runtime diagnostics, typed timeout outcomes, exit code and truncation metadata.
+The result panel shows `compilationTime`, `executionTime` and `totalTime` in milliseconds (`ms`), including failures
+and timeouts. Execution time includes Scala CLI/JVM startup, not only snippet evaluation; total time also includes
+executor setup and cleanup. Skipped or unmeasured timings display `0 ms`.
 The default example lists entries in the selected agent’s configured root with `fs.list(".").map(_.mkString("\n"))`.
 The browser always requests filesystem-capable execution, which requires a filesystem-enabled backend.
 Editor text is treated only as text; no Markdown/HTML is executed by the browser.

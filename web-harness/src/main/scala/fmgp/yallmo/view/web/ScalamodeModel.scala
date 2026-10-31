@@ -21,6 +21,7 @@ private[web] final case class ScalamodeResult(message: Message) {
     .map(_.result match {
       case ScalaModeResult.CompilationError(_) => "Compilation / launch diagnostics"
       case ScalaModeResult.Executed(_)         => "Execution attempt"
+      case ScalaModeResult.TimedOut(_)         => "Compilation / execution timed out"
     })
     .getOrElse("Last tool output")
   val fields: Option[ToolResultContent.Result] = scalaOutput
@@ -28,8 +29,10 @@ private[web] final case class ScalamodeResult(message: Message) {
       import ToolResultContent.{Field, Result}
       Result(
         List(
+          Field("compilationTime", s"${value.compilationTime} ms"),
+          Field("executionTime", s"${value.executionTime} ms"),
+          Field("totalTime", s"${value.totalTime} ms"),
           Field("exitCode", value.exitCode.toString),
-          Field("timedOut", value.timedOut.toString),
           Field("truncated", value.truncated.toString)
         ),
         List(Field("output", value.output))

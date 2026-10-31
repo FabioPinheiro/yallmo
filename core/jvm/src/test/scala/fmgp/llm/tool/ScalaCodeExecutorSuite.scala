@@ -36,6 +36,52 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         .provide(ScalaCodeExecutor.layer(executable.toString))
     )
 
+  test("timings measure compilation and execution separately in milliseconds") {
+    withFakeCli("sleep 0.2; printf 42", compileBody = "sleep 0.1") { executable =>
+      val result = execute(executable)
+      assertEquals(result.output, "42")
+      assert(result.compilationTime >= 80L, result.toString)
+      assert(result.executionTime >= 180L, result.toString)
+      assert(result.totalTime >= result.compilationTime + result.executionTime, result.toString)
+    }
+  }
+
+  test("compilation failure records elapsed time without an execution phase") {
+    withFakeCli("printf 'must not run'", compileBody = "sleep 0.1; exit 1") { executable =>
+      val result = execute(executable)
+      assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
+      assert(result.compilationTime >= 80L, result.toString)
+      assertEquals(result.executionTime, 0L)
+      assert(result.totalTime >= result.compilationTime, result.toString)
+    }
+  }
+
+  test("compilation timeout retains its timing and leaves execution time zero") {
+    withFakeCli("printf 'must not run'", compileBody = "sleep 60") { executable =>
+      val result = execute(executable, timeout = 300.millis)
+      assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
+      assert(result.compilationTime >= 200L, result.toString)
+      assertEquals(result.executionTime, 0L)
+      assert(result.totalTime >= result.compilationTime, result.toString)
+    }
+  }
+
+  test("runtime failures and timeouts retain phase timings") {
+    withFakeCli("sleep 0.1; exit 1", compileBody = "sleep 0.1") { executable =>
+      val result = execute(executable)
+      assertEquals(result.exitCode, 1)
+      assert(result.compilationTime >= 80L, result.toString)
+      assert(result.executionTime >= 80L, result.toString)
+      assert(result.totalTime >= result.compilationTime + result.executionTime, result.toString)
+    }
+    withFakeCli("sleep 60") { executable =>
+      val result = execute(executable, timeout = 300.millis)
+      assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
+      assert(result.executionTime > 0L, result.toString)
+      assert(result.totalTime >= result.compilationTime + result.executionTime, result.toString)
+    }
+  }
+
   test("offline mode rejects a floating nightly before starting the CLI") {
     val result = run(
       ZIO
@@ -288,7 +334,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         "[E006] Not Found Error: Snippet.scala:1:1\nNot found: missing"
       )
       assertEquals(typed.logs, Seq.empty[String])
-      assert(!typed.timedOut && !typed.truncated)
+      assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut] && !typed.truncated)
     }
   }
 
@@ -300,7 +346,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       assertEquals(result.output, "x" * 32)
       assertEquals(result.logs, Seq.empty[String])
       assertEquals(result.exitCode, 1)
-      assert(!result.timedOut)
+      assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(!result.output.contains("execution-started"))
     }
   }
@@ -334,7 +380,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     withFakeCli("printf 'running\\n'; sleep 60", compileBody = "sleep 0.4") { executable =>
       val start = java.lang.System.nanoTime()
       val result = execute(executable, timeout = 700.millis)
-      assert(result.timedOut)
+      assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(result.output.contains("running"), result.output)
       assert(java.lang.System.nanoTime() - start < 1500.millis.toNanos)
     }
@@ -382,7 +428,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val result = execute(executable)
       try {
         assertEquals(result.exitCode, 0)
-        assert(!result.timedOut)
+        assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut])
         assert(java.lang.System.nanoTime() - started < 2.seconds.toNanos, "output drain waited for inherited stdout")
       } finally {
         val child = ProcessHandle.of(result.output.trim.toLong)
@@ -400,8 +446,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
       val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
-      assert(typed.timedOut)
-      assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
+      assert(typed.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(typed.output.contains("Checking compiler metadata"))
       assert(typed.output.contains("deadline"))
       assert(typed.output.contains("Compiler stalled"))
@@ -414,7 +459,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("timeout terminates the CLI and its child process") {
     withFakeCli("sleep 60 &\necho $!\nwait\n") { executable =>
       val result = execute(executable, timeout = 300.millis)
-      assert(result.timedOut)
+      assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(!isRunning(result.output.trim.linesIterator.toList.last.toLong))
     }
   }
@@ -481,7 +526,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
                 .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](unusedFilesystem, route))
             result <- execute(300.millis).timeoutFail(new Exception("bootstrap deadline was bypassed"))(10.seconds)
             _ <- ZIO.attempt {
-              assert(result.timedOut)
+              assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
               assert(!isRunning(Files.readString(marker).linesIterator.next().toLong))
               assert(!Files.exists(Path.of(result.output.trim.linesIterator.toList.last)))
               Files.writeString(marker, "")
@@ -732,7 +777,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         .timeoutFail(new RuntimeException("Scala CLI resolution did not respect its deadline"))(5.seconds)
     )
     val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
-    if typed.timedOut then assert(typed.output.contains("deadline"))
+    if typed.result.isInstanceOf[ScalaModeResult.TimedOut] then assert(typed.output.contains("deadline"))
   }
 
   test("nightly returns E006 compilation diagnostics in the tool output") {
@@ -791,6 +836,57 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
+  test("nightly constructs and executes restricted ZIO effects") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the restricted ZIO integration test")
+    for (code, expected) <- List(
+        "ZIO.succeed(1 + 1)" -> "2",
+        "for { a <- ZIO.succeed(1); b <- ZIO.succeed(2) } yield a + b" -> "3",
+        "ZIO.foreach(List(1, 2, 3))(n => ZIO.succeed(n * 2)).map(_.sum)" -> "12",
+        "ZIO.fromEither(Right(7)).map(_ + 1)" -> "8",
+        "ZIO.attempt(6 / 2)" -> "3",
+        "ZIO.unit" -> "()"
+      )
+    do {
+      val result = run(
+        ZIO
+          .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
+          .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
+      )
+      assertEquals(result.exitCode, 0, result.output)
+      assertEquals(result.output.trim, expected)
+    }
+    val failed = run(
+      ZIO
+        .serviceWithZIO[ScalaCodeExecutor](_.execute("ZIO.fail(\"expected failure\")", 120.seconds, 16 * 1024))
+        .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
+    )
+    assert(failed.result.isInstanceOf[ScalaModeResult.Executed], failed.output)
+    assertNotEquals(failed.exitCode, 0)
+    assert(failed.output.contains("expected failure"), failed.output)
+  }
+
+  test("nightly restricted ZIO callbacks cannot acquire ambient authority") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the restricted ZIO integration test")
+    for code <- List(
+        "ZIO.succeed(java.lang.System.getenv())",
+        "ZIO.attempt(java.nio.file.Files.readString(java.nio.file.Path.of(\"/etc/passwd\")))",
+        "ZIO.foreach(List(1))(_ => ZIO.succeed(new java.net.Socket(\"example.com\", 80)))",
+        "ZIO.service[String]",
+        "zio.ZIO.succeed(1)",
+        "zio.Runtime.default",
+        "zio.Unsafe"
+      )
+    do {
+      val rejected = run(
+        ZIO
+          .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
+          .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
+      )
+      assert(rejected.result.isInstanceOf[ScalaModeResult.CompilationError], s"$code\n${rejected.output}")
+      assertNotEquals(rejected.exitCode, 0)
+    }
+  }
+
   test("nightly accepts pure code and rejects ambient JVM authority") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
     def evaluate(code: String, timeout: Duration = 120.seconds): ExternalToolResult.ScalaMode = run(
@@ -827,7 +923,10 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       )
     do {
       val rejected = evaluate(code)
-      assert(!rejected.timedOut && rejected.exitCode != 0, s"Unexpectedly accepted: $code\n${rejected.output}")
+      assert(
+        !rejected.result.isInstanceOf[ScalaModeResult.TimedOut] && rejected.exitCode != 0,
+        s"Unexpectedly accepted: $code\n${rejected.output}"
+      )
       assert(rejected.result.isInstanceOf[ScalaModeResult.CompilationError])
       assert(rejected.output.contains("Compilation failed"), rejected.output)
       assertEquals(rejected.logs, Seq.empty[String])
@@ -837,6 +936,6 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assert(runtimeError.output.contains("ArithmeticException"))
     assertNotEquals(runtimeError.exitCode, 0)
     assertEquals(runtimeError.logs, Seq.empty[String])
-    assert(evaluate("while true do ()", 15.seconds).timedOut)
+    assert(evaluate("while true do ()", 15.seconds).result.isInstanceOf[ScalaModeResult.TimedOut])
   }
 }

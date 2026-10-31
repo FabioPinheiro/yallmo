@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.orchestration.config.{Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{Config, ConfigDocument, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import munit.FunSuite
 import zio.*
@@ -56,6 +56,93 @@ final class ProviderCatalogSuite extends FunSuite {
     val stream = Files.list(path.getParent)
     try stream.iterator.asScala.map(_.getFileName.toString).toSet
     finally stream.close()
+  }
+
+  test("YAML provider and credential updates preserve comments, unknown fields, order and prompt styles") {
+    withFile { (jsonPath, _) =>
+      val path = jsonPath.resolveSibling("synthetic.yaml")
+      val yaml = """# Operator configuration
+agents:
+  assistant: # agent note
+    agentType: OAIAgent
+    providerIds: [local]
+    config:
+      model: "synthetic" # model note
+      systemPrompt: |-
+        Be helpful.
+        Be concise.
+providers: # provider catalog
+  local:
+    providerType: OAI
+    endpoint: http://localhost:1234/v1 # endpoint note
+    future: {keep: true}
+  account: # account note
+    providerType: ChatGPT
+    credentials: # credential note
+      accessToken: old-access # access note
+      refreshToken: old-refresh # refresh note
+      expiresAtMillis: 123 # expiration note
+    future: [one, two] # future note
+futureRoot: preserved # root note
+# End of operator configuration
+"""
+      Files.writeString(path, yaml, UTF_8)
+      val catalog = run(ProviderCatalog.make(path))
+      val before = ConfigDocument.parse(path, yaml).toOption.get
+      assertEquals(run(catalog.list).map(_.displayId), Vector("account", "local"))
+      assertEquals(Files.readString(path), yaml)
+      run(catalog.add("new-local", Creation.OAI("http://localhost:8000/v1")))
+      run(catalog.add("new-account", Creation.ChatGPT))
+      val credentials = OAuthCredentialsConfig("new-access", "new-refresh", 456)
+      run(catalog.updateChatGptCredentials(id("account"), credentials))
+      val text = Files.readString(path)
+      val after = ConfigDocument.parse(path, text).toOption.get
+      assertEquals(after.config.providers(id("account")), ProviderConfig.ChatGPT(Some(credentials)))
+      assertEquals(after.config.providers(id("new-account")), ProviderConfig.ChatGPT())
+      assertEquals(after.config.providers(id("new-local")), ProviderConfig.OAI("http://localhost:8000/v1"))
+      assertEquals(after.json.fields.filterNot(_._1 == "providers"), before.json.fields.filterNot(_._1 == "providers"))
+      def providers(obj: Json.Obj) = obj.fields.toMap.apply("providers").asInstanceOf[Json.Obj].fields.toMap
+      assertEquals(providers(after.json)("local"), providers(before.json)("local"))
+      val oldAccount = providers(before.json)("account").asInstanceOf[Json.Obj]
+      val newAccount = providers(after.json)("account").asInstanceOf[Json.Obj]
+      assertEquals(
+        newAccount.fields.filterNot(_._1 == "credentials"),
+        oldAccount.fields.filterNot(_._1 == "credentials")
+      )
+      List(
+        "Operator configuration",
+        "agent note",
+        "model note",
+        "provider catalog",
+        "endpoint note",
+        "account note",
+        "credential note",
+        "access note",
+        "refresh note",
+        "expiration note",
+        "future note",
+        "root note",
+        "End of operator configuration"
+      ).foreach(comment => assert(text.contains("# " + comment), comment))
+      assert(text.contains("systemPrompt: |-"))
+      assert(text.contains("model: \"synthetic\""))
+      assertEquals(after.json.fields.map(_._1), before.json.fields.map(_._1))
+      assertEquals(Files.getPosixFilePermissions(path), PosixFilePermissions.fromString("rw-------"))
+      assertEquals(children(path), Set("synthetic.json", "synthetic.yaml"))
+    }
+  }
+
+  test("malformed YAML catalog cannot be updated and errors do not reveal values") {
+    withFile { (jsonPath, _) =>
+      val path = jsonPath.resolveSibling("synthetic.yml")
+      val text = "providers: {account: {providerType: SECRET_INVALID}}\n"
+      Files.writeString(path, text, UTF_8)
+      val catalog = run(ProviderCatalog.make(path))
+      val result = run(catalog.add("new", Creation.ChatGPT).either)
+      assertEquals(result, Left(Error.InvalidConfig))
+      assert(!result.toString.contains("SECRET"))
+      assertEquals(Files.readString(path), text)
+    }
   }
 
   test("list and load include all configured providers without exposing credentials") {

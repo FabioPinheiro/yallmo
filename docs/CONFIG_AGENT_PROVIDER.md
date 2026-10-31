@@ -37,6 +37,39 @@ metadata stays unknown. No selected agent means no prompt-induced create/write; 
 selection. First prompt creates once and submits once; subsequent prompts reuse that session. Lost responses require
 history/refresh before manual resend, never automatic replay. See [REPL](REPL.md#server-connection).
 
+## JSON and YAML configuration
+
+Select either format explicitly with server `--config ./yallmo.yaml` (or `.yml`) or the existing
+`--config ./yallmo.json`. Both decode into the same typed `Config` and use the same reference/capability validation;
+there is no schema or runtime-composition change. The server does not discover or migrate files automatically.
+Existing embedded callers' `ApplicationRuntime.DefaultConfigPath` remains `yallmo.json` for compatibility.
+
+See the commented [YAML example](examples/yallmo.yaml) and existing [JSON example](examples/yallmo.json).
+YAML supports comments, nested mappings, flow lists and literal/folded multiline prompts under `agents.<id>.config.systemPrompt`.
+Use JSON-compatible scalars: `true`/`false`, `null`, finite JSON numbers and strings. Words such as `on`, `off`, `yes`,
+`no` and dates remain strings; quote numeric or boolean-looking IDs. Duplicate/non-string keys, aliases, merge keys,
+custom tags and multiple YAML documents are rejected. Unknown fields are retained by application catalog edits.
+
+Loading never rewrites an existing file. Application provider additions and credential updates keep the selected
+format, unknown fields, comments on surviving YAML nodes, key order and scalar styles (including multiline prompts).
+Whitespace/indentation may be normalized on updates; byte-for-byte formatting preservation is not promised. The
+existing private atomic-write policy and per-catalog locking still apply; external writers must coordinate.
+
+### Explicit JSON → YAML migration
+
+Stop other config writers, then run this offline command from the repository root:
+
+```sh
+sbt 'core/runMain fmgp.yallmo.orchestration.config.ConfigMigrationMain ./yallmo.json ./yallmo.yaml'
+```
+
+Migration requires an existing, valid JSON source and creates a private YAML destination with the complete raw tree,
+including unknown/legacy fields. It never initializes a missing source, modifies the source or replaces an existing
+destination (even under a concurrent migration). Hard-link publication support is required. Inspect/edit the YAML
+privately, then explicitly switch the server to `--config ./yallmo.yaml`; JSON remains supported and unchanged.
+The output still contains any literal credentials from the source: do not log, share or commit it. Root `yallmo.json`,
+`yallmo.yaml` and `yallmo.yml` are gitignored; exclude other private paths yourself.
+
 ## Current implementation boundary
 
 - `core/.../orchestration/config/Config.scala` is data only: ID-keyed **maps** of agents and providers, and `browserAudioPort` (default 5180, valid 1–65535). Newly initialized config files serialize the port; older files missing it retain the default without being rewritten. JSON catalogs are objects, not arrays.

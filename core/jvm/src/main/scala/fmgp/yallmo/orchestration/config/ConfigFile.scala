@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{FileAlreadyExistsException, Files, NoSuchFileException, Path}
 import java.nio.file.attribute.PosixFilePermissions
 
-/** Reads a single private JSON configuration file, initializing an empty catalog when it is missing.
+/** Reads a single private JSON or YAML configuration file, initializing an empty catalog when it is missing.
   *
   * No environment references are resolved and no runtime instances are constructed. Error messages never include file
   * contents, decoder diagnostics or credentials. Existing files are never rewritten by loading.
@@ -23,7 +23,7 @@ object ConfigFile {
     */
   def loadOrInitialize(path: Path): IO[YallmoError, Config] =
     for {
-      json <- ZIO
+      text <- ZIO
         .attemptBlocking {
           val target = path.toAbsolutePath.normalize
           try Files.readString(target, UTF_8)
@@ -38,7 +38,13 @@ object ConfigFile {
                 else Seq.empty
               val temporary = Files.createTempFile(parent, ".yallmo-config-", ".json", attributes*)
               try {
-                Files.writeString(temporary, initial.toJsonPretty + "\n", UTF_8)
+                val contents =
+                  if ConfigDocument.isYaml(path) then
+                    ConfigDocument
+                      .yaml(initial.toJsonAST.toOption.get.asInstanceOf[zio.json.ast.Json.Obj])
+                      .fold(_ => throw new IllegalArgumentException("Unable to encode configuration"), identity)
+                  else initial.toJsonPretty + "\n"
+                Files.writeString(temporary, contents, UTF_8)
                 // Creating a hard link publishes the complete file atomically and cannot replace an existing target.
                 try Files.createLink(target, temporary)
                 catch { case _: FileAlreadyExistsException => () }
@@ -47,26 +53,54 @@ object ConfigFile {
           }
         }
         .mapError(_ => YallmoError.InvalidConfig("Unable to read or initialize the configuration file"))
-      config <- ZIO.fromEither(
-        json
-          .fromJson[Config]
-          .left
-          .map(_ => YallmoError.InvalidConfig("Invalid configuration JSON; check its structure and field types"))
-      )
+      document <- ZIO.fromEither(ConfigDocument.parse(path, text))
       _ <- ZIO
         .logWarning(
           "Ignoring removed configuration keys userName, defaultAgentId, transcriberAgent; use REPL flags --user-name, --agent, --transcriber-agent instead"
         )
         .when(
-          json
-            .fromJson[zio.json.ast.Json.Obj]
-            .toOption
-            .exists(_.fields.exists { case (name, _) =>
-              Set("userName", "defaultAgentId", "transcriberAgent").contains(name)
-            })
+          document.json.fields.exists { case (name, _) =>
+            Set("userName", "defaultAgentId", "transcriberAgent").contains(name)
+          }
         )
-      _ <- ZIO.fromEither(validate(config))
-    } yield config
+    } yield document.config
+
+  /** Explicit JSON → YAML migration. Reads and validates an existing source, preserves unknown fields, and privately
+    * publishes a new file. Neither the source nor an existing destination is ever overwritten; loading never migrates.
+    */
+  def migrateJsonToYaml(source: Path, destination: Path): IO[YallmoError, Unit] =
+    for {
+      _ <- ZIO
+        .fail(YallmoError.InvalidConfig("Migration requires a JSON source and a .yaml or .yml destination"))
+        .unless(
+          Option(source.getFileName).exists(_.toString.toLowerCase(java.util.Locale.ROOT).endsWith(".json")) &&
+            ConfigDocument.isYaml(destination)
+        )
+      text <- ZIO
+        .attemptBlocking(Files.readString(source, UTF_8))
+        .mapError(_ => YallmoError.InvalidConfig("Unable to read migration source"))
+      document <- ZIO.fromEither(ConfigDocument.parse(source, text))
+      yaml <- ZIO.fromEither(ConfigDocument.yaml(document.json))
+      _ <- ZIO
+        .attemptBlocking {
+          val target = destination.toAbsolutePath.normalize
+          val parent = target.getParent
+          Files.createDirectories(parent)
+          val attributes =
+            if Files.getFileStore(parent).supportsFileAttributeView("posix") then
+              Seq(PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            else Seq.empty
+          val temporary = Files.createTempFile(parent, ".yallmo-migration-", ".yaml", attributes*)
+          try {
+            Files.writeString(temporary, yaml, UTF_8)
+            Files.createLink(target, temporary)
+            ()
+          } finally Files.deleteIfExists(temporary)
+        }
+        .mapError(_ =>
+          YallmoError.InvalidConfig("Unable to publish YAML migration; destination must not already exist")
+        )
+    } yield ()
 
   /** Validate capability IDs once the application's complete, unfiltered local catalogs are available. */
   def validateCapabilities[R](

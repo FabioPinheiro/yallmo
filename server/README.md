@@ -156,7 +156,10 @@ sbt 'server/run --storage ./server-storage --config ./private/server.json --work
 ```
 
 Server-owned `ConfigFile` loading reads the private configuration or initializes an empty catalog (private POSIX
-permissions). Keep it private: it can contain provider credentials. Standalone startup registers configured agents
+permissions). `--config` accepts `.yaml`/`.yml` as well as existing JSON paths, with the same typed validation.
+YAML catalog updates retain comments and unknown fields; loading never rewrites existing files. See the
+[configuration formats and explicit migration guide](../docs/CONFIG_AGENT_PROVIDER.md#json-and-yaml-configuration).
+Keep it private: it can contain provider credentials. Standalone startup registers configured agents
 only, without a fake local human, OS-name lookup, selection, login or inference. `userName`, `defaultAgentId` and
 `transcriberAgent` were removed from Config; old terminal preferences no longer apply. Unknown raw fields survive
 catalog edits but do not become active server preferences.

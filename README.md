@@ -37,6 +37,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
 - [Setup and running](docs/HOW_TO_RUN.md)
+- [JSON/YAML configuration and explicit migration](docs/CONFIG_AGENT_PROVIDER.md#json-and-yaml-configuration)
 - [Interactive REPL](docs/REPL.md) — startup, connections, commands and retained feature details.
 - [Client controls — quick reference](docs/CLIENT_CONTROLS.md) — keyboard/mode tables for the website and REPL, dictation and ClientHarness.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.

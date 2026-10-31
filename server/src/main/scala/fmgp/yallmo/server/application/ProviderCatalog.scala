@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.orchestration.config.{Config, ConfigFile, OAuthCredentialsConfig, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{Config, ConfigDocument, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import zio.*
 import zio.json.*
@@ -34,7 +34,8 @@ final class ProviderCatalog private (path: Path, lock: Semaphore) {
   def load(id: ProviderId): IO[Error, Option[Entry]] =
     read.map(_.config.providers.get(id).map(summarize(id, _)))
 
-  /** Adds just one provider entry to the latest JSON tree. Validation/duplicates never write anything.
+  /** Adds just one provider entry to the latest configuration tree, preserving YAML comments. Validation/duplicates
+    * never write anything.
     *
     * This effect is lazy: abandoning a UI form without running add has no side effects. Once started, the blocking save
     * completes atomically even if the calling fiber is interrupted. ChatGPT creation accepts no credentials or endpoint
@@ -54,7 +55,7 @@ final class ProviderCatalog private (path: Path, lock: Semaphore) {
           providerJson <- ZIO.fromEither(provider.toJsonAST.left.map(_ => Error.InvalidConfig))
           updatedProviders = Json.Obj(providers.fields :+ (id -> providerJson))
           fields = snapshot.json.fields.filterNot(_._1 == "providers") :+ ("providers" -> updatedProviders)
-          _ <- save(Json.Obj(fields))
+          _ <- save(Json.Obj(fields), snapshot.document)
         } yield summarize(providerId, provider)
       }
     } yield entry
@@ -95,7 +96,7 @@ final class ProviderCatalog private (path: Path, lock: Semaphore) {
               })
             case field => field
           })
-          _ <- save(updated).mapError(CredentialError.Catalog(_))
+          _ <- save(updated, snapshot.document).mapError(CredentialError.Catalog(_))
         } yield summarize(id, provider.copy(credentials = Some(stored)))
       }
     } yield entry
@@ -108,24 +109,14 @@ final class ProviderCatalog private (path: Path, lock: Semaphore) {
           Files.readString(path, UTF_8)
         }
         .mapError(_ => Error.ReadFailed)
-      snapshot <- ZIO.fromEither {
-        for {
-          json <- text.fromJson[Json].left.map(_ => Error.InvalidConfig)
-          obj <- json match {
-            case value: Json.Obj if uniqueKeys(value) => Right(value)
-            case _                                    => Left(Error.InvalidConfig)
-          }
-          config <- text.fromJson[Config].left.map(_ => Error.InvalidConfig)
-          _ <- ConfigFile.validate(config).left.map(_ => Error.InvalidConfig)
-        } yield Snapshot(obj, config)
-      }
-    } yield snapshot
+      document <- ZIO.fromEither(ConfigDocument.parse(path, text).left.map(_ => Error.InvalidConfig))
+    } yield Snapshot(document.json, document.config, document)
 
   private def requireSafeTarget(): Unit =
     if !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) then
       throw new IllegalArgumentException("Configuration must be a regular non-symlink file")
 
-  private def save(json: Json.Obj): IO[Error, Unit] =
+  private def save(json: Json.Obj, document: ConfigDocument): IO[Error, Unit] =
     ZIO
       .attemptBlocking {
         requireSafeTarget()
@@ -136,7 +127,9 @@ final class ProviderCatalog private (path: Path, lock: Semaphore) {
         val temporary = Files.createTempFile(path.getParent, ".yallmo-providers-", ".json", permissions)
         var published = false
         try {
-          Files.writeString(temporary, json.toJsonPretty + "\n", UTF_8)
+          val rendered =
+            document.render(json).fold(_ => throw new IllegalArgumentException("Invalid configuration"), identity)
+          Files.writeString(temporary, rendered, UTF_8)
           requireSafeTarget()
           Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
           published = true
@@ -189,7 +182,7 @@ object ProviderCatalog {
   def make(path: Path): UIO[ProviderCatalog] =
     Semaphore.make(1).map(new ProviderCatalog(path.toAbsolutePath.normalize, _))
 
-  private final case class Snapshot(json: Json.Obj, config: Config)
+  private final case class Snapshot(json: Json.Obj, config: Config, document: ConfigDocument)
 
   private def chatGptTarget(snapshot: Snapshot, id: ProviderId): Either[CredentialError, ProviderConfig.ChatGPT] =
     snapshot.config.providers.get(id) match {
@@ -261,9 +254,4 @@ object ProviderCatalog {
 
   private def displayText(value: String): String = value.map(char => if unsafeCharacter(char) then '?' else char)
 
-  private def uniqueKeys(json: Json): Boolean = json match {
-    case Json.Obj(fields) => fields.map(_._1).distinct.size == fields.size && fields.forall(pair => uniqueKeys(pair._2))
-    case Json.Arr(values) => values.forall(uniqueKeys)
-    case _                => true
-  }
 }

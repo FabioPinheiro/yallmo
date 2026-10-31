@@ -14,6 +14,8 @@ project/metals.sbt
 # Runtime files
 .env
 /yallmo.json
+/yallmo.yaml
+/yallmo.yml
 debug/
 # REPL diagnostic source is code, not generated runtime capture.
 !repl/src/main/scala/fmgp/yallmo/repl/debug/

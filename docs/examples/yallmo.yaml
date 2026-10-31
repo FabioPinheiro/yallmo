@@ -1,0 +1,20 @@
+# Secret-free example. Copy to a private, gitignored file and choose an installed model.
+# The configured filesystem root must exist when the agent is first used.
+browserAudioPort: 5180
+agents:
+  assistant:
+    agentType: OAIAgent
+    providerIds: [local]
+    filesystem:
+      root: ./workspace
+    capabilities:
+      tools: [readFile, listFiles, scalamode]
+    config:
+      model: chat-model
+      systemPrompt: |-
+        You are a concise assistant.
+        Use the available tools when needed.
+providers:
+  local:
+    providerType: OAI
+    endpoint: http://127.0.0.1:12434/v1

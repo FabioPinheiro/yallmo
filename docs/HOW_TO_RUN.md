@@ -36,17 +36,22 @@ client, browser origin and proxy with access. Preserve the real browser Origin; 
 
 ## Initialize server configuration
 
-Only the server loads configuration. Start it with `--config ./yallmo.json` as above; a missing file initializes
+Only the server loads configuration. Use `--config ./yallmo.yaml` (or `.yml`) for commented YAML, or keep
+`--config ./yallmo.json` as above. Both use the same typed validation; a missing file initializes
 with empty agent/provider catalogs. On POSIX filesystems it is owner-readable/writable only. Publication is atomic
 and never overwrites another process's file; the filesystem must support hard links. Existing files are loaded,
 not rewritten. Configure agents/providers and restart the server before selecting an agent in the client.
 
-The repository-root `yallmo.json` is gitignored. Keep other config paths private and excluded from version control too.
+The repository-root `yallmo.json`, `yallmo.yaml` and `yallmo.yml` are gitignored. Keep other config paths private and excluded from version control too.
 The file may contain OAuth secrets: do not print or share it. Credential values are literal; `${NAME}` references are not resolved.
 
 `--user-name <id>` is required by the client and sent as claimed human ID `user-<id>`, not authentication.
 The server alone owns tools, providers and durable storage. Provider-login/voice/human-interaction transport remains
 pending; there is no legacy in-process REPL fallback.
+
+For the [YAML example](examples/yallmo.yaml), format rules, comment-preserving updates and the explicit
+[JSON → YAML migration command](CONFIG_AGENT_PROVIDER.md#explicit-json--yaml-migration), see the configuration guide.
+Loading never migrates or overwrites existing files automatically.
 
 ## Configure agents
 

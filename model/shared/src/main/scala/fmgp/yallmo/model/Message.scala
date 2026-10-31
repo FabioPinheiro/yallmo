@@ -2,7 +2,8 @@ package fmgp.yallmo.model
 
 import fmgp.yallmo.model.llm.ProviderContinuation
 import zio.Chunk
-import zio.json.{DeriveJsonCodec, EncoderOps, JsonCodec}
+import zio.json.{DeriveJsonCodec, EncoderOps, JsonCodec, JsonDecoder, JsonEncoder}
+import zio.json.ast.Json
 
 import java.time.Instant
 import scala.util.Try
@@ -41,7 +42,36 @@ final case class MessageData(
     payload: MessagePayload
 ) derives JsonCodec
 
-final case class Message(id: MessageId, data: MessageData) {
+/** A message address whose immutable data may be unavailable while reading incomplete history. */
+sealed trait MessageMaybe {
+  def id: MessageId
+}
+
+/** A missing history object, not a persisted message or a model-facing payload. */
+final case class MessageMissing(id: MessageId) extends MessageMaybe derives JsonCodec
+
+object MessageMaybe {
+  // Encoding only: omit unavailable data without adding an ADT tag or changing the full Message envelope.
+  private final case class Envelope(id: MessageId, data: Option[MessageData]) derives JsonEncoder
+
+  /** Preserve Message's id/data wire format and hash validation. Only an absent data field denotes a missing message;
+    * present but null, malformed or hash-mismatched data must never silently become MessageMissing.
+    */
+  given JsonCodec[MessageMaybe] = JsonCodec(
+    summon[JsonEncoder[Envelope]].contramap[MessageMaybe] {
+      case message: Message   => Envelope(message.id, Some(message.data))
+      case MessageMissing(id) => Envelope(id, None)
+    },
+    summon[JsonDecoder[Json]].mapOrFail[MessageMaybe] {
+      case obj: Json.Obj =>
+        if obj.fields.exists(_._1 == "data") then obj.as[Message]
+        else obj.as[MessageMissing]
+      case _ => Left("expected a message object")
+    }
+  )
+}
+
+final case class Message(id: MessageId, data: MessageData) extends MessageMaybe {
   def agentId: AgentId = data.agentId
   def parentId: Option[MessageId] = data.parentId
   def timestamp: Instant = data.timestamp

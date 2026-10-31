@@ -179,7 +179,7 @@ final class AgentsInvokeSuite extends FunSuite {
     })
   }
 
-  test("ordinary configured capabilities and the tool loop apply to independent invocations") {
+  test("independent invocations advertise configured capabilities but cannot start a tool loop") {
     run(ZIO.scoped {
       for {
         requests <- Ref.make(Vector.empty[String])
@@ -209,18 +209,12 @@ final class AgentsInvokeSuite extends FunSuite {
         count <- executions.get
         stored <- fixture.live.listMessages
       } yield {
-        assertEquals(decode[JsonRpc.Success[Message]](reply).result.payload, Message.Assistant("answer"))
-        assertEquals(count, 1)
-        assertEquals(sent.size, 2)
+        assertEquals(decode[JsonRpc.Failure](reply).error.code, ErrorCode.Rejected)
+        assert(decode[JsonRpc.Failure](reply).error.message.contains("turn.submit"))
+        assertEquals(count, 0)
+        assertEquals(sent.size, 1)
         assertEquals(ujson.read(sent.head)("tools")(0)("function")("name").str, "echo")
-        assert(
-          ujson
-            .read(sent.last)("messages")
-            .arr
-            .exists(item => item("role").str == "tool" && item("content").str == "tool output")
-        )
-        assertEquals(stored.size, 2)
-        assert(!stored.exists(_.payload.role == "tool_result"))
+        assertEquals(stored, Chunk(input))
       }
     })
   }

@@ -83,6 +83,13 @@ private[orchestration] final class StorageFS(
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     lock.withPermit(readState(id)).flatMap(sessionFrom(id, _))
 
+  override def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial] =
+    ZIO.logAnnotate("sessionId", id.value) {
+      lock.withPermit(readState(id)).flatMap { state =>
+        messagesFromMaybe(state.head).map(SessionParcial(id, state.agentIds, _))
+      }
+    }
+
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     lock
       .withPermit {
@@ -197,6 +204,18 @@ private[orchestration] final class StorageFS(
               new java.util.NoSuchElementException(MessageId.value(messageId))
             )
           )
+      }
+    }
+
+  private def messagesFromMaybe(head: Option[MessageId]): UIO[Chunk[MessageMaybe]] =
+    head.fold[UIO[Chunk[MessageMaybe]]](ZIO.succeed(Chunk.empty)) { messageId =>
+      store.get(messageId).flatMap {
+        case Some(DecodedArtifact.Msg(stored)) =>
+          messagesFromMaybe(stored.value.parentId).map(_ :+ Message(stored.id, stored.value))
+        case None =>
+          ZIO
+            .logWarning(s"History traversal stopped at missing message ${MessageId.value(messageId)}")
+            .as(Chunk(MessageMissing(messageId)))
       }
     }
 

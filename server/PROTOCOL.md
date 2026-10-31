@@ -175,7 +175,7 @@ reads/listing rather than assuming a safe retry. Browser dictation uses these co
 
 ## Independent agent invocation
 
-`agents.invoke` runs a configured agent without requiring or creating a session. It is available only on configured
+`agents.invoke` handles one configured agent turn or an explicit tool call, not an agent loop, without requiring or creating a session. It is available only on configured
 servers to initialized Operators; anonymous clients get Forbidden and unconfigured servers return MethodNotFound.
 Params have exactly `agentId` (recipient) and `input` (full Message). Extra params, including `sessionId`,
 `expectedHead` and `resetContinuation`, are InvalidParams. Message hash/field validation happens during decoding.
@@ -191,8 +191,9 @@ then supplies only its payload to an `AgentInvocation`. Successful execution sav
 in a full `Message`, with the selected agent as author, a server timestamp and `parentId = input.id`.
 No session history, prior provider continuation or session continuation policy is inherited.
 
-The normal text-oriented `AgentExecution` adapter still runs its configured conversation loop and returns an `Assistant`
-answer. Its internal tool/reasoning exchanges remain transient. The configured runner rejects incoming opaque
+The text-oriented `AgentRunner.invocation` adapter requests at most one agent turn and returns a non-blank `Assistant`
+answer. Model-requested actions are rejected with guidance to use `turn.submit`; there is no transient tool-loop fallback.
+`AgentExecution` is an opaque session-loop handle and cannot be invoked directly. The configured runner rejects incoming opaque
 `Reasoning` continuations as server-owned; callers can submit a `Context` summary instead. Submitted `Instructions` do not
 replace the native agent's immutable configured system instructions. History APIs continue using redacted snapshots.
 
@@ -264,7 +265,10 @@ same-root owners. Do not run those writers together. No crash transaction or ext
 
 Under session admission, a supplied `expectedHead` must match the stored last message. Omitted/null skips the condition;
 there is no invented “must be empty” condition. Busy/head/configuration rejection precedes prompt writes. The core
-persist–run–persist path alone saves the prompt once and generated suffix after success; RPC never preappends it.
+submission path alone saves the prompt once, then schedules ordered, asynchronous transcript saves before tools and after
+each result; RPC never preappends input. Writes do not block tools or inference. Failed saves log errors and later snapshots
+retry the unsaved suffix. Pending writes drain on completion, failure or cancellation; any remaining unsaved messages log a
+warning. This is best-effort persistence: successful execution does not guarantee that every generated message was saved.
 
 `resetContinuation: true` discards old opaque provider continuation from future requests, not visible transcript.
 The server also resets on execution-binding change or unknown policy after restart. Resume asks for reset on the next
@@ -278,7 +282,7 @@ Terminal `TurnOutcome` is a discriminated **application result**, not a JSON-RPC
 
 Success includes the actual durable suffix (prompt plus generated output) with real persisted IDs. No runId, commandId,
 ledger, status, cancel, tombstone, deduplication, replay or exactly-once guarantee is active. An accepted typed failure
-retains the prompt and returns its safe snapshot. Missing accepted-session information is **Unknown**, never inferred
+retains the prompt and earlier saved checkpoints and returns their safe snapshot. Missing accepted-session information is **Unknown**, never inferred
 NotAccepted. Defect/shutdown returns terminal Unknown with the best safely loadable snapshot; absence is not rollback.
 NotAccepted means known not persisted, Accepted means known persisted. Snapshot heads are last confirmed knowledge,
 not a guarantee that an uncertain write cannot advance them.
@@ -328,8 +332,10 @@ Provider/login/voice/human-interaction transport and public authentication remai
 
 `YallmoProtocolSuite` freezes enabled shapes, optional fields/defaults and shared JVM/JS decoding.
 `OrchestratorInvokeSuite` covers session-independent persistence on memory/filesystem storage, blob dependency waits,
-invalid inputs/executions, persistence failures and interruption. `AgentsInvokeSuite` covers authorization, ordinary
-tool execution, continuation privacy, owned lifetime/shutdown, and real same-socket upload/invocation correlation.
+invalid inputs, rejection of model-requested actions, persistence failures and interruption. `AgentsInvokeSuite` covers
+authorization, direct tool execution, loop rejection, continuation privacy, owned lifetime/shutdown, and real same-socket
+upload/invocation correlation. `ExecutionBoundarySuite` checks that application code cannot construct or directly execute
+loop handles; session loops must enter through `Orchestrator.submit`.
 The independent-invocation backend change was validated with **570 tests**, with **2 existing Scala-CLI integration skips**: core JVM 302,
 core JS 15, protocol JVM/JS 26 each, server 157, web-harness 44; REPL test compilation also passed. Focused post-format
 revalidation passed 127 checks and REPL test compilation. Subsequent browser dictation integration passed 59 Scala.js

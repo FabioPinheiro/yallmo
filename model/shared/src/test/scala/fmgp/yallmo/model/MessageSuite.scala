@@ -1,6 +1,7 @@
 package fmgp.yallmo.model
 
 import munit.FunSuite
+import zio.Chunk
 import zio.json.{DecoderOps, EncoderOps}
 
 import java.time.Instant
@@ -20,6 +21,58 @@ final class MessageSuite extends FunSuite {
     assertEquals(message.id, MessageId.from(data))
     assertEquals(message.toJson, messageJson)
     assertEquals(messageJson.fromJson[Message], Right(message))
+  }
+
+  test("MessageMaybe preserves the full Message envelope and hash validation") {
+    val value: MessageMaybe = message
+    assertEquals(value.toJson, messageJson)
+    assertEquals(messageJson.fromJson[MessageMaybe], Right(value))
+    val reversed = s"""{"data":$dataJson,"id":"$expectedId"}"""
+    assertEquals(reversed.fromJson[MessageMaybe], Right(value))
+    val forged = messageJson.replace(expectedId, MessageId.value(MessageId.sha256("wrong")))
+    assert(forged.fromJson[MessageMaybe].isLeft)
+  }
+
+  test("MessageMaybe encodes a missing message as an id-only object without an ADT tag") {
+    val missing: MessageMaybe = MessageMissing(message.id)
+    val json = s"""{"id":"$expectedId"}"""
+    assertEquals(missing.toJson, json)
+    assertEquals(json.fromJson[MessageMaybe], Right(missing))
+    assertEquals(MessageMissing(message.id).toJson, json)
+    assert(json.fromJson[Message].isLeft)
+  }
+
+  test("MessageMaybe round-trips mixed complete and missing messages") {
+    val values: Chunk[MessageMaybe] = Chunk(message, MessageMissing(MessageId.sha256("unavailable")))
+    assertEquals(values.toJson.fromJson[Chunk[MessageMaybe]], Right(values))
+  }
+
+  test("MessageMaybe never falls back to missing when data is present but invalid") {
+    val invalidData = Seq(
+      "null",
+      "{}",
+      "42",
+      "[]",
+      """"not message data"""",
+      """{"agentId":"human","payload":{"User":{"text":"hello"}}}"""
+    )
+    invalidData.foreach { data =>
+      val json = s"""{"id":"$expectedId","data":$data}"""
+      assert(json.fromJson[MessageMaybe].isLeft, clues(json))
+    }
+  }
+
+  test("MessageMaybe requires a valid id and an object envelope even when data is absent") {
+    Seq(
+      "{}",
+      """{"id":null}""",
+      """{"id":"not-an-id"}""",
+      """{"data":null}""",
+      "null",
+      "[]",
+      "42",
+      s""""$expectedId""""
+    ).foreach(json => assert(json.fromJson[MessageMaybe].isLeft, clues(json)))
   }
 
   private val audio = MessagePayload.AudioAttachment(

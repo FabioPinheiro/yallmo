@@ -53,7 +53,7 @@ final class ReplOrchestratorLive[-R] private (
     sessions: SessionSubmission[?]
 ) extends ReplOrchestrator[R] {
 
-  export orchestrator.{getAgent, submit, listSessions, createSession, loadSession, append, fork}
+  export orchestrator.{getAgent, submit, listSessions, createSession, loadSession, loadSessionParcial, append, fork}
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     orchestrator.addSessionAgent(id, agentId)

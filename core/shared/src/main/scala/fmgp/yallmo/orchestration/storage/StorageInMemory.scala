@@ -70,6 +70,9 @@ private[orchestration] final class StorageInMemory private (
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     sessions.get.flatMap(values => ZIO.fromOption(values.get(id)).orElseFail(YallmoError.SessionNotFound(id)))
 
+  override def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial] =
+    loadSession(id).map(session => SessionParcial(session.id, session.agentIds, session.messages))
+
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     sessions
       .modify { current =>

@@ -89,19 +89,21 @@ private[server] final class OrchestratorRpc(
           case params: Json.Obj => invoke(method.getOrElse(""), params, connection)
           case _                => ZIO.fail(JsonRpc.Error.InvalidParams)
         }
-        result.either
-          .catchAllCause { cause =>
-            if cause.isInterrupted then ZIO.refailCause(cause)
-            else ZIO.logErrorCause("RPC failed", cause).as(Left(JsonRpc.Error.InternalError))
-          }
-          .map { outcome =>
-            id.map { requestId =>
-              outcome match {
-                case Right(result) => JsonRpc.Success(requestId, result).toJson
-                case Left(error)   => JsonRpc.Failure(requestId, error).toJson
+        ZIO.logAnnotate("rpcMethod", method.getOrElse("").take(80)) {
+          result.either
+            .catchAllCause { cause =>
+              if cause.isInterrupted then ZIO.refailCause(cause)
+              else ZIO.logErrorCause("RPC failed", cause).as(Left(JsonRpc.Error.InternalError))
+            }
+            .map { outcome =>
+              id.map { requestId =>
+                outcome match {
+                  case Right(result) => JsonRpc.Success(requestId, result).toJson
+                  case Left(error)   => JsonRpc.Failure(requestId, error).toJson
+                }
               }
             }
-          }
+        }
       }
     case _ => invalidRequest
   }
@@ -173,7 +175,9 @@ private[server] final class OrchestratorRpc(
           case SessionsGet.method =>
             for {
               request <- decode[SessionsGet.Params](params)
-              session <- domain(master.loadSession(request.sessionId))
+              session <- ZIO.logAnnotate("sessionId", request.sessionId.value)(
+                domain(master.loadSession(request.sessionId))
+              )
               result <- encode(SessionSnapshot.from(session))
             } yield result
           case MessagesList.method =>
@@ -202,14 +206,18 @@ private[server] final class OrchestratorRpc(
             for {
               author <- operator(state)
               request <- decode[TurnSubmit.Params](params)
-              outcome <- configured.get.submit(
-                author,
-                request.sessionId,
-                request.agentId,
-                request.task.prompt,
-                request.expectedHead,
-                request.resetContinuation
-              )
+              outcome <- ZIO.logAnnotate("sessionId", request.sessionId.value) {
+                ZIO.logAnnotate("agentId", AgentId.value(request.agentId)) {
+                  configured.get.submit(
+                    author,
+                    request.sessionId,
+                    request.agentId,
+                    request.task.prompt,
+                    request.expectedHead,
+                    request.resetContinuation
+                  )
+                }
+              }
               result <- encode(outcome)
             } yield result
           case AgentsInvoke.method if configured.nonEmpty =>
@@ -326,12 +334,17 @@ private[server] final class OrchestratorRpc(
     ZIO.fromEither(params.as[A]).mapError(_ => JsonRpc.Error.InvalidParams)
 
   private def encode[A: JsonEncoder](value: A): IO[JsonRpc.Error, Json] =
-    ZIO.fromEither(value.toJsonAST).mapError(_ => JsonRpc.Error.InternalError)
+    ZIO
+      .fromEither(value.toJsonAST)
+      .tapError(details => ZIO.logError(s"RPC response encoding failed: $details"))
+      .mapError(_ => JsonRpc.Error.InternalError)
 
   private def domain[A](effect: IO[YallmoError, A]): IO[JsonRpc.Error, A] =
-    effect.mapError {
-      case YallmoError.StorageFailed(error) => storageError(error)
-      case error                            => storageError(error)
+    effect.catchAll { error =>
+      val response = storageError(error)
+      ZIO
+        .logErrorCause("RPC domain operation failed", Cause.fail(error))
+        .when(response == JsonRpc.Error.InternalError) *> ZIO.fail(response)
     }
 
   private def storageError(error: YallmoError): JsonRpc.Error = error match {

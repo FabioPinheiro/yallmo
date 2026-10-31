@@ -72,7 +72,7 @@ Then compose in ordinary code:
 3. If `needs_clarification` is near its uncertain middle or above the configured action threshold, ask a clarification or choose a read-only triage worker.
 4. Apply conservative thresholds to `worker.confidence`; use a default general worker, a confirmation UI, or a more deliberate planner when it is below threshold.
 5. Map the resulting `WorkerKey` to the entire host-owned `WorkerProfile`: agent type, LLM model, model options, system prompt, static context, and advertised tools. Do **not** treat a Jev Score as a model name or allow it to override a worker profile.
-6. Invoke the existing `AgentRunner.runWithContext(profile.agent, task, profile.staticContext, ...)`.
+6. Build the opaque handle with `runner.execution(profile.agent, profile.staticContext)` and pass it to `orchestrator.submit(sessionId, authorId, task, execution)`. The orchestrator supplies history and transcript persistence; application code cannot execute the loop directly.
 
 Call the selector once per user task/phase, not every LLM turn. Re-selection on every loop would add latency/cost, make the worker flip while its transcript grows, and invalidate prompt-cache locality. A multi-step workflow should use explicit stages (for example `triage -> research -> implementation -> review`) whose transitions are deterministic or separately evaluated with an auditable System One question.
 

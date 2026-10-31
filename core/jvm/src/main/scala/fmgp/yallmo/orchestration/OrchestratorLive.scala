@@ -45,24 +45,70 @@ final class OrchestratorLive[-R] private (
         session <- append(id, userId, Chunk(MessagePayload.User(task.prompt)))
       } yield session).mapError(SessionSubmitFailure(_, None))
       context = RunContext(accepted.messages.map(_.payload))
-      // Execution inherits the caller's interruptibility; its failure/cancellation cannot undo the saved prompt.
-      turn <- execution.run(task, context).mapError(SessionSubmitFailure(_, Some(accepted)))
-      _ <- ZIO
-        .fail(
-          SessionSubmitFailure(
-            YallmoError.InvalidAgentDecision("Agent execution must preserve the accepted transcript and agent ID"),
-            Some(accepted)
-          )
-        )
-        .unless(
-          turn.result.agentId == execution.agentId &&
-            turn.runContext.messages.take(context.messages.size) == context.messages
-        )
-      response = turn.runContext.messages.drop(context.messages.size)
-      saved <- (if response.isEmpty then ZIO.succeed(accepted)
-                else addSessionAgent(id, execution.agentId) *> append(id, execution.agentId, response))
-        .mapError(SessionSubmitFailure(_, Some(accepted)))
-    } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
+      submitted <- ZIO.scoped {
+        for {
+          persisted <- Ref.make((context, accepted))
+          latest <- Ref.make(context)
+          // One writer preserves checkpoint order without making model/tool work wait for storage.
+          // Runner budgets bound the number of queued snapshots.
+          queue <- Queue.unbounded[Option[RunContext]]
+          persist = (next: RunContext) =>
+            for {
+              current <- persisted.get
+              _ <- ZIO
+                .fail(YallmoError.InvalidAgentDecision("Agent checkpoint must preserve the persisted transcript"))
+                .unless(next.messages.take(current._1.messages.size) == current._1.messages)
+              delta = next.messages.drop(current._1.messages.size)
+              saved <-
+                if delta.isEmpty then ZIO.succeed(current._2)
+                else addSessionAgent(id, execution.agentId) *> append(id, execution.agentId, delta)
+              _ <- persisted.set((next, saved))
+            } yield ()
+          writer <- queue.take
+            .flatMap {
+              case Some(next) =>
+                persist(next)
+                  .catchAllCause(cause =>
+                    ZIO.logErrorCause(s"Session ${id.value} checkpoint persistence failed", cause)
+                  )
+                  .as(true)
+              case None => ZIO.succeed(false)
+            }
+            .repeatWhile(identity)
+            .forkScoped
+          // Cancellation must not split bookkeeping from enqueueing; this never waits for storage.
+          saveTranscriptLater = (next: RunContext) => (latest.set(next) *> queue.offer(Some(next)).unit).uninterruptible
+          // Drain even on failure/cancellation, before the scoped writer is interrupted.
+          // Later snapshots retry any suffix that an earlier checkpoint failed to save.
+          finish = queue.offer(None) *> writer.join *> latest.get.zip(persisted.get).flatMap {
+            case (requested, (stored, _)) =>
+              val missing = requested.messages.size - stored.messages.size
+              ZIO
+                .logWarning(s"Session ${id.value} submission has $missing generated message(s) not stored")
+                .when(missing > 0)
+                .unit
+          }
+          turn <- (for {
+            turn <- execution.run(task, context, saveTranscriptLater)
+            _ <- ZIO
+              .fail(
+                YallmoError.InvalidAgentDecision("Agent execution must preserve the accepted transcript and agent ID")
+              )
+              .unless(
+                turn.result.agentId == execution.agentId &&
+                  turn.runContext.messages.take(context.messages.size) == context.messages
+              )
+            _ <- saveTranscriptLater(turn.runContext)
+          } yield turn)
+            .ensuring(finish)
+            .catchAll(error =>
+              persisted.get.flatMap { case (_, saved) => ZIO.fail(SessionSubmitFailure(error, Some(saved))) }
+            )
+          saved <- persisted.get.map(_._2)
+          response = turn.runContext.messages.drop(context.messages.size)
+        } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
+      }
+    } yield submitted
 
   private def persistMessage(message: Message): IO[YallmoError, Message] =
     instances.validateAuthor(message.agentId) *>
@@ -95,6 +141,9 @@ final class OrchestratorLive[-R] private (
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     storage.loadSession(id).mapError(YallmoError.StorageFailed.apply)
+
+  override def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial] =
+    storage.loadSessionParcial(id).mapError(YallmoError.StorageFailed.apply)
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     instances.validateAuthor(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)

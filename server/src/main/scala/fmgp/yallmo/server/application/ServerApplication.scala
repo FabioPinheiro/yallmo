@@ -80,6 +80,7 @@ object ServerApplication {
                 assembly
                   .submission(author, Some(binding))
                   .submit(Some(sessionId.value), prompt, boundary)
+                  .tapError(failure => ZIO.logErrorCause("Session execution failed", Cause.fail(failure.error)))
                   .fold(
                     failure =>
                       TurnOutcome.Failed(
@@ -113,8 +114,9 @@ object ServerApplication {
         }
       }
 
-    /** Independent configured execution; the application owns work and the caller owns only its wait. No session,
-      * continuation policy or session diagnostic capture is created. Accepted input survives execution failure.
+    /** Single-message configured invocation, never a model/tool loop. The application owns work and the caller owns
+      * only its wait. No session, continuation policy or session diagnostic capture is created. Accepted input survives
+      * execution failure. Model-requested actions require submit instead.
       */
     def invoke(author: AgentId, agentId: AgentId, input: Message): IO[JsonRpc.Error, Message] =
       owned {
@@ -199,7 +201,13 @@ object ServerApplication {
               effect.interruptible.exit.flatMap {
                 case Exit.Success(value) => terminal.succeed(value).unit
                 case Exit.Failure(cause) =>
-                  onFailure(cause).exit.flatMap {
+                  (ZIO
+                    .logErrorCause("Configured operation failed unexpectedly", cause)
+                    .when(cause.defects.nonEmpty) *>
+                    ZIO
+                      .logWarning("Configured operation interrupted before terminal delivery")
+                      .when(cause.isInterrupted) *>
+                    onFailure(cause)).exit.flatMap {
                     case Exit.Success(value) => terminal.succeed(value).unit
                     case Exit.Failure(error) =>
                       terminal.fail(error.failureOption.getOrElse(JsonRpc.Error.InternalError)).unit
@@ -209,26 +217,39 @@ object ServerApplication {
             .forkIn(scope)
           // A closed scope may interrupt forkIn before its body starts; no wait may be left hanging.
           _ <- fiber.poll.flatMap {
-            case Some(_) => terminal.fail(JsonRpc.Error.InternalError).unit
-            case None    => ZIO.unit
+            case Some(exit) =>
+              terminal.fail(JsonRpc.Error.InternalError).flatMap { delivered =>
+                val log = exit match {
+                  case Exit.Failure(cause) =>
+                    ZIO.logErrorCause("Configured operation stopped before terminal delivery", cause)
+                  case Exit.Success(_) => ZIO.logError("Configured operation stopped without a terminal result")
+                }
+                log.when(delivered).unit
+              }
+            case None => ZIO.unit
           }
           result <- restore(terminal.await)
         } yield result
       }
 
     private def checked[A](effect: IO[YallmoError, A]): IO[JsonRpc.Error, A] =
-      effect.mapError {
-        case YallmoError.StorageFailed(error) => checkedError(error)
-        case error                            => checkedError(error)
+      effect.catchAll { error =>
+        val response = checkedError(error)
+        ZIO
+          .logErrorCause("Configured domain operation failed", Cause.fail(error))
+          .when(response == JsonRpc.Error.InternalError) *> ZIO.fail(response)
       }
 
     private def checkedError(error: YallmoError): JsonRpc.Error = error match {
+      case YallmoError.StorageFailed(error)                            => checkedError(error)
       case _: YallmoError.SessionNotFound | _: YallmoError.BlobMissing =>
         JsonRpc.Error(ErrorCode.NotFound, "Not found")
       case _: YallmoError.SessionAlreadyExists =>
         JsonRpc.Error(ErrorCode.Conflict, "Session already exists")
       case _: YallmoError.InvalidMessage =>
         JsonRpc.Error(ErrorCode.Rejected, "Invalid message for this invocation")
+      case _: YallmoError.InvalidAgentDecision =>
+        JsonRpc.Error(ErrorCode.Rejected, "Invocation requires a final answer; use turn.submit for agent actions")
       case YallmoError.BlobUploadFailed(reason) =>
         JsonRpc.Error(ErrorCode.Rejected, reason.message)
       case _: YallmoError.UnknownAgent | _: YallmoError.InvalidConfig =>

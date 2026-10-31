@@ -310,12 +310,12 @@ object ApplicationRuntime {
         }
       }
 
-    /** Executes with only the supplied message, using the same configured runner/capabilities as session turns. */
+    /** Invokes one message, never an agent loop; model-requested actions require a session submission. */
     def invoke(input: Message, selection: ConfiguredAgentBinding): ZIO[R, YallmoError, Message] = {
       val selected = Some(selection)
       orchestrator.invoke(
         input,
-        runner(selected).execution(selection.bind[R](id => orchestrator.readBlob(id)), context(selected))
+        runner(selected).invocation(selection.bind[R](id => orchestrator.readBlob(id)), context(selected))
       )
     }
 

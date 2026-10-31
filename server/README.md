@@ -53,7 +53,8 @@ input's content address and linking the response to it. The input author must ma
 An existing parent is allowed without inheriting its history. An input can reference a blob still arriving through
 `blobs.upload`: invocation waits without blocking subsequent upload commands on the socket.
 
-Conversational agents retain their normal text-loop behavior. A direct `ToolCall` executes through the selected
+Text input gets at most one agent turn; model-requested actions are rejected and require `turn.submit` instead.
+A direct `ToolCall` executes through the selected
 agent's authorized runner and returns a correlated `ToolOutput` without inference. Registered approval gates,
 argument validation and deadlines still apply. No session is required or created.
 The browser's [Scalamode page](../web-harness/README.md#scalamode) uses this path with the **Run scalamode** button for restricted Scala execution. `ApplicationTools` registers `scalamode`; server tool availability and agent permissions still apply.
@@ -66,13 +67,16 @@ endpoint or session is introduced. General execution cancellation remains separa
 
 ## Submission lifetime and uncertainty
 
-Core persist–run–persist alone saves the prompt, executes and saves generated output; RPC never preappends it.
+`Orchestrator.submit` is the public agent-loop boundary. Core saves the prompt, then schedules ordered transcript saves
+before tools and after each result without blocking inference/tool work. Pending writes drain before return; failures log
+errors and any remaining unsaved messages log a warning. Generated output is best-effort, not guaranteed durable. RPC never
+preappends input.
 The configured application owns work beyond disconnect. Closing/interruption abandons the local wait, **not remote
 execution**. Reconnect, resume the retained session and read `/history` to observe completion. Never automatically
 resubmit/replay after a lost reply. A lost create reply may leave an unknown empty session; inspect `/session list`.
 
 Success returns a sanitized snapshot/result and the actual durable message suffix. Accepted failures retain the prompt
-and snapshot. Storage/defect/shutdown uncertainty is Unknown, not an assertion of nonacceptance or rollback. A known
+and earlier saved checkpoints. Storage/defect/shutdown uncertainty is Unknown, not an assertion of nonacceptance or rollback. A known
 head is sent as `expectedHead`; mismatch/Busy retains client session state and requests refresh before manual retry.
 Resume resets old opaque continuation on the next turn; binding changes and restart also derive server boundaries.
 Visible history is preserved; the client never sends continuation offsets or stores provider state.
@@ -233,6 +237,10 @@ sbt 'server/run --storage ./zzz --port 8080 --log-level=trace'
 Levels are case-insensitive; both `--log-level debug` and `--log-level=debug` work, in any option order.
 `warning`, `error` and `fatal` select higher thresholds; `off` suppresses application ZIO logs (not sbt/SLF4J output).
 The configured console logger is installed before HTTP startup so connection fibers inherit it.
+Unexpected domain/storage failures log their original cause at ERROR **before** being sanitized to the browser's
+`Internal error`. Request logs include `rpcMethod` and, for session reads/submissions, `sessionId` (and submission
+`agentId`). Execution failures/defects also log their causes. Expected NotFound/Conflict/authorization responses do
+not become ERROR logs. Error causes can contain sensitive provider details; keep server logs private.
 
 | Level | Server output |
 | --- | --- |

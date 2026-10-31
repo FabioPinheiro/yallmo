@@ -106,12 +106,19 @@ final class ReplOrchestratorSuite extends FunSuite {
     } yield ReplOrchestratorLive.make(orchestrator, bob, Some(gamma))
   }
 
-  private def execution(id: AgentId, response: Chunk[MessagePayload]): AgentExecution[Any] =
-    new AgentExecution[Any] {
-      override val agentId: AgentId = id
-      override def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] =
-        ZIO.succeed(AgentTurnResult(AgentResult(id, "result"), acceptedContext.appendAll(response)))
-    }
+  private def execution(agentId: AgentId, response: Chunk[MessagePayload]): AgentExecution[Any] =
+    new AgentRunner[Any](Map.empty, Map.empty).execution(
+      new AgentInstance[Any] {
+        override val id: AgentId = agentId
+        override def next(
+            task: AgentTask,
+            context: StaticContext[Any],
+            current: RunContext
+        ): IO[YallmoError, AgentTurn] =
+          ZIO.succeed(AgentTurn(None, AgentDecision.FinalAnswer("result"), response))
+      },
+      StaticContext[Any]("Test")
+    )
 
   private val bobId = AgentId("bob")
   private val gammaId = AgentId("Gamma")

@@ -8,8 +8,9 @@ import zio.*
 
 /** In-process session operations with a bound human author and optional configured assistant.
   *
-  * This is not an authorized remote API or a run coordinator. Core still owns persist–run–persist; a failed or
-  * interrupted execution never rolls back its accepted prompt. Selection is immutable and local to this service.
+  * This is not an authorized remote API or a run coordinator. Core owns prompt persistence and asynchronous transcript
+  * saves; failed or interrupted execution never rolls back accepted input. Selection is immutable and local to this
+  * service.
   */
 final class SessionSubmission[-R] private (
     orchestrator: Orchestrator[?],

@@ -10,8 +10,8 @@ import zio.json.*
 object ScalaToolRuntime {
   val LogFile: String = "runtime.jsonl"
 
-  /** Overload resolution preserves the inferred snippet type: plain values are evaluated, effects are executed.
-    * Only effects with no environment requirement are executed, without runtime type tests or casts.
+  /** Overload resolution preserves the inferred snippet type: plain values are evaluated, effects are executed. Only
+    * effects with no environment requirement are executed, without runtime type tests or casts.
     */
   def evaluate(value: => Any): Task[Any] = ZIO.attempt(value)
 

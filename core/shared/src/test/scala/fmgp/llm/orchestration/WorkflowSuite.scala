@@ -1,14 +1,26 @@
 package fmgp.yallmo.orchestration
 
+import RunnerTestSupport.*
+
 import fmgp.yallmo.model.YallmoError
 import java.util.UUID
 import munit.FunSuite
 import scala.concurrent.Future
+import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import fmgp.yallmo.model.*
 
 final class AgentRunnerSuite extends FunSuite:
   private val CoordinatorId = AgentId("coordinator")
+
+  test("even internal loop execution requires a transcript-saving operation") {
+    val errors = typeCheckErrors("""
+      import fmgp.yallmo.orchestration.*
+      def missingSave(execution: AgentExecution[Any]) =
+        execution.run(AgentTask("hello"), RunContext())
+    """)
+    assert(errors.exists(_.message.contains("saveTranscriptLater")))
+  }
 
   test("agent identifiers reject blank values") {
     assert(AgentId.from(" ").isLeft)
@@ -124,7 +136,7 @@ final class AgentRunnerSuite extends FunSuite:
         def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = ZIO.succeed(result)
       }
       new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
-        .execution(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+        .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
         .invoke(Message.ToolCall(call))
     }) { outputs =>
       assertEquals(
@@ -157,7 +169,7 @@ final class AgentRunnerSuite extends FunSuite:
         )
     }
     val execution = new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
-      .execution(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+      .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
     runZIO(ZIO.foreach(List("{}", "not-json")) { arguments =>
       execution.invoke(
         Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), ToolKey.Scalamode, arguments))

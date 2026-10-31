@@ -3,6 +3,8 @@ package fmgp.yallmo.orchestration
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import munit.FunSuite
+import java.nio.file.Files
+import java.util.Comparator
 import zio.*
 
 final class OrchestratorLiveSuite extends FunSuite {
@@ -33,6 +35,60 @@ final class OrchestratorLiveSuite extends FunSuite {
 
     assertEquals(session.agentIds, Chunk(agentId))
     assertEquals(session.messages.map(_.payload), Chunk(Message.User("hello")))
+  }
+
+  test("public partial session reads delegate to memory storage and preserve error mapping") {
+    runZIO {
+      for {
+        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
+        id = SessionId.unsafe("partial")
+        _ <- orchestrator.createSession(id, Chunk(agentId))
+        strict <- orchestrator.append(id, agentId, Chunk(Message.User("hello")))
+        partial <- orchestrator.loadSessionParcial(id)
+        absentId = SessionId.unsafe("absent")
+        absent <- orchestrator.loadSessionParcial(absentId).either
+      } yield {
+        assertEquals(partial, SessionParcial(id, strict.agentIds, strict.messages))
+        assertEquals(absent, Left(YallmoError.StorageFailed(YallmoError.SessionNotFound(absentId))))
+      }
+    }
+  }
+
+  test("public partial filesystem reads preserve missing heads while strict reads and appends still fail") {
+    val root = Files.createTempDirectory("yallmo-partial-session-")
+    try {
+      runZIO {
+        for {
+          instances <- RuntimeInstances.fromAgents(Chunk(agent))
+          orchestrator <- OrchestratorLive.filesystem(root, instances)
+          id = SessionId.unsafe("broken")
+          _ <- orchestrator.createSession(id, Chunk(agentId))
+          missing = MessageId.sha256("unavailable-head")
+          _ <- ZIO.attempt(
+            Files.writeString(
+              root.resolve("refs/sessions/broken"),
+              s"""{"agentIds":["${AgentId.value(agentId)}"],"head":"${MessageId.value(missing)}"}"""
+            )
+          )
+          before <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
+          partial <- orchestrator.loadSessionParcial(id)
+          strict <- orchestrator.loadSession(id).either
+          appended <- orchestrator.append(id, agentId, Chunk(Message.User("must not write"))).either
+          after <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
+        } yield {
+          assertEquals(partial, SessionParcial(id, Chunk(agentId), Chunk(MessageMissing(missing))))
+          assert(strict.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))
+          assert(appended.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))
+          assertEquals(after, before)
+          assertEquals(Files.readString(root.resolve("objects.jsonl")), "")
+        }
+      }
+    } finally {
+      val paths = Files.walk(root)
+      try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+      finally paths.close()
+    }
   }
 
   test("registered users can join sessions and author text and blobs without an executable agent") {

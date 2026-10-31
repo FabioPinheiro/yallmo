@@ -3,7 +3,12 @@ package fmgp.yallmo.server
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
+import java.util.Comparator
+import fmgp.yallmo.server.jsonrpc.JsonRpc
+import fmgp.yallmo.server.protocol.YallmoProtocol.*
+import zio.json.*
+import zio.json.ast.Json
 import java.util.concurrent.{CopyOnWriteArrayList, CountDownLatch, TimeUnit}
 import munit.FunSuite
 import scala.jdk.CollectionConverters.*
@@ -122,6 +127,87 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
       """{"params":{"data\u0042ase64":"PRIVATE_BINARY"}}""",
       """{"params":{"dataBase64":"PRIVATE_BINARY""""
     ).foreach { payload => assert(!RpcWire.tracePayload(payload).contains("PRIVATE_BINARY")) }
+  }
+
+  test("missing session messages log the original storage cause while RPC replies remain sanitized") {
+    val logs = new CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    val missing = MessageId.sha256("missing-message")
+    run(ZIO.scoped {
+      for {
+        root <- ZIO.acquireRelease(ZIO.attemptBlocking(Files.createTempDirectory("yallmo-rpc-logging-"))) { root =>
+          ZIO.attemptBlocking {
+            val paths = Files.walk(root)
+            try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))
+            finally paths.close()
+          }.orDie
+        }
+        author = AgentId("author")
+        registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+          val id = author
+          def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+            ZIO.dieMessage("Reading a broken session must not execute an agent")
+        }))
+        master <- OrchestratorLive.filesystem(root, registry)
+        session = SessionId.unsafe("broken")
+        _ <- master.createSession(session, Chunk(author))
+        _ <- master.append(session, author, Chunk(MessagePayload.User("PRIVATE_TRANSCRIPT")))
+        _ <- ZIO.attemptBlocking(
+          Files.writeString(
+            root.resolve("refs/sessions/broken"),
+            s"""{"agentIds":["author"],"head":"${MessageId.value(missing)}"}"""
+          )
+        )
+        rpc = new OrchestratorRpc(master)
+        connection <- rpc.openConnection
+        _ <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("init"),
+              Initialize.method,
+              Initialize.Params(Version, "logging-test", None)
+            )
+            .toJson,
+          connection
+        )
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
+        listed <- rpc.handle(JsonRpc.Request(Json.Str("list"), SessionsList.method, Empty()).toJson, connection)
+        loaded <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("get"),
+              SessionsGet.method,
+              SessionsGet.Params(session)
+            )
+            .toJson,
+          connection
+        )
+        notFound <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("absent"),
+              SessionsGet.method,
+              SessionsGet.Params(SessionId.unsafe("absent"))
+            )
+            .toJson,
+          connection
+        )
+      } yield {
+        List(listed.get, loaded.get).foreach { reply =>
+          assertEquals(reply.fromJson[JsonRpc.Failure].toOption.get.error, JsonRpc.Error.InternalError)
+          assert(!reply.contains(MessageId.value(missing)))
+          assert(!reply.contains("PRIVATE_TRANSCRIPT"))
+        }
+        assertEquals(notFound.get.fromJson[JsonRpc.Failure].toOption.get.error.code, ErrorCode.NotFound)
+        val errors = logs.asScala.filter(_.contains("level=ERROR")).toVector
+        assertEquals(errors.size, 2)
+        assert(errors.forall(_.contains("session refers to missing message")))
+        assert(errors.forall(_.contains(MessageId.value(missing))))
+        assert(errors.exists(_.contains("rpcMethod=sessions.list")))
+        assert(errors.exists(line => line.contains("rpcMethod=sessions.get") && line.contains("sessionId=broken")))
+        assert(!logs.asScala.exists(_.contains("PRIVATE_TRANSCRIPT")))
+      }
+    })
   }
 
   private def exchange(level: LogLevel): Vector[String] = {

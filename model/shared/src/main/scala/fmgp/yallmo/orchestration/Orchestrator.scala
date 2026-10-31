@@ -24,16 +24,21 @@ trait Orchestrator[-R] extends BlobOps {
   @deprecated("Use submit for session-aware agent execution and persistence.", "2.0.0")
   def turn(id: AgentId, request: AgentTurnRequest): ZIO[R, YallmoError, AgentTurnResponse]
 
-  /** Submits one user task to an existing session, owning the complete persist-run-persist lifecycle.
+  /** Submits one user task to an existing session, owning prompt and transcript persistence.
     *
-    * Validates the registered authors and saves the user prompt before invoking execution. Storage write before
-    * execution starts. The execution receives history from the stored session, including the accepted prompt exactly
-    * once; callers must not append it themselves. After successful execution, only newly generated assistant/tool
-    * messages are saved, attributed to execution.agentId, before this effect succeeds.
+    * Validates the registered authors and saves the user prompt before invoking execution. The execution receives
+    * history from the stored session, including the accepted prompt exactly once; callers must not append it
+    * themselves. Generated assistant/tool messages are attributed to execution.agentId and saved through ordered,
+    * asynchronous checkpoints. Tools and inference do not wait for these writes; persistence failures are logged as
+    * errors without stopping execution. Subsequent checkpoints retry the unsaved suffix.
     *
-    * A failed prompt save prevents execution. Failures after acceptance retain the saved prompt and expose its session
-    * through [[SessionSubmitFailure.acceptedSession]]. Timeout and interruption do not roll back an accepted prompt.
-    * Appends are not a rollback transaction.
+    * Pending checkpoints are drained before returning, including on execution failure or cancellation. Any remaining
+    * unsaved generated messages produce a warning; a successful result may include newMessages absent from its saved
+    * session. This is best-effort persistence, not a durability barrier or exactly-once tool execution.
+    *
+    * A failed prompt save prevents execution. Failures after acceptance retain saved checkpoints and expose the latest
+    * saved session through [[SessionSubmitFailure.acceptedSession]]. Timeout and interruption do not roll back accepted
+    * input or earlier checkpoints. Appends are not a rollback transaction.
     *
     * @tparam R1
     *   environment required by the configured execution, including its model/tool services
@@ -44,11 +49,11 @@ trait Orchestrator[-R] extends BlobOps {
     * @param task
     *   user task whose prompt is accepted and saved before execution
     * @param execution
-    *   configured agent loop, typically created by AgentRunner.execution; its agent must be registered and it must
-    *   preserve the accepted transcript prefix and response author
+    *   opaque loop handle created by AgentRunner.execution; only submit can execute it, with mandatory transcript
+    *   persistence; its agent must be registered and preserve the accepted transcript prefix and response author
     * @return
     *   the saved session, final agent result and new messages (prompt plus generated responses), or a
-    *   [[SessionSubmitFailure]] containing the underlying error and the accepted session when available
+    *   [[SessionSubmitFailure]] containing the underlying error and the latest saved session when available
     */
   def submit[R1](
       id: SessionId,
@@ -57,10 +62,12 @@ trait Orchestrator[-R] extends BlobOps {
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, SessionTurn]
 
-  /** Saves one message, awaits its blobs and invokes a configured recipient. Any payload may be submitted/returned; the
-    * recipient validates what it supports. A parent must exist but does not implicitly load history. No session is
-    * created or advanced. The exact response payload is saved as a direct child of input. Failure never rolls back an
-    * accepted input, and repeating an invocation may execute again even if that input is already stored.
+  /** Saves one message, awaits its blobs and invokes a single-message recipient, not an agent loop. AgentRunner's
+    * invocation adapter rejects model-requested actions; use [[submit]] to execute those with transcript persistence.
+    * Any payload may be submitted/returned; the recipient validates what it supports. A parent must exist but does not
+    * implicitly load history. No session is created or advanced. The exact response payload is saved as a direct child
+    * of input. Failure never rolls back an accepted input, and repeating an invocation may execute again even if that
+    * input is already stored.
     */
   def invoke[R1](input: Message, execution: AgentInvocation[R1]): ZIO[R1, YallmoError, Message] = {
     val _ = (input, execution)
@@ -72,6 +79,11 @@ trait Orchestrator[-R] extends BlobOps {
   def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session]
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
+
+  /** Loads read-only history with explicit missing-message markers. Does not repair storage or make incomplete history
+    * executable; submit, append and other mutations continue to require strict [[loadSession]].
+    */
+  def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial]
 
   /** Adds a registered message author without changing the session ID or transcript. Idempotent. Fixed-membership
     * implementations retain their previous behavior unless they override this operation.

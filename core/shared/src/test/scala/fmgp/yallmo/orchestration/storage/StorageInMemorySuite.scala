@@ -1,7 +1,7 @@
 package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.orchestration.SessionId
+import fmgp.yallmo.orchestration.{SessionId, SessionParcial}
 import munit.FunSuite
 import scala.concurrent.Future
 import zio.*
@@ -29,6 +29,28 @@ final class StorageInMemorySuite extends FunSuite {
         assertEquals(forked.id, target)
         assertEquals(forked.messages, saved.messages)
         assertEquals(listed.size, 2)
+      }
+    }
+  }
+
+  test("partial session reads preserve complete histories, metadata and missing-session errors") {
+    run {
+      val author = AgentId("author")
+      val id = SessionId.unsafe("partial")
+      val absentId = SessionId.unsafe("absent")
+      for {
+        storage <- StorageInMemory.make
+        _ <- storage.createSession(id, Chunk(author))
+        empty <- storage.loadSessionParcial(id)
+        strict <- StorageTestMessages.persistTurn(storage, id, author, Chunk(MessagePayload.User("hello")))
+        partial <- storage.loadSessionParcial(id)
+        absent <- storage.loadSessionParcial(absentId).either
+        unchanged <- storage.loadSession(id)
+      } yield {
+        assertEquals(empty, SessionParcial(id, Chunk(author), Chunk.empty))
+        assertEquals(partial, SessionParcial(id, strict.agentIds, strict.messages))
+        assertEquals(absent, Left(YallmoError.SessionNotFound(absentId)))
+        assertEquals(unchanged, strict)
       }
     }
   }

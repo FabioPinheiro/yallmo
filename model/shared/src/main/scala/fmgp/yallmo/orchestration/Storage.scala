@@ -27,6 +27,11 @@ private[orchestration] trait Storage extends BlobOps {
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
+  /** Reads history without requiring every referenced message to be available. Missing session references or invalid
+    * metadata still fail; a missing history object becomes a MessageMissing marker. Never repairs stored data.
+    */
+  def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial]
+
   /** Registers another author without changing existing messages. Resolution belongs to the orchestrator. */
   def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session]
 

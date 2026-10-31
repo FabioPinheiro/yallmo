@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import RunnerTestSupport.*
+
 import fmgp.yallmo.model.*
 import munit.FunSuite
 import scala.concurrent.Future
@@ -27,7 +29,7 @@ final class AgentInvocationSuite extends FunSuite {
       context = StaticContext[Any]("", tools = Chunk(tool.definition))
       _ <- runner.runWithContext(agent, AgentTask("continue"), context, RunContext(Chunk(Message.ToolCall(call))))
       reply <- runner
-        .execution(agent, context)
+        .invocation(agent, context)
         .invoke(Message.ToolOutput(FunctionGenericOutput(call.id, call.name, "data")))
       count <- calls.get
     } yield {
@@ -52,7 +54,7 @@ final class AgentInvocationSuite extends FunSuite {
       runner = new AgentRunner[Any](Map(ToolKey.unsafe("echo") -> tool), Map.empty)
       context = StaticContext[Any]("", tools = Chunk(tool.definition))
       result <- runner
-        .execution(neverInfer, context, AgentBudget(1, 1, 50.millis))
+        .invocation(neverInfer, context, AgentBudget(1, 1, 50.millis))
         .invoke(Message.ToolCall(call))
         .either
       interrupted <- cancelled.get
@@ -66,7 +68,7 @@ final class AgentInvocationSuite extends FunSuite {
     run(for {
       runner = new AgentRunner[Any](Map.empty, Map.empty)
       result <- runner
-        .execution(agent, StaticContext[Any](""), AgentBudget(1, 0, 1.second))
+        .invocation(agent, StaticContext[Any](""), AgentBudget(1, 0, 1.second))
         .invoke(Message.ToolCall(call))
         .either
     } yield assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidAgentBudget])))

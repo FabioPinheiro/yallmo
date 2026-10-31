@@ -1,80 +1,47 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
-import zio.{Chunk, ZIO}
+import zio.{Chunk, UIO, ZIO}
 
-/** A configured recipient of one message. Payload support belongs to the recipient, not the transport or storage.
-  * Implementations execute through their authorized services and do not persist messages themselves.
+/** A configured recipient of one message, not an agent loop. Payload support belongs to the recipient, not storage.
+  * Implementations execute through their authorized services; [[Orchestrator.invoke]] owns input/output persistence.
   */
 trait AgentInvocation[-R] {
   def agentId: AgentId
-  def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload]
+  private[orchestration] def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload]
 }
 
-/** The identity and execution operation of an already-configured agent loop, independent of session storage.
+/** An opaque configured agent loop, executable only by orchestration through [[Orchestrator.submit]].
   *
-  * This is a small dependency boundary, not another agent implementation or execution engine. The model module defines
-  * [[Orchestrator]] but cannot depend on the concrete AgentRunner and AgentInstance types in core. Bundling agentId and
-  * run here lets the orchestrator invoke a configured loop without knowing how that loop is assembled.
-  *
-  * AgentRunner.execution supplies the usual implementation: it binds an agent program, static context and execution
-  * budget to the existing runner. Constructing that adapter performs no model/tool calls. Calling run describes a full
-  * bounded agent loop, potentially containing several model requests and tool/retrieval actions, not one provider turn.
-  *
-  * Responsibilities remain separate:
-  *   - The orchestrator accepts and saves input, supplies either session history or just an independent input, invokes
-  *     this operation and saves results.
-  *   - The configured runner executes model/tool work and enforces its permissions and budgets.
-  *   - This interface neither owns storage nor duplicates the runner's execution logic.
-  *
-  * The supplied transcript already includes the accepted user prompt. Implementations must preserve that prefix and
-  * return the complete transcript without appending the prompt again. They must not persist messages themselves;
-  * orchestration saves the generated suffix for session submissions or only the final answer for independent calls.
+  * AgentRunner.execution binds the agent, capabilities and budget without performing effects. Application code can pass
+  * this handle to submit, but cannot construct its own implementation or invoke the loop directly. The model module
+  * defines this boundary because it cannot depend on the concrete runner in core.
   *
   * {{{
   * val execution = runner.execution(agent, staticContext, budget)
   * orchestrator.submit(sessionId, authorId, AgentTask("Explain Scala"), execution)
   * }}}
-  *
-  * @tparam R
-  *   services required by the configured loop, such as model and tool services
   */
-trait AgentExecution[-R] extends AgentInvocation[R] {
+abstract class AgentExecution[-R] private[orchestration] () {
 
   /** Registered agent identity used to validate execution and attribute its generated messages. */
   def agentId: AgentId
 
-  /** Describes execution of one accepted task; the orchestrator controls when this effect runs.
+  /** Internal loop entry point. Only orchestration can supply the accepted history and persistence operation.
     *
-    * @param task
-    *   task to execute; its prompt is already present in acceptedContext
-    * @param acceptedContext
-    *   accepted input exactly once, preceded by stored history only for session-based execution
-    * @return
-    *   the final result attributed to agentId and the full append-only transcript, not just the generated suffix;
-    *   execution failures are left to the orchestrator; already accepted input is not rolled back
+    * The transcript includes the accepted prompt exactly once and must remain append-only. The required callback
+    * schedules ordered, best-effort saves before tool execution and after each result; it is not a durability barrier.
+    * There is deliberately no callback-free overload or default. The returned transcript includes the entire run.
     */
-  def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult]
-
-  /** Compatibility adapter for text-oriented loops. Other recipients may override this to return any payload. */
-  override def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] = {
-    val context = RunContext(Chunk(input))
-    run(AgentTask(input.contentStr), context).flatMap { turn =>
-      if turn.result.agentId != agentId ||
-        turn.runContext.messages.take(context.messages.size) != context.messages || turn.result.text.trim.isEmpty
-      then
-        ZIO.fail(
-          YallmoError.InvalidAgentDecision(
-            "Agent execution must preserve the accepted input and agent ID and return a non-blank answer"
-          )
-        )
-      else ZIO.succeed(MessagePayload.Assistant(turn.result.text))
-    }
-  }
+  private[orchestration] def run(
+      task: AgentTask,
+      acceptedContext: RunContext,
+      saveTranscriptLater: RunContext => UIO[Unit]
+  ): ZIO[R, YallmoError, AgentTurnResult]
 }
 
-/** A completed submission and the durable session after its generated messages have been saved. */
+/** A completed submission and its durable session. Best-effort checkpoint failures may leave newMessages unsaved. */
 final case class SessionTurn(session: Session, result: AgentResult, newMessages: Chunk[MessagePayload])
 
-/** A failed submission, with the accepted session when the user prompt was successfully saved. */
+/** A failed submission, with the latest saved session when the user prompt was successfully saved. */
 final case class SessionSubmitFailure(error: YallmoError, acceptedSession: Option[Session])

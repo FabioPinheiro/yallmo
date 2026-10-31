@@ -27,7 +27,7 @@ final class AgentRunner[R](
     val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
 
-  /** Binds a program and its capabilities for orchestrator-owned execution; construction performs no effects. */
+  /** Builds an opaque loop handle. Only Orchestrator.submit can execute it and supply transcript persistence. */
   def execution(
       agent: AgentInstance[R],
       staticContext: StaticContext[R],
@@ -35,65 +35,65 @@ final class AgentRunner[R](
   ): AgentExecution[R] =
     new AgentExecution[R] {
       override val agentId: AgentId = agent.id
-      override def run(task: AgentTask, acceptedContext: RunContext): ZIO[R, YallmoError, AgentTurnResult] =
-        runAccepted(agent, task, staticContext, acceptedContext, budget)
-
-      override def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] = input match {
-        case MessagePayload.ToolCall(call) =>
-          (for {
-            _ <- ZIO.fromEither(budget.validate)
-            _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
-            context <- agent.configuredContext(staticContext)
-            result <- executeAction(agent, PreparedAction.CallExternalTool(call), context)
-          } yield result).timeoutFail(YallmoError.AgentTimedOut(budget.timeout))(budget.timeout)
-        case _: MessagePayload.Reasoning =>
-          ZIO.fail(
-            YallmoError.InvalidMessage("Provider continuations are server-owned; submit a Context summary instead")
-          )
-        case _ => super.invoke(input)
-      }
+      override private[orchestration] def run(
+          task: AgentTask,
+          acceptedContext: RunContext,
+          saveTranscriptLater: RunContext => UIO[Unit]
+      ): ZIO[R, YallmoError, AgentTurnResult] =
+        runAccepted(agent, task, staticContext, acceptedContext, budget, saveTranscriptLater)
     }
 
-  /** Starts a new run with an empty transcript.
+  /** Builds a single-message recipient for Orchestrator.invoke, never a model/tool loop.
     *
-    * Its a standalone execution. Use when you need the answer, but not conversation history.
+    * Explicit tool-call inputs execute just that tool. Other inputs produce at most one agent turn; a decision to
+    * execute actions is rejected and must instead be submitted through the session execution boundary.
     */
-  def run(
+  def invocation(
       agent: AgentInstance[R],
-      task: AgentTask,
       staticContext: StaticContext[R],
-      budget: AgentBudget = AgentBudget.default // TODO REVIEW considered for removal
-  ): ZIO[R, YallmoError, AgentResult] =
-    runWithContext(agent, task, staticContext, RunContext(), budget).map(_.result)
-
-  /** Runs one user task from an existing transcript and returns the transcript for the next task.
-    *
-    * {{{
-    *    for
-    *     first <- runner.runWithContext(
-    *       agent, AgentTask("Explain Scala"), context, RunContext()
-    *     )
-    *     second <- runner.runWithContext(
-    *       agent, AgentTask("Show an example"), context, first.runContext
-    *     )
-    *   yield second.result.text
-    * }}}
-    */
-  def runWithContext(
-      agent: AgentInstance[R],
-      task: AgentTask,
-      staticContext: StaticContext[R],
-      runContext: RunContext,
-      budget: AgentBudget = AgentBudget.default // TODO REVIEW considered for removal
-  ): ZIO[R, YallmoError, AgentTurnResult] =
-    runAccepted(agent, task, staticContext, runContext.append(MessagePayload.User(task.prompt)), budget)
+      budget: AgentBudget = AgentBudget.default
+  ): AgentInvocation[R] =
+    new AgentInvocation[R] {
+      override val agentId: AgentId = agent.id
+      override private[orchestration] def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] =
+        (for {
+          _ <- ZIO.fromEither(budget.validate)
+          result <- input match {
+            case MessagePayload.ToolCall(call) =>
+              for {
+                _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
+                context <- agent.configuredContext(staticContext)
+                result <- executeAction(agent, PreparedAction.CallExternalTool(call), context)
+              } yield result
+            case _: MessagePayload.Reasoning =>
+              ZIO.fail(
+                YallmoError.InvalidMessage("Provider continuations are server-owned; submit a Context summary instead")
+              )
+            case _ =>
+              for {
+                context <- agent.configuredContext(staticContext)
+                prepared <- applyExtensions(context, RunContext(Chunk(input)))
+                turn <- agent.next(AgentTask(input.contentStr), context, prepared)
+                result <- turn.decision match {
+                  case AgentDecision.FinalAnswer(text) if text.trim.nonEmpty =>
+                    ZIO.succeed(MessagePayload.Assistant(text))
+                  case AgentDecision.FinalAnswer(_) =>
+                    ZIO.fail(YallmoError.InvalidAgentDecision("Agent invocation must return a non-blank answer"))
+                  case AgentDecision.Actions(_) =>
+                    ZIO.fail(YallmoError.InvalidAgentDecision("Agent actions require Orchestrator.submit"))
+                }
+              } yield result
+          }
+        } yield result).timeoutFail(YallmoError.AgentTimedOut(budget.timeout))(budget.timeout)
+    }
 
   private def runAccepted(
       agent: AgentInstance[R],
       task: AgentTask,
       staticContext: StaticContext[R],
       runContext: RunContext,
-      budget: AgentBudget
+      budget: AgentBudget,
+      saveTranscriptLater: RunContext => UIO[Unit]
   ): ZIO[R, YallmoError, AgentTurnResult] =
     ZIO.logAnnotate(AgentRunner.LogAnnotationKey, runnerId.toString) {
       val execute =
@@ -111,7 +111,8 @@ final class AgentRunner[R](
                 runContext,
                 budget,
                 turnCount,
-                actionCount
+                actionCount,
+                saveTranscriptLater
               )
             yield agentRun
           }
@@ -131,7 +132,8 @@ final class AgentRunner[R](
       runContext: RunContext,
       budget: AgentBudget,
       turnCount: Ref[Int],
-      actionCount: Ref[Int]
+      actionCount: Ref[Int],
+      saveTranscriptLater: RunContext => UIO[Unit]
   ): ZIO[R, YallmoError, AgentTurnResult] =
     for
       turn <- turnCount.updateAndGet(_ + 1)
@@ -143,7 +145,7 @@ final class AgentRunner[R](
         .appendAll(agentTurn.additionalMessages)
       result <- agentTurn.decision match
         case AgentDecision.FinalAnswer(text) =>
-          ZIO.succeed(AgentTurnResult(AgentResult(agent.id, text), runContextWithTurn))
+          saveTranscriptLater(runContextWithTurn).as(AgentTurnResult(AgentResult(agent.id, text), runContextWithTurn))
         case AgentDecision.Actions(actions) =>
           if actions.isEmpty then ZIO.fail(YallmoError.EmptyActionBatch(agent.id))
           else
@@ -154,15 +156,25 @@ final class AgentRunner[R](
                   MessagePayload.ToolCall(call)
                 }
               )
-              messages <- executeActions(agent, preparedActions, staticContext, budget, actionCount)
+              _ <- saveTranscriptLater(runContextWithCalls)
+              nextContext <- executeActions(
+                agent,
+                preparedActions,
+                staticContext,
+                budget,
+                actionCount,
+                runContextWithCalls,
+                saveTranscriptLater
+              )
               result <- runLoop(
                 agent,
                 task,
                 staticContext,
-                runContextWithCalls.appendAll(messages),
+                nextContext,
                 budget,
                 turnCount,
-                actionCount
+                actionCount,
+                saveTranscriptLater
               )
             yield result
     yield result
@@ -197,14 +209,18 @@ final class AgentRunner[R](
       actions: Chunk[PreparedAction],
       staticContext: StaticContext[R],
       budget: AgentBudget,
-      actionCount: Ref[Int]
-  ): ZIO[R, YallmoError, Chunk[MessagePayload]] =
-    ZIO.foreach(actions) { action =>
+      actionCount: Ref[Int],
+      runContext: RunContext,
+      saveTranscriptLater: RunContext => UIO[Unit]
+  ): ZIO[R, YallmoError, RunContext] =
+    ZIO.foldLeft(actions)(runContext) { (current, action) =>
       for
         count <- actionCount.updateAndGet(_ + 1)
         _ <- ZIO.fail(YallmoError.ActionLimitExceeded(budget.maxActions)).when(count > budget.maxActions)
         message <- executeAction(agent, action, staticContext)
-      yield message
+        next = current.append(message)
+        _ <- saveTranscriptLater(next)
+      yield next
     }
 
   private def executeAction(

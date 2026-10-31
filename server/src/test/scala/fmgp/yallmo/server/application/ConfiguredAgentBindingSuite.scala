@@ -154,16 +154,24 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         ) { policy =>
           val binding = ConfiguredAgentBinding.Folder(adapter, policy, Some(fs)).bind[Any](readBlob)
           val execution = new AgentRunner[Any](tools.map(tool => tool.definition.key -> tool).toMap, Map.empty)
-            .execution(binding, context.copy(tools = tools.map(_.definition)))
+            .invocation(binding, context.copy(tools = tools.map(_.definition)))
           for {
+            registry <- RuntimeInstances.fromAgents(Chunk(adapter))
+            orchestrator <- OrchestratorLive.inMemory(registry)
+            invoke = (payload: MessagePayload) =>
+              orchestrator
+                .invoke(
+                  Message(MessageData(agentId, None, java.time.Instant.EPOCH, payload)),
+                  execution
+                )
+                .map(_.payload)
             _ <- ZIO.foreachDiscard(
               List(
                 ToolKey.Scalamode -> """{"code":"fs.readUtf8(\"notes.txt\")","mode":"filesystem"}""",
                 ToolKey.ReadFile -> """{"path":"notes.txt"}"""
               )
             ) { (key, arguments) =>
-              execution
-                .invoke(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("denied"), key, arguments)))
+              invoke(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("denied"), key, arguments)))
                 .map {
                   case MessagePayload.ToolOutput(output) =>
                     assertEquals(output.name, key)
@@ -171,7 +179,7 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
                   case other => fail(s"Expected denied tool output, got $other")
                 }
             }
-            answer <- execution.invoke(MessagePayload.User("show folder"))
+            answer <- invoke(MessagePayload.User("show folder"))
             _ <- ZIO.attempt(assertEquals(answer, MessagePayload.Assistant("folder answer")))
           } yield ()
         }

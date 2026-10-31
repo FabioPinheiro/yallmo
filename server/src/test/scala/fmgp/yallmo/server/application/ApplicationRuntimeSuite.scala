@@ -74,7 +74,9 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
   }
 
-  test("RPC assembly binds selected private roots consistently for invoke and session tools without duplicate keys") {
+  test(
+    "RPC assembly binds selected private roots consistently for direct tools and session loops without duplicate keys"
+  ) {
     run(ZIO.scoped {
       for {
         root <- temporaryRoot
@@ -146,7 +148,20 @@ final class ApplicationRuntimeSuite extends FunSuite {
         again <- runtime.resolve(first)
         failed <- runtime.resolve(invalid).either
         results <- ZIO.foreachPar(List(one -> "one", two -> "two", workspace -> "workspace")) { (binding, expected) =>
-          val input = Message(MessageData(human.id, None, java.time.Instant.EPOCH, MessagePayload.User("read")))
+          val input = Message(
+            MessageData(
+              human.id,
+              None,
+              java.time.Instant.EPOCH,
+              MessagePayload.ToolCall(
+                FunctionCall(
+                  FunctionCallId.unsafe("read-private"),
+                  ToolKey.Scalamode,
+                  """{"code":"read notes","mode":"filesystem"}"""
+                )
+              )
+            )
+          )
           opened._1.invoke(input, binding).map { message =>
             assertEquals(message.payload.contentStr, expected)
           }

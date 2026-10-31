@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import RunnerTestSupport.*
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, AgentConfig, ConfiguredAgentSettings}

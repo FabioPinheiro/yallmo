@@ -135,7 +135,61 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
+  test("pre-submission storage failures log their cause before becoming an Internal error") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    val missing = MessageId.sha256("missing-submission-message")
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1).as(answer))
+        backend = app.configured.get
+        session <- backend.create(human, Some(SessionId.unsafe("broken")))
+        _ <- ZIO.attemptBlocking(
+          Files.writeString(
+            backend.workspace.resolve("refs/sessions/broken"),
+            s"""{"agentIds":["${AgentId.value(human)}"],"head":"${MessageId.value(missing)}"}"""
+          )
+        )
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        connection <- rpc.openConnection
+        _ <- initializeUpload(rpc, connection, Some(human))
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
+        reply <- rpc
+          .handle(
+            JsonRpc
+              .Request(
+                Json.Str("submit"),
+                TurnSubmit.method,
+                TurnSubmit.Params(session.id, first, AgentTask("PRIVATE_PROMPT"))
+              )
+              .toJson,
+            connection
+          )
+          .map(_.get)
+        count <- calls.get
+      } yield {
+        assertEquals(reply.fromJson[JsonRpc.Failure].toOption.get.error, JsonRpc.Error.InternalError)
+        assert(!reply.contains(MessageId.value(missing)))
+        assert(!reply.contains("PRIVATE_PROMPT"))
+        assertEquals(count, 0)
+        assertEquals(logs.size(), 1)
+        val line = logs.get(0)
+        assert(line.contains("level=ERROR"))
+        assert(line.contains("Configured domain operation failed"))
+        assert(line.contains("session refers to missing message"))
+        assert(line.contains(MessageId.value(missing)))
+        assert(line.contains("rpcMethod=turn.submit"))
+        assert(line.contains("sessionId=broken"))
+        assert(line.contains(s"agentId=${AgentId.value(first)}"))
+        assert(!line.contains("PRIVATE_PROMPT"))
+      }
+    })
+  }
+
   test("accepted typed provider failure is sanitized and leaves prompt once; later submission succeeds") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
     run(ZIO.scoped {
       for {
         calls <- Ref.make(0)
@@ -147,6 +201,7 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         backend = app.configured.get
         session <- backend.create(human, Some(SessionId.unsafe("failed")))
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
         failed <- backend.submit(human, session.id, first, "keep")
         recovered <- backend.submit(human, session.id, first, "continue")
         loaded <- app.master.loadSession(session.id)
@@ -156,6 +211,8 @@ final class ServerSubmissionSuite extends FunSuite {
         assertEquals(failure.session.get.messages.map(_.content), Chunk("keep"))
         assert(!(failure: TurnOutcome).toJson.contains("PRIVATE"))
         assert(!(failure: TurnOutcome).toJson.contains("credential"))
+        assert(logs.toString.contains("Session execution failed"))
+        assert(logs.toString.contains("PRIVATE /secret credential"))
         assert(recovered.isInstanceOf[TurnOutcome.Succeeded])
         assertEquals(
           loaded.messages.map(_.payload),
@@ -166,6 +223,8 @@ final class ServerSubmissionSuite extends FunSuite {
   }
 
   test("provider defect returns terminal Unknown with safe snapshot and releases admission") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
     run(ZIO.scoped {
       for {
         calls <- Ref.make(0)
@@ -177,6 +236,7 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         backend = app.configured.get
         session <- backend.create(human, Some(SessionId.unsafe("defect")))
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
         failed <- backend.submit(human, session.id, first, "keep")
         success <- backend.submit(human, session.id, first, "continue")
       } yield {
@@ -184,6 +244,8 @@ final class ServerSubmissionSuite extends FunSuite {
         assertEquals(failure.acceptance, PromptAcceptance.Unknown)
         assertEquals(failure.session.get.messages.map(_.content), Chunk("keep"))
         assert(!(failure: TurnOutcome).toJson.contains("PRIVATE"))
+        assert(logs.toString.contains("Configured operation failed unexpectedly"))
+        assert(logs.toString.contains("PRIVATE stack /secret credential"))
         assert(success.isInstanceOf[TurnOutcome.Succeeded])
       }
     })

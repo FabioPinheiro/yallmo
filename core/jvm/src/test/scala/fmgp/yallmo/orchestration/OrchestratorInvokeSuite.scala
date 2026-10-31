@@ -137,9 +137,9 @@ final class OrchestratorInvokeSuite extends FunSuite {
             Message(input.data.copy(agentId = AgentId("unknown")))
           )
           results <- ZIO.foreach(invalid)(live.invoke(_, execution).either)
-          unknown = new AgentExecution[Any] {
+          unknown = new AgentInvocation[Any] {
             val agentId = AgentId("unknown")
-            def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] = ZIO.never
+            def invoke(input: MessagePayload): IO[YallmoError, MessagePayload] = ZIO.never
           }
           invalidAgent <- live.invoke(input, unknown).either
           stored <- live.listMessages
@@ -215,24 +215,64 @@ final class OrchestratorInvokeSuite extends FunSuite {
       }
     }
 
-    test(s"$backend: invocations reject an execution that changes its author/prefix or returns a blank final answer") {
+    test(s"$backend: a single-message invocation cannot execute model-requested actions") {
       directory { root =>
         run(for {
           live <- open(root, filesystem)
-          results <- ZIO.foreach(
-            Chunk(
-              program(context => ZIO.succeed(answered(context).copy(result = AgentResult(human, "spoof")))),
-              program(_ => ZIO.succeed(answered(RunContext()))),
-              program(context => ZIO.succeed(answered(context).copy(result = AgentResult(assistant, " \n "))))
-            )
-          )(live.invoke(input, _).either)
+          calls <- Ref.make(0)
+          tool = new AgentTool[Any] {
+            val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Must not execute")
+            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+              calls.update(_ + 1).as(ExternalToolResult("unexpected"))
+          }
+          agent = new AgentInstance[Any] {
+            val id = assistant
+            def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =
+              ZIO.succeed(
+                AgentTurn(
+                  None,
+                  AgentDecision.Actions(
+                    Chunk(
+                      LlmAction.CallExternalTool(ExternalToolCall(tool.definition.key, "{}"))
+                    )
+                  )
+                )
+              )
+          }
+          invocation = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
+            .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+          result <- live.invoke(input, invocation).either
+          executed <- calls.get
           stored <- live.listMessages
         } yield {
-          assert(results.forall(_.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidAgentDecision])))
+          assertEquals(result, Left(YallmoError.InvalidAgentDecision("Agent actions require Orchestrator.submit")))
+          assertEquals(executed, 0)
           assertEquals(stored, Chunk(input))
         })
       }
     }
+
+    test(s"$backend: single-message invocations reject a blank final answer") {
+      directory { root =>
+        run(for {
+          live <- open(root, filesystem)
+          result <- live
+            .invoke(
+              input,
+              program(context => ZIO.succeed(answered(context).copy(result = AgentResult(assistant, " \n "))))
+            )
+            .either
+          stored <- live.listMessages
+        } yield {
+          assertEquals(
+            result,
+            Left(YallmoError.InvalidAgentDecision("Agent invocation must return a non-blank answer"))
+          )
+          assertEquals(stored, Chunk(input))
+        })
+      }
+    }
+
   }
 
   test("a failed input persistence never starts execution") {
@@ -321,14 +361,23 @@ final class OrchestratorInvokeSuite extends FunSuite {
     }
   }
 
-  private def program(runContext: RunContext => IO[YallmoError, AgentTurnResult]): AgentExecution[Any] =
-    new AgentExecution[Any] {
-      val agentId = assistant
-      def run(task: AgentTask, acceptedContext: RunContext): IO[YallmoError, AgentTurnResult] = {
-        assertEquals(task.prompt, acceptedContext.messages.head.contentStr)
-        runContext(acceptedContext)
-      }
-    }
+  private def program(runContext: RunContext => IO[YallmoError, AgentTurnResult]): AgentInvocation[Any] =
+    new AgentRunner[Any](Map.empty, Map.empty).invocation(
+      new AgentInstance[Any] {
+        val id = assistant
+        def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] = {
+          assertEquals(task.prompt, current.messages.head.contentStr)
+          runContext(current).map(turn =>
+            AgentTurn(
+              None,
+              AgentDecision.FinalAnswer(turn.result.text),
+              turn.runContext.messages.drop(current.messages.size)
+            )
+          )
+        }
+      },
+      StaticContext[Any]("Test")
+    )
 
   private def answered(context: RunContext): AgentTurnResult =
     AgentTurnResult(AgentResult(assistant, "answer"), context.append(Message.Assistant("answer")))

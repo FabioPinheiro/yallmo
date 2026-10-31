@@ -127,8 +127,9 @@ This works for both `program.bind(adapter)` and native programs resolving `Agent
 ## 6. Conversational turn and action flow
 
 ```text
-AgentRunner.runWithContext
-  -> agent.configuredContext(availableContext)
+Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, availableContext))
+  -> persist the user prompt and supply ordered background transcript saves
+  -> internal runner: agent.configuredContext(availableContext)
        validate and filter policy; compute effective context
   -> each turn:
        apply only effectiveContext.extensions, in order
@@ -141,8 +142,10 @@ AgentRunner.runWithContext
        -> configured adapter checks returned tool calls
        -> native program proposes an AgentDecision
        -> runner handles the decision:
-            final answer -> return
-            actions -> authorize, validate, execute, record results -> next turn
+            final answer -> schedule transcript save -> return
+            actions -> schedule calls save -> authorize, validate, execute
+                    -> schedule each result save -> next turn
+  -> drain pending saves; log errors/warn about any unsaved messages
 ```
 
 ### Before inference

@@ -123,104 +123,147 @@ object ScalaCodeExecutor {
                   UTF_8
                 )
               }
-              stopping <- ZIO.succeed(new AtomicBoolean(false))
-              _ <- ZIO.logInfo(s"Scala CLI starting compiler=$scalaVersion offline=$offline timeout=$timeout")
-              process <- ZIO.acquireRelease(ZIO.attemptBlocking {
-                val builder = new ProcessBuilder(
-                  arguments(
-                    executable,
-                    scalaVersion,
-                    offline,
-                    dependencies,
-                    if bootstrap.isDefined then filesystemClasspath else apiClasspath
-                  )*
-                )
-                  .directory(directory.toFile)
-                // Do not let host JVM/classpath injection change the compilation or evaluated program.
-                Seq("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH").foreach(
-                  builder.environment().remove
-                )
-                builder.start()
-              })(process => ZIO.attemptBlocking(stop(process, stopping)).orDie)
+              deadline <- ZIO.succeed(java.lang.System.nanoTime() + timeout.toNanos)
               remaining <- ZIO.succeed(new AtomicInteger(maxOutputBytes))
-              captureOutput = (input: java.io.InputStream) =>
-                ZIO.attemptBlockingInterrupt {
-                  val bytes = new ByteArrayOutputStream()
-                  val buffer = new Array[Byte](8192)
-                  var truncated = false
-                  try {
-                    // Do not wait for EOF: a descendant can inherit stdout and keep the pipe open after CLI exit.
-                    // Polling available bytes also makes cancellation independent of interrupting a blocking pipe read.
-                    def capture(available: Int): Int = {
-                      val count = input.read(buffer, 0, math.min(buffer.length, available))
-                      if count > 0 then {
-                        val retained = math.min(count, remaining.getAndUpdate(left => math.max(0, left - count)))
-                        bytes.write(buffer, 0, retained)
-                        truncated ||= retained < count
-                      }
-                      count
-                    }
-                    while process.isAlive do {
-                      val available = input.available()
-                      if available > 0 then capture(available)
-                      else Thread.sleep(10)
-                    }
-                    // Drain only bytes already pending at exit, not future output from an orphaned descendant.
-                    var pending = input.available()
-                    while pending > 0 do {
-                      val count = capture(pending)
-                      pending = if count > 0 then pending - count else 0
-                    }
-                  } catch {
-                    // Process.destroyForcibly can close the pipe while it is being polled. Preserve captured diagnostics.
-                    case _: IOException if stopping.get() || !process.isAlive => ()
-                  } finally input.close()
-                  (bytes.toString(UTF_8), truncated)
-                }
-              output <- captureOutput(process.getInputStream).forkScoped
-              diagnostics <- captureOutput(process.getErrorStream).forkScoped
-              // The deadline runs concurrently with stdin delivery. Killing the child unblocks a pipe write;
-              // interrupting a Java blocking write alone does not. The canceler also kills before awaiting delivery.
-              completed <- ZIO
-                .attemptBlockingInterrupt(process.waitFor(timeout.toMillis, TimeUnit.MILLISECONDS))
-                .ensuring(ZIO.attemptBlocking(stop(process, stopping)).orDie)
-                .zipPar(
-                  ZIO.attemptBlockingCancelable {
-                    try {
-                      try
-                        bootstrap.foreach { case (endpoint, token) =>
-                          process.getOutputStream.write((endpoint + "\n" + token.exportSecret + "\n").getBytes(UTF_8))
-                          process.getOutputStream.flush()
-                        }
-                      finally process.getOutputStream.close()
-                    } catch {
-                      case _: IOException if stopping.get() || !process.isAlive => ()
-                    }
-                  }(ZIO.attemptBlocking(stop(process, stopping)).orDie)
-                )
-              captured <- output.join
-              logs <- diagnostics.join
-              _ <- ZIO.logInfo(s"Scala CLI finished exitCode=${process.exitValue()} timedOut=${!completed}")
-              started <- ZIO.attemptBlocking(Files.exists(directory.resolve(ExecutionStartedFile)))
+              classpath = if bootstrap.isDefined then filesystemClasspath else apiClasspath
+              _ <- ZIO.logInfo(s"Scala CLI compiling compiler=$scalaVersion offline=$offline timeout=$timeout")
+              compilation <- runProcess(
+                compileArguments(executable, scalaVersion, offline, dependencies, classpath),
+                directory,
+                deadline,
+                remaining,
+                None
+              )
+              compiled = compilation.exitCode == 0 && !compilation.timedOut
+              command <-
+                if !compiled then ZIO.succeed(compilation)
+                else
+                  for {
+                    runtime <- runProcess(
+                      arguments(executable, scalaVersion, offline, dependencies, classpath, maxOutputBytes),
+                      directory,
+                      deadline,
+                      remaining,
+                      bootstrap
+                    )
+                    fileLogs <- readRuntimeLogs(directory, remaining)
+                  } yield runtime.copy(
+                    logs = compilation.logs ++ compilation.output.linesIterator.toVector ++ runtime.logs ++ fileLogs._1,
+                    truncated = compilation.truncated || runtime.truncated || fileLogs._2
+                  )
             } yield result(
-              CommandOutput(
-                process.exitValue(),
-                !completed,
-                captured._1,
-                captured._2 || logs._2,
-                logs._1.linesIterator.toVector
-              ),
-              started
+              displayDiagnostics(command, code, bootstrap.isDefined, compiled, maxOutputBytes),
+              compiled
             )
           }
           .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))
   })
 
-  // A private fixed-size filesystem marker is independent of stdout/stderr retention and cannot leak into results.
-  // Safe snippets have no filesystem authority; only trusted Main writes it, before evaluating user code.
-  private[tool] val ExecutionStartedFile = ".execution-started"
+  /** Every phase owns its process and stream readers; both phases share the deadline and byte budget. */
+  private def runProcess(
+      command: Seq[String],
+      directory: Path,
+      deadline: Long,
+      remaining: AtomicInteger,
+      bootstrap: Option[(String, RpcToken)]
+  ): Task[CommandOutput] =
+    if java.lang.System.nanoTime() >= deadline then ZIO.succeed(CommandOutput(-1, true, "", false))
+    else
+      ZIO.scoped {
+        for {
+          stopping <- ZIO.succeed(new AtomicBoolean(false))
+          process <- ZIO.acquireRelease(ZIO.attemptBlocking {
+            val builder = new ProcessBuilder(command*)
+              .directory(directory.toFile)
+            // Do not let host JVM/classpath injection change the compilation or evaluated program.
+            Seq("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH").foreach(
+              builder.environment().remove
+            )
+            builder.start()
+          })(process => ZIO.attemptBlocking(stop(process, stopping)).orDie)
+          captureOutput = (input: java.io.InputStream) =>
+            ZIO.attemptBlockingInterrupt {
+              val bytes = new ByteArrayOutputStream()
+              val buffer = new Array[Byte](8192)
+              var truncated = false
+              try {
+                // Do not wait for EOF: a descendant can inherit stdout and keep the pipe open after CLI exit.
+                // Polling available bytes also makes cancellation independent of interrupting a blocking pipe read.
+                def capture(available: Int): Int = {
+                  val count = input.read(buffer, 0, math.min(buffer.length, available))
+                  if count > 0 then {
+                    val retained = math.min(count, remaining.getAndUpdate(left => math.max(0, left - count)))
+                    bytes.write(buffer, 0, retained)
+                    truncated ||= retained < count
+                  }
+                  count
+                }
+                while process.isAlive do {
+                  val available = input.available()
+                  if available > 0 then capture(available)
+                  else Thread.sleep(10)
+                }
+                // Drain only bytes already pending at exit, not future output from an orphaned descendant.
+                var pending = input.available()
+                while pending > 0 do {
+                  val count = capture(pending)
+                  pending = if count > 0 then pending - count else 0
+                }
+              } catch {
+                // Process.destroyForcibly can close the pipe while it is being polled. Preserve captured diagnostics.
+                case _: IOException if stopping.get() || !process.isAlive => ()
+              } finally input.close()
+              (bytes.toString(UTF_8), truncated)
+            }
+          output <- captureOutput(process.getInputStream).forkScoped
+          diagnostics <- captureOutput(process.getErrorStream).forkScoped
+          // The deadline runs concurrently with stdin delivery. Killing the child unblocks a pipe write;
+          // interrupting a Java blocking write alone does not. The canceler also kills before awaiting delivery.
+          completed <- ZIO
+            .attemptBlockingInterrupt(
+              process.waitFor(math.max(0L, deadline - java.lang.System.nanoTime()), TimeUnit.NANOSECONDS)
+            )
+            .ensuring(ZIO.attemptBlocking(stop(process, stopping)).orDie)
+            .zipPar(
+              ZIO.attemptBlockingCancelable {
+                try {
+                  try
+                    bootstrap.foreach { case (endpoint, token) =>
+                      process.getOutputStream.write((endpoint + "\n" + token.exportSecret + "\n").getBytes(UTF_8))
+                      process.getOutputStream.flush()
+                    }
+                  finally process.getOutputStream.close()
+                } catch {
+                  case _: IOException if stopping.get() || !process.isAlive => ()
+                }
+              }(ZIO.attemptBlocking(stop(process, stopping)).orDie)
+            )
+          captured <- output.join
+          logs <- diagnostics.join
+          _ <- ZIO.logInfo(s"Scala process finished exitCode=${process.exitValue()} timedOut=${!completed}")
+        } yield CommandOutput(
+          process.exitValue(),
+          !completed,
+          captured._1,
+          captured._2 || logs._2,
+          logs._1.linesIterator.toVector
+        )
+      }
 
-  private[tool] def result(command: CommandOutput, started: Boolean): ExternalToolResult.ScalaMode = {
+  private def readRuntimeLogs(directory: Path, remaining: AtomicInteger): Task[(Vector[String], Boolean)] =
+    ZIO.attemptBlocking {
+      val path = directory.resolve(fmgp.yallmo.scalacode.ScalaToolRuntime.LogFile)
+      if !Files.exists(path) then (Vector.empty, false)
+      else {
+        val input = Files.newInputStream(path)
+        val bytes = try input.readNBytes(math.min(remaining.get().toLong + 1L, Int.MaxValue.toLong).toInt)
+        finally input.close()
+        val retained = math.min(bytes.length, remaining.getAndUpdate(left => math.max(0, left - bytes.length)))
+        (new String(bytes, 0, retained, UTF_8).linesIterator.toVector, Files.size(path) > retained)
+      }
+    }
+
+  private[tool] def result(command: CommandOutput, compiled: Boolean): ExternalToolResult.ScalaMode = {
     val failed = command.exitCode != 0 || command.timedOut
     val diagnostics = (Seq(command.output).filter(_.nonEmpty) ++ command.logs).mkString("\n")
     val outcome =
@@ -229,7 +272,7 @@ object ScalaCodeExecutor {
           "Scala CLI exceeded its compilation/execution deadline." + (if diagnostics.isEmpty then ""
                                                                       else "\n" + diagnostics)
         )
-      else if command.exitCode != 0 && !started then
+      else if command.exitCode != 0 && !compiled then
         ScalaModeResult.CompilationError(
           if diagnostics.nonEmpty then diagnostics
           else s"Scala compiler/launch stage failed (exit ${command.exitCode})."
@@ -239,7 +282,9 @@ object ScalaCodeExecutor {
           if diagnostics.nonEmpty then diagnostics else s"Scala execution failed (exit ${command.exitCode})."
         )
       else ScalaModeResult.Executed(command.output)
-    ExternalToolResult.ScalaMode(outcome, command.logs, command.exitCode, command.timedOut, command.truncated)
+    // Failure diagnostics own the captured logs; successful execution logs stay separate from the returned value.
+    val logs = if failed then Seq.empty else command.logs
+    ExternalToolResult.ScalaMode(outcome, logs, command.exitCode, command.timedOut, command.truncated)
   }
 
   private def validateFilesystemEndpoint(endpoint: String): Unit = {
@@ -257,49 +302,157 @@ object ScalaCodeExecutor {
     )
   }
 
+  // Required by the trusted ZIOApp runner even when the host requests no additional snippet libraries.
+  private[tool] val RuntimeDependencies = Seq("dev.zio::zio:2.1.27", "dev.zio::zio-json:1.1.1")
+
   private[tool] def arguments(
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
       offline: Boolean = true,
       dependencies: Seq[String] = ScalaTool.DefaultDependencies,
-      classpath: String = apiClasspath
-  ): Seq[String] = Seq(
-    executable,
-    "run", // Compile and execute the project.
-    ".", // The isolated working directory is the explicit project root.
-    "--scala", // Select the pinned compiler version rather than resolving a moving nightly alias.
-    scalaVersion,
-    "--jvm", // Use the host JVM instead of downloading a managed JVM.
-    "system",
-    "--server=false", // Compile without the Bloop build server.
-    "--main-class", // Run the trusted entry point that prints the snippet result.
-    "ScalaToolMain",
-    "--classpath", // Expose only explicitly selected capability/API artifacts, never the application classpath.
-    classpath,
-    "--scalac-option=-language:experimental.captureChecking", // Enable capture checking in the compiler.
-    "--scalac-option=-language:experimental.modularity", // Enable experimental modularity support.
-    "--scalac-option=-color:never", // Keep compiler diagnostics free of ANSI color escapes.
-    "--java-opt=-Xmx128m", // Limit the evaluated program's JVM heap to 128 MiB.
-    "--java-opt=--enable-native-access=ALL-UNNAMED", // Allow Netty's native library loading.
-    "--java-opt=--sun-misc-unsafe-memory-access=allow" // Scala lazy vals still use Unsafe on recent JDKs.
-  ) ++ dependencies.flatMap { dependency =>
-    Seq("--dependency", dependency) // Add each trusted dependency and its transitive dependencies.
-  } ++ Option
-    .when(offline)(
-      Seq(
-        "--power", // Unlock Scala CLI's restricted options, including offline mode.
-        "--offline", // Resolve dependencies from local caches without network access.
-        "--suppress-experimental-warning" // Hide Scala CLI's experimental-option warnings.
+      classpath: String = apiClasspath,
+      maxOutputBytes: Int = 64 * 1024
+  ): Seq[String] =
+    Seq(executable, "run", ".", "--main-class", "ScalaToolMain") ++
+      compilerArguments(scalaVersion, offline, dependencies, classpath) ++ Seq(
+        "--java-opt=-Xmx128m",
+        "--java-opt=--enable-native-access=ALL-UNNAMED",
+        "--java-opt=--sun-misc-unsafe-memory-access=allow",
+        "--",
+        maxOutputBytes.toString // Trusted argument consumed by the JSON logger's bootstrap layer.
       )
-    )
-    .toSeq
-    .flatten
 
-  private[tool] def snippet(code: String): String =
+  private[tool] def compileArguments(
+      executable: String = "scala-cli",
+      scalaVersion: String = ScalaVersion,
+      offline: Boolean = true,
+      dependencies: Seq[String] = ScalaTool.DefaultDependencies,
+      classpath: String = apiClasspath
+  ): Seq[String] =
+    Seq(executable, "compile", ".") ++ compilerArguments(scalaVersion, offline, dependencies, classpath)
+
+  private def compilerArguments(
+      scalaVersion: String,
+      offline: Boolean,
+      dependencies: Seq[String],
+      classpath: String
+  ): Seq[String] = Seq(
+    "--quiet",
+    "--scala",
+    scalaVersion,
+    "--jvm",
+    "system",
+    "--server=false",
+    "--classpath",
+    classpath, // Only the selected API/capability artifacts, never the application classpath.
+    "--scalac-option=-language:experimental.captureChecking",
+    "--scalac-option=-language:experimental.modularity",
+    "--scalac-option=-color:never"
+  ) ++ (dependencies ++ RuntimeDependencies).distinct.flatMap(dependency => Seq("--dependency", dependency)) ++
+    Option.when(offline)(Seq("--power", "--offline", "--suppress-experimental-warning")).toSeq.flatten
+
+  private val purePreamble =
     "import scala.language.experimental.safe\n" +
       "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
-      "object ScalaToolSnippet {\n  import tool.*\n  def result: Any = {\n" +
-      code + "\n  }\n}\n"
+      "object ScalaToolSnippet {\n  import tool.*\n  def result: Any = {\n"
+
+  private[tool] def snippet(code: String): String = purePreamble + code + "\n  }\n}\n"
+
+  private val snippetPosition =
+    "(?<![\\w.])(?:(?:[A-Za-z]:)?[/\\\\](?:[^:\\r\\n()]*[/\\\\])?)?Snippet\\.scala:(\\d+)(?::(\\d+))?(?=[:)\\s]|$)".r
+  private val sourcePosition = "\\.(?:scala|sc|java):\\d+".r
+  private val sourceGutter = "^([ \\t]*)(\\d+)([ \\t]*\\|)".r
+  private val sourceCaret = "^([ \\t]*\\|)[ \\t]*[\\^~]+[ \\t]*$".r
+
+  /** Hide generated source and report submitted-code coordinates. Body columns/carets stay unchanged; errors in the
+    * generated closing braces point to the end of the submitted code instead. Setup failures are not blamed on a user
+    * line. Successful result values never pass through this formatter.
+    */
+  private[tool] def remapDiagnostics(diagnostics: String, code: String, filesystem: Boolean): String = {
+    val preambleLines = (if filesystem then filesystemPreamble else purePreamble).count(_ == '\n')
+    val codeLines = code.split("\n", -1).map(_.stripSuffix("\r"))
+    val lastLine = preambleLines + codeLines.length
+    val generatedEnd = lastLine + 3 // Two closing braces and the file's final newline.
+    def submittedLine(line: String): Option[Int] =
+      line.toIntOption
+        .filter(number => number > preambleLines && number <= generatedEnd)
+        .map(number => math.min(number - preambleLines, codeLines.length))
+    def afterBody(line: String): Boolean =
+      line.toIntOption.exists(number => number > lastLine && number <= generatedEnd)
+
+    var inSnippetDiagnostic = false
+    var endDiagnostic = false
+    var hideCaret = false
+    var endCaret = false
+    diagnostics
+      .split("\n", -1)
+      .flatMap { line =>
+        sourceGutter.findPrefixMatchOf(line) match {
+          case Some(gutter) if inSnippetDiagnostic =>
+            val mapped = submittedLine(gutter.group(2)).filter(_ => !afterBody(gutter.group(2)) || endDiagnostic)
+            hideCaret = mapped.isEmpty
+            endCaret = mapped.nonEmpty && afterBody(gutter.group(2))
+            mapped.map { value =>
+              val number = value.toString
+              val prefix = gutter.group(1) + (" " * (gutter.group(2).length - number.length)) + number + gutter.group(3)
+              prefix + (if endCaret then codeLines.last else line.substring(gutter.end))
+            }
+          case Some(_) => Some(line)
+          case None    =>
+            if sourcePosition.findFirstIn(line).nonEmpty then {
+              val position = snippetPosition.findFirstMatchIn(line)
+              inSnippetDiagnostic = position.nonEmpty
+              endDiagnostic = position.exists(value => afterBody(value.group(1)))
+              hideCaret = false
+              endCaret = false
+            }
+            sourceCaret.findFirstMatchIn(line) match {
+              case Some(_) if inSnippetDiagnostic && hideCaret    => None
+              case Some(caret) if inSnippetDiagnostic && endCaret =>
+                Some(caret.group(1) + codeLines.last.map(char => if char == '\t' then '\t' else ' ') + "^")
+              case _ =>
+                val positioned = snippetPosition.replaceAllIn(
+                  line,
+                  position =>
+                    submittedLine(position.group(1)).fold("<executor setup>") { number =>
+                      val column = Option(position.group(2))
+                        .map(value => if afterBody(position.group(1)) then codeLines.last.length.toString else value)
+                      s"Snippet.scala:$number" + column.fold("")(":" + _)
+                    }
+                )
+                Some(if endDiagnostic then
+                  positioned
+                    .replace("expected, but '}' found", "expected at end of submitted code")
+                    .replace("expected, but eof found", "expected at end of submitted code")
+                else positioned)
+            }
+        }
+      }
+      .mkString("\n")
+  }
+
+  /** Rendering an EOF excerpt can expand the captured text, so apply the shared byte budget again afterwards. */
+  private[tool] def displayDiagnostics(
+      command: CommandOutput,
+      code: String,
+      filesystem: Boolean,
+      compiled: Boolean,
+      maxOutputBytes: Int
+  ): CommandOutput = {
+    var remaining = maxOutputBytes
+    var truncated = command.truncated
+    def retain(value: String): String = {
+      val bytes = value.getBytes(UTF_8)
+      val kept = math.min(remaining, bytes.length)
+      truncated ||= kept < bytes.length
+      remaining -= kept
+      new String(bytes, 0, kept, UTF_8)
+    }
+    val output = retain(if compiled || command.exitCode == 0 then command.output
+    else remapDiagnostics(command.output, code, filesystem))
+    val logs = retain(remapDiagnostics(command.logs.mkString("\n"), code, filesystem)).linesIterator.toVector
+    command.copy(output = output, logs = logs, truncated = truncated)
+  }
 
   // Expose only scalacode-api, not the application classpath or model-supplied dependencies.
   // The stable API object is the location anchor; only its privileged methods are experimental.
@@ -318,52 +471,45 @@ object ScalaCodeExecutor {
       .distinct
       .mkString(java.io.File.pathSeparator)
 
-  private[tool] def filesystemSnippet(code: String): String =
+  private val filesystemPreamble =
     "import scala.language.experimental.safe\n" +
       "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
       "import fmgp.yallmo.fs.{FsRead, FsError}\nimport zio.ZIO\n" +
       "object ScalaToolSnippet {\n  import tool.*\n" +
-      "  def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): ZIO[Any, FsError, Any] = {\n" +
-      code + "\n  }\n}\n"
+      "  def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): ZIO[Any, FsError, Any] = {\n"
+
+  private[tool] def filesystemSnippet(code: String): String = filesystemPreamble + code + "\n  }\n}\n"
 
   private val filesystemMain = """import fmgp.rpc.*
     |import fmgp.yallmo.fs.{FsRead, FsError}
+    |import fmgp.yallmo.scalacode.ScalaToolRuntime
     |import zio.*
-    |object ScalaToolMain {
-    |  def main(args: Array[String]): Unit = {
-    |    java.nio.file.Files.createFile(java.nio.file.Path.of(".execution-started"))
-    |    val resultOut = java.lang.System.out
-    |    java.lang.System.setOut(java.lang.System.err)
-    |    val endpoint = scala.io.StdIn.readLine()
-    |    val secret = scala.io.StdIn.readLine()
-    |    given RpcErrorMapper[FsError] = RpcErrorMapper(error =>
-    |      FsError.IoFailure("<rpc>", "RPC " + error.code.toString))
-    |    val effect = ZIO.scoped {
-    |      for {
-    |        token <- ZIO.fromEither(RpcToken.parse(secret))
-    |        connection <- RpcWebSocket.connect(endpoint, token)
-    |        fs = Rpc.derived[FsRead].client(connection)
-    |        value <- ScalaToolSnippet.result(fs)(using Trace.empty, summon[CanFail[FsError]])
-    |      } yield value
-    |    }
-    |    Unsafe.unsafe { implicit unsafe =>
-    |      Runtime.default.unsafe.run(effect).foldCause(
-    |        cause => { java.lang.System.err.println("Filesystem execution failed: " + cause.prettyPrint); java.lang.System.exit(1) },
-    |        value => resultOut.println(value)
-    |      )
-    |    }
+    |object ScalaToolMain extends ZIOAppDefault {
+    |  override val bootstrap = ScalaToolRuntime.bootstrap
+    |
+    |  private given RpcErrorMapper[FsError] = RpcErrorMapper(error =>
+    |    FsError.IoFailure("<rpc>", "RPC " + error.code.toString))
+    |
+    |  def run = ZIO.scoped {
+    |    for {
+    |      endpoint <- Console.readLine
+    |      secret <- Console.readLine
+    |      token <- ZIO.fromEither(RpcToken.parse(secret))
+    |      connection <- RpcWebSocket.connect(endpoint, token)
+    |      fs = Rpc.derived[FsRead].client(connection)
+    |      value <- ZIO.suspendSucceed(ScalaToolSnippet.result(fs)(using Trace.empty, summon[CanFail[FsError]]))
+    |      _ <- Console.printLine(value)
+    |    } yield ()
     |  }
     |}
     |""".stripMargin
 
-  // Kept in a separate source file: the trusted runner prints the result; snippets use the narrow runtime API.
-  private val main = """object ScalaToolMain {
-    |  def main(args: Array[String]): Unit = {
-    |    java.nio.file.Files.createFile(java.nio.file.Path.of(".execution-started"))
-    |    val resultOut = java.lang.System.out
-    |    java.lang.System.setOut(java.lang.System.err)
-    |    resultOut.println(ScalaToolSnippet.result)
-    |  }
+  // ZIOApp owns the runtime, failure reporting and logger scope; stdout is only the returned value.
+  private val main = """import fmgp.yallmo.scalacode.ScalaToolRuntime
+    |import zio.*
+    |object ScalaToolMain extends ZIOAppDefault {
+    |  override val bootstrap = ScalaToolRuntime.bootstrap
+    |  def run = ZIO.attempt(ScalaToolSnippet.result).flatMap(value => Console.printLine(value))
     |}
     |""".stripMargin
 

@@ -68,23 +68,31 @@ final class ApplicationRuntime private (
     )
   }
 
-  /** Resolves an explicit selection without changing other callers' selections or invoking a provider. */
+  /** Resolves an explicit selection without changing other callers' selections or invoking a provider. Logs loading
+    * failures here, before the RPC boundary replaces details with a sanitized client error.
+    */
   def resolve(id: AgentId): IO[YallmoError, ConfiguredAgentBinding] =
-    ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id)).flatMap { definition =>
-      definition.agentType match {
-        case "OAIAgent" | "ChatGPTAgent" | "CoachAgent" => resolveNative(definition, id)
-        case "FolderStructureAgent"                     =>
-          instances.getAgentWithFilesystem(id).map { case (adapter, fs) =>
-            ConfiguredAgentBinding.Folder(adapter, definition.capabilities, fs)
-          }
-        case name =>
-          ZIO.fail(
-            YallmoError.InvalidConfig(
-              s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent, CoachAgent or FolderStructureAgent"
+    ZIO
+      .fromOption(config.agents.get(id))
+      .orElseFail(YallmoError.UnknownAgent(id))
+      .flatMap { definition =>
+        definition.agentType match {
+          case "OAIAgent" | "ChatGPTAgent" | "CoachAgent" => resolveNative(definition, id)
+          case "FolderStructureAgent"                     =>
+            instances.getAgentWithFilesystem(id).map { case (adapter, fs) =>
+              ConfiguredAgentBinding.Folder(adapter, definition.capabilities, fs)
+            }
+          case name =>
+            ZIO.fail(
+              YallmoError.InvalidConfig(
+                s"Unsupported agentType ($name); expected OAIAgent, ChatGPTAgent, CoachAgent or FolderStructureAgent"
+              )
             )
-          )
+        }
       }
-    }
+      .tapError(error =>
+        ZIO.logError(s"Unable to load agent '${displayText(AgentId.value(id))}': ${displayText(error.getMessage)}")
+      )
 
   /** Uses the server factory's storage choice, in memory by default, with the same workspace scope. */
   def openWorkspace(

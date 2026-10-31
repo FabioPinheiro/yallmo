@@ -11,5 +11,5 @@ object ScalaToolApi {
   /** Prints a fixed greeting without granting general console or JVM access to the caller. */
   @experimental
   @caps.assumeSafe
-  def api: Unit = println("Yes Tool API is available")
+  def api: Unit = scala.Console.err.println("Yes Tool API is available")
 }

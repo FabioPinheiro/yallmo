@@ -108,6 +108,7 @@ lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
   )
+  .jvmSettings(libraryDependencies += "dev.zio" %% "zio-json" % "1.1.1")
   .jsSettings(
     libraryDependencies += "io.github.cquiroz" %% "scala-java-time" % "2.8.0",
   )

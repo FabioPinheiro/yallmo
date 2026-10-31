@@ -8,10 +8,11 @@ import zio.*
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.FsRead
 
-/** One-shot restricted Scala evaluation through an external Scala CLI process.
+/** One-shot restricted Scala evaluation through isolated Scala CLI compilation and a ZIOApp runner.
   *
   * @param dependencies
-  *   Trusted host-supplied Scala CLI dependency coordinates. Replaces the defaults; use an empty sequence for none.
+  *   Trusted host-supplied Scala CLI dependency coordinates. Replaces the defaults; an empty sequence keeps only the
+  *   mandatory ZIO/ZIO JSON runner dependencies.
   */
 final class ScalaTool(
     timeout: Duration = 45.seconds,

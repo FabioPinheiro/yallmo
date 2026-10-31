@@ -153,12 +153,8 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
         assertEquals(bodies.size, 2, bodies.mkString("\n"))
         val advertised = ujson.read(bodies.head)("tools").arr.map(_("function")).find(_("name").str == "scalamode").get
         assert(advertised("parameters")("properties")("mode")("enum").arr.contains(ujson.Str("filesystem")))
-        val output =
-          ujson.read(ujson.read(bodies.last)("messages").arr.find(_("role").str == "tool").get("content").str)
-        assertEquals(output("exitCode").num.toInt, 0)
-        assertEquals(output("timedOut").bool, false)
-        assertEquals(output("truncated").bool, false)
-        assertEquals(output("output").str.linesIterator.toList.last, expected)
+        val output = ujson.read(bodies.last)("messages").arr.find(_("role").str == "tool").get("content").str
+        assertEquals(output.linesIterator.toList.last, expected)
       }
     }
     Unsafe.unsafe { unsafe ?=>

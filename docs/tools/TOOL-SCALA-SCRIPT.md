@@ -46,16 +46,34 @@ The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
 ```
 
 `ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
-`CompilationError(diagnostics)` contains the complete retained compiler/launch-stage diagnostics when the CLI exits
-nonzero before trusted Main starts (including compiler setup/dependency-resolution failures). A private fixed-size
-Main-start file marks this boundary independently of the bounded log capture. It is never included in results.
+`CompilationError(diagnostics)` contains formatted retained diagnostics when the explicit `scala-cli compile` stage
+fails, including compiler setup/dependency-resolution failures. Only successful compilation proceeds to execution.
+The completed stage distinguishes compilation from execution even if output is truncated; no start-marker file is used.
 `Executed(value)` represents an execution **attempt**, not guaranteed success: runtime exceptions, timeouts (including
 pre-Main timeouts), and host infrastructure/validation failures carry actionable text here. Inspect `exitCode`,
 `timedOut`, and `truncated`. Providers continue to receive the computed `output`, including compiler diagnostics.
 Successful `output` contains only the returned value; informational messages remain in `ScalaModeOutput.logs`.
+On compilation failure, runtime failure or timeout, captured logs are included in the diagnostic result only, leaving `logs` empty.
 Other tools use `FunctionGenericOutput(callId,name,output)` with no logs field.
 Malformed `scalamode` JSON is rejected; there is no legacy JSON fallback or migration.
 Use the **last expression**, not `println`, to return a value.
+
+### Submitted source and diagnostic lines
+
+Submit only the block body. Imports, experimental compiler flags and the safe/trusted boundary are host setup.
+Compiler positions and source gutters for submitted code are reported starting at **line 1 of the submitted body**,
+not at the generated wrapper's line number. Temporary snippet paths and generated snippet source are hidden.
+Body columns, source text and carets are unchanged. Syntax errors in the generated closing braces instead point to
+the submitted EOF, with its source/caret and an end-of-submitted-code message, not the wrapper's braces. Errors in
+generated imports/setup are labeled `<executor setup>` without showing generated source or blaming a submitted line.
+Other source files are left unchanged. Runtime `Snippet.scala` stack frames use submitted lines too. Rendering keeps
+the shared output byte budget; successful values are never rewritten.
+
+Safe mode is always enabled by the host's file-level `import scala.language.experimental.safe`. The host also sets
+capture-checking/modularity flags; submitted code cannot disable them or supply its own language imports/directives.
+The executor uses ordinary `Snippet.scala` and `Main.scala` files, not a REPL or `.sc` script. We retain the internal
+result wrapper to capture the last expression (and inject `fs` in filesystem mode), without requiring it in submitted
+code. No bundled compiler or staging task is required.
 
 ### Compiled runtime API
 
@@ -70,15 +88,30 @@ The result is `42\n`; `logs` contains `Yes Tool API is available`.
 
 The model sees only the public contract in the tool description: `def api: Unit` prints a fixed API availability message. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/jvm/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.scalacode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
 
-Only the API availability helper implementation uses `@caps.assumeSafe` to cross the compiler's trust boundary. Its enclosing object is marked `@experimental`, allowing normal module compilation without enabling experimental mode for the rest of the application. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
+Only the API availability helper implementation uses `@caps.assumeSafe` to cross the compiler's trust boundary. The method is marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
 
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
-- Starts a fresh background `scala-cli run .` process in an isolated temporary directory (the explicit project root) for each call, using the hard-coded `3.10.2-RC1-bin-20261021-a98b104-NIGHTLY` compiler with `--offline --jvm system --server=false`. The main project's Scala version is unchanged. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
-- Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. The compiled `scalacode-api` module and host-configured dependencies are supplied, not the application classpath. A separate trusted main prints the returned value.
+- Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.2-RC1-bin-20261021-a98b104-NIGHTLY` compiler with `--offline --jvm system --server=false --quiet`. Quiet mode suppresses CLI housekeeping notices, not compiler diagnostics. The main project's Scala version is unchanged. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
+- Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. The compiled `scalacode-api` module and host-configured dependencies are supplied, not the application classpath. The separate trusted `Main.scala` extends `ZIOAppDefault`: `run` evaluates the snippet and prints its returned value with `Console.printLine`. `bootstrap` replaces default loggers with a scoped JSON file logger. No handwritten unsafe runtime launch or global stdout redirection is used. Safe mode remains scoped to `Snippet.scala`, not the trusted runner; model-supplied directives are still rejected.
 - No user-supplied dependencies, directives, annotations, Unicode source escapes, backticks or compiler safety overrides. The small validator intentionally also rejects these inside strings/comments; it is not a Scala parser or an API blacklist.
 - Defaults: 45-second process deadline (including compilation), 128 MiB evaluation heap, 64 KiB shared retention budget for the result and logs, 65,536 source characters. Output beyond the cap is drained and discarded, not written to an unbounded log. Timeout/cancellation kills the process tree; temporary source/build files are removed.
 - The tool deadline is shorter than the default two-minute agent budget so a stalled compiler can return diagnostics to the model before the whole turn is cancelled. Start/finish logs report the selected compiler, offline mode and timeout status without logging submitted code.
 - No persistent REPL or general tool bridge. The compiled API module and host-configured dependencies are on the classpath for every call, but user definitions do not persist.
+
+### Runtime logging
+
+The generated applications use [ZIOAppDefault](https://zio.dev/reference/core/zioapp/). Their trusted bootstrap is
+`Runtime.removeDefaultLoggers >>> ... Runtime.addLogger(...)`, owned by `ScalaToolRuntime` in the JVM API module.
+INFO-and-above records are written to the invocation-local `runtime.jsonl` file with timestamp, level, fiber,
+message, optional cause and annotations. JSON encoding escapes quotes, newlines and other control characters.
+ZIOApp handles effect execution, failure reporting, resource finalization and the process exit code.
+
+The logger keeps at most the configured byte budget plus one overflow byte, then discards further records. The
+host reads only the remaining shared result/log budget and sets `truncated` when bytes were omitted; the last JSON
+record may therefore be partial when truncated or the process is killed. Retained records appear in `logs` on success, or in the single
+failure diagnostic on error. The file is removed with the scoped sources/build directory, not retained globally.
+Compiler diagnostics and non-ZIO stderr notices remain plain text. `tool.api` writes its fixed notice directly to
+stderr; there is no `System.setOut` mutation.
 
 ### Host-configured dependencies
 
@@ -87,10 +120,11 @@ Only the API availability helper implementation uses `@caps.assumeSafe` to cross
 ```scala
 new ScalaTool() // ZIO by default
 new ScalaTool(dependencies = ScalaTool.DefaultDependencies :+ "dev.zio::zio-streams:2.1.27")
-new ScalaTool(dependencies = Seq.empty) // No external dependencies
+new ScalaTool(dependencies = Seq.empty) // Only the mandatory ZIO/ZIO JSON runner dependencies
 ```
 
-A supplied sequence replaces the defaults. Each entry is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
+A supplied sequence replaces the defaults. The trusted runner always adds `dev.zio::zio:2.1.27` and
+`dev.zio::zio-json:1.1.1`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
 
 ### Pinned nightly / offline use
 

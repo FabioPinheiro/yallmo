@@ -54,9 +54,21 @@ final class ScalamodeModelSuite extends FunSuite {
     }
   }
 
+  test("the default example lists the selected root using filesystem mode") {
+    val h = new Harness
+    val code = h.model.state.now().code
+    assert(code.contains("""fs.list(".")"""))
+    h.model.run()
+    val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
+    assertEquals(
+      call.argumentsJson.fromJson[Json],
+      Right(Json.Obj("code" -> Json.Str(code), "mode" -> Json.Str("filesystem")))
+    )
+  }
+
   test("Run sends one correlated scalamode call, preserves drafts, and displays the response") {
     val h = new Harness
-    h.model.code("List(1, 2, 3).map(_ * 2).sum")
+    h.model.code("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)")
     h.model.run()
     h.model.run()
     assertEquals(h.requests.size, 1)
@@ -66,7 +78,10 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(params.input.agentId, human)
     assertEquals(params.input.parentId, None)
     assertEquals(call.name, ToolKey.Scalamode)
-    assertEquals(call.argumentsJson.fromJson[Json], Right(Json.Obj("code" -> Json.Str("List(1, 2, 3).map(_ * 2).sum"))))
+    assertEquals(
+      call.argumentsJson.fromJson[Json],
+      Right(Json.Obj("code" -> Json.Str("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)"), "mode" -> Json.Str("filesystem")))
+    )
     h.model.code("next draft")
     val response = h.response()
     h.requests.head._2.success(response)
@@ -164,6 +179,7 @@ final class ScalamodeModelSuite extends FunSuite {
 
   test("disconnect invalidates late results, preserves the draft, and never replays on reconnect") {
     val h = new Harness
+    val draft = h.model.state.now().code
     h.model.run()
     h.model.disable()
     assert(h.model.state.now().notice.contains("unknown"))
@@ -173,7 +189,7 @@ final class ScalamodeModelSuite extends FunSuite {
       assertEquals(h.requests.size, 1)
       assertEquals(h.model.state.now().result, None)
       assert(!h.model.state.now().pending)
-      assert(h.model.state.now().code.contains("tool.api"))
+      assertEquals(h.model.state.now().code, draft)
     }
   }
 

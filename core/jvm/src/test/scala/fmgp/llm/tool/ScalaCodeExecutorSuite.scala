@@ -13,10 +13,13 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
 
-  private def withFakeCli(body: String)(test: Path => Unit): Unit = {
+  private def withFakeCli(body: String, compileBody: String = "exit 0")(test: Path => Unit): Unit = {
     val executable = Files.createTempFile("yallmo-fake-scala-", ".sh")
     try {
-      Files.writeString(executable, "#!/bin/sh\n" + body)
+      Files.writeString(
+        executable,
+        "#!/bin/sh\nif [ \"$1\" = compile ]; then\n" + compileBody + "\nexit $?\nfi\n" + body
+      )
       assert(executable.toFile.setExecutable(true))
       test(executable)
     } finally Files.deleteIfExists(executable)
@@ -65,16 +68,25 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("custom dependencies replace defaults and each gets a separate CLI flag") {
+  test("custom dependencies retain the mandatory ZIOApp runtime dependencies without duplicates") {
     val dependencies = Seq("dev.zio::zio-streams:2.1.27", "dev.zio::zio-json:1.1.1")
     val arguments = ScalaCodeExecutor.arguments(dependencies = dependencies)
     val actual = arguments.sliding(2).collect { case Seq("--dependency", dependency) => dependency }.toList
-    assertEquals(actual, dependencies.toList)
-    assert(!arguments.contains("dev.zio::zio:2.1.27"))
-    assert(!ScalaCodeExecutor.arguments(dependencies = Seq.empty).contains("--dependency"))
+    assertEquals(actual, (dependencies ++ ScalaCodeExecutor.RuntimeDependencies).distinct.toList)
+    assert(arguments.contains("dev.zio::zio:2.1.27"))
+    assertEquals(
+      ScalaCodeExecutor
+        .arguments(dependencies = Seq.empty)
+        .sliding(2)
+        .collect { case Seq("--dependency", dependency) =>
+          dependency
+        }
+        .toList,
+      ScalaCodeExecutor.RuntimeDependencies.toList
+    )
   }
 
-  test("ScalaTool forwards configured dependencies to the CLI, including an empty sequence") {
+  test("ScalaTool forwards additional dependencies and always includes the trusted runtime libraries") {
     withFakeCli("printf '%s\\n' \"$@\"\n") { executable =>
       for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.1"), Seq.empty) do {
         val result = run(
@@ -84,7 +96,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         )
         val arguments = result.text.linesIterator.toList
         val actual = arguments.sliding(2).collect { case List("--dependency", dependency) => dependency }.toList
-        assertEquals(actual, dependencies.toList)
+        assertEquals(actual, (dependencies ++ ScalaCodeExecutor.RuntimeDependencies).distinct.toList)
       }
     }
   }
@@ -92,7 +104,11 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("isolated temporary sources are removed after execution") {
     withFakeCli(
       "test \"$1\" = run && test \"$2\" = . || exit 8\n" +
-        "test -f Snippet.scala && test -f Main.scala && test ! -f ScalaToolApi.scala || exit 9\n" +
+        "test -f Snippet.scala && test -f Main.scala && test ! -f Main.sc && test ! -f ScalaToolApi.scala || exit 9\n" +
+        "grep -q 'scala.language.experimental.safe' Main.scala && exit 13\n" +
+        "grep -q 'extends ZIOAppDefault' Main.scala || exit 14\n" +
+        "grep -q 'ScalaToolRuntime.bootstrap' Main.scala || exit 15\n" +
+        "grep -E 'execution-started|System.setOut|Unsafe.unsafe|Runtime.default' Main.scala && exit 16\n" +
         "grep -q 'import fmgp.yallmo.scalacode.{ScalaToolApi as tool}' Snippet.scala || exit 10\n" +
         "grep -q 'import tool.\\*' Snippet.scala || exit 11\npwd\n"
     ) { executable =>
@@ -106,50 +122,238 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("stderr diagnostics are captured as logs without contaminating the value") {
-    withFakeCli("printf '42\\n'; printf 'connected\\ndisconnected\\n' >&2\n") { executable =>
+  test("filesystem mode uses a separate trusted runner and safe effect snippet") {
+    withFakeCli(
+      "test \"$1\" = run && test \"$2\" = . || exit 8\n" +
+        "test -f Snippet.scala && test -f Main.scala && test ! -f Main.sc || exit 9\n" +
+        "grep -q 'scala.language.experimental.safe' Snippet.scala || exit 11\n" +
+        "grep -q 'def result(fs: FsRead)' Snippet.scala || exit 12\n" +
+        "grep -q 'RpcWebSocket.connect' Main.scala || exit 13\n" +
+        "grep -q 'scala.language.experimental.safe' Main.scala && exit 14\n" +
+        "grep -q 'extends ZIOAppDefault' Main.scala || exit 15\n" +
+        "grep -q 'ScalaToolRuntime.bootstrap' Main.scala || exit 16\n" +
+        "grep -E 'execution-started|System.setOut|Unsafe.unsafe|Runtime.default' Main.scala && exit 17\n" +
+        "read endpoint && read secret || exit 18\n" +
+        "test \"$endpoint\" = ws://127.0.0.1:1/rpc && test -n \"$secret\" || exit 19\n" +
+        "case \"$*\" in *\"$secret\"*) exit 20;; esac\n" +
+        "printf 'filesystem runner ready\\n'\n",
+      compileBody = "if read unexpected; then exit 21; fi\nexit 0"
+    ) { executable =>
+      run(ZIO.scoped {
+        for {
+          route <- RpcWebSocket.route()
+          executor <- ZIO.service[ScalaCodeExecutor].provide(ScalaCodeExecutor.layer(executable.toString))
+          result <- executor
+            .executeFilesystem("fs.list(\".\")", "ws://127.0.0.1:1/rpc", 10.seconds, 1024)
+            .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](unusedFilesystem, route))
+          _ <- ZIO.attempt {
+            assertEquals(result.exitCode, 0, result.output)
+            assertEquals(result.output, "filesystem runner ready\n")
+          }
+        } yield ()
+      })
+    }
+  }
+
+  test("diagnostics use submitted pure-code lines without changing columns, source text or carets") {
+    val diagnostics =
+      "-- [E006] Not Found Error: /tmp/Snippet.scala:7:3 --\n" +
+        "7 |  missing\n  |  ^^^^^^^\n  |  Not found: missing\n"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(diagnostics, "val number = 1\n  missing", filesystem = false),
+      "-- [E006] Not Found Error: Snippet.scala:2:3 --\n" +
+        "2 |  missing\n  |  ^^^^^^^\n  |  Not found: missing\n"
+    )
+  }
+
+  test("filesystem diagnostics account for their own preamble and preserve gutter alignment") {
+    val code = "val a = 1\nval b = 2\nmissing"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics("Snippet.scala:10:1\n10 |missing\n   |^^^^^^^", code, filesystem = true),
+      "Snippet.scala:3:1\n 3 |missing\n   |^^^^^^^"
+    )
+  }
+
+  test("diagnostic mapping hides generated snippet setup but preserves other sources and excerpt contents") {
+    val diagnostics =
+      "Snippet.scala:2:1\n2 |trusted import\n" +
+        "Main.scala:7:1\n7 |trusted runner\n" +
+        "Other.scala:7:1\n7 |unrelated source\n" +
+        "Snippet.scala:6:1\n6 |\"Snippet.scala:6:1\"\n" +
+        "Snippet.scala:999999999999:1\n"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(diagnostics, "\"Snippet.scala:6:1\"", filesystem = false),
+      "<executor setup>\n" +
+        "Main.scala:7:1\n7 |trusted runner\n" +
+        "Other.scala:7:1\n7 |unrelated source\n" +
+        "Snippet.scala:1:1\n1 |\"Snippet.scala:6:1\"\n" +
+        "<executor setup>\n"
+    )
+  }
+
+  test("syntax errors in generated closing braces point to submitted EOF without displaying the braces") {
+    val raw = "-- [E040] Syntax Error: /tmp/Snippet.scala:7:2 --\n7 |  }\n  |  ^\n  | ')' expected, but '}' found\n"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(raw, "List(1, 2", filesystem = false),
+      "-- [E040] Syntax Error: Snippet.scala:1:9 --\n1 |List(1, 2\n  |         ^\n" +
+        "  | ')' expected at end of submitted code\n"
+    )
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics("Snippet.scala:8:2\n8 |  }\n  |  ^", "List(1,\n", filesystem = false),
+      "Snippet.scala:2:0\n2 |\n  |^"
+    )
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics("Snippet.scala:7:2\n7 |  }\n  |  ^", "\tList(1, 2", filesystem = false),
+      "Snippet.scala:1:10\n1 |\tList(1, 2\n  |\t         ^"
+    )
+  }
+
+  test("filesystem syntax errors and final-newline errors use the end of the submitted body") {
+    val raw = "Snippet.scala:12:1\n11 |}\n   | ^\n   | '}' expected, but eof found"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(raw, "val n = 1\nif true then {\nn", filesystem = true),
+      "Snippet.scala:3:1\n 3 |n\n   | ^\n   | '}' expected at end of submitted code"
+    )
+  }
+
+  test("generated setup and closing-brace context is omitted from body diagnostics") {
+    val raw = "Snippet.scala:6:0\n5 |  def result: Any = {\n  |  ^\n6 |missing\n  |^^^^^^^\n7 |  }\n  |  ^\n"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(raw, "missing", filesystem = false),
+      "Snippet.scala:1:0\n1 |missing\n  |^^^^^^^\n"
+    )
+  }
+
+  test("temporary source paths including spaces and Windows drives are hidden") {
+    for path <- List("/tmp/a b/Snippet.scala", "C:\\temp dir\\Snippet.scala", "/Snippet.scala") do
+      assertEquals(
+        ScalaCodeExecutor.remapDiagnostics(s"-- Error: $path:6:4 --\n6 |missing", "missing", filesystem = false),
+        "-- Error: Snippet.scala:1:4 --\n1 |missing"
+      )
+  }
+
+  test("formatted EOF excerpts still obey the shared result and logs byte budget") {
+    val code = "(" + (" " * 1000)
+    val command = CommandOutput(1, false, "", false, Seq("Snippet.scala:7:2", "7 |  }", "  |  ^"))
+    val displayed =
+      ScalaCodeExecutor.displayDiagnostics(command, code, filesystem = false, compiled = false, maxOutputBytes = 64)
+    assert(displayed.truncated)
+    assert(
+      displayed.output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length +
+        displayed.logs.mkString("\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 64
+    )
+    assert(!displayed.logs.mkString("\n").contains("  }"))
+  }
+
+  test("runtime stack frames use submitted lines but unrelated frames stay unchanged") {
+    val stack = "at ScalaToolSnippet$.result(Snippet.scala:6)\nat Trusted.main(Main.scala:6)\n"
+    assertEquals(
+      ScalaCodeExecutor.remapDiagnostics(stack, "1 / 0", filesystem = false),
+      "at ScalaToolSnippet$.result(Snippet.scala:1)\nat Trusted.main(Main.scala:6)\n"
+    )
+  }
+
+  test("source-position text in the returned value is not remapped") {
+    withFakeCli("printf 'Snippet.scala:6:1\\n'\n") { executable =>
+      assertEquals(execute(executable).output, "Snippet.scala:6:1\n")
+    }
+  }
+
+  test("successful stderr logs preserve repeated events and text matching the returned value") {
+    withFakeCli("printf '42'; printf 'connected\\n42\\nconnected\\n' >&2\n") { executable =>
       val result = execute(executable)
-      assertEquals(result.output, "42\n")
-      assertEquals(result.logs, Seq("connected", "disconnected"))
+      assertEquals(result.output, "42")
+      assertEquals(result.logs, Seq("connected", "42", "connected"))
       assert(!result.truncated)
     }
   }
 
   test("compiler stderr errors remain visible in the tool result") {
-    withFakeCli("printf '[E006] Not Found Error: Snippet.scala:6:1\\nNot found: missing\\n' >&2\nexit 1\n") {
-      executable =>
-        val result = run(
-          new ScalaTool()
-            .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"missing"}"""))
-            .provide(ScalaCodeExecutor.layer(executable.toString))
-        )
-        val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
-        assertEquals(typed.exitCode, 1)
-        assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
-        assert(typed.output.contains("[E006] Not Found Error"))
-        assert(typed.output.contains("Not found: missing"))
-        assert(typed.logs.nonEmpty)
+    withFakeCli(
+      "exit 99",
+      compileBody = "printf '[E006] Not Found Error: Snippet.scala:6:1\\nNot found: missing\\n' >&2\nexit 1\n"
+    ) { executable =>
+      val result = run(
+        new ScalaTool()
+          .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"missing"}"""))
+          .provide(ScalaCodeExecutor.layer(executable.toString))
+      )
+      val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+      assertEquals(typed.exitCode, 1)
+      assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
+      assert(typed.output.contains("[E006] Not Found Error"))
+      assert(typed.output.contains("Not found: missing"))
+      assertEquals(
+        typed.output,
+        "[E006] Not Found Error: Snippet.scala:1:1\nNot found: missing"
+      )
+      assertEquals(typed.logs, Seq.empty[String])
+      assert(!typed.timedOut && !typed.truncated)
     }
   }
 
-  test("trusted Main marker survives exhausted logs without leaking into captured results") {
-    withFakeCli("i=0; while [ $i -lt 1000 ]; do printf x >&2; i=$((i+1)); done\ntouch .execution-started\nexit 1\n") {
-      executable =>
-        val result = execute(executable, limit = 32)
-        assert(result.result.isInstanceOf[ScalaModeResult.Executed])
-        assert(result.truncated)
-        assertEquals(result.output, "x" * 32)
-        assertEquals(result.logs, Seq("x" * 32))
-        assert(!result.output.contains(ScalaCodeExecutor.ExecutionStartedFile))
+  test("runtime failure stays an execution result even when logs are exhausted, without a marker") {
+    withFakeCli("i=0; while [ $i -lt 1000 ]; do printf x >&2; i=$((i+1)); done\nexit 1\n") { executable =>
+      val result = execute(executable, limit = 32)
+      assert(result.result.isInstanceOf[ScalaModeResult.Executed])
+      assert(result.truncated)
+      assertEquals(result.output, "x" * 32)
+      assertEquals(result.logs, Seq.empty[String])
+      assertEquals(result.exitCode, 1)
+      assert(!result.timedOut)
+      assert(!result.output.contains("execution-started"))
     }
   }
 
-  test("pre-Main nonzero exit is a compiler or launch diagnostic, not a runtime failure") {
-    withFakeCli("printf 'Compiler dependency unavailable' >&2\nexit 1\n") { executable =>
+  test("compile-phase failure and runtime failure have distinct typed results without a marker") {
+    withFakeCli("exit 99", compileBody = "printf 'Compiler dependency unavailable' >&2\nexit 1\n") { executable =>
       assertEquals(execute(executable).result, ScalaModeResult.CompilationError("Compiler dependency unavailable"))
     }
-    withFakeCli("touch .execution-started\nprintf 'Runtime failure' >&2\nexit 1\n") { executable =>
+    withFakeCli("printf 'Runtime failure' >&2\nexit 1\n") { executable =>
       assertEquals(execute(executable).result, ScalaModeResult.Executed("Runtime failure"))
+    }
+  }
+
+  test("compile failure remains a compilation error after its diagnostic budget is exhausted") {
+    val failure = "i=0; while [ $i -lt 1000 ]; do printf x >&2; i=$((i+1)); done\nexit 1"
+    withFakeCli("printf 'must not run'", compileBody = failure) { executable =>
+      val result = execute(executable, limit = 32)
+      assertEquals(result.result, ScalaModeResult.CompilationError("x" * 32))
+      assert(result.truncated)
+      assertEquals(result.logs, Seq.empty[String])
+    }
+  }
+
+  test("compile and run share one output budget and one deadline") {
+    withFakeCli("printf abcdef", compileBody = "printf 123456 >&2") { executable =>
+      val result = execute(executable, limit = 8)
+      assertEquals(result.output, "ab")
+      assertEquals(result.logs, Seq("123456"))
+      assert(result.truncated)
+    }
+    withFakeCli("printf 'running\\n'; sleep 60", compileBody = "sleep 0.4") { executable =>
+      val start = java.lang.System.nanoTime()
+      val result = execute(executable, timeout = 700.millis)
+      assert(result.timedOut)
+      assert(result.output.contains("running"), result.output)
+      assert(java.lang.System.nanoTime() - start < 1500.millis.toNanos)
+    }
+  }
+
+  test("JSON runtime file logs are separate from the result and share its byte budget") {
+    val json = "{\"level\":\"INFO\",\"message\":\"hello\"}"
+    withFakeCli(s"printf '42\\n'\nprintf '%s\\n' '$json' > runtime.jsonl") { executable =>
+      val result = execute(executable)
+      assertEquals(result.output, "42\n")
+      assertEquals(result.logs, Seq(json))
+      assert(!result.truncated)
+      val limited = execute(executable, limit = 8)
+      assertEquals(limited.output, "42\n")
+      assert(limited.truncated)
+      assert(
+        limited.output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length +
+          limited.logs.mkString("\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 8
+      )
     }
   }
 
@@ -188,7 +392,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("tool returns a diagnostic before the outer agent deadline when CLI stalls") {
-    withFakeCli("printf 'Checking compiler metadata\\n'; sleep 60\n") { executable =>
+    withFakeCli("printf 'Checking compiler metadata\\n'; printf 'Compiler stalled\\n' >&2; sleep 60\n") { executable =>
       val result = run(
         new ScalaTool(timeout = 300.millis)
           .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
@@ -200,6 +404,10 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
       assert(typed.output.contains("Checking compiler metadata"))
       assert(typed.output.contains("deadline"))
+      assert(typed.output.contains("Compiler stalled"))
+      assertEquals(typed.logs, Seq.empty[String])
+      assertNotEquals(typed.exitCode, 0)
+      assert(!typed.truncated)
     }
   }
 
@@ -305,6 +513,30 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     val process = ProcessHandle.of(pid)
     // ProcessHandle.isAlive may report true for a killed zombie awaiting reaping.
     process.isPresent && process.get().isAlive && process.get().info().command().isPresent
+  }
+
+  test("cancelling compilation kills its process before removing the sources") {
+    val marker = Files.createTempFile("yallmo-compile-started-", ".txt")
+    try {
+      withFakeCli("exit 99", compileBody = s"{ echo $$$$; pwd; } > '$marker'\nwhile :; do :; done") { executable =>
+        val exit = run(for {
+          fiber <- ZIO
+            .serviceWithZIO[ScalaCodeExecutor](_.execute("42", 60.seconds, 1024))
+            .provide(ScalaCodeExecutor.layer(executable.toString))
+            .fork
+          _ <- ZIO
+            .attempt(Files.readString(marker))
+            .repeat(Schedule.spaced(10.millis) && Schedule.recurWhile[String](_.linesIterator.size < 2))
+            .timeoutFail(new RuntimeException("compiler did not start"))(5.seconds)
+            .onError(_ => fiber.interrupt.unit)
+          exit <- fiber.interrupt
+        } yield exit)
+        assert(exit.isInterrupted)
+        val lines = Files.readString(marker).linesIterator.toList
+        assert(!isRunning(lines.head.toLong))
+        assert(!Files.exists(Path.of(lines(1))))
+      }
+    } finally Files.deleteIfExists(marker)
   }
 
   test("fiber cancellation tears down the process before cleaning temporary files") {
@@ -515,6 +747,27 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
     assert(typed.output.contains("[E006] Not Found Error"), result.text)
     assert(typed.output.contains("Not found: doesNotExist"), result.text)
+    assert(typed.output.contains("Snippet.scala:1:"), result.text)
+    assert(typed.output.linesIterator.exists(_.matches("\\s*1 \\|doesNotExist")), result.text)
+    assertEquals(typed.logs, Seq.empty[String])
+  }
+
+  test("nightly syntax diagnostics hide the wrapper and point to the submitted EOF") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler diagnostics integration test")
+    for code <- List("List(1, 2", "val n = 1\nif true then {\nn") do {
+      val result = run(
+        ZIO
+          .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
+          .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
+      )
+      val lines = code.split("\n", -1)
+      assert(result.result.isInstanceOf[ScalaModeResult.CompilationError], result.output)
+      assert(result.output.contains(s"Snippet.scala:${lines.length}:${lines.last.length}"), result.output)
+      assert(result.output.contains("expected at end of submitted code"), result.output)
+      assert(!result.output.contains("yallmo-scala-"), result.output)
+      assert(!result.output.contains("def result") && !result.output.contains("object ScalaToolSnippet"), result.output)
+      assert(!result.output.linesIterator.exists(_.matches("\\s*\\d+ \\|\\s*}")), result.output)
+    }
   }
 
   test("nightly provides the trusted runtime API on every fresh invocation") {
@@ -568,21 +821,22 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         "new java.net.Socket(\"example.com\", 80)",
         "classOf[String].getDeclaredMethods",
         "1.asInstanceOf[String]",
-        "println(42)"
+        "println(42)",
+        "ScalaToolMain.main(Array.empty[String])",
+        "fmgp.yallmo.scalacode.ScalaToolRuntime.bootstrap"
       )
     do {
       val rejected = evaluate(code)
       assert(!rejected.timedOut && rejected.exitCode != 0, s"Unexpectedly accepted: $code\n${rejected.output}")
       assert(rejected.result.isInstanceOf[ScalaModeResult.CompilationError])
-      assert(rejected.logs.exists(_.contains("Compilation failed")), rejected.logs.mkString("\n"))
+      assert(rejected.output.contains("Compilation failed"), rejected.output)
+      assertEquals(rejected.logs, Seq.empty[String])
     }
     val runtimeError = evaluate("1 / 0")
     assert(runtimeError.result.isInstanceOf[ScalaModeResult.Executed])
     assert(runtimeError.output.contains("ArithmeticException"))
-    assert(
-      runtimeError.exitCode != 0 && runtimeError.logs.exists(_.contains("ArithmeticException")),
-      runtimeError.logs.mkString("\n")
-    )
+    assertNotEquals(runtimeError.exitCode, 0)
+    assertEquals(runtimeError.logs, Seq.empty[String])
     assert(evaluate("while true do ()", 15.seconds).timedOut)
   }
 }

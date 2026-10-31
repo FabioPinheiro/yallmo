@@ -55,16 +55,19 @@ a conversation turn. Choose an agent using the **same toolbar picker as Chat**, 
 **Run scalamode** for restricted Scala execution. Both views use the current conversation's selected agent;
 Scalamode has no separate agent selection. The shared agent picker and run button are disabled while a request is pending.
 The page sends an ordinary `agents.invoke` message containing
-`ToolCall(name = scalamode, argumentsJson = {"code":"..."})` and displays its correlated `ToolOutput`:
+`ToolCall(name = scalamode, argumentsJson = {"code":"...","mode":"filesystem"})` and displays its correlated `ToolOutput`:
 stdout/result, compiler/runtime diagnostics, exit code, timeout and truncation metadata.
+The default example lists entries in the selected agent’s configured root with `fs.list(".").map(_.mkString("\n"))`.
+The browser always requests filesystem-capable execution, which requires a filesystem-enabled backend.
 Editor text is treated only as text; no Markdown/HTML is executed by the browser.
 
 A configured backend, initialized Operator and advertised `agents.invoke` method are required. Tool availability and
 the selected agent's capability allowlist are checked by the server, not inferred from the agent selector. Scala CLI
 must exist on the backend; restricted execution also needs the pinned offline compiler cache. `ApplicationTools`
 registers the restricted tool.
-Unavailable or denied tools return server errors. Restricted execution still accepts
-only `{"code":"..."}`, with the same compiler restrictions, injected `tool.api` helper and execution limits.
+Unavailable or denied tools return server errors. The backend API still accepts
+`{"code":"..."}` in pure mode, or `{"code":"...","mode":"filesystem"}` when supported, with the same compiler
+restrictions, injected `tool.api` helper and execution limits.
 
 Source, pending state and the last result live at application root and survive tab navigation, not
 page reload. Editing while running does not change the submitted code. Double clicks cannot

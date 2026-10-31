@@ -131,6 +131,57 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
     }
   }
 
+  test("ZIOApp writes structured JSON runtime logs without contaminating the returned value") {
+    withExecutor { (executor, endpoint, fs, route) =>
+      executor
+        .executeFilesystem("fs.list(\".\").map(_.mkString(\",\"))", endpoint, 120.seconds, 64 * 1024)
+        .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](fs, route))
+        .map { result =>
+          assertEquals(result.exitCode, 0, result.output)
+          assertEquals(result.output, "hello.txt\n")
+          val events = result.logs.filter(_.startsWith("{")).map(ujson.read(_))
+          assert(events.exists(event => event("message").str.contains("client connected")), result.logs.mkString("\n"))
+          assert(
+            events.exists(event => event("message").str.contains("client disconnected")),
+            result.logs.mkString("\n")
+          )
+          assert(events.forall(event => event("timestamp").str.nonEmpty && event("level").str.nonEmpty))
+          assert(!result.truncated)
+        }
+    }
+  }
+
+  test("filesystem compiler diagnostics point to submitted lines, not the effect wrapper") {
+    withExecutor { (executor, endpoint, fs, route) =>
+      executor
+        .executeFilesystem("val name = \"hello.txt\"\nfs.missing(name)", endpoint, 120.seconds, 16 * 1024)
+        .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](fs, route))
+        .map { result =>
+          assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
+          assert(result.output.contains("Snippet.scala:2:"), result.output)
+          assert(result.output.linesIterator.exists(_.matches("\\s*2 \\|fs\\.missing\\(name\\)")), result.output)
+          assertEquals(result.logs, Seq.empty[String])
+        }
+    }
+  }
+
+  test("filesystem syntax diagnostics hide generated braces and point to the submitted EOF") {
+    withExecutor { (executor, endpoint, fs, route) =>
+      val code = "fs.list(\".\""
+      executor
+        .executeFilesystem(code, endpoint, 120.seconds, 16 * 1024)
+        .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](fs, route))
+        .map { result =>
+          assert(result.result.isInstanceOf[ScalaModeResult.CompilationError], result.output)
+          assert(result.output.contains(s"Snippet.scala:1:${code.length}"), result.output)
+          assert(result.output.contains("expected at end of submitted code"), result.output)
+          assert(!result.output.contains("yallmo-scala-") && !result.output.contains("def result"), result.output)
+          assert(!result.output.linesIterator.exists(_.matches("\\s*\\d+ \\|\\s*}")), result.output)
+          assertEquals(result.logs, Seq.empty[String])
+        }
+    }
+  }
+
   test("filesystem runtime failures are typed execution attempts with actionable diagnostics") {
     withExecutor { (executor, endpoint, fs, route) =>
       ScalaTool
@@ -148,7 +199,8 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           assertEquals(typed.exitCode, 1)
           assert(!typed.timedOut)
           assert(typed.output.contains("NotFound(missing)"), typed.output)
-          assert(typed.logs.exists(_.contains("Filesystem execution failed")))
+          assert(typed.output.contains("Scala execution failed"), typed.output)
+          assertEquals(typed.logs, Seq.empty[String])
         }
     }
   }
@@ -235,8 +287,10 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         "new java.net.Socket(\"example.com\", 80)",
         "java.lang.Runtime.getRuntime.exec(\"true\")",
         "zio.Runtime.default",
+        "ZIO.logInfo(\"not allowed\")",
         "zio.Unsafe",
         "ScalaToolMain.main(Array.empty[String])",
+        "fmgp.yallmo.scalacode.ScalaToolRuntime.bootstrap",
         "ScalaToolMain.secret",
         "ScalaToolMain.fs",
         "fs.connection"
@@ -251,12 +305,13 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           )
           .provideEnvironment(ZEnvironment[FsRead, RpcWebSocket.RpcRoute](fs, route))
           .map { result =>
-            val diagnostics = result.logs.mkString("\n")
+            val diagnostics = result.output
             Files.writeString(Path.of(s"/tmp/yallmo-phase2-denied-$index.log"), diagnostics)
             assert(!result.timedOut, s"probe $index timed out")
             assertNotEquals(result.exitCode, 0, s"probe $index accepted: ${result.output}")
             assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
-            assert(result.logs.exists(_.contains("Compilation failed")), result.logs.mkString("\n"))
+            assert(diagnostics.contains("Compilation failed"), diagnostics)
+            assertEquals(result.logs, Seq.empty[String])
             assert(
               diagnostics.contains("from safe code") || diagnostics.contains("is not a member") ||
                 diagnostics.contains("cannot be accessed") || diagnostics.contains("safe mode"),

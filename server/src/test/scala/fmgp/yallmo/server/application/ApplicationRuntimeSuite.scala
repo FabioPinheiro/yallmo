@@ -285,6 +285,31 @@ final class ApplicationRuntimeSuite extends FunSuite {
     }
   }
 
+  test("selection logs failures once with single-line diagnostics and leaves successful loading silent") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    run(ZIO.scoped {
+      for {
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
+        runtime <- ApplicationRuntime.make(config, Chunk(human))
+        _ <- runtime.resolve(first)
+        _ <- runtime.resolve(first)
+        _ <- ZIO.succeed(assert(logs.isEmpty))
+        unknown = AgentId("missing\nforged\u2028entry")
+        failure <- runtime.resolve(unknown).either
+      } yield {
+        assertEquals(failure, Left(YallmoError.UnknownAgent(unknown)))
+        assertEquals(logs.size(), 1)
+        val line = logs.get(0)
+        assert(line.contains("level=ERROR"))
+        assert(line.contains("Unable to load agent 'missing?forged?entry'"))
+        assert(line.contains("No agent is registered with id 'missing?forged?entry'"))
+        assert(!line.contains("\n"))
+        assert(!line.contains("\u2028"))
+      }
+    })
+  }
+
   test("selection reuses one lazy registry and opened storage without changing existing bindings") {
     run {
       for {

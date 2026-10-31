@@ -145,6 +145,40 @@ final class AgentsInvokeSuite extends FunSuite {
     })
   }
 
+  test("agent loading logs the configuration reason before returning a sanitized RPC error") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    val invalid = config.copy(agents =
+      Map(
+        assistant -> definition.copy(
+          config = Json.Obj("systemPrompt" -> Json.Str("PRIVATE_PROMPT"))
+        )
+      )
+    )
+    run(ZIO.scoped {
+      for {
+        fixture <- make(_ => ZIO.dieMessage("Invalid settings must not invoke the provider"), configuration = invalid)
+        _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
+        _ <- ZIO.succeed(assert(logs.isEmpty))
+        reply <- invoke(fixture)
+        stored <- fixture.live.listMessages
+      } yield {
+        assertEquals(
+          decode[JsonRpc.Failure](reply).error,
+          JsonRpc.Error(ErrorCode.Rejected, "Invalid author or assistant configuration")
+        )
+        assertEquals(logs.size(), 1)
+        val line = logs.get(0)
+        assert(line.contains("level=ERROR"))
+        assert(line.contains("Unable to load agent 'assistant'"))
+        assert(line.contains("Agent config.model is required when the provider has no default model"))
+        assert(!line.contains("PRIVATE_PROMPT"))
+        assert(!reply.contains("config.model"))
+        assertEquals(stored, Chunk.empty)
+      }
+    })
+  }
+
   test("ordinary configured capabilities and the tool loop apply to independent invocations") {
     run(ZIO.scoped {
       for {

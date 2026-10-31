@@ -1,9 +1,10 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
+import fmgp.yallmo.model.{FunctionCallId, ScalaModeOutput, ToolKey, ScalaModeResult}
 import fmgp.yallmo.orchestration.{ExternalToolCall, ExternalToolResult}
 import munit.FunSuite
 import zio.*
+import zio.json.*
 
 final class ScalaToolSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
@@ -37,23 +38,65 @@ final class ScalaToolSuite extends FunSuite {
     assert(!typed.timedOut && !typed.truncated)
   }
 
-  test("timeouts are actionable execution attempts, not compilation errors") {
-    val result = ScalaCodeExecutor.result(CommandOutput(124, true, "deadline", false), started = false)
-    assert(result.result.isInstanceOf[ScalaModeResult.Executed])
-    assert(result.output.contains("deadline"))
-    assert(result.timedOut)
+  test("compilation diagnostics are preserved once through result conversion and JSON serialization") {
+    val diagnostics =
+      "-- [E006] Not Found Error: Snippet.scala:1:1 --\n" +
+        "1 |doesNotExist\n  |^^^^^^^^^^^^\n  |Not found: doesNotExist\n\n" +
+        "  | longer explanation available when compiling with `-explain`\n1 error found\nCompilation failed"
+    val result = ScalaCodeExecutor.result(
+      CommandOutput(1, false, "", false, diagnostics.linesIterator.toVector),
+      compiled = false
+    )
+    assertEquals(result.result, ScalaModeResult.CompilationError(diagnostics))
+    assertEquals(result.output, diagnostics)
+    assertEquals(result.logs, Seq.empty[String])
+    assertEquals(result.exitCode, 1)
+    assert(!result.timedOut && !result.truncated)
+    val output = ScalaModeOutput(
+      FunctionCallId.unsafe("scala-compilation-error"),
+      result.result,
+      result.logs,
+      result.exitCode,
+      result.timedOut,
+      result.truncated
+    )
+    val json = output.toJson
+    assert(json.contains("\"logs\":[]"), json)
+    assertEquals(json.fromJson[ScalaModeOutput], Right(output))
   }
 
-  test("trusted start boundary separates compilation diagnostics from runtime errors") {
+  test("timeouts consume logs into actionable execution diagnostics and preserve flags") {
+    val result = ScalaCodeExecutor.result(
+      CommandOutput(124, true, "partial value", true, Seq("checking compiler", "checking compiler")),
+      compiled = false
+    )
+    assertEquals(
+      result.result,
+      ScalaModeResult.Executed(
+        "Scala CLI exceeded its compilation/execution deadline.\npartial value\nchecking compiler\nchecking compiler"
+      )
+    )
+    assertEquals(result.logs, Seq.empty[String])
+    assertEquals(result.exitCode, 124)
+    assert(result.timedOut && result.truncated)
+  }
+
+  test("explicit compile result separates compilation diagnostics from runtime errors") {
     val command = CommandOutput(1, false, "partial value", true, Seq("[E006] Not Found Error", "missing"))
-    val compilation = ScalaCodeExecutor.result(command, started = false)
+    val compilation = ScalaCodeExecutor.result(command, compiled = false)
     assertEquals(compilation.result, ScalaModeResult.CompilationError("partial value\n[E006] Not Found Error\nmissing"))
-    val runtime = ScalaCodeExecutor.result(command, started = true)
+    assertEquals(compilation.logs, Seq.empty[String])
+    assert(compilation.truncated && compilation.exitCode == 1 && !compilation.timedOut)
+    val runtime = ScalaCodeExecutor.result(command, compiled = true)
     assertEquals(runtime.result, ScalaModeResult.Executed(compilation.output))
-    assert(runtime.truncated && runtime.exitCode == 1)
-    val success = ScalaCodeExecutor.result(CommandOutput(0, false, "42\n", false, Seq("connected")), started = true)
-    assertEquals(success.output, "42\n")
-    assertEquals(success.logs, Seq("connected"))
+    assertEquals(runtime.logs, Seq.empty[String])
+    assert(runtime.truncated && runtime.exitCode == 1 && !runtime.timedOut)
+    val success = ScalaCodeExecutor.result(
+      CommandOutput(0, false, "42", false, Seq("connected", "42", "connected")),
+      compiled = true
+    )
+    assertEquals(success.output, "42")
+    assertEquals(success.logs, Seq("connected", "42", "connected"))
   }
 
   test("invalid arguments are rejected before executing anything") {
@@ -87,13 +130,20 @@ final class ScalaToolSuite extends FunSuite {
   }
 
   test(
-    "command defaults to scala-cli with the verified nightly offline, no build server, and an explicit project root"
+    "command runs isolated Scala source files with the verified nightly offline, no build server, and the safety flags"
   ) {
     val arguments = ScalaCodeExecutor.arguments()
     assertEquals(arguments.take(3), Seq("scala-cli", "run", "."))
+    assertEquals(arguments(arguments.indexOf("--main-class") + 1), "ScalaToolMain")
+    assert(arguments.contains("--quiet"))
     assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY")
     assert(arguments.contains("--power") && arguments.contains("--offline"))
+    assertEquals(arguments(arguments.indexOf("--jvm") + 1), "system")
     assert(arguments.contains("--server=false"))
+    assert(arguments.contains("--scalac-option=-language:experimental.captureChecking"))
+    assert(arguments.contains("--scalac-option=-language:experimental.modularity"))
+    assert(arguments.contains("--scalac-option=-color:never"))
+    assert(arguments.contains("--java-opt=-Xmx128m"))
     assert(arguments.contains("--java-opt=--enable-native-access=ALL-UNNAMED"))
     assert(arguments.contains("--java-opt=--sun-misc-unsafe-memory-access=allow"))
     assert(ScalaCodeExecutor.snippet("42").startsWith("import scala.language.experimental.safe\n"))
@@ -126,7 +176,7 @@ final class ScalaToolSuite extends FunSuite {
         ZIO.succeed(
           ExternalToolResult.ScalaMode(
             ScalaModeResult.CompilationError("Compilation failed"),
-            Seq("Compilation failed"),
+            Seq.empty,
             exitCode = 1
           )
         )
@@ -137,6 +187,6 @@ final class ScalaToolSuite extends FunSuite {
     val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
     assertEquals(typed.exitCode, 1)
     assertEquals(typed.result, ScalaModeResult.CompilationError("Compilation failed"))
-    assertEquals(typed.logs, Seq("Compilation failed"))
+    assertEquals(typed.logs, Seq.empty[String])
   }
 }

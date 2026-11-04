@@ -41,7 +41,7 @@ final case class AgentTurn(
     additionalMessages: Chunk[MessagePayload] = Chunk.empty
 )
 
-/** The terminal answer and complete in-memory transcript produced by one agent run. */
+/** Compatibility output containing the terminal answer and a payload snapshot. Never reapplied to managed history. */
 final case class AgentTurnResult(
     result: AgentResult,
     runContext: RunContext

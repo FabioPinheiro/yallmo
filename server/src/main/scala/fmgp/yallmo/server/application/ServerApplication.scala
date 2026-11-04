@@ -3,6 +3,7 @@ package fmgp.yallmo.server.application
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
+import fmgp.yallmo.model.llm.ProviderContinuation
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.orchestration.config.ConfigFile
@@ -39,7 +40,7 @@ object ServerApplication {
       val workspace: Path,
       scope: Scope,
       inFlight: Ref[Set[SessionId]],
-      continuations: Ref[Map[SessionId, (AgentId, Int)]],
+      continuations: Ref[Map[SessionId, (AgentId, Set[ProviderContinuation])]],
       requestCaptures: Ref[VectorMap[SessionId, Path]]
   ) {
     def create(author: AgentId, name: Option[SessionId]): IO[JsonRpc.Error, SessionSnapshot] =
@@ -71,15 +72,15 @@ object ServerApplication {
                 .when(expectedHead.exists(head => !previous.messages.lastOption.exists(_.id == head)))
               _ <- checked(runtime.registerUser(author))
               policies <- continuations.get
-              boundary = policies.get(sessionId) match {
-                case Some((id, start)) if id == agentId && !resetContinuation => start
-                case _                                                        => previous.messages.size
+              excluded = policies.get(sessionId) match {
+                case Some((id, values)) if id == agentId && !resetContinuation => values
+                case _ => SessionSubmission.continuations(previous.messages.map(_.payload))
               }
-              _ <- continuations.update(_.updated(sessionId, (agentId, boundary)))
+              _ <- continuations.update(_.updated(sessionId, (agentId, excluded)))
               outcome <- captureRequest(sessionId)(
                 assembly
                   .submission(author, Some(binding))
-                  .submit(Some(sessionId.value), prompt, boundary)
+                  .submitExcludingContinuations(Some(sessionId.value), prompt, excluded)
                   .tapError(failure => ZIO.logErrorCause("Session execution failed", Cause.fail(failure.error)))
                   .fold(
                     failure =>
@@ -350,7 +351,7 @@ object ServerApplication {
             // Registered after storage/tools: all application work finalizes before their ownership is released.
             scope <- ZIO.service[Scope].flatMap(_.fork)
             inFlight <- Ref.make(Set.empty[SessionId])
-            continuations <- Ref.make(Map.empty[SessionId, (AgentId, Int)])
+            continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[ProviderContinuation])])
             captures <- Ref.make(VectorMap.empty[SessionId, Path])
           } yield new ServerApplication(
             assembly.orchestrator,

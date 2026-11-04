@@ -2,10 +2,26 @@ package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.SessionId
-import zio.Chunk
+import zio.{Chunk, IO, ZIO}
 
 /** Validates the whole chain before either backend starts publishing any of its messages. */
-private[storage] object StoreageUtils {
+private[orchestration] object StoreageUtils {
+  def ancestry(inventory: Map[MessageId, Message], head: Option[MessageId]): IO[YallmoError, Chunk[Message]] = {
+    def loop(next: Option[MessageId], seen: Set[MessageId], chain: List[Message]): IO[YallmoError, Chunk[Message]] =
+      ZIO.suspendSucceed {
+        next match {
+          case None     => ZIO.succeed(Chunk.fromIterable(chain))
+          case Some(id) =>
+            inventory.get(id) match {
+              case Some(message) if !seen(id) && message.id == MessageId.from(message.data) =>
+                loop(message.parentId, seen + id, message :: chain)
+              case _ => ZIO.fail(YallmoError.InvalidMessage("Missing, cyclic or invalid message ancestry"))
+            }
+        }
+      }
+    loop(head, Set.empty, Nil)
+  }
+
   def validateMessageBatch(
       id: SessionId,
       expectedHead: Option[MessageId],

@@ -12,6 +12,7 @@ no Scala, browser, hardware or external-provider test suite was rerun for this d
 
 | Plan | Disposition |
 | --- | --- |
+| [Managed history and message rebase](orchestration/MANAGED_HISTORY_AND_REBASE_PLAN.md) | Implementation and review through step 7 complete (narrowed step 5). Model/core validation passes without exclusions. Manual/live acceptance and qualified full-server/REPL failure disposition remain pending; plan stays active. |
 | [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) | Implemented, **not ready to archive**: the documented failed-message-append bug remains in `core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala`. Move message append before producer finalization and add a permanent regression before closing the plan. |
 | [Debug by message ID](transcriber/DEBUG_BY_MESSAGE_ID_PLAN.md) | Future work. `/debug message <hash>` is not implemented; connected `/debug request` is a different delivered feature. |
 | [Research sub-agent and web search](../core/src/main/scala/fmgp/yallmo/tool/WEB_SEARCH_PLAN.md) | Proposed; the research child and search service/tool are not implemented. |

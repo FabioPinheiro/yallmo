@@ -3,6 +3,7 @@ package fmgp.yallmo.model.som
 import scala.language.dynamics
 import scala.quoted.*
 import zio.json.{JsonDecoder, JsonEncoder, jsonField}
+import zio.json.ast.Json
 
 /** System One primitive shared by a question field and its corresponding answer field. */
 enum SOPrimitive {
@@ -59,12 +60,58 @@ trait SOSchema[Q] {
   def decodeRequest[S](json: String)(using JsonDecoder[S], JsonDecoder[Q]): Either[String, SORequest[S, Q]] =
     JsonDecoder[SORequest[S, Q]].decodeJson(json)
 
-  /** Encodes a typed System One request using the System One wire format. */
+  /** Encodes a typed System One request using the System One wire format.
+    *
+    * The question encoder must produce exactly this schema's question IDs with object payloads. Invalid custom
+    * encodings (including conflicting or duplicate discriminators) throw IllegalArgumentException before transport.
+    */
   def encodeRequest[S](request: SORequest[S, Q])(using JsonEncoder[S], JsonEncoder[Q]): String =
-    JsonEncoder[SORequest[S, Q]].encodeJson(request).toString
+    SORequest
+      .requestEncoder[S, Q](using summon[JsonEncoder[S]], summon[JsonEncoder[Q]], this)
+      .encodeJson(request)
+      .toString
 
   /** Field IDs and shared System One primitives in case-class declaration order. */
   def fields: Seq[SOField]
+
+  /** Retains the caller's encoded payloads, adding only the protocol discriminator omitted by concrete-field codecs. */
+  private[som] final def encodeQuestions(questions: Q)(using encoder: JsonEncoder[Q]): Json.Obj = {
+    val encoded = encoder.toJsonAST(questions).fold(error => throw new IllegalArgumentException(error), identity)
+    val expected = fields.map(_.id)
+    require(expected.distinct.size == expected.size, "System One schema has duplicate question IDs")
+    encoded match {
+      case Json.Obj(entries) =>
+        require(entries.map(_._1).distinct.size == entries.size, "System One questions contain duplicate IDs")
+        require(entries.map(_._1).toSet == expected.toSet, "System One questions must match the schema IDs")
+        val primitives = fields.map { field =>
+          val hint = field.primitive match {
+            case SOPrimitive.Choice => "choice"
+            case SOPrimitive.Score  => "score"
+            case SOPrimitive.Noul   => "noul"
+          }
+          field.id -> hint
+        }.toMap
+        Json.Obj(entries.map { case (id, value) =>
+          val hint = Json.Str(primitives(id))
+          val question = value match {
+            case Json.Obj(payload) =>
+              require(
+                payload.map(_._1).distinct.size == payload.size,
+                s"System One question '$id' has duplicate fields"
+              )
+              payload.find(_._1 == "type") match {
+                case Some((_, existing)) =>
+                  require(existing == hint, s"System One question '$id' has a conflicting type")
+                  value
+                case None => Json.Obj(("type" -> hint) +: payload)
+              }
+            case _ => throw new IllegalArgumentException(s"System One question '$id' must be an object")
+          }
+          id -> question
+        })
+      case _ => throw new IllegalArgumentException("System One questions must be an object")
+    }
+  }
 }
 
 object SOSchema {
@@ -208,13 +255,16 @@ object SOSchema {
 /** Typed System One request whose question object is a caller-defined case class.
   *
   * Its JSON representation remains the System One `questions` object: the fields of `Q` become the question IDs.
+  * Encoding requires `SOSchema[Q]` as well as the caller's state/question encoders. This intentionally tightens the
+  * former encoder-only contract: arbitrary dynamic question objects belong in [[SystemOneRequest]]. The question
+  * encoder retains control of aliases and payloads, but must emit exactly the schema IDs and object payloads with
+  * absent or matching `type` hints. Malformed custom encodings throw IllegalArgumentException before transport.
   */
 final case class SORequest[S, Q](
     state: S,
     model: String,
     questions: Q
-) derives JsonEncoder,
-      JsonDecoder {
+) derives JsonDecoder {
 
   /** Validates a decoded wire response and gives it the answer-field types derived from this request's question schema.
     *
@@ -226,6 +276,15 @@ final case class SORequest[S, Q](
   /** Decodes and validates a JSON wire response using this request's question schema. */
   def answersFromJson(jsonResponse: String)(using schema: SOSchema[Q]): Either[String, SOAnswer[Q]] =
     schema.decodeAnswer(jsonResponse)
+}
+
+object SORequest {
+  private final case class Envelope[S](state: S, model: String, questions: Json) derives JsonEncoder
+
+  given requestEncoder: [S, Q] => (JsonEncoder[S], JsonEncoder[Q], SOSchema[Q]) => JsonEncoder[SORequest[S, Q]] =
+    JsonEncoder[Envelope[S]].contramap(request =>
+      Envelope(request.state, request.model, summon[SOSchema[Q]].encodeQuestions(request.questions))
+    )
 }
 
 /** Typed view over answers to a case-class question schema.

@@ -31,6 +31,17 @@ trait AgentInstance[R] {
   def configuredContext(staticContext: StaticContext[R]): ZIO[R, YallmoError, StaticContext[R]] =
     ZIO.fromEither(capabilities.resolve(id, staticContext))
 
+  /** Ordinary orchestrated execution only. Programs can inspect stable accepted/generated Message identities here.
+    * Invocation uses next with temporary input, not a managed multi-turn history. RunContext is a fresh per-turn
+    * payload snapshot; generated messages are accepted only through runner decisions, not through this read capability.
+    */
+  def nextManaged(
+      task: AgentTask,
+      staticContext: StaticContext[R],
+      runContext: RunContext,
+      @scala.annotation.unused history: ManagedHistory
+  ): ZIO[R, YallmoError, AgentTurn] = next(task, staticContext, runContext)
+
   def next(
       task: AgentTask,
       staticContext: StaticContext[R],

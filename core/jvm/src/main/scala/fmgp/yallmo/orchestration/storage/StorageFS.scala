@@ -123,6 +123,25 @@ private[orchestration] final class StorageFS(
       }
       .flatMap(sessionFrom(id, _))
 
+  override def compareAndSetSessionHead(
+      id: SessionId,
+      expectedHead: Option[MessageId],
+      newHead: Option[MessageId]
+  ): IO[YallmoError, Session] =
+    lock
+      .withPermit {
+        for {
+          state <- readState(id)
+          _ <- ZIO
+            .fail(YallmoError.SessionHeadConflict(id, expectedHead, state.head))
+            .unless(state.head == expectedHead)
+          inventory <- store.listMessages.map(_.map(m => m.id -> m).toMap)
+          _ <- StoreageUtils.ancestry(inventory, newHead)
+          _ <- StorageFiles.write(root, id, state.agentIds, newHead).uninterruptible
+        } yield state.copy(head = newHead)
+      }
+      .flatMap(sessionFrom(id, _))
+
   private def blobPath(blobId: BlobId): Path = root.resolve("blobs").resolve(blobId.value)
 
   override def putBlob(blob: Blob): IO[YallmoError, Unit] = lock.withPermit {

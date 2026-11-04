@@ -1,7 +1,7 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
-import zio.{Chunk, UIO, ZIO}
+import zio.{Chunk, ZIO}
 
 /** A configured recipient of one message, not an agent loop. Payload support belongs to the recipient, not storage.
   * Implementations execute through their authorized services; [[Orchestrator.invoke]] owns input/output persistence.
@@ -27,20 +27,21 @@ abstract class AgentExecution[-R] private[orchestration] () {
   /** Registered agent identity used to validate execution and attribute its generated messages. */
   def agentId: AgentId
 
-  /** Internal loop entry point. Only orchestration can supply the accepted history and persistence operation.
-    *
-    * The transcript includes the accepted prompt exactly once and must remain append-only. The required callback
-    * schedules ordered, best-effort saves before tool execution and after each result; it is not a durability barrier.
-    * There is deliberately no callback-free overload or default. The returned transcript includes the entire run.
+  /** Internal loop entry point. Only orchestration supplies managed history, including the accepted prompt exactly
+    * once. Generated payloads append directly; the returned snapshot is compatibility output, never reapplied to
+    * history.
     */
   private[orchestration] def run(
       task: AgentTask,
-      acceptedContext: RunContext,
-      saveTranscriptLater: RunContext => UIO[Unit]
+      history: ManagedHistory
   ): ZIO[R, YallmoError, AgentTurnResult]
 }
 
-/** A completed submission and its durable session. Best-effort checkpoint failures may leave newMessages unsaved. */
+/** A completed submission and its last acknowledged session publication. Best-effort object failures may leave
+  * newMessages unsaved; a session-head conflict instead leaves independently stored messages on an inspectable branch.
+  * newMessages is the accepted prompt once plus actual execution appends, even if rebased out of active context.
+  * Immutable rebase copies are not new execution and never appear in this audit as additional messages.
+  */
 final case class SessionTurn(session: Session, result: AgentResult, newMessages: Chunk[MessagePayload])
 
 /** A failed submission, with the latest saved session when the user prompt was successfully saved. */

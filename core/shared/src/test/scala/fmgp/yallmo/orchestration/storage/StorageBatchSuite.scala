@@ -133,6 +133,34 @@ abstract class StorageBatchSuite extends FunSuite {
     }
   }
 
+  test("head replacement preserves session-only originals, latest participants and strict expected-head CAS") {
+    withStorage { storage =>
+      val original = message("original")
+      val destination = message("destination", agent = other)
+      for {
+        _ <- storage.createSession(id, Chunk(author))
+        _ <- storage.putMessagesAndUpdateSession(id, None, Chunk(original))
+        _ <- storage.putMessage(destination)
+        _ <- storage.addSessionAgent(id, other)
+        saved <- storage.compareAndSetSessionHead(id, Some(original.id), Some(destination.id))
+        stale <- storage.compareAndSetSessionHead(id, Some(original.id), None).either
+        missing <- storage.compareAndSetSessionHead(id, Some(destination.id), Some(MessageId.sha256("missing"))).either
+        unchanged <- storage.loadSession(id)
+        empty <- storage.compareAndSetSessionHead(id, Some(destination.id), None)
+        inventory <- storage.listMessages
+      } yield {
+        assertEquals(saved.messages, Chunk(destination))
+        assertEquals(saved.agentIds, Chunk(author, other))
+        assertEquals(stale, Left(YallmoError.SessionHeadConflict(id, Some(original.id), Some(destination.id))))
+        assert(missing.isLeft)
+        assertEquals(unchanged, saved)
+        assertEquals(empty.messages, Chunk.empty)
+        assertEquals(empty.agentIds, saved.agentIds)
+        assertEquals(inventory.map(_.id).toSet, Set(original.id, destination.id))
+      }
+    }
+  }
+
   protected def runStorageTest[A](effect: IO[YallmoError, A]): Future[A] =
     Unsafe.unsafe { unsafe ?=>
       Runtime.default.unsafe.runToFuture(

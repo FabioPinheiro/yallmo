@@ -592,7 +592,7 @@ final class AgentsInvokeSuite extends FunSuite {
       assembly <- runtime.open[Any](root, tools)
       scope <- ZIO.service[Scope]
       inFlight <- Ref.make(Set.empty[SessionId])
-      continuations <- Ref.make(Map.empty[SessionId, (AgentId, Int)])
+      continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[fmgp.yallmo.model.llm.ProviderContinuation])])
       captures <- Ref.make(VectorMap.empty[SessionId, Path])
       backend = new ServerApplication.Configured(
         runtime,

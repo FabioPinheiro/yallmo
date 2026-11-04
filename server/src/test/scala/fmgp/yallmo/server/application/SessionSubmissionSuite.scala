@@ -121,6 +121,7 @@ final class SessionSubmissionSuite extends FunSuite {
       for {
         master <- orchestrator
         seen <- Ref.make(Chunk.empty[RunContext])
+        canonical <- Ref.make(Chunk.empty[Chunk[Message]])
         configured <- Ref.make(0)
         agent = new AgentInstance[Any] {
           override val id: AgentId = assistantId
@@ -132,11 +133,20 @@ final class SessionSubmissionSuite extends FunSuite {
               available: StaticContext[Any],
               current: RunContext
           ): IO[YallmoError, AgentTurn] =
-            seen.updateAndGet(_ :+ current).map { history =>
-              assertEquals(available.tools, Chunk.empty)
-              val continuation = ProviderContinuation(ProviderId.unsafe("test"), None, s"continuation-${history.size}")
-              answer("ok").copy(additionalMessages = Chunk(MessagePayload.Reasoning(None, continuation)))
-            }
+            ZIO.dieMessage("Continuation wrapper must preserve the managed entry point")
+          override def nextManaged(
+              task: AgentTask,
+              available: StaticContext[Any],
+              current: RunContext,
+              history: ManagedHistory
+          ): IO[YallmoError, AgentTurn] =
+            history.messages.flatMap(messages => canonical.update(_ :+ messages)) *>
+              seen.updateAndGet(_ :+ current).map { history =>
+                assertEquals(available.tools, Chunk.empty)
+                val continuation =
+                  ProviderContinuation(ProviderId.unsafe("test"), None, s"continuation-${history.size}")
+                answer("ok").copy(additionalMessages = Chunk(MessagePayload.Reasoning(None, continuation)))
+              }
         }
         sessions = SessionSubmission.configured(
           master,
@@ -152,6 +162,7 @@ final class SessionSubmissionSuite extends FunSuite {
         second <- sessions.submit(Some(first.session.id.value), "after reset", boundary)
         third <- sessions.submit(Some(first.session.id.value), "continue", boundary)
         requests <- seen.get
+        histories <- canonical.get
         configurations <- configured.get
       } yield {
         def reasoning(messages: Chunk[MessagePayload]) = messages.collect {
@@ -161,7 +172,169 @@ final class SessionSubmissionSuite extends FunSuite {
         assertEquals(reasoning(requests(2).messages), Chunk("continuation-2"))
         assertEquals(reasoning(second.session.messages.map(_.payload)), Chunk("continuation-1", "continuation-2"))
         assertEquals(reasoning(third.session.messages.map(_.payload)).size, 3)
+        assertEquals(histories.size, 3)
+        assertEquals(reasoning(histories(1).map(_.payload)), Chunk("continuation-1"))
+        assertEquals(reasoning(histories(2).map(_.payload)), Chunk("continuation-1", "continuation-2"))
+        assertEquals(histories(2), third.session.messages.dropRight(2))
         assertEquals(configurations, 3)
+      }
+    }
+  }
+
+  test("reused concurrent reset execution preserves fresh continuations after shortening rebase and tool loop") {
+    run {
+      val key = ToolKey.unsafe("probe")
+      def continuation(value: String) = ProviderContinuation(ProviderId.unsafe("test"), None, value)
+      def old(prompt: String) = continuation(s"old-$prompt")
+      // For A, the fresh continuation is B's excluded value: reset state must not leak between submissions.
+      def fresh(prompt: String) = if prompt == "A" then old("B") else continuation(s"fresh-$prompt")
+      def reasoning(value: ProviderContinuation, summary: String) = MessagePayload.Reasoning(Some(summary), value)
+      for {
+        master <- orchestrator
+        requests <- Ref.make(Map.empty[String, Chunk[AgentTurnRequest]])
+        origins <- Ref.make(Map.empty[String, Chunk[Message]])
+        enteredA <- Promise.make[Nothing, Unit]
+        enteredB <- Promise.make[Nothing, Unit]
+        release <- Promise.make[Nothing, Unit]
+        provider = new Agent[Any] {
+          val id = assistantId
+          def turn(request: AgentTurnRequest) = {
+            val prompt = request.input.collect { case MessagePayload.User(text) => text }.last
+            requests.update(_.updatedWith(prompt)(previous => Some(previous.getOrElse(Chunk.empty) :+ request))) *>
+              ZIO.succeed {
+                assertEquals(request.tools.map(_.name), Chunk(key))
+                if request.input.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
+                  AgentTurnResponse(
+                    Chunk(MessagePayload.Assistant(s"done-$prompt")),
+                    fmgp.yallmo.model.llm.LlmStopReason.Stop
+                  )
+                else
+                  AgentTurnResponse(
+                    Chunk(
+                      reasoning(old(prompt), "changed summary"),
+                      reasoning(fresh(prompt), "fresh"),
+                      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(s"call-$prompt"), key, "{}"))
+                    ),
+                    fmgp.yallmo.model.llm.LlmStopReason.ToolUse
+                  )
+              }
+          }
+        }
+        native = NativeFunctionAgent[Agent[Any]](
+          assistantId,
+          "recording",
+          capabilities = AgentCapabilities(tools = Some(Set(key)))
+        ).bind[Any](provider)
+        agent = new AgentInstance[Any] {
+          val id = assistantId
+          override val capabilities = native.capabilities
+          override def configuredContext(context: StaticContext[Any]) = native.configuredContext(context)
+          def next(task: AgentTask, context: StaticContext[Any], current: RunContext) =
+            ZIO.dieMessage("Managed entry point required")
+          override def nextManaged(
+              task: AgentTask,
+              context: StaticContext[Any],
+              current: RunContext,
+              history: ManagedHistory
+          ) =
+            if current.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
+              native.nextManaged(task, context, current, history)
+            else
+              for {
+                initial <- history.initialMessages
+                _ <- origins.update(_.updated(task.prompt, initial))
+                _ <- ZIO.succeed {
+                  assertEquals(
+                    current.messages.collect { case MessagePayload.Reasoning(_, value) => value },
+                    Chunk.empty
+                  )
+                  assertEquals(initial.size, 11)
+                  assertEquals(initial(1).payload, reasoning(old(task.prompt), "old"))
+                  assertEquals(context.tools.map(_.key), Chunk(key))
+                }
+                _ <- (if task.prompt == "A" then enteredA.succeed(()) else enteredB.succeed(())).unit
+                _ <- release.await
+                _ <- history.rebase(initial(initial.size - 2).id, initial.last.id, None)
+                rebuilt <- history.messages
+                turn <- native.nextManaged(task, context, RunContext(rebuilt.map(_.payload)), history)
+              } yield turn
+        }
+        effects <- Ref.make(0)
+        tool = new AgentTool[Any] {
+          val definition = AgentToolDefinition(key, "Synthetic probe")
+          def execute(call: ExternalToolCall) = effects.update(_ + 1).as(ExternalToolResult("tool-result"))
+        }
+        available = context.copy(tools =
+          Chunk(tool.definition, AgentToolDefinition(ToolKey.unsafe("unavailable"), "Excluded"))
+        )
+        configured = SessionSubmission.configuredExecution(
+          new AgentRunner[Any](Map(key -> tool), Map.empty),
+          agent,
+          available,
+          10
+        )
+        submissions = SessionSubmission.make(master, userId, Some(assistantId))
+        seeds <- ZIO
+          .foreach(List("A", "B", "C")) { prompt =>
+            for {
+              session <- master.createSession(SessionId.unsafe(s"reset-$prompt"), Chunk(userId))
+              seed <- master.append(
+                session.id,
+                userId,
+                Chunk(MessagePayload.User("seed"), reasoning(old(prompt), "old")) ++
+                  Chunk.fromIterable((1 to 8).map(i => MessagePayload.Context("temporary", s"note-$i")))
+              )
+            } yield prompt -> seed
+          }
+          .map(_.toMap)
+        a <- submissions.submitExecution(Some(seeds("A").id.value), "A", configured).fork
+        _ <- enteredA.await
+        b <- submissions.submitExecution(Some(seeds("B").id.value), "B", configured).fork
+        _ <- enteredB.await
+        _ <- release.succeed(())
+        first <- a.join
+        second <- b.join
+        third <- submissions.submitExecution(Some(seeds("C").id.value), "C", configured)
+        seen <- requests.get
+        accepted <- origins.get
+        inventory <- master.listMessages
+        count <- effects.get
+      } yield {
+        assertEquals(count, 3)
+        for (prompt, turn) <- List("A" -> first, "B" -> second, "C" -> third) do {
+          val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(s"call-$prompt"), key, "{}"))
+          val output =
+            MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe(s"call-$prompt"), key, "tool-result"))
+          val initialRequest = Chunk(MessagePayload.User(prompt), MessagePayload.Instructions(context.systemPrompt))
+          assertEquals(seen(prompt).size, 2)
+          assertEquals(seen(prompt)(0).input, initialRequest)
+          assertEquals(
+            seen(prompt)(1).input,
+            Chunk(
+              MessagePayload.User(prompt),
+              reasoning(fresh(prompt), "fresh"),
+              call,
+              output,
+              MessagePayload.Instructions(context.systemPrompt)
+            )
+          )
+          val expected = Chunk(
+            MessagePayload.User(prompt),
+            reasoning(old(prompt), "changed summary"),
+            reasoning(fresh(prompt), "fresh"),
+            call,
+            output,
+            MessagePayload.Assistant(s"done-$prompt")
+          )
+          assertEquals(turn.session.messages.map(_.payload), expected)
+          assertEquals(turn.newMessages, expected)
+          assert(accepted(prompt).forall(inventory.contains))
+          assert(seeds(prompt).messages.forall(inventory.contains))
+          assertEquals(
+            turn.session.messages.drop(1).map(_.parentId),
+            turn.session.messages.dropRight(1).map(m => Some(m.id))
+          )
+        }
       }
     }
   }

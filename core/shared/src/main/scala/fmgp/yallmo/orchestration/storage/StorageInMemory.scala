@@ -104,6 +104,31 @@ private[orchestration] final class StorageInMemory private (
       }
       .flatMap(ZIO.fromEither)
 
+  override def compareAndSetSessionHead(
+      id: SessionId,
+      expectedHead: Option[MessageId],
+      newHead: Option[MessageId]
+  ): IO[YallmoError, Session] =
+    for {
+      // Retain session-only originals independently BEFORE changing any references.
+      originals <- loadSession(id)
+      _ <- standalone.update(_ ++ originals.messages.map(m => m.id -> m))
+      inventory <- listMessages.map(_.map(m => m.id -> m).toMap)
+      chain <- StoreageUtils.ancestry(inventory, newHead)
+      saved <- sessions
+        .modify { current =>
+          current.get(id).toRight(YallmoError.SessionNotFound(id)).flatMap { session =>
+            val actual = session.messages.lastOption.map(_.id)
+            if actual != expectedHead then Left(YallmoError.SessionHeadConflict(id, expectedHead, actual))
+            else Right(session.copy(messages = chain))
+          } match {
+            case Left(error)    => (Left(error), current)
+            case Right(updated) => (Right(updated), current.updated(id, updated))
+          }
+        }
+        .flatMap(ZIO.fromEither)
+    } yield saved
+
   override def putBlob(blob: Blob): IO[YallmoError, Unit] =
     blobs
       .modify { current =>

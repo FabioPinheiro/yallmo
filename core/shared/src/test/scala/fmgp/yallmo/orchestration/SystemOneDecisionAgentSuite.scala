@@ -5,7 +5,7 @@ import fmgp.yallmo.model.som.*
 import munit.FunSuite
 import scala.concurrent.Future
 import zio.{Cause, FiberFailure, IO, Runtime, Unsafe, ZEnvironment, ZIO}
-import zio.json.JsonCodec
+import zio.json.*
 
 final class SystemOneDecisionAgentSuite extends FunSuite {
   private final case class State(task: String) derives JsonCodec
@@ -13,8 +13,12 @@ final class SystemOneDecisionAgentSuite extends FunSuite {
   private final case class Questions(worker: SystemOneQuestion.Choice) derives JsonCodec, SOSchema
 
   private final class StubSOMProvider(response: SystemOneResponse) extends SOMProvider {
+    var sentJson = Option.empty[String]
     override protected def evaluateRequestJson(requestJson: String): IO[YallmoError, SystemOneResponse] =
-      ZIO.succeed(response)
+      ZIO.succeed {
+        sentJson = Some(requestJson)
+        response
+      }
   }
 
   private def run[A](effect: IO[YallmoError, A])(check: A => Unit): Future[Unit] =
@@ -37,6 +41,18 @@ final class SystemOneDecisionAgentSuite extends FunSuite {
 
     run(agent.decide(State("Review this change")).provideEnvironment(ZEnvironment(provider))) { answer =>
       assertEquals(answer.worker.choice, "review")
+      assertEquals(
+        provider.sentJson.map(_.fromJson[SystemOneRequest[State]]),
+        Some(
+          Right(
+            SystemOneRequest(
+              State("Review this change"),
+              "jev-latest",
+              Map("worker" -> SystemOneQuestion.Choice("Select a worker", Map("review" -> "Review")))
+            )
+          )
+        )
+      )
     }
   }
 }

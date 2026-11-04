@@ -28,17 +28,27 @@ trait Orchestrator[-R] extends BlobOps {
     *
     * Validates the registered authors and saves the user prompt before invoking execution. The execution receives
     * history from the stored session, including the accepted prompt exactly once; callers must not append it
-    * themselves. Generated assistant/tool messages are attributed to execution.agentId and saved through ordered,
-    * asynchronous checkpoints. Tools and inference do not wait for these writes; persistence failures are logged as
-    * errors without stopping execution. Subsequent checkpoints retry the unsaved suffix.
+    * themselves. Generated assistant/tool messages are attributed to execution.agentId. ManagedHistory assigns IDs,
+    * parents and timestamps once when appending new payloads, then queues independent immutable object puts in parent
+    * order. Tools and inference do not wait for disk; later appends retry identical objects after errors. Programs may
+    * inspect identities through AgentInstance.nextManaged; appending remains runner-controlled, while programs may
+    * explicitly request managed rebase. Each turn renders a fresh RunContext snapshot; returned snapshots never replace
+    * or append to managed history.
     *
-    * Pending checkpoints are drained before returning, including on execution failure or cancellation. Any remaining
-    * unsaved generated messages produce a warning; a successful result may include newMessages absent from its saved
-    * session. This is best-effort persistence, not a durability barrier or exactly-once tool execution.
+    * Session-head advancement uses existing best-effort CAS after the objects are saved. A competing append never
+    * reparents/regenerates generated messages or prevents saving their branch (inspectable through listMessages).
+    * Pointer conflicts are logged separately from object failures; no session-wide execution lock or automatic rebase
+    * is implied.
     *
-    * A failed prompt save prevents execution. Failures after acceptance retain saved checkpoints and expose the latest
-    * saved session through [[SessionSubmitFailure.acceptedSession]]. Timeout and interruption do not roll back accepted
-    * input or earlier checkpoints. Appends are not a rollback transaction.
+    * Pending writes are drained before returning, including on execution failure or cancellation. Any remaining unsaved
+    * generated objects produce a warning. newMessages derives from the immutable execution audit: the accepted prompt
+    * once plus actual generated appends, even if later rebased out of active history. Rebase copies are not additional
+    * execution. These messages may be absent from the last acknowledged session publication after pointer conflicts.
+    * This is best-effort persistence, not a durability barrier or exactly-once tool execution.
+    *
+    * A failed prompt save prevents execution. Failures after acceptance retain saved messages and expose the last
+    * acknowledged publication through [[SessionSubmitFailure.acceptedSession]]. Timeout and interruption do not roll
+    * back accepted input or earlier appends. Appends are not a rollback transaction.
     *
     * @tparam R1
     *   environment required by the configured execution, including its model/tool services
@@ -50,10 +60,13 @@ trait Orchestrator[-R] extends BlobOps {
     *   user task whose prompt is accepted and saved before execution
     * @param execution
     *   opaque loop handle created by AgentRunner.execution; only submit can execute it, with mandatory transcript
-    *   persistence; its agent must be registered and preserve the accepted transcript prefix and response author
+    *   persistence; its agent must be registered and preserve the response author. Ordinary appends preserve the active
+    *   prefix; an authorized managed rebase may replace that prefix without altering original objects or execution
+    *   audit
     * @return
-    *   the saved session, final agent result and new messages (prompt plus generated responses), or a
-    *   [[SessionSubmitFailure]] containing the underlying error and the latest saved session when available
+    *   the last acknowledged session publication, final agent result and execution audit (prompt plus generated
+    *   appends), or a [[SessionSubmitFailure]] containing the underlying error and the last acknowledged publication
+    *   when available
     */
   def submit[R1](
       id: SessionId,
@@ -126,6 +139,20 @@ trait Orchestrator[-R] extends BlobOps {
     val _ = (id, agentId, message, produce)
     ZIO.fail(YallmoError.InvalidConfig("This orchestrator does not support blob ingestion"))
   }
+
+  /** Replays messages after exclusive `base` through inclusive `head`, attaching the first copy to `onto` (or a root
+    * when None). Returns chronological, persisted immutable messages, preserving authors, timestamps and payloads; only
+    * parents and derived IDs change. References, complete source/destination ancestry, hashes and registered authors
+    * are validated before any writes. Missing references or an unreachable base fail even for empty/no-op ranges.
+    * `base == head` returns empty; `onto == Some(base)` reproduces the original IDs with idempotent puts.
+    *
+    * Any existing message may be the destination, including one in the source range. Original messages, session heads
+    * and active ManagedHistory are never changed. Only already-persisted history is available; this does not drain or
+    * coordinate active-run checkpoints. No tools/inference run, blob bytes are not copied, and preserved provider
+    * continuations are not guaranteed safe to replay. Writes are parent-first, not a batch transaction: I/O failure or
+    * interruption may leave a saved prefix without updating any refs. Success means every returned object is saved.
+    */
+  def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]): IO[YallmoError, Chunk[Message]]
 
   def fork(source: SessionId, target: SessionId): IO[YallmoError, Session]
 }

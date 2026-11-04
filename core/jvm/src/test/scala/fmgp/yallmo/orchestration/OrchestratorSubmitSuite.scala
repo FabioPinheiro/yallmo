@@ -125,10 +125,9 @@ final class OrchestratorSubmitSuite extends FunSuite {
             override val agentId: AgentId = AgentId("unknown")
             override private[orchestration] def run(
                 task: AgentTask,
-                acceptedContext: RunContext,
-                saveTranscriptLater: RunContext => UIO[Unit]
+                history: ManagedHistory
             ): IO[YallmoError, AgentTurnResult] =
-              saveTranscriptLater(acceptedContext) *> ZIO.dieMessage("Unknown execution must not run")
+              ZIO.dieMessage("Unknown execution must not run")
           }
           failed <- orchestrator.submit(sessionId, userId, AgentTask("reject"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
@@ -150,10 +149,9 @@ final class OrchestratorSubmitSuite extends FunSuite {
             override val agentId: AgentId = userId
             override private[orchestration] def run(
                 task: AgentTask,
-                acceptedContext: RunContext,
-                saveTranscriptLater: RunContext => UIO[Unit]
+                history: ManagedHistory
             ): IO[YallmoError, AgentTurnResult] =
-              saveTranscriptLater(acceptedContext) *> ZIO.dieMessage("A user has no executable agent")
+              ZIO.dieMessage("A user has no executable agent")
           }
           failed <- orchestrator.submit(sessionId, userId, AgentTask("reject"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
@@ -165,7 +163,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
     }
   }
 
-  test("an execution cannot replace accepted history or change its response author") {
+  test("an execution cannot change its response author") {
     withRoot { root =>
       run {
         for {
@@ -175,10 +173,9 @@ final class OrchestratorSubmitSuite extends FunSuite {
             override val agentId: AgentId = assistantId
             override private[orchestration] def run(
                 task: AgentTask,
-                acceptedContext: RunContext,
-                saveTranscriptLater: RunContext => UIO[Unit]
+                history: ManagedHistory
             ): IO[YallmoError, AgentTurnResult] =
-              saveTranscriptLater(acceptedContext).as(AgentTurnResult(AgentResult(assistantId, "bad"), RunContext()))
+              ZIO.succeed(AgentTurnResult(AgentResult(userId, "bad"), RunContext()))
           }
           failed <- orchestrator.submit(sessionId, userId, AgentTask("preserve"), invalid).either
           stored <- orchestrator.loadSession(sessionId)
@@ -200,12 +197,9 @@ final class OrchestratorSubmitSuite extends FunSuite {
             override val agentId: AgentId = assistantId
             override private[orchestration] def run(
                 task: AgentTask,
-                acceptedContext: RunContext,
-                saveTranscriptLater: RunContext => UIO[Unit]
+                history: ManagedHistory
             ): IO[YallmoError, AgentTurnResult] =
-              saveTranscriptLater(acceptedContext).as(
-                AgentTurnResult(AgentResult(assistantId, "done"), acceptedContext)
-              )
+              ZIO.succeed(AgentTurnResult(AgentResult(assistantId, "done"), RunContext()))
           }
           result <- orchestrator.submit(sessionId, userId, AgentTask("no response message"), execution)
         } yield assertEquals(result.newMessages, result.session.messages.map(_.payload))

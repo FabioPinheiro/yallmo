@@ -17,14 +17,14 @@ final class StorageFSMessageMaybeSuite extends FunSuite {
   test("tolerant traversal preserves complete history in chronological order and an absent head is empty") {
     withHistory { (_, storage, messages) =>
       for {
-        empty <- storage.messagesFromMaybe(None)
-        found <- storage.messagesFromMaybe(Some(messages.last.id))
+        emptyId = SessionId.unsafe("empty-head")
+        _ <- storage.createSession(emptyId, Chunk(author))
+        empty <- storage.loadSessionParcial(emptyId)
         strict <- storage.loadSession(sessionId)
         partial <- storage.loadSessionParcial(sessionId)
       } yield {
         assertEquals(partial, SessionParcial(sessionId, strict.agentIds, messages))
-        assertEquals(empty, Chunk.empty[MessageMaybe])
-        assertEquals(found, messages: Chunk[MessageMaybe])
+        assertEquals(empty, SessionParcial(emptyId, Chunk(author), Chunk.empty))
         assertEquals(strict.messages, messages)
       }
     }

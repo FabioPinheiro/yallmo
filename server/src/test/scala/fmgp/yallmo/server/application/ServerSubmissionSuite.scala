@@ -747,6 +747,43 @@ final class ServerSubmissionSuite extends FunSuite {
         diagnostic <- backend.providerRequest(session.id)
         _ <- backend.submit(human, session.id, first, "reset", resetContinuation = true)
         _ <- backend.submit(human, session.id, first, "after reset")
+        beforeRewrite <- app.master.loadSession(session.id)
+        continuationProvider = fmgp.yallmo.model.llm.ProviderId.unsafe("openai-codex-responses")
+        stale = MessagePayload.Reasoning(
+          Some("different summary"),
+          fmgp.yallmo.model.llm.ProviderContinuation(continuationProvider, None, "private-1")
+        )
+        fresh = MessagePayload.Reasoning(
+          Some("fresh"),
+          fmgp.yallmo.model.llm.ProviderContinuation(continuationProvider, None, "private-after-rebase")
+        )
+        program = new AgentInstance[Any] {
+          val id = first
+          def next(task: AgentTask, context: StaticContext[Any], current: RunContext) =
+            ZIO.dieMessage("Managed entry point required")
+          override def nextManaged(
+              task: AgentTask,
+              context: StaticContext[Any],
+              current: RunContext,
+              history: ManagedHistory
+          ) =
+            for {
+              initial <- history.initialMessages
+              _ <- history.rebase(initial(initial.size - 2).id, initial.last.id, None)
+              _ <- history.messages
+            } yield AgentTurn(
+              Some(MessagePayload.Assistant("compacted")),
+              AgentDecision.FinalAnswer("compacted"),
+              Chunk(stale, fresh)
+            )
+        }
+        rewritten <- app.master.submit(
+          session.id,
+          human,
+          AgentTask("shorten"),
+          new AgentRunner[Any](Map.empty, Map.empty).execution(program, StaticContext[Any]("Synthetic"))
+        )
+        _ <- backend.submit(human, session.id, first, "after shortening")
         _ <- backend.submit(human, session.id, second, "switch")
         _ <- backend.submit(human, session.id, first, "switch back")
         _ <- owner.close(Exit.unit)
@@ -756,7 +793,14 @@ final class ServerSubmissionSuite extends FunSuite {
         result <- restarted.configured.get.submit(human, session.id, first, "unknown after restart")
         requests <- seen.get
         stored <- restarted.master.loadSession(session.id)
+        inventory <- restarted.master.listMessages
       } yield {
+        assertEquals(
+          rewritten.session.messages.map(_.payload),
+          Chunk(MessagePayload.User("shorten"), MessagePayload.Assistant("compacted"), stale, fresh)
+        )
+        assert(beforeRewrite.messages.forall(inventory.contains))
+        assert(rewritten.session.messages.forall(inventory.contains))
         def reasoning(body: String) =
           ujson.read(body)("input").arr.toVector.flatMap(item => item.obj.get("encrypted_content").map(_.str))
         assert(result.isInstanceOf[TurnOutcome.Succeeded])
@@ -767,6 +811,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Vector("private-1"),
             Vector.empty,
             Vector("private-3"),
+            Vector("private-after-rebase"),
             Vector.empty,
             Vector.empty,
             Vector.empty
@@ -777,8 +822,8 @@ final class ServerSubmissionSuite extends FunSuite {
         assert(!diagnostic.toJson.contains("private-1"))
         assert(!diagnostic.toJson.contains("fake-refresh"))
         assert(!diagnostic.toJson.contains("header."))
-        assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.Reasoning]), 7)
-        assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.User]), 7)
+        assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.Reasoning]), 6)
+        assertEquals(stored.messages.count(_.payload.isInstanceOf[MessagePayload.User]), 5)
         assert(!SessionSnapshot.from(stored).toJson.contains("private-"))
       }
     })

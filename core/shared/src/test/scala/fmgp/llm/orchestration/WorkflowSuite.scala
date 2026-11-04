@@ -13,13 +13,13 @@ import fmgp.yallmo.model.*
 final class AgentRunnerSuite extends FunSuite:
   private val CoordinatorId = AgentId("coordinator")
 
-  test("even internal loop execution requires a transcript-saving operation") {
+  test("even internal loop execution requires managed history") {
     val errors = typeCheckErrors("""
       import fmgp.yallmo.orchestration.*
       def missingSave(execution: AgentExecution[Any]) =
-        execution.run(AgentTask("hello"), RunContext())
+        execution.run(AgentTask("hello"))
     """)
-    assert(errors.exists(_.message.contains("saveTranscriptLater")))
+    assert(errors.exists(_.message.contains("history")))
   }
 
   test("agent identifiers reject blank values") {

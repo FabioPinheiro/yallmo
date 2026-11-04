@@ -2,6 +2,7 @@ package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
+import fmgp.yallmo.model.llm.ProviderContinuation
 import java.time.{Instant, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import zio.*
@@ -16,7 +17,7 @@ final class SessionSubmission[-R] private (
     orchestrator: Orchestrator[?],
     authorId: AgentId,
     val selectedAgentId: Option[AgentId],
-    execution: Int => Option[AgentExecution[R]]
+    execution: (Int, Option[Set[ProviderContinuation]]) => Option[AgentExecution[R]]
 ) {
   def create(name: Option[String]): IO[YallmoError, Session] =
     sessionId(name)
@@ -32,14 +33,26 @@ final class SessionSubmission[-R] private (
   /** Submits through the configured server-owned runner.
     *
     * @param continuationStart
-    *   legacy in-process continuation boundary only; not a future wire parameter or durable transcript offset policy
+    *   legacy in-process boundary interpreted against each submission's immutable initial history. Callers must
+    *   recalculate it after a persisted rewrite; it is not a durable cross-submission reset policy or wire parameter
     */
   def submit(
       previous: Option[String],
       prompt: String,
       continuationStart: Int = 0
   ): ZIO[R, SessionSubmitFailure, SessionTurn] =
-    execution(continuationStart) match {
+    execution(continuationStart, None) match {
+      case None             => ZIO.fail(SessionSubmitFailure(YallmoError.InvalidConfig("No agent selected"), None))
+      case Some(configured) => submitExecution(previous, prompt, configured)
+    }
+
+  /** Server-owned reset identity policy, captured once at reset/selection rather than from later mutable offsets. */
+  private[application] def submitExcludingContinuations(
+      previous: Option[String],
+      prompt: String,
+      excluded: Set[ProviderContinuation]
+  ): ZIO[R, SessionSubmitFailure, SessionTurn] =
+    execution(0, Some(excluded)) match {
       case None             => ZIO.fail(SessionSubmitFailure(YallmoError.InvalidConfig("No agent selected"), None))
       case Some(configured) => submitExecution(previous, prompt, configured)
     }
@@ -90,7 +103,7 @@ object SessionSubmission {
       authorId: AgentId,
       selectedAgentId: Option[AgentId]
   ): SessionSubmission[Any] =
-    new SessionSubmission(orchestrator, authorId, selectedAgentId, _ => None)
+    new SessionSubmission(orchestrator, authorId, selectedAgentId, (_, _) => None)
 
   /** Binds execution once from trusted services, without invoking the agent or modifying storage. */
   def configured[R](
@@ -104,10 +117,13 @@ object SessionSubmission {
       orchestrator,
       authorId,
       agent.map(_.id),
-      start => agent.map(selected => configuredExecution(runner, selected, context, start))
+      (start, excluded) =>
+        agent.map(selected => runner.execution(withCurrentContinuations(selected, start, excluded), context))
     )
 
-  /** Execution construction for legacy in-process REPL constructors; not a client/protocol operation. */
+  /** Execution construction for legacy in-process REPL constructors; not a client/protocol operation. The offset is
+    * interpreted against each submission's initial history, so legacy callers must recalculate after persisted rebase.
+    */
   def configuredExecution[R](
       runner: AgentRunner[R],
       agent: AgentInstance[R],
@@ -117,23 +133,53 @@ object SessionSubmission {
     runner.execution(withCurrentContinuations(agent, continuationStart), context)
 
   /** Filter only provider request history; keep the runner's append-only transcript and capability policy intact. */
-  private def withCurrentContinuations[R](selected: AgentInstance[R], start: Int): AgentInstance[R] =
-    if start <= 0 then selected
+  private def withCurrentContinuations[R](
+      selected: AgentInstance[R],
+      start: Int,
+      excluded: Option[Set[ProviderContinuation]] = None
+  ): AgentInstance[R] =
+    if start <= 0 && excluded.forall(_.isEmpty) then selected
     else
       new AgentInstance[R] {
         override val id: AgentId = selected.id
         override val capabilities = selected.capabilities
         override def configuredContext(context: StaticContext[R]): ZIO[R, YallmoError, StaticContext[R]] =
           selected.configuredContext(context)
+        override def nextManaged(
+            task: AgentTask,
+            context: StaticContext[R],
+            current: RunContext,
+            history: ManagedHistory
+        ): ZIO[R, YallmoError, AgentTurn] =
+          for {
+            old <- excluded match {
+              case Some(values) => ZIO.succeed(values)
+              case None => history.initialMessages.map(initial => continuations(initial.take(start).map(_.payload)))
+            }
+            turn <- selected.nextManaged(task, context, withoutContinuations(current, old), history)
+          } yield turn
+
         override def next(
             task: AgentTask,
             context: StaticContext[R],
             current: RunContext
-        ): ZIO[R, YallmoError, AgentTurn] = {
+        ): ZIO[R, YallmoError, AgentTurn] =
+          selected.next(task, context, excluded.fold(requestSnapshot(current))(withoutContinuations(current, _)))
+
+        private def requestSnapshot(current: RunContext): RunContext = {
           val messages = current.messages.zipWithIndex.collect {
             case (message, index) if index >= start || !message.isInstanceOf[MessagePayload.Reasoning] => message
           }
-          selected.next(task, context, current.copy(messages = messages))
+          current.copy(messages = messages)
         }
       }
+
+  private[application] def continuations(messages: Chunk[MessagePayload]): Set[ProviderContinuation] =
+    messages.collect { case MessagePayload.Reasoning(_, continuation) => continuation }.toSet
+
+  private def withoutContinuations(current: RunContext, excluded: Set[ProviderContinuation]): RunContext =
+    current.copy(messages = current.messages.filter {
+      case MessagePayload.Reasoning(_, continuation) => !excluded(continuation)
+      case _                                         => true
+    })
 }

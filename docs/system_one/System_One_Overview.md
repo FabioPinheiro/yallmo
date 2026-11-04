@@ -23,7 +23,11 @@ Jev may select or score only values that Yallmo supplied in a closed schema. The
 
 - Use `SystemOneRequest[State]` and its `Map[String, SystemOneQuestion]` questions when IDs are assembled dynamically.
 - Use `SORequest[State, Questions]` plus `Questions derives SOSchema` for a fixed case-class schema and typed answer access.
-- Both forms encode the same System One request envelope. See [JEV_models.md](JEV_models.md).
+- Both forms encode the same System One request envelope, including all question `type` hints. Fixed-schema JSON
+  encoding now requires `SOSchema[Questions]` even when directly calling `toJson`; use the dynamic model for arbitrary
+  runtime question objects. Custom encoders retain their payloads/aliases but must match the fixed schema's object
+  shape and cannot supply conflicting/duplicate hints. See [encoding contract](MANAGED_HISTORY_DECISIONS.md#typed-question-encoding)
+  and [JEV_models.md](JEV_models.md).
 
 ## Provider boundary
 
@@ -32,6 +36,15 @@ completion. `evaluate(SystemOneRequest)` returns a decoded wire response for dyn
 `evaluate(SORequest)` additionally applies `SOSchema` and returns typed `SOAnswer` fields. A provider adapter has one
 transport seam: it sends the encoded request and decodes the successful `SystemOneResponse`.
 
+## Opt-in agent programs
+
+[`SystemOneHistoryDecision`](MANAGED_HISTORY_DECISIONS.md) composes one advisory typed
+Keep/Rebase decision with an agent-selected managed-history candidate and a fresh
+request for the existing conversational agent. It is not automatic cleanup or model
+authorization. The usage example, conservative host policy and generic typed wire contract are documented there.
+Independent review and an explicitly opted-in synthetic-data live run are separate from automated fixtures; see the
+[pending acceptance procedure](../orchestration/MANAGED_HISTORY_ACCEPTANCE.md).
+
 ## Runtime configuration
 
 `JevHttpProvider` reads the required full endpoint from `JEV_SYSTEM_ONE_URL`, for example
@@ -39,6 +52,11 @@ transport seam: it sends the encoded request and decodes the successful `SystemO
 `TYPESAFE_API_KEY` is set; an omitted key is reserved for an explicitly configured local Laya service. The initial
 provider has a 20-second timeout and no automatic retries. Callers decide whether a failed decision should trigger a
 safe deterministic fallback.
+
+Managed preparation uses captured message-head identity, not a rewrite counter: a different local head stops stale
+work, while exact restoration of the original head/immutable ancestry is valid. The runner advances guards only from
+its own atomic appends; session pointer competition remains independent. See the
+[usage and head-identity policy](MANAGED_HISTORY_DECISIONS.md#small-host-owned-policy).
 
 ## Manual local smoke test
 

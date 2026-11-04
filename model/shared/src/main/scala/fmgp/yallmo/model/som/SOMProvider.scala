@@ -37,9 +37,13 @@ trait SOMProvider {
       questionEncoder: JsonEncoder[Q],
       schema: SOSchema[Q]
   ): IO[YallmoError, SOAnswer[Q]] =
-    evaluateRequestJson(JsonEncoder[SORequest[S, Q]].encodeJson(request).toString).flatMap { response =>
-      ZIO.fromEither(schema.decodeAnswer(response).left.map(YallmoError.ProtocolFailure.apply))
-    }
+    for {
+      json <- ZIO
+        .attempt(JsonEncoder[SORequest[S, Q]].encodeJson(request).toString)
+        .mapError(_ => YallmoError.ProtocolFailure("Invalid typed System One request encoding"))
+      response <- evaluateRequestJson(json)
+      answer <- ZIO.fromEither(schema.decodeAnswer(response).left.map(YallmoError.ProtocolFailure.apply))
+    } yield answer
 
   /** Performs one provider-specific request using a fully encoded System One envelope.
     *

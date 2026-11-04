@@ -7,7 +7,10 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.{AgentTask, AgentTurn, ExternalToolCall, RunContext, StaticContext}
 
-/** An agent that uses provider-native function calls while leaving execution to [[AgentRunner]]. */
+/** An agent that uses provider-native function calls while leaving execution to [[AgentRunner]]. Ordinary submissions
+  * enter through inherited nextManaged; provider rendering still consumes the temporary per-turn RunContext payload
+  * snapshot.
+  */
 final case class NativeFunctionAgent[R <: Agent[Any]](
     id: AgentId,
     model: String,

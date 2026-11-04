@@ -46,6 +46,17 @@ private[orchestration] trait Storage extends BlobOps {
       messages: Chunk[Message]
   ): IO[YallmoError, Session]
 
+  /** Replaces only an existing session pointer with validated, already stored ancestry. Atomic with session mutations;
+    * retains latest participants. Never retries against a newly observed competing head.
+    *
+    * TODO RENAME to only setSessionHead
+    */
+  def compareAndSetSessionHead(
+      id: SessionId,
+      expectedHead: Option[MessageId], // option condition
+      newHead: Option[MessageId]
+  ): IO[YallmoError, Session]
+
   /** Stores a full blob independently of session/message appends. No producer or stream API. */
   def putBlob(blob: Blob): IO[YallmoError, Unit]
 

@@ -136,7 +136,7 @@ nothing restarts automatically. Transcripts enter the draft, never send it to a 
 
 The website requires the configured `Transcriber` agent, upload/invoke capabilities, a supported browser, a secure
 context and microphone permission. See [dictation setup, privacy and lifecycle](../web-harness/README.md#dictation).
-Send, session creation and reconnect remain blocked while dictation is busy.
+Send, preparing a new conversation and reconnect remain blocked while dictation is busy.
 
 Cancellation before upload discards the capture. Discarding during upload/transcription ignores the result and
 best-effort aborts an unfinished upload; it **does not cancel submitted server execution or delete saved audio/messages**.

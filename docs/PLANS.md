@@ -25,6 +25,8 @@ no Scala, browser, hardware or external-provider test suite was rerun for this d
 
 ## Implementation and research references kept in place
 
+- [User identity model](future-plan/UserId-future_identity_model.md): implemented with explicit owned actors; authentication remains separate.
+
 These are still useful reference documents, not active execution boards:
 
 - [Scala script tool](tools/TOOL-SCALA-SCRIPT.md): implemented `ScalaTool`/`ScalaCodeExecutor` and matching suites. OS/container sandboxing is explicitly future work, not delivered protection.

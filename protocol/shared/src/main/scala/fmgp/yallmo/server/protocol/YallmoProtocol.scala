@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.protocol
 
 import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, MessagePayload}
+import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, MessagePayload, UserId}
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{AgentResult, AgentTask, AgentToolDefinition, Session, SessionId, SessionSummary}
 import java.time.Instant
@@ -9,14 +9,13 @@ import zio.Chunk
 import zio.json.*
 import zio.json.ast.Json
 
-/** The Yallmo v1 application contract, identical on WebSocket and Unix-domain sockets. Each operation declares its
+/** The Yallmo application contract, identical on WebSocket and Unix-domain sockets. Each operation declares its
   * JSON-RPC method, named Params and Result. This defines messages only: no handler, listener or runtime is started.
   * Domain values are reused directly. History uses redacted snapshots to exclude private provider continuations;
-  * agents.invoke exchanges payload-flexible Messages through a configured recipient. There is no dependency on the
-  * legacy viewer contract. See server/PROTOCOL.md.
+  * agents.invoke exchanges payload-flexible Messages through a configured recipient. Client and server share one
+  * current contract, without application-version negotiation. See server/PROTOCOL.md.
   */
 object YallmoProtocol {
-  val Version: Int = 1
   val MaxBlobChunkBytes: Int = BlobUploadLimits.MaxChunkBytes
 
   // Missing domain codecs are derived here, without changing persistence formats or core/model ownership.
@@ -73,16 +72,21 @@ object YallmoProtocol {
     @jsonHint("operator") case Operator
   }
 
-  final case class Identity(id: AgentId, role: Role) derives JsonCodec
+  /** The connected user and its server-provisioned actors; recipient agents are advertised separately. */
+  final case class Identity(id: UserId, role: Role, agentIds: Chunk[AgentId]) derives JsonCodec {
+    def chatAgent: Option[AgentId] = agentIds.find(_ == UserId.chatAgent(id))
+    def websiteAgent: Option[AgentId] = agentIds.find(_ == UserId.websiteAgent(id))
+  }
   final case class ApplicationError(code: String, message: String) derives JsonCodec
 
   object Initialize {
     val method: String = "initialize"
 
-    /** Claimed local author, not an authenticated identity. Transport/server policy determines capabilities. */
-    final case class Params(protocolVersion: Int, clientName: String, userId: Option[AgentId] = None) derives JsonCodec
+    /** Claimed local user, not an authenticated identity. Transport/server policy determines capabilities. */
+    @jsonNoExtraFields
+    final case class Params(clientName: String, userId: Option[UserId] = None) derives JsonCodec
+    @jsonNoExtraFields
     final case class Result(
-        protocolVersion: Int,
         serverInstanceId: String,
         identity: Identity,
         methods: List[String],
@@ -101,12 +105,6 @@ object YallmoProtocol {
   object SessionsGet {
     val method: String = "sessions.get"
     final case class Params(sessionId: SessionId) derives JsonCodec
-    type Result = SessionSnapshot
-  }
-
-  object SessionsCreate {
-    val method: String = "sessions.create"
-    final case class Params(name: Option[SessionId] = None) derives JsonCodec
     type Result = SessionSnapshot
   }
 
@@ -186,11 +184,11 @@ object YallmoProtocol {
     val method: String = "agents.invoke"
 
     /** Independent invocation: no session fields, inherited history or prior provider continuation. The input author
-      * must match the initialized identity. Payload support belongs to the recipient; a parent must exist but does not
-      * load history.
+      * must match the explicitly selected, user-owned actingAgentId. Payload support belongs to the recipient; a parent
+      * must exist but does not load history.
       */
     @jsonNoExtraFields
-    final case class Params(agentId: AgentId, input: Message) derives JsonCodec
+    final case class Params(agentId: AgentId, input: Message, actingAgentId: AgentId) derives JsonCodec
     type Result = Message
   }
 
@@ -245,18 +243,55 @@ object YallmoProtocol {
   object TurnSubmit {
     val method: String = "turn.submit"
 
-    /** The session must already exist; the human author comes from the authorized identity. A supplied expectedHead
-      * must match under write admission; None skips the check. resetContinuation discards old opaque continuation,
-      * never visible stored transcript; binding changes also reset it server-side. No replay or deduplication.
+    /** Explicit conversation destination: New allocates only as part of submission, Existing never creates. */
+    sealed trait Target
+    object Target {
+      final case class New(name: Option[SessionId] = None) extends Target
+      final case class Existing(sessionId: SessionId) extends Target
+
+      // Strict product decoding avoids discriminator fields being treated as unknown by subtype codecs.
+      @jsonNoExtraFields
+      private final case class Wire(kind: String, name: Option[SessionId] = None, sessionId: Option[SessionId] = None)
+          derives JsonCodec
+      given JsonCodec[Target] = summon[JsonCodec[Wire]].transformOrFail(
+        {
+          case Wire("new", name, None)          => Right(New(name))
+          case Wire("existing", None, Some(id)) => Right(Existing(id))
+          case _                                => Left("Expected a new or existing conversation target")
+        },
+        {
+          case New(name)    => Wire("new", name = name)
+          case Existing(id) => Wire("existing", sessionId = Some(id))
+        }
+      )
+    }
+
+    /** The actor authors the prompt; agentId selects the recipient. expectedHead is valid only for Existing. New
+      * returns its allocated session even if execution fails. No automatic retries, replay or rollback.
       */
+    @jsonNoExtraFields
     final case class Params(
-        sessionId: SessionId,
+        target: Target,
         agentId: AgentId,
         task: AgentTask,
+        actingAgentId: AgentId,
         expectedHead: Option[MessageId] = None,
         resetContinuation: Boolean = false
     ) derives JsonCodec
     type Result = TurnOutcome
+
+    /** Only these JSON-RPC failures establish rejection before execution; InternalError is an unknown outcome. */
+    def isKnownRejection(code: Int): Boolean =
+      Set(
+        ErrorCode.Busy,
+        ErrorCode.Conflict,
+        ErrorCode.Unauthorized,
+        ErrorCode.Forbidden,
+        ErrorCode.NotFound,
+        ErrorCode.Rejected,
+        -32601,
+        -32602
+      ).contains(code)
   }
 
   /** Authoritative prompt persistence, not run admission. Unknown is required when acceptance cannot be established. */
@@ -368,7 +403,6 @@ object YallmoProtocol {
   /** Application errors in the JSON-RPC envelope. Rejection data uses ApplicationError; standard errors stay standard.
     */
   object ErrorCode {
-    val UnsupportedVersion: Int = -32001
     val Unauthorized: Int = -32002
     val Forbidden: Int = -32003
     val NotFound: Int = -32004

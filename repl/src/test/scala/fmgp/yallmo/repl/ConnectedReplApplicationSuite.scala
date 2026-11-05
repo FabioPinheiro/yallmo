@@ -9,7 +9,7 @@ import zio.*
 import zio.json.ast.Json
 
 final class ConnectedReplApplicationSuite extends FunSuite {
-  private val user = AgentId("human")
+  private val user = AgentId("user-human")
   private val agent = AgentId("remote")
   private val id = SessionId.unsafe("one")
   private val message =
@@ -130,9 +130,12 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       val client = new Reads {
         override def capabilities = ZIO.some(
           Initialize.Result(
-            Version,
             "test",
-            Identity(user, role),
+            Identity(
+              UserId(AgentId.value(user).stripPrefix("user-")),
+              role,
+              Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+            ),
             advertised,
             Nil,
             MaxBlobChunkBytes,
@@ -201,16 +204,18 @@ final class ConnectedReplApplicationSuite extends FunSuite {
 
   private class Writes extends Reads {
     var info = Initialize.Result(
-      1,
       "test",
-      Identity(user, Role.Operator),
-      List(SessionsCreate.method, TurnSubmit.method),
+      Identity(
+        UserId(AgentId.value(user).stripPrefix("user-")),
+        Role.Operator,
+        Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+      ),
+      List(TurnSubmit.method),
       Nil,
       MaxBlobChunkBytes,
       Some(Chunk(agent))
     )
-    var creates = Vector.empty[Option[SessionId]]
-    var turns = Vector.empty[(SessionId, AgentId, AgentTask, Option[MessageId], Boolean)]
+    var turns = Vector.empty[(TurnSubmit.Target, AgentId, AgentTask, Option[MessageId], Boolean)]
     var diagnostic = DiagnosticsRequest.Result(None)
     var diagnosticError: Option[OrchestratorClient.Error] = None
     override def providerRequest(sessionId: SessionId) = ZIO.suspendSucceed {
@@ -219,51 +224,62 @@ final class ConnectedReplApplicationSuite extends FunSuite {
         ZIO.fail(_)
       )
     }
-    var createError: Option[OrchestratorClient.Error] = None
     var turnError: Option[OrchestratorClient.Error] = None
     val empty = SessionSnapshot(id, Chunk(user), Chunk.empty)
     val reply = message.copy(id = MessageId.sha256("answer"), agentId = agent, role = "assistant", content = "answer")
     val completed = empty.copy(messages = Chunk(message, reply))
     var outcome: TurnOutcome = TurnOutcome.Succeeded(completed, AgentResult(agent, "answer"), Chunk(message, reply))
     override def capabilities = ZIO.some(info)
-    override def createSession(name: Option[SessionId]) = ZIO.suspendSucceed {
-      creates :+= name
-      createError.fold[IO[OrchestratorClient.Error, SessionSnapshot]](ZIO.succeed(empty))(ZIO.fail(_))
-    }
     override def submitTurn(
-        sessionId: SessionId,
+        target: TurnSubmit.Target,
         agentId: AgentId,
         task: AgentTask,
+        @scala.annotation.unused actingAgentId: AgentId,
         expectedHead: Option[MessageId],
         resetContinuation: Boolean
     ) = ZIO.suspendSucceed {
-      turns :+= ((sessionId, agentId, task, expectedHead, resetContinuation))
+      turns :+= ((target, agentId, task, expectedHead, resetContinuation))
       turnError.fold[IO[OrchestratorClient.Error, TurnOutcome]](ZIO.succeed(outcome))(ZIO.fail(_))
     }
   }
 
-  test("cached capabilities require Operator and both methods; configured assistants exclude humans") {
+  test("cached capabilities require Operator and submit; configured assistants exclude humans") {
     val client = new Writes
     run(for {
       app <- ConnectedReplApplication.make(client, user, Some(agent))
       human <- app.selectAgent(user).either
-      _ <- ZIO.succeed { client.info = client.info.copy(identity = Identity(user, Role.Viewer)) }
+      _ <- ZIO.succeed {
+        client.info = client.info.copy(identity =
+          Identity(
+            UserId(AgentId.value(user).stripPrefix("user-")),
+            Role.Viewer,
+            Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+          )
+        )
+      }
       viewer <- ConnectedReplApplication.make(client, user)
       _ <- ZIO.succeed {
-        client.info = client.info.copy(identity = Identity(user, Role.Operator), methods = List(TurnSubmit.method))
+        client.info = client.info.copy(
+          identity = Identity(
+            UserId(AgentId.value(user).stripPrefix("user-")),
+            Role.Operator,
+            Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+          ),
+          methods = List(TurnSubmit.method)
+        )
       }
       partial <- ConnectedReplApplication.make(client, user)
     } yield {
       assert(app.remoteConnection); assert(app.canSubmit); assert(!app.connectedReadOnly)
       assertEquals(app.activeAgent, None)
       assertEquals(app.agentChoices.map(_.id), Vector(agent)); assert(human.isLeft)
-      assert(viewer.connectedReadOnly); assert(partial.connectedReadOnly)
+      assert(viewer.connectedReadOnly); assert(partial.canSubmit)
       assertEquals(client.calls, Vector.empty)
       assert(app.notice.contains("trusted local, unauthenticated"))
     })
   }
 
-  test("no selected configured agent means no create and no submit; selection is per application") {
+  test("no selected configured agent means no submission; selection is per application") {
     val client = new Writes
     run(for {
       unselected <- ConnectedReplApplication.make(client, user)
@@ -272,12 +288,12 @@ final class ConnectedReplApplicationSuite extends FunSuite {
     } yield {
       assertEquals(blocked.state, unselected.initialState)
       assert(blocked.events.toString.contains("--agent"))
-      assertEquals(client.creates, Vector.empty); assertEquals(client.turns, Vector.empty)
+      assertEquals(client.turns, Vector.empty)
       assertEquals(selected.selectedAgentId, Some(agent)); assertEquals(unselected.selectedAgentId, None)
     })
   }
 
-  test("first create then single submit returns durable delta and head; subsequent prompt reuses session") {
+  test("first single new submit returns durable delta and head; subsequent prompt reuses session") {
     val client = new Writes
     run(for {
       app <- ConnectedReplApplication.make(client, user, Some(agent))
@@ -293,7 +309,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       second <- app.submit(first.state, "again")
       help <- app.submit(second.state, "/help")
     } yield {
-      assertEquals(client.creates, Vector(None))
+
       assertEquals(client.turns.map(_._3), Vector(AgentTask("hello"), AgentTask("again")))
       assertEquals(client.turns.map(_._4), Vector(None, Some(client.reply.id)))
       assertEquals(first.events, Chunk(ReplEvent.SnapshotDelta(Chunk(message, client.reply))))
@@ -304,7 +320,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
     })
   }
 
-  test("create failure leaves original state and never submits; explicit new resets only remote session flags") {
+  test("new prepares only a named local draft; first submit selects New and preserves preferences") {
     val client = new Writes
     val original = ReplState(
       sessionId = Some("old"),
@@ -314,21 +330,15 @@ final class ConnectedReplApplicationSuite extends FunSuite {
     )
     run(for {
       app <- ConnectedReplApplication.make(client, user, Some(agent))
-      _ <- ZIO.succeed { client.createError = Some(OrchestratorClient.Error.Disconnected) }
-      failed <- app.submit(app.initialState, "hello")
-      failedNew <- app.submit(original, "/new named")
-      _ <- ZIO.succeed { client.createError = None }
-      created <- app.submit(original, "/new named")
+      draft <- app.submit(original, "/new named")
+      _ <- ZIO.succeed(assertEquals(client.turns, Vector.empty))
+      submitted <- app.submit(draft.state, "hello")
     } yield {
-      assertEquals(failed.state, app.initialState); assertEquals(failedNew.state, original)
-      assert(failed.events.toString.contains("/session list"));
-      assert(failedNew.events.toString.contains("/session list"))
-      assertEquals(client.turns, Vector.empty)
-      assertEquals(client.creates, Vector(None, Some(SessionId.unsafe("named")), Some(SessionId.unsafe("named"))))
-      assertEquals(
-        created.state,
-        original.copy(sessionId = Some("one"), remoteHeadMessageId = None, remoteResetContinuation = false)
-      )
+      assertEquals(draft.state.sessionId, None)
+      assertEquals(draft.state.remoteNewSessionName, Some(SessionId.unsafe("named")))
+      assertEquals(draft.state.logLevel, LogLevel.Debug)
+      assertEquals(client.turns.map(_._1), Vector(TurnSubmit.Target.New(Some(SessionId.unsafe("named")))))
+      assertEquals(submitted.state.sessionId, Some("one"))
     })
   }
 
@@ -349,32 +359,41 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assertEquals(failed.events.head, ReplEvent.SnapshotTranscript(Chunk(message), Some("one")))
       assert(failed.events.last.toString.contains("prompt remains"));
       assert(!failed.events.toString.contains("PRIVATE"))
-      assertEquals(client.creates.size, 1); assertEquals(client.turns.size, 1)
+      assertEquals(client.turns.size, 1)
     })
   }
 
-  test("lost reply after create retains known session without replay; unknown and notAccepted keep honest state") {
+  test("lost first reply blocks further submits until explicit recovery, never allocates a second conversation") {
     val client = new Writes
     run(for {
       app <- ConnectedReplApplication.make(client, user, Some(agent))
       _ <- ZIO.succeed { client.turnError = Some(OrchestratorClient.Error.Disconnected) }
       lost <- app.submit(app.initialState, "only once")
-      _ <- ZIO.succeed {
-        client.turnError = None;
-        client.outcome = TurnOutcome.Failed(PromptAcceptance.Unknown, None, ApplicationError("unknown", "secret"))
-      }
-      unknown <- app.submit(lost.state, "manual next")
-      _ <- ZIO.succeed {
-        client.outcome =
-          TurnOutcome.Failed(PromptAcceptance.NotAccepted, None, ApplicationError("notAccepted", "secret"))
-      }
-      rejected <- app.submit(unknown.state, "manual next")
+      _ <- ZIO.succeed { client.turnError = None }
+      blocked <- app.submit(lost.state, "do not replay")
+      resumed <- app.submit(blocked.state, "/session resume one")
+      next <- app.submit(resumed.state, "manual next")
     } yield {
-      List(lost, unknown, rejected).foreach(result => assertEquals(result.state.sessionId, Some("one")))
-      assertEquals(lost.state.remoteHeadMessageId, None); assertEquals(unknown.state, lost.state)
-      assert(lost.events.toString.contains("Refresh /history")); assert(unknown.events.toString.contains("unknown"))
-      assert(rejected.events.toString.contains("not accepted"))
-      assertEquals(client.creates.size, 1); assertEquals(client.turns.size, 3)
+      assertEquals(lost.state.sessionId, None)
+      assert(lost.state.remoteSubmissionUncertain)
+      assertEquals(blocked.state, lost.state)
+      assert(lost.events.toString.contains("/session list"))
+      assertEquals(client.turns.map(_._1), Vector(TurnSubmit.Target.New(), TurnSubmit.Target.Existing(id)))
+      assertEquals(next.state.sessionId, Some("one"))
+    })
+  }
+
+  test("an internal RPC error is unknown and blocks another new submit") {
+    val client = new Writes
+    client.turnError = Some(OrchestratorClient.Error.Remote(fmgp.yallmo.server.jsonrpc.JsonRpc.Error.InternalError))
+    run(for {
+      app <- ConnectedReplApplication.make(client, user, Some(agent))
+      failed <- app.submit(app.initialState, "once")
+      blocked <- app.submit(failed.state, "not again")
+    } yield {
+      assert(failed.state.remoteSubmissionUncertain)
+      assertEquals(blocked.state, failed.state)
+      assertEquals(client.turns.size, 1)
     })
   }
 
@@ -397,7 +416,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
         assert(failure.events.toString.contains("refresh") || failure.events.toString.contains("Refresh"))
         assert(!failure.events.toString.contains("PRIVATE"))
       }
-      assertEquals(client.creates, Vector.empty); assertEquals(client.turns.size, 2)
+      assertEquals(client.turns.size, 2)
       assert(client.turns.forall(_._5))
     })
   }
@@ -418,7 +437,6 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assertEquals(client.turns.map(_._4), Vector.fill(2)(Some(client.reply.id)))
       assertEquals(client.turns.map(_._5), Vector(true, false))
       assertEquals(submitted.state.continuationStart, 42); assertEquals(submitted.state.runContext, RunContext())
-      assertEquals(client.creates, Vector.empty)
     })
   }
 
@@ -451,7 +469,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assert(entries.exists(_.usage == "/debug request"))
       assert(!entries.exists(_.usage.contains("export")))
       assertEquals(client.calls, Vector.fill(2)("diagnostics.request:one"))
-      assertEquals(client.creates, Vector.empty); assertEquals(client.turns, Vector.empty)
+      assertEquals(client.turns, Vector.empty)
       assert(unavailable.events.head.isInstanceOf[ReplEvent.Unavailable])
     })
   }
@@ -461,7 +479,14 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       val client = new Writes
       if viewer then
         client.info = client.info
-          .copy(identity = Identity(user, Role.Viewer), methods = client.info.methods :+ DiagnosticsRequest.method)
+          .copy(
+            identity = Identity(
+              UserId(AgentId.value(user).stripPrefix("user-")),
+              Role.Viewer,
+              Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+            ),
+            methods = client.info.methods :+ DiagnosticsRequest.method
+          )
       for {
         app <- ConnectedReplApplication.make(client, user)
         blocked <- app.submit(ReplState(sessionId = Some("one")), "/debug request")

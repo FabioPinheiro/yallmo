@@ -1,5 +1,6 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.model.UserId
 import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageData}
 import java.time.Instant
 import fmgp.yallmo.orchestration.{AgentTask, SessionId}
@@ -189,27 +190,29 @@ final class OrchestratorWSClientSuite extends FunSuite {
   }
 
   test(
-    "claimed identity, advertised capabilities, create and diagnostic share protocol DTOs; turn has no read deadline"
+    "claimed identity, advertised capabilities, submit and diagnostic share protocol DTOs; turn has no read deadline"
   ) {
     val h = new Harness(timeout = 40)
     val user = OrchestratorWSClient.claimedUser(" Alice ")
     val sessionId = SessionId.unsafe("chat")
     val snapshot = SessionSnapshot(sessionId, Chunk.empty, Chunk.empty)
     for {
-      info <- h.initialize(user, List(SessionsCreate.method, TurnSubmit.method), Some(Chunk(AgentId("assistant"))))
+      info <- h.initialize(user, List(TurnSubmit.method), Some(Chunk(AgentId("assistant"))))
       _ = assertEquals(decode[Initialize.Params](h.sent.head.params.toJson).userId, user)
       _ = assert(OrchestratorWSClient.canChat(info))
       _ <- h.client.connect(OrchestratorWSClient.claimedUser("Ignored until reconnect"))
-      create = h.client.createSession(Some(sessionId))
-      createRequest <- h.awaitRequest(SessionsCreate.method)
-      _ = assertEquals(decode[SessionsCreate.Params](createRequest.params.toJson).name, Some(sessionId))
-      _ = h.reply(createRequest, snapshot)
-      _ <- create
       diagnostic = h.client.diagnostic(sessionId)
       diagnosticRequest <- h.awaitRequest(DiagnosticsRequest.method)
       _ = h.reply(diagnosticRequest, DiagnosticsRequest.Result(None))
       _ <- diagnostic
-      turn = h.client.submitTurn(TurnSubmit.Params(sessionId, AgentId("assistant"), AgentTask("hello")))
+      turn = h.client.submitTurn(
+        TurnSubmit.Params(
+          TurnSubmit.Target.Existing(sessionId),
+          AgentId("assistant"),
+          AgentTask("hello"),
+          AgentId("user-Alice")
+        )
+      )
       turnRequest <- h.awaitRequest(TurnSubmit.method)
       read = h.client.agents()
       _ <- h.awaitRequest(AgentsList.method)
@@ -240,7 +243,7 @@ final class OrchestratorWSClientSuite extends FunSuite {
       uploadRequest <- h.awaitRequest(BlobsUpload.method)
       _ = h.reply(uploadRequest, BlobsUpload.Result.Begun(blobId): BlobsUpload.Result)
       _ <- begun
-      invocation = h.client.invokeAgent(AgentsInvoke.Params(AgentId("Transcriber"), input))
+      invocation = h.client.invokeAgent(AgentsInvoke.Params(AgentId("Transcriber"), input, input.agentId))
       request <- h.awaitRequest(AgentsInvoke.method)
       _ = assertEquals(decode[AgentsInvoke.Params](request.params.toJson).input, input)
       read = h.client.agents()
@@ -355,7 +358,7 @@ private[web] object OrchestratorWSClientSuite {
     )
 
     def initialize(
-        userId: Option[AgentId] = None,
+        userId: Option[UserId] = None,
         methods: List[String] = Nil,
         configured: Option[Chunk[AgentId]] = None
     ): Future[Initialize.Result] = {
@@ -364,9 +367,8 @@ private[web] object OrchestratorWSClientSuite {
       reply(
         sent.last,
         Initialize.Result(
-          Version,
           "test",
-          Identity(AgentId("viewer"), Role.Viewer),
+          Identity(UserId("viewer"), Role.Viewer, Chunk(AgentId("user-viewer"), AgentId("web-user-viewer"))),
           methods,
           Nil,
           chunkSize,

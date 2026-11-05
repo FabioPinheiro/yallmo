@@ -89,7 +89,7 @@ private[web] final class VoiceTransfer(rpc: VoiceTransfer.Rpc)(using ExecutionCo
             if !current then { abort(); terminal.tryFailure(new Discarded); () }
             else {
               // Admit the normal message while its blob is still arriving. The server awaits Complete before execution.
-              rpc.invoke(AgentsInvoke.Params(Transcriber, input)).onComplete {
+              rpc.invoke(AgentsInvoke.Params(Transcriber, input, author)).onComplete {
                 case Success(message) if current =>
                   message.payload match {
                     case MessagePayload.Assistant(text)

@@ -46,22 +46,18 @@ object ServerApplication {
       continuations: Ref[Map[SessionId, (AgentId, Set[ProviderContinuation])]],
       requestCaptures: Ref[VectorMap[SessionId, Path]]
   ) {
-    def create(author: AgentId, name: Option[SessionId]): IO[JsonRpc.Error, SessionSnapshot] =
-      owned {
-        for {
-          _ <- checked(runtime.registerUser(author))
-          session <- checked(assembly.submission(author, None).create(name.map(_.value)))
-        } yield SessionSnapshot.from(session)
-      }()
-
     def submit(
         author: AgentId,
-        sessionId: SessionId,
+        target: TurnSubmit.Target,
         agentId: AgentId,
         prompt: String,
         expectedHead: Option[MessageId] = None,
         resetContinuation: Boolean = false
-    ): IO[JsonRpc.Error, TurnOutcome] =
+    ): IO[JsonRpc.Error, TurnOutcome] = ZIO.suspendSucceed {
+      val sessionId = target match {
+        case TurnSubmit.Target.Existing(id) => id
+        case TurnSubmit.Target.New(name)    => name.getOrElse(SessionId.unsafe(s"main-${java.util.UUID.randomUUID()}"))
+      }
       owned {
         ZIO.uninterruptibleMask { restore =>
           for {
@@ -69,11 +65,18 @@ object ServerApplication {
             _ <- ZIO.fail(JsonRpc.Error(ErrorCode.Busy, "Session is busy")).unless(admitted)
             outcome <- restore((for {
               binding <- checked(runtime.resolve(agentId))
-              previous <- checked(assembly.orchestrator.loadSession(sessionId))
+              _ <- ZIO
+                .fail(JsonRpc.Error.InvalidParams)
+                .when(target.isInstanceOf[TurnSubmit.Target.New] && expectedHead.nonEmpty)
+              _ <- checked(runtime.registerUser(author))
+              previous <- target match {
+                case _: TurnSubmit.Target.Existing => checked(assembly.orchestrator.loadSession(sessionId))
+                case _: TurnSubmit.Target.New      =>
+                  checked(assembly.orchestrator.createSession(sessionId, Chunk(author, agentId)))
+              }
               _ <- ZIO
                 .fail(JsonRpc.Error(ErrorCode.Conflict, "Session head changed"))
                 .when(expectedHead.exists(head => !previous.messages.lastOption.exists(_.id == head)))
-              _ <- checked(runtime.registerUser(author))
               policies <- continuations.get
               excluded = policies.get(sessionId) match {
                 case Some((id, values)) if id == agentId && !resetContinuation => values
@@ -90,7 +93,7 @@ object ServerApplication {
                       TurnOutcome.Failed(
                         if failure.acceptedSession.nonEmpty then PromptAcceptance.Accepted
                         else PromptAcceptance.Unknown,
-                        failure.acceptedSession.map(SessionSnapshot.from),
+                        Some(SessionSnapshot.from(failure.acceptedSession.getOrElse(previous))),
                         ApplicationError("execution_failed", "Execution failed; refresh session before continuing")
                       ),
                     turn =>
@@ -118,6 +121,8 @@ object ServerApplication {
         }
       }
 
+    }
+
     /** Single-message configured invocation, never a model/tool loop. The application owns work and the caller owns
       * only its wait. No session, continuation policy or session diagnostic capture is created. Accepted input survives
       * execution failure. Model-requested actions require submit instead.
@@ -126,7 +131,7 @@ object ServerApplication {
       owned {
         for {
           _ <- ZIO
-            .fail(JsonRpc.Error(ErrorCode.Forbidden, "Message author must match the initialized identity"))
+            .fail(JsonRpc.Error(ErrorCode.Forbidden, "Message author must match the acting agent"))
             .unless(input.agentId == author)
           binding <- checked(runtime.resolve(agentId))
           _ <- ZIO

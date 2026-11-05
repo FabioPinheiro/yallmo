@@ -2,7 +2,7 @@ package fmgp.yallmo.view.web
 
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.ControlAction
-import fmgp.yallmo.model.{AgentId, BlobId, MessageId}
+import fmgp.yallmo.model.{AgentId, BlobId, MessageId, UserId}
 import fmgp.yallmo.server.protocol.YallmoProtocol.{MessageSnapshot, SessionSnapshot}
 import org.scalajs.dom
 import scala.concurrent.Future
@@ -71,7 +71,7 @@ object App {
     def connect(): Unit = {
       val requestedUser = OrchestratorWSClient.claimedUser(humanName.now())
       if requestedUser.nonEmpty && !connecting
-          .now() && chat.state.now().pending.isEmpty && !chat.state.now().creating && !chat.state
+          .now() && chat.state.now().pending.isEmpty && !chat.state
           .now()
           .voiceBusy && !scalamode.state.now().pending && !providers.state.now().busy
       then {
@@ -92,7 +92,7 @@ object App {
             chat.reload()
             refresh.emit(())
             connection.set(if OrchestratorWSClient.canChat(info) then
-              s"Trusted operator · ${AgentId.value(info.identity.id)}"
+              s"Trusted operator · ${UserId.value(info.identity.id)}"
             else "Read only")
           case scala.util.Failure(error) if mounted =>
             connecting.set(false)
@@ -254,7 +254,7 @@ object App {
               .map { case (name, busy, state, scalaState, providerState) =>
                 OrchestratorWSClient
                   .claimedUser(name)
-                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy || scalaState.pending || providerState.busy
+                  .isEmpty || busy || state.pending.nonEmpty || state.voiceBusy || scalaState.pending || providerState.busy
               },
             title <-- humanName.signal.map(name =>
               if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."

@@ -17,7 +17,7 @@ import org.jline.terminal.impl.DumbTerminal
 import zio.*
 
 final class ConnectedTerminalSuite extends FunSuite {
-  private val user = AgentId("human")
+  private val user = AgentId("user-human")
   private val snapshot = MessageSnapshot(
     MessageId.sha256("wire"),
     user,
@@ -31,7 +31,7 @@ final class ConnectedTerminalSuite extends FunSuite {
 
   test("snapshot rendering keeps wire role, author, content, tool and blob references with controls sanitized") {
     val text = TerminalMessageRenderer.renderSnapshot(snapshot)
-    assertEquals(text, s"tool[human] tool[name]> helloRED\n blob[${snapshot.blobIds.head}]")
+    assertEquals(text, s"tool[user-human] tool[name]> helloRED\n blob[${snapshot.blobIds.head}]")
     assert(!text.codePoints().anyMatch(code => Character.isISOControl(code) && code != '\n' && code != '\t'))
   }
 
@@ -39,7 +39,7 @@ final class ConnectedTerminalSuite extends FunSuite {
     val content =
       "a\u001b[31m\nb\u001b[0m\tc\r\nd\re\u001b[2J\u0000\u0007\u0008\u000b\u007f\u0085\u009b\u009d\u200b\u202e\u2028\u2029"
     val message = snapshot.copy(content = content, blobIds = Chunk.empty)
-    assertEquals(TerminalMessageRenderer.renderSnapshot(message), "tool[human] tool[name]> a\nb\tc\nd\ne")
+    assertEquals(TerminalMessageRenderer.renderSnapshot(message), "tool[user-human] tool[name]> a\nb\tc\nd\ne")
     assertEquals(message.content, content)
     assertEquals(message.id, snapshot.id)
   }
@@ -130,11 +130,13 @@ final class ConnectedTerminalSuite extends FunSuite {
       val client = new Reads {
         override def capabilities = ZIO.some(
           Initialize.Result(
-            Version,
             "test",
-            Identity(user, Role.Operator),
+            Identity(
+              UserId(AgentId.value(user).stripPrefix("user-")),
+              Role.Operator,
+              Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+            ),
             List(
-              SessionsCreate.method,
               TurnSubmit.method,
               ProvidersList.method,
               ProvidersLoginStart.method,
@@ -297,10 +299,13 @@ final class ConnectedTerminalSuite extends FunSuite {
   private def operatorReads: OrchestratorClient = new Reads {
     override def capabilities = ZIO.some(
       Initialize.Result(
-        1,
         "test",
-        Identity(user, Role.Operator),
-        List(SessionsCreate.method, TurnSubmit.method),
+        Identity(
+          UserId(AgentId.value(user).stripPrefix("user-")),
+          Role.Operator,
+          Chunk(user, UserId.websiteAgent(UserId(AgentId.value(user).stripPrefix("user-"))))
+        ),
+        List(TurnSubmit.method),
         Nil,
         MaxBlobChunkBytes,
         Some(Chunk(AgentId("bob")))

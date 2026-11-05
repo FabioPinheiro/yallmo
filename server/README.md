@@ -7,7 +7,7 @@ HTTP serves static assets, WebSocket upgrades and read-only SDLC inspection;
 conversation/blob requests still use JSON-RPC, not REST endpoints.
 
 **Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
-initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit`, `agents.invoke`,
+initialized claimed human `userId` enable Operator with `turn.submit`, `agents.invoke`,
 `blobs.upload`, `diagnostics.request` and provider catalog/login methods,
 including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
 `clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
@@ -76,7 +76,7 @@ may have been sent, interrupting only abandons the client wait; the server may s
 
 The generic JSON-RPC `agents.invoke` method accepts `{agentId, input: Message}` and returns the recipient's response
 `Message`, without imposing a payload role. It saves input and response independently of sessions, preserving the
-input's content address and linking the response to it. The input author must match the initialized identity.
+input's content address and linking the response to it. The input author must match the request's explicit user-owned `actingAgentId`.
 An existing parent is allowed without inheriting its history. An input can reference a blob still arriving through
 `blobs.upload`: invocation waits without blocking subsequent upload commands on the socket.
 
@@ -255,7 +255,7 @@ semantics; `--workspace` does not silently rewrite them.
 Configured mode retains one `ApplicationRuntime` and its opened assembly, with exactly one filesystem master supplied
 to the same WebSocket host. Client and core tool-service layers surround the entire host scope, so captured HTTP
 services outlive application work. Configured connections with a claimed human ID can execute; anonymous connections remain viewers.
-Authentication is explicitly deferred; a claimed human ID is author metadata, not an authenticated principal.
+Authentication is explicitly deferred; a claimed `UserId` selects server-owned actors, not an authenticated principal.
 
 ### Startup validation failures
 
@@ -346,7 +346,7 @@ Enabled methods:
 - `messages.list`, `agents.list`
 - `blobs.list`, `blobs.read`
 
-Configured trusted-environment Operators additionally enable `sessions.create` and `turn.submit`. Other mutation/control/
+Configured trusted-environment Operators additionally enable `turn.submit` with explicit New/Existing targets. Other mutation/control/
 diagnostic definitions remain disabled; no progress notifications are advertised. Unix-domain sockets remain deferred.
 The JVM client uses dependency-free public JDK WebSocket (JDK 21+ resource lifecycle), not a synthetic-Origin transport;
 it never bypasses server policy. Read `capabilities` from cached initialization, not a second initialize.
@@ -429,3 +429,16 @@ Browser smoke checks exercised the packaged production host and Vite proxy using
 all five tabs, graph expansion, literal HTML text, multiline tool output, a byte-exact attachment download, one
 application WebSocket/initialization, and zero legacy API requests. The prior broken REST-viewer suite was replaced
 by tests for the new host; no test-source exclusions are needed.
+
+## User and acting-agent identities
+
+Initialization claims a `UserId` (for example `fabio`) and returns owned actors in `identity.agentIds`.
+Chat selects `user-fabio`; website/harness features select `web-user-fabio` on the same connection.
+`turn.submit` and `agents.invoke` require `actingAgentId`, separate from recipient `agentId`.
+The server validates ownership and invocation message authorship before execution. No implicit sessions or
+authentication are introduced; recipient capability checks remain unchanged. See [the wire contract](PROTOCOL.md#connection-and-capabilities).
+
+Conversation allocation is part of `turn.submit`: use `target: {kind: "new", name?: SessionId}` for the first prompt
+and `target: {kind: "existing", sessionId: SessionId}` for later prompts. The separate create endpoint is removed.
+New/Existing are explicit; missing IDs never silently create or resume a session. Execution failures retain any
+allocated session ID, and clients never retry an unknown first submission automatically.

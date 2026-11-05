@@ -1,6 +1,6 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.model.{AgentId, BlobId}
+import fmgp.yallmo.model.{AgentId, BlobId, UserId}
 import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
 import fmgp.yallmo.server.OrchestratorClient.Error
 import fmgp.yallmo.server.jsonrpc.JsonRpc
@@ -22,7 +22,7 @@ final class OrchestratorWSClient private (
     state: Ref[OrchestratorWSClient.State],
     writes: Semaphore,
     timeout: Duration,
-    userId: Option[AgentId],
+    userId: Option[UserId],
     negotiated: Ref[Option[Initialize.Result]]
 ) extends OrchestratorClient {
   import OrchestratorWSClient.*
@@ -31,31 +31,37 @@ final class OrchestratorWSClient private (
     for {
       result <- request[Initialize.Params, Initialize.Result](
         Initialize.method,
-        Initialize.Params(Version, clientName, userId)
+        Initialize.Params(clientName, userId)
       )
       _ <- ZIO
         .fail(Error.InvalidResponse)
         .unless(
-          result.protocolVersion == Version && result.maxBlobChunkBytes > 0 && result.maxBlobChunkBytes <= MaxBlobChunkBytes &&
+          result.maxBlobChunkBytes > 0 && result.maxBlobChunkBytes <= MaxBlobChunkBytes &&
             userId.fold(result.identity.role == Role.Viewer)(id =>
               result.identity.id == id && (result.identity.role == Role.Viewer ||
                 (result.identity.role == Role.Operator &&
-                  result.methods.contains(SessionsCreate.method) && result.methods.contains(TurnSubmit.method)))
+                  result.methods.contains(TurnSubmit.method)))
             )
         )
       _ <- negotiated.set(Some(result))
     } yield result
   override def capabilities: UIO[Option[Initialize.Result]] = negotiated.get
-  override def createSession(name: Option[SessionId]): IO[Error, SessionSnapshot] =
-    request(SessionsCreate.method, SessionsCreate.Params(name))
   override def submitTurn(
-      sessionId: SessionId,
+      target: TurnSubmit.Target,
       agentId: AgentId,
       task: fmgp.yallmo.orchestration.AgentTask,
+      actingAgentId: AgentId,
       expectedHead: Option[fmgp.yallmo.model.MessageId],
       resetContinuation: Boolean
   ): IO[Error, TurnOutcome] =
-    request(TurnSubmit.method, TurnSubmit.Params(sessionId, agentId, task, expectedHead, resetContinuation))
+    request(
+      TurnSubmit.method,
+      TurnSubmit.Params(target, agentId, task, actingAgentId, expectedHead, resetContinuation)
+    )
+
+  /** Select an owned actor per invocation, independently of the recipient. */
+  def invokeAgent(params: AgentsInvoke.Params): IO[Error, fmgp.yallmo.model.Message] =
+    request(AgentsInvoke.method, params)
 
   override def providerRequest(sessionId: SessionId): IO[Error, DiagnosticsRequest.Result] =
     request(DiagnosticsRequest.method, DiagnosticsRequest.Params(sessionId))
@@ -140,7 +146,7 @@ object OrchestratorWSClient {
   def connect(
       endpoint: String,
       requestTimeout: Duration = 15.seconds,
-      userId: Option[AgentId] = None,
+      userId: Option[UserId] = None,
       clientName: String = "yallmo-jvm"
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     ZIO.acquireRelease(Scope.make)(_.close(Exit.unit)).flatMap { scope =>
@@ -152,7 +158,7 @@ object OrchestratorWSClient {
   private def connectInScope(
       endpoint: String,
       requestTimeout: Duration,
-      userId: Option[AgentId],
+      userId: Option[UserId],
       clientName: String
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     for {

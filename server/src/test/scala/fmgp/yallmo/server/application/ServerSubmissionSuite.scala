@@ -23,7 +23,7 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class ServerSubmissionSuite extends FunSuite {
-  private val human = AgentId("local-human")
+  private val human = AgentId("user-local-human")
   private val first = AgentId("first")
   private val second = AgentId("second")
   private val provider = ProviderId.unsafe("fake")
@@ -66,13 +66,13 @@ final class ServerSubmissionSuite extends FunSuite {
             .Request(
               Json.Str("init"),
               Initialize.method,
-              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", Some(human))
+              Initialize.Params("test", Some(human).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
             )
             .toJson,
           connection
         )
         rejected <- viewer.handle(
-          JsonRpc.Request(Json.Str("create"), SessionsCreate.method, SessionsCreate.Params()).toJson,
+          JsonRpc.Request(Json.Str("create"), "sessions.create", Empty()).toJson,
           connection
         )
         diagnostic <- viewer.handle(
@@ -91,7 +91,14 @@ final class ServerSubmissionSuite extends FunSuite {
         count <- calls.get
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](initialized.get).result
-        assertEquals(info.identity, Identity(human, Role.Viewer))
+        assertEquals(
+          info.identity,
+          Identity(
+            UserId(AgentId.value(human).stripPrefix("user-")),
+            Role.Viewer,
+            Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
+          )
+        )
         assertEquals(info.methods.size, 7)
         assertEquals(decode[JsonRpc.Failure](rejected.get).error, JsonRpc.Error.MethodNotFound)
         assertEquals(decode[JsonRpc.Failure](diagnostic.get).error, JsonRpc.Error.MethodNotFound)
@@ -108,18 +115,36 @@ final class ServerSubmissionSuite extends FunSuite {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+        client <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         info <- client.capabilities
-        created <- client.createSession(Some(SessionId.unsafe("created")))
-        outcome <- client.submitTurn(created.id, first, AgentTask("prompt"))
+        outcome <- client.submitTurn(
+          TurnSubmit.Target.New(Some(SessionId.unsafe("created"))),
+          first,
+          AgentTask("prompt"),
+          human
+        )
+        created = outcome.asInstanceOf[TurnOutcome.Succeeded].session
         stored <- app.master.loadSession(created.id)
         count <- calls.get
         _ <- client.close
-        again <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+        again <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         reloaded <- again.loadSession(created.id)
       } yield {
-        assertEquals(info.get.identity, Identity(human, Role.Operator))
-        assertEquals(info.get.methods.size, 16)
+        assertEquals(
+          info.get.identity,
+          Identity(
+            UserId(AgentId.value(human).stripPrefix("user-")),
+            Role.Operator,
+            Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
+          )
+        )
+        assertEquals(info.get.methods.size, 15)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -144,7 +169,7 @@ final class ServerSubmissionSuite extends FunSuite {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("broken")))
+        session <- seed(backend, human, Some(SessionId.unsafe("broken")))
         _ <- ZIO.attemptBlocking(
           Files.writeString(
             backend.workspace.resolve("refs/sessions/broken"),
@@ -161,7 +186,7 @@ final class ServerSubmissionSuite extends FunSuite {
               .Request(
                 Json.Str("submit"),
                 TurnSubmit.method,
-                TurnSubmit.Params(session.id, first, AgentTask("PRIVATE_PROMPT"))
+                TurnSubmit.Params(TurnSubmit.Target.Existing(session.id), first, AgentTask("PRIVATE_PROMPT"), human)
               )
               .toJson,
             connection
@@ -200,10 +225,10 @@ final class ServerSubmissionSuite extends FunSuite {
           }
         )
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("failed")))
+        session <- seed(backend, human, Some(SessionId.unsafe("failed")))
         _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
-        failed <- backend.submit(human, session.id, first, "keep")
-        recovered <- backend.submit(human, session.id, first, "continue")
+        failed <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep")
+        recovered <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "continue")
         loaded <- app.master.loadSession(session.id)
       } yield {
         val failure = failed.asInstanceOf[TurnOutcome.Failed]
@@ -235,10 +260,10 @@ final class ServerSubmissionSuite extends FunSuite {
           }
         )
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("defect")))
+        session <- seed(backend, human, Some(SessionId.unsafe("defect")))
         _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
-        failed <- backend.submit(human, session.id, first, "keep")
-        success <- backend.submit(human, session.id, first, "continue")
+        failed <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep")
+        success <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "continue")
       } yield {
         val failure = failed.asInstanceOf[TurnOutcome.Failed]
         assertEquals(failure.acceptance, PromptAcceptance.Unknown)
@@ -261,12 +286,12 @@ final class ServerSubmissionSuite extends FunSuite {
           calls.updateAndGet(_ + 1).flatMap(n => ZIO.when(n == 2)(entered.succeed(()))) *> release.await.as(answer)
         )
         backend = app.configured.get
-        one <- backend.create(human, Some(SessionId.unsafe("one")))
-        two <- backend.create(human, Some(SessionId.unsafe("two")))
-        a <- backend.submit(human, one.id, first, "one").fork
-        b <- backend.submit(human, two.id, second, "two").fork
+        one <- seed(backend, human, Some(SessionId.unsafe("one")))
+        two <- seed(backend, human, Some(SessionId.unsafe("two")))
+        a <- backend.submit(human, TurnSubmit.Target.Existing(one.id), first, "one").fork
+        b <- backend.submit(human, TurnSubmit.Target.Existing(two.id), second, "two").fork
         _ <- entered.await
-        busy <- backend.submit(human, one.id, second, "must not append").either
+        busy <- backend.submit(human, TurnSubmit.Target.Existing(one.id), second, "must not append").either
         during <- app.master.loadSession(one.id)
         _ <- release.succeed(())
         _ <- a.join.zipPar(b.join)
@@ -283,15 +308,27 @@ final class ServerSubmissionSuite extends FunSuite {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("head")))
+        session <- seed(backend, human, Some(SessionId.unsafe("head")))
         stale <- backend
-          .submit(AgentId("other-human"), session.id, first, "no", Some(MessageId.unsafe("sha256:" + "a" * 64)))
+          .submit(
+            AgentId("other-human"),
+            TurnSubmit.Target.Existing(session.id),
+            first,
+            "no",
+            Some(MessageId.unsafe("sha256:" + "a" * 64))
+          )
           .either
         after <- app.master.loadSession(session.id)
         before <- calls.get
-        success <- backend.submit(human, session.id, first, "yes")
+        success <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "yes")
         current = success.asInstanceOf[TurnOutcome.Succeeded].session
-        matched <- backend.submit(human, session.id, first, "matched", current.messages.lastOption.map(_.id))
+        matched <- backend.submit(
+          human,
+          TurnSubmit.Target.Existing(session.id),
+          first,
+          "matched",
+          current.messages.lastOption.map(_.id)
+        )
       } yield {
         assertEquals(stale.left.toOption.map(_.code), Some(ErrorCode.Conflict))
         assertEquals(SessionSnapshot.from(after), session)
@@ -306,9 +343,9 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         app <- application(_ => ZIO.dieMessage("must not execute"))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("selection")))
+        session <- seed(backend, human, Some(SessionId.unsafe("selection")))
         rejected <- ZIO.foreach(List(human, AgentId("viewer")))(id =>
-          backend.submit(human, session.id, id, "no").either
+          backend.submit(human, TurnSubmit.Target.Existing(session.id), id, "no").either
         )
         after <- app.master.loadSession(session.id)
       } yield {
@@ -327,16 +364,24 @@ final class ServerSubmissionSuite extends FunSuite {
         app <- application(_ => (entered.succeed(()) *> release.await.as(answer)).ensuring(finished.succeed(()).unit))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
-        session <- client.createSession(Some(SessionId.unsafe("disconnect")))
-        wait <- client.submitTurn(session.id, first, AgentTask("keep")).fork
+        client <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
+        session <- seed(app.configured.get, human, Some(SessionId.unsafe("disconnect")))
+        wait <- client.submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("keep"), human).fork
         _ <- entered.await
         during <- client.loadSession(session.id)
         pendingCapture <- client.providerRequest(session.id)
         _ <- client.close
         lost <- wait.await
-        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
-        busy <- observer.submitTurn(session.id, first, AgentTask("not retried")).either
+        observer <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
+        busy <- observer
+          .submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("not retried"), human)
+          .either
         _ <- release.succeed(())
         _ <- finished.await
         after <- (ZIO.yieldNow *> observer.loadSession(session.id)).repeatUntil(_.messages.size == 2)
@@ -363,13 +408,16 @@ final class ServerSubmissionSuite extends FunSuite {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
-        session <- client.createSession(Some(SessionId.unsafe("abandoned")))
-        wait <- client.submitTurn(session.id, first, AgentTask("keep running")).fork
+        client <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
+        session <- seed(app.configured.get, human, Some(SessionId.unsafe("abandoned")))
+        wait <- client.submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("keep running"), human).fork
         _ <- entered.await
         interrupted <- wait.interrupt
         during <- client.loadSession(session.id)
-        busy <- client.submitTurn(session.id, first, AgentTask("not retried")).either
+        busy <- client.submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("not retried"), human).either
         _ <- release.succeed(())
         after <- (ZIO.yieldNow *> client.loadSession(session.id)).repeatUntil(_.messages.size == 2)
         executions <- calls.get
@@ -395,8 +443,8 @@ final class ServerSubmissionSuite extends FunSuite {
         app <- application(_ => (entered.succeed(()) *> ZIO.never).ensuring(finalized.set(true)))
           .provideEnvironment(ZEnvironment(ownerScope))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("shutdown")))
-        wait <- backend.submit(human, session.id, first, "keep").fork
+        session <- seed(backend, human, Some(SessionId.unsafe("shutdown")))
+        wait <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep").fork
         _ <- entered.await
         _ <- ownerScope.close(Exit.unit)
         outcome <- wait.join
@@ -421,15 +469,20 @@ final class ServerSubmissionSuite extends FunSuite {
                 .Request(
                   Json.Str("init"),
                   Initialize.method,
-                  Initialize
-                    .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, clientName, None)
+                  Initialize.Params(clientName, None)
                 )
                 .toJson,
               connection
             )
             info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
             rejected <- rpc.handle(
-              JsonRpc.Request(Json.Str("create"), SessionsCreate.method, SessionsCreate.Params()).toJson,
+              JsonRpc
+                .Request(
+                  Json.Str("submit"),
+                  TurnSubmit.method,
+                  TurnSubmit.Params(TurnSubmit.Target.New(), first, AgentTask("rejected"), human)
+                )
+                .toJson,
               connection
             )
             _ <- rpc.disconnect(connection)
@@ -454,7 +507,7 @@ final class ServerSubmissionSuite extends FunSuite {
             .Request(
               Json.Str("init"),
               Initialize.method,
-              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "any-name", Some(human))
+              Initialize.Params("any-name", Some(human).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
             )
             .toJson,
           connection
@@ -464,8 +517,7 @@ final class ServerSubmissionSuite extends FunSuite {
             .Request(
               Json.Str("change"),
               Initialize.method,
-              Initialize
-                .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "any-name", Some(AgentId("changed")))
+              Initialize.Params("any-name", Some(UserId("changed")))
             )
             .toJson,
           connection
@@ -478,9 +530,8 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(9),
+          info.methods.takeRight(8),
           List(
-            SessionsCreate.method,
             TurnSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
@@ -510,9 +561,15 @@ final class ServerSubmissionSuite extends FunSuite {
         release <- Promise.make[Nothing, Unit]
         app <- application(_ => entered.succeed(()) *> release.await.as(answer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
-        session <- client.createSession(Some(SessionId.unsafe("deadline")))
-        wait <- client.submitTurn(session.id, first, AgentTask("long")).withClock(noDeadline).fork
+        client <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
+        session <- seed(app.configured.get, human, Some(SessionId.unsafe("deadline")))
+        wait <- client
+          .submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("long"), human)
+          .withClock(noDeadline)
+          .fork
         _ <- entered.await
         _ <- release.succeed(())
         outcome <- wait.join
@@ -520,20 +577,27 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
-  test("closed application scope cannot hang create/submit or start provider work") {
+  test("closed application scope cannot hang new/existing submit or start provider work") {
     run(ZIO.scoped {
       for {
         calls <- Ref.make(0)
         owner <- Scope.make
         app <- application(_ => calls.update(_ + 1).as(answer)).provideEnvironment(ZEnvironment(owner))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("closed")))
+        session <- seed(backend, human, Some(SessionId.unsafe("closed")))
         _ <- owner.close(Exit.unit)
-        created <- backend.create(human, Some(SessionId.unsafe("too-late"))).either
-        outcomes <- ZIO.foreach(1 to 20)(_ => backend.submit(human, session.id, first, "too late").either)
+        created <- backend
+          .submit(human, TurnSubmit.Target.New(Some(SessionId.unsafe("too-late"))), first, "too late")
+          .either
+        outcomes <- ZIO.foreach(1 to 20)(_ =>
+          backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "too late").either
+        )
         count <- calls.get
       } yield {
-        assert(created.isLeft)
+        assert(created.toOption.forall {
+          case failed: TurnOutcome.Failed => failed.acceptance == PromptAcceptance.Unknown && failed.session.isEmpty;
+          case _                          => false
+        })
         assert(outcomes.forall {
           case Left(error)                       => error.code != ErrorCode.Busy
           case Right(failed: TurnOutcome.Failed) => failed.acceptance == PromptAcceptance.Unknown
@@ -557,8 +621,8 @@ final class ServerSubmissionSuite extends FunSuite {
         )
           .provideEnvironment(ZEnvironment(owner))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("lease")))
-        wait <- backend.submit(human, session.id, first, "keep").fork
+        session <- seed(backend, human, Some(SessionId.unsafe("lease")))
+        wait <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep").fork
         _ <- entered.await
         closing <- owner.close(Exit.unit).fork
         _ <- finalizing.await
@@ -579,7 +643,7 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
-  test("Origin-bearing browser can create, submit and read diagnostics with its claimed author") {
+  test("Origin-bearing browser can submit New and read diagnostics with its claimed author") {
     run(ZIO.scoped {
       for {
         calls <- Ref.make(0)
@@ -596,15 +660,14 @@ final class ServerSubmissionSuite extends FunSuite {
             .Request(
               Json.Str("init"),
               Initialize.method,
-              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "browser", Some(human))
+              Initialize.Params("browser", Some(human).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
             )
             .toJson,
-          JsonRpc.Request(Json.Str("create"), SessionsCreate.method, SessionsCreate.Params(Some(sessionId))).toJson,
           JsonRpc
             .Request(
               Json.Str("submit"),
               TurnSubmit.method,
-              TurnSubmit.Params(sessionId, first, AgentTask("browser prompt"))
+              TurnSubmit.Params(TurnSubmit.Target.New(Some(sessionId)), first, AgentTask("browser prompt"), human)
             )
             .toJson,
           JsonRpc
@@ -636,18 +699,23 @@ final class ServerSubmissionSuite extends FunSuite {
           .connect(s"ws://127.0.0.1:$port/rpc", Headers(Header.Custom("Origin", "https://browser.internal:9443")))
           .provideSomeEnvironment[Scope](_.add(environment.get[Client]))
         initialized <- replies.take
-        created <- replies.take
         submitted <- replies.take
         diagnostic <- replies.take
         stored <- app.master.loadSession(sessionId)
         count <- calls.get
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](initialized).result
-        assertEquals(info.identity, Identity(human, Role.Operator))
         assertEquals(
-          info.methods.takeRight(9),
+          info.identity,
+          Identity(
+            UserId(AgentId.value(human).stripPrefix("user-")),
+            Role.Operator,
+            Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
+          )
+        )
+        assertEquals(
+          info.methods.takeRight(8),
           List(
-            SessionsCreate.method,
             TurnSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
@@ -658,7 +726,6 @@ final class ServerSubmissionSuite extends FunSuite {
             ProvidersLoginCancel.method
           )
         )
-        assertEquals(decode[JsonRpc.Success[SessionSnapshot]](created).result.id, sessionId)
         assert(decode[JsonRpc.Success[TurnOutcome]](submitted).result.isInstanceOf[TurnOutcome.Succeeded])
         assert(decode[JsonRpc.Success[DiagnosticsRequest.Result]](diagnostic).result.providerRequest.nonEmpty)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -686,16 +753,24 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
-        sessions <- ZIO.foreach(1 to OrchestratorWSServer.MaxConnectionWorkers)(n =>
-          client.createSession(Some(SessionId.unsafe(s"overload-$n")))
+        client <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
-        waits <- ZIO.foreach(sessions)(session => client.submitTurn(session.id, first, AgentTask("keep")).fork)
+        sessions <- ZIO.foreach(1 to OrchestratorWSServer.MaxConnectionWorkers)(n =>
+          seed(app.configured.get, human, Some(SessionId.unsafe(s"overload-$n")))
+        )
+        waits <- ZIO.foreach(sessions)(session =>
+          client.submitTurn(TurnSubmit.Target.Existing(session.id), first, AgentTask("keep"), human).fork
+        )
         _ <- allEntered.await
         overflow <- client.listSessions.either
         stopped <- ZIO.foreach(waits)(_.await)
         _ <- release.succeed(())
-        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
+        observer <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         stored <- ZIO.foreach(sessions)(session =>
           (ZIO.yieldNow *> observer.loadSession(session.id))
             .repeatUntil(_.messages.size == 2)
@@ -749,12 +824,12 @@ final class ServerSubmissionSuite extends FunSuite {
           .provideSomeLayer[Scope](ZLayer.succeed(client) ++ tools)
           .provideEnvironment(ZEnvironment(owner))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("continuation")))
-        _ <- backend.submit(human, session.id, first, "first")
-        _ <- backend.submit(human, session.id, first, "same")
+        session <- seed(backend, human, Some(SessionId.unsafe("continuation")))
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "first")
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "same")
         diagnostic <- backend.providerRequest(session.id)
-        _ <- backend.submit(human, session.id, first, "reset", resetContinuation = true)
-        _ <- backend.submit(human, session.id, first, "after reset")
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "reset", resetContinuation = true)
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "after reset")
         beforeRewrite <- app.master.loadSession(session.id)
         continuationProvider = fmgp.yallmo.model.llm.ProviderId.unsafe("openai-codex-responses")
         stale = MessagePayload.Reasoning(
@@ -791,14 +866,15 @@ final class ServerSubmissionSuite extends FunSuite {
           AgentTask("shorten"),
           new AgentRunner[Any](Map.empty, Map.empty).execution(program, StaticContext[Any]("Synthetic"))
         )
-        _ <- backend.submit(human, session.id, first, "after shortening")
-        _ <- backend.submit(human, session.id, second, "switch")
-        _ <- backend.submit(human, session.id, first, "switch back")
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "after shortening")
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), second, "switch")
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "switch back")
         _ <- owner.close(Exit.unit)
         restarted <- ServerApplication
           .open(root, Some(path), Some(root))
           .provideSomeLayer[Scope](ZLayer.succeed(client) ++ tools)
-        result <- restarted.configured.get.submit(human, session.id, first, "unknown after restart")
+        result <- restarted.configured.get
+          .submit(human, TurnSubmit.Target.Existing(session.id), first, "unknown after restart")
         requests <- seen.get
         stored <- restarted.master.loadSession(session.id)
         inventory <- restarted.master.listMessages
@@ -852,18 +928,24 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
-        one <- client.createSession(Some(SessionId.unsafe("debug-one")))
-        two <- client.createSession(Some(SessionId.unsafe("debug-two")))
+        client <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
+        one <- seed(app.configured.get, human, Some(SessionId.unsafe("debug-one")))
+        two <- seed(app.configured.get, human, Some(SessionId.unsafe("debug-two")))
         empty <- client.providerRequest(one.id)
         _ <- client
-          .submitTurn(one.id, first, AgentTask("only-one"))
-          .zipPar(client.submitTurn(two.id, second, AgentTask("only-two")))
+          .submitTurn(TurnSubmit.Target.Existing(one.id), first, AgentTask("only-one"), human)
+          .zipPar(client.submitTurn(TurnSubmit.Target.Existing(two.id), second, AgentTask("only-two"), human))
         firstCapture <- client.providerRequest(one.id)
         secondCapture <- client.providerRequest(two.id)
         bodies <- seen.get
         _ <- client.close
-        observer <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
+        observer <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         retained <- observer.providerRequest(one.id)
         sessions <- observer.listSessions
       } yield {
@@ -895,12 +977,12 @@ final class ServerSubmissionSuite extends FunSuite {
           }
         )
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("diagnostic-failures")))
-        _ <- backend.submit(human, session.id, first, "success")
+        session <- seed(backend, human, Some(SessionId.unsafe("diagnostic-failures")))
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "success")
         before <- backend.providerRequest(session.id)
-        failed <- backend.submit(human, session.id, first, "typed-failure")
+        failed <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "typed-failure")
         typed <- backend.providerRequest(session.id)
-        defect <- backend.submit(human, session.id, first, "defect-failure")
+        defect <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "defect-failure")
         after <- backend.providerRequest(session.id)
       } yield {
         assert(failed.isInstanceOf[TurnOutcome.Failed]); assert(defect.isInstanceOf[TurnOutcome.Failed])
@@ -925,12 +1007,12 @@ final class ServerSubmissionSuite extends FunSuite {
           .open(root, Some(path), Some(root))
           .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(_ => ZIO.succeed(answer))) ++ tools)
           .provideEnvironment(ZEnvironment(owner))
-        session <- app.configured.get.create(human, Some(SessionId.unsafe("no-stale-capture")))
-        _ <- app.configured.get.submit(human, session.id, first, "captured")
+        session <- seed(app.configured.get, human, Some(SessionId.unsafe("no-stale-capture")))
+        _ <- app.configured.get.submit(human, TurnSubmit.Target.Existing(session.id), first, "captured")
         before <- app.configured.get.providerRequest(session.id)
-        _ <- app.configured.get.submit(human, session.id, second, "no-provider")
+        _ <- app.configured.get.submit(human, TurnSubmit.Target.Existing(session.id), second, "no-provider")
         cleared <- app.configured.get.providerRequest(session.id)
-        _ <- app.configured.get.submit(human, session.id, first, "captured-again")
+        _ <- app.configured.get.submit(human, TurnSubmit.Target.Existing(session.id), first, "captured-again")
         _ <- owner.close(Exit.unit)
         restarted <- ServerApplication
           .open(root, Some(path), Some(root))
@@ -949,15 +1031,18 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         app <- application(_ => ZIO.succeed(answer))
         backend = app.configured.get
-        session <- backend.create(human, Some(SessionId.unsafe("capture-limits")))
-        _ <- backend.submit(human, session.id, first, "small")
+        session <- seed(backend, human, Some(SessionId.unsafe("capture-limits")))
+        _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "small")
         valid <- backend.providerRequest(session.id)
         turnId = ujson.read(valid.toJson)("providerRequest")("turnId").str
         path = Path.of("debug", s"$turnId-request.json")
         _ <- ZIO.attemptBlocking(Files.writeString(path, "x" * (DiagnosticsRequest.MaxCaptureBytes + 1)))
         large <- backend.providerRequest(session.id).either
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+        client <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         oversizedReply <- client.providerRequest(session.id).either
         stillConnected <- client.listSessions
         _ <- ZIO.attemptBlocking(Files.writeString(path, "{broken json"))
@@ -1014,7 +1099,7 @@ final class ServerSubmissionSuite extends FunSuite {
                 .Request(
                   Json.Str("init"),
                   Initialize.method,
-                  Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, clientName, None)
+                  Initialize.Params(clientName, None.map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
                 )
                 .toJson,
               viewer
@@ -1040,7 +1125,7 @@ final class ServerSubmissionSuite extends FunSuite {
             .Request(
               Json.Str("init"),
               Initialize.method,
-              Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "operator", Some(human))
+              Initialize.Params("operator", Some(human).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
             )
             .toJson,
           connection
@@ -1086,7 +1171,7 @@ final class ServerSubmissionSuite extends FunSuite {
         _ <- rpc.disconnect(uninitialized)
       } yield {
         assertEquals(decode[JsonRpc.Failure](before).error.code, ErrorCode.Unauthorized)
-        // Blank identities are rejected by the existing AgentId codec and remain uninitialized.
+        // Blank identities are rejected by the UserId codec and remain uninitialized.
         replies.foreach { case (initialized, rejected) =>
           initialized
             .fromJson[JsonRpc.Success[Initialize.Result]]
@@ -1255,11 +1340,7 @@ final class ServerSubmissionSuite extends FunSuite {
           ) *> replies.take
         _ <- send(
           Initialize.method,
-          Initialize
-            .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", Some(human))
-            .toJsonAST
-            .toOption
-            .get
+          Initialize.Params("test", Some(UserId("local-human"))).toJsonAST.toOption.get
         )
         id = BlobId.fresh()
         begun <- send(BlobsUpload.method, (BlobsUpload.Params.Begin(id, 3): BlobsUpload.Params).toJsonAST.toOption.get)
@@ -1337,11 +1418,7 @@ final class ServerSubmissionSuite extends FunSuite {
           ) *> replies.take
         initialized <- send(
           Initialize.method,
-          Initialize
-            .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "web-test", Some(human))
-            .toJsonAST
-            .toOption
-            .get
+          Initialize.Params("web-test", Some(UserId("local-human"))).toJsonAST.toOption.get
         )
         before <- send(ProvidersList.method, Json.Obj())
         started <- send(ProvidersLoginStart.method, ProvidersLoginStart.Params("account").toJsonAST.toOption.get)
@@ -1471,8 +1548,8 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         backend = app.configured.get
         warmed <- backend.runtime.resolve(second)
-        session <- backend.create(human, Some(SessionId.unsafe("live-login")))
-        before <- backend.submit(human, session.id, first, "before login")
+        session <- seed(backend, human, Some(SessionId.unsafe("live-login")))
+        before <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "before login")
         owner = java.util.UUID.randomUUID()
         login <- backend.providers.start(owner, "account")
         state = java.net.URI
@@ -1489,7 +1566,7 @@ final class ServerSubmissionSuite extends FunSuite {
             s"http://localhost:1455/auth/callback?code=synthetic-code&state=$state"
           )
         )
-        after <- backend.submit(human, session.id, second, "after login")
+        after <- backend.submit(human, TurnSubmit.Target.Existing(session.id), second, "after login")
         rebound <- backend.runtime.resolve(second)
         sent <- headers.get
         stored <- app.master.loadSession(session.id)
@@ -1593,6 +1670,171 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
+  test("one user switches owned actors without reconnecting; ownership and authorship precede execution") {
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1).as(answer))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        connection <- rpc.openConnection
+        initialized <- initializeUpload(rpc, connection, Some(AgentId("user-fabio")))
+        info = decode[JsonRpc.Success[Initialize.Result]](initialized).result
+        chat = AgentId("user-fabio")
+        website = AgentId("web-user-fabio")
+        send = (method: String, params: Json) =>
+          rpc.handle(JsonRpc.Request(Json.Str("identity"), method, params).toJson, connection).map(_.get)
+        turn <- send(
+          TurnSubmit.method,
+          TurnSubmit.Params(TurnSubmit.Target.New(), first, AgentTask("chat"), chat).toJsonAST.toOption.get
+        )
+        session = decode[JsonRpc.Success[TurnOutcome]](turn).result.asInstanceOf[TurnOutcome.Succeeded].session
+        secondTurn <- send(
+          TurnSubmit.method,
+          TurnSubmit
+            .Params(TurnSubmit.Target.Existing(session.id), first, AgentTask("website"), website)
+            .toJsonAST
+            .toOption
+            .get
+        )
+        input = Message(MessageData(website, None, java.time.Instant.EPOCH, Message.User("independent")))
+        invoked <- send(AgentsInvoke.method, AgentsInvoke.Params(first, input, website).toJsonAST.toOption.get)
+        stored <- app.master.listMessages
+        invalidActors <- ZIO.foreach(List(AgentId("user-bob"), first)) { actor =>
+          ZIO.foreach(
+            List(
+              TurnSubmit.method -> TurnSubmit
+                .Params(TurnSubmit.Target.New(), first, AgentTask("rejected"), actor)
+                .toJsonAST
+                .toOption
+                .get,
+              TurnSubmit.method -> TurnSubmit
+                .Params(TurnSubmit.Target.Existing(session.id), first, AgentTask("rejected"), actor)
+                .toJsonAST
+                .toOption
+                .get,
+              AgentsInvoke.method -> AgentsInvoke.Params(first, input, actor).toJsonAST.toOption.get
+            )
+          ) { case (method, params) => send(method, params) }
+        }
+        forged <- send(AgentsInvoke.method, AgentsInvoke.Params(first, input, chat).toJsonAST.toOption.get)
+        missing <- send(TurnSubmit.method, Json.Obj())
+        foreign <- rpc.openConnection
+        _ <- initializeUpload(rpc, foreign, Some(AgentId("user-bob")))
+        stolen <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("stolen"),
+              TurnSubmit.method,
+              TurnSubmit.Params(TurnSubmit.Target.New(), first, AgentTask("stolen"), chat)
+            )
+            .toJson,
+          foreign
+        )
+        sessions <- app.master.listSessions
+        history <- app.master.loadSession(session.id)
+        count <- calls.get
+        _ <- rpc.disconnect(connection)
+        _ <- rpc.disconnect(foreign)
+      } yield {
+        assertEquals(info.identity, Identity(UserId("fabio"), Role.Operator, Chunk(chat, website)))
+        assert(decode[JsonRpc.Success[TurnOutcome]](turn).result.isInstanceOf[TurnOutcome.Succeeded])
+        assert(decode[JsonRpc.Success[TurnOutcome]](secondTurn).result.isInstanceOf[TurnOutcome.Succeeded])
+        assertEquals(history.messages.filter(_.payload.role == "user").map(_.agentId), Chunk(chat, website))
+        assertEquals(stored.find(_.id == input.id), Some(input))
+        assertEquals(decode[JsonRpc.Success[Message]](invoked).result.agentId, first)
+        invalidActors.flatten.foreach(reply =>
+          assertEquals(decode[JsonRpc.Failure](reply).error.code, ErrorCode.Forbidden)
+        )
+        assertEquals(decode[JsonRpc.Failure](forged).error.code, ErrorCode.Forbidden)
+        assertEquals(decode[JsonRpc.Failure](missing).error, JsonRpc.Error.InvalidParams)
+        assertEquals(decode[JsonRpc.Failure](stolen.get).error.code, ErrorCode.Forbidden)
+        assertEquals(sessions.size, 1)
+        assertEquals(count, 3)
+      }
+    })
+  }
+
+  test("new submit rejects invalid recipient/head before allocation and existing never creates") {
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1).as(answer))
+        backend = app.configured.get
+        name = SessionId.unsafe("not-created")
+        invalidRecipient <- backend.submit(human, TurnSubmit.Target.New(Some(name)), AgentId("missing"), "no").either
+        invalidHead <- backend
+          .submit(human, TurnSubmit.Target.New(Some(name)), first, "no", Some(MessageId.sha256("head")))
+          .either
+        absent <- backend.submit(human, TurnSubmit.Target.Existing(name), first, "no").either
+        sessions <- app.master.listSessions
+        messages <- app.master.listMessages
+        count <- calls.get
+      } yield {
+        assertEquals(invalidRecipient.swap.toOption.get.code, ErrorCode.Rejected)
+        assertEquals(invalidHead, Left(JsonRpc.Error.InvalidParams))
+        assertEquals(absent.swap.toOption.get.code, ErrorCode.NotFound)
+        assertEquals(sessions.size, 0)
+        assertEquals(messages.size, 0)
+        assertEquals(count, 0)
+      }
+    })
+  }
+
+  test("new named submit returns failed execution's session; duplicate New conflicts and Existing continues") {
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ =>
+          calls.updateAndGet(_ + 1).map(n => if n == 1 then Response.status(Status.InternalServerError) else answer)
+        )
+        backend = app.configured.get
+        name = SessionId.unsafe("new-failure")
+        failed <- backend.submit(human, TurnSubmit.Target.New(Some(name)), first, "keep once")
+        duplicate <- backend.submit(human, TurnSubmit.Target.New(Some(name)), first, "never append").either
+        continued <- backend.submit(human, TurnSubmit.Target.Existing(name), first, "continue")
+        stored <- app.master.loadSession(name)
+        sessions <- app.master.listSessions
+        count <- calls.get
+      } yield {
+        val failure = failed.asInstanceOf[TurnOutcome.Failed]
+        assertEquals(failure.acceptance, PromptAcceptance.Accepted)
+        assertEquals(failure.session.map(_.id), Some(name))
+        assertEquals(duplicate.swap.toOption.get.code, ErrorCode.Conflict)
+        assert(continued.isInstanceOf[TurnOutcome.Succeeded])
+        assertEquals(
+          stored.messages.filter(_.payload.role == "user").map(_.payload.contentStr),
+          Chunk("keep once", "continue")
+        )
+        assertEquals(sessions.size, 1)
+        assertEquals(count, 2)
+      }
+    })
+  }
+
+  test("generated New submissions each execute once and sessions.create is no longer advertised or handled") {
+    run(ZIO.scoped {
+      for {
+        calls <- Ref.make(0)
+        app <- application(_ => calls.update(_ + 1).as(answer))
+        backend = app.configured.get
+        outcomes <- ZIO.foreachPar(1 to 2)(n => backend.submit(human, TurnSubmit.Target.New(), first, s"prompt-$n"))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        connection <- rpc.openConnection
+        initialized <- initializeUpload(rpc, connection, Some(human))
+        removed <- rpc.handle(JsonRpc.Request(Json.Str("removed"), "sessions.create", Empty()).toJson, connection)
+        sessions <- app.master.listSessions
+        count <- calls.get
+        _ <- rpc.disconnect(connection)
+      } yield {
+        assertEquals(outcomes.map(_.asInstanceOf[TurnOutcome.Succeeded].session.id).toSet.size, 2)
+        assertEquals(sessions.size, 2)
+        assertEquals(count, 2)
+        assert(!decode[JsonRpc.Success[Initialize.Result]](initialized).result.methods.contains("sessions.create"))
+        assertEquals(decode[JsonRpc.Failure](removed.get).error, JsonRpc.Error.MethodNotFound)
+      }
+    })
+  }
+
   private def initializeUpload(
       rpc: OrchestratorRpc,
       connection: OrchestratorRpc.Connection,
@@ -1604,7 +1846,10 @@ final class ServerSubmissionSuite extends FunSuite {
           .Request(
             Json.Str("init"),
             Initialize.method,
-            Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", claimed)
+            Json.Obj(
+              Chunk("clientName" -> Json.Str("test")) ++ Chunk
+                .fromIterable(claimed.map(id => "userId" -> Json.Str(AgentId.value(id).stripPrefix("user-"))))
+            )
           )
           .toJson,
         connection
@@ -1696,4 +1941,14 @@ final class ServerSubmissionSuite extends FunSuite {
       .run(effect.timeoutFail(new AssertionError("Submission test timed out"))(25.seconds))
       .getOrThrowFiberFailure()
   }
+  private def seed(
+      backend: ServerApplication.Configured,
+      author: AgentId,
+      name: Option[SessionId]
+  ): IO[YallmoError, SessionSnapshot] =
+    for {
+      _ <- backend.runtime.registerUser(author)
+      session <- backend.assembly.submission(author, None).create(name.map(_.value))
+    } yield SessionSnapshot.from(session)
+
 }

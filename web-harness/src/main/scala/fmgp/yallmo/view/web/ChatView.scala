@@ -48,7 +48,7 @@ private[web] object ChatView {
         typ := "button",
         "New conversation",
         idAttr := "new-conversation",
-        disabled <-- state.map(s => !s.enabled || s.creating || s.pending.nonEmpty || s.voiceBusy),
+        disabled <-- state.map(s => !s.enabled || s.pending.nonEmpty || s.voiceBusy),
         onClick --> (_ => { model.newConversation(name.now()); openChat() })
       ),
       detailsTag(
@@ -58,14 +58,14 @@ private[web] object ChatView {
           value <-- name.signal,
           onInput.mapToValue --> name.writer,
           placeholder := "Automatic name",
-          disabled <-- state.map(s => s.creating || s.pending.nonEmpty)
+          disabled <-- state.map(s => s.pending.nonEmpty)
         )
       ),
       button(
         typ := "button",
         "Unsent draft",
         hidden <-- state.map(s => s.active.isEmpty || s.conversations("").draft.isEmpty),
-        disabled <-- state.map(_.creating),
+
         onClick --> (_ => { model.resume(""); openChat() })
       ),
       div(
@@ -86,7 +86,7 @@ private[web] object ChatView {
             button(
               typ := "button",
               cls <-- state.map(s => if s.active == id then "session selected" else "session"),
-              disabled <-- state.map(_.creating),
+
               aria.current <-- state.map(s => if s.active == id then "true" else "false"),
               span(cls := "session-name", id),
               span(cls := "muted", child.text <-- summary.map(s => s"${s.messageCount} messages")),
@@ -108,7 +108,7 @@ private[web] object ChatView {
       aria.label := "Configured agent",
       title := "Changing agent resets provider continuation, not history.",
       disabled <-- state.combineWith(busy).map { case (s, running) =>
-        running || s.creating || s.currentPending.nonEmpty
+        running || s.currentPending.nonEmpty
       },
       onChange.mapToValue --> model.selectAgent,
       // Options must exist before restoring the value, including after catalog changes.
@@ -157,7 +157,7 @@ private[web] object ChatView {
         title := (if voice.supported then "Record up to 30 seconds; Space: stop and transcribe · Esc: discard"
                   else "Microphone capture requires HTTPS or localhost and AudioWorklet support"),
         disabled <-- state.combineWith(model.state.signal).map { (v, c) =>
-          !voice.supported || !v.available || c.creating || c.pending.nonEmpty ||
+          !voice.supported || !v.available || c.pending.nonEmpty ||
           (v.busy && v.phase != VoicePhase.Recording)
         },
         // Prevent mouse focus from moving the textarea cursor before it is captured.
@@ -233,7 +233,7 @@ private[web] object ChatView {
           typ := "button",
           "Reload history",
           idAttr := "reload-history",
-          disabled <-- state.map(s => s.active.isEmpty || s.creating || s.currentPending.nonEmpty),
+          disabled <-- state.map(s => s.active.isEmpty || s.currentPending.nonEmpty),
           onClick --> (_ => model.reload())
         )
       ),
@@ -328,15 +328,14 @@ private[web] object ChatView {
           cls := "composer-actions",
           div(
             cls := "composer-feedback",
-            hidden <-- state.map(s => !s.creating && s.pending.isEmpty && !s.needsAgent),
+            hidden <-- state.map(s => s.pending.isEmpty && !s.needsAgent),
             span(
               cls := "muted",
               role := "status",
               aria.live := "polite",
-              hidden <-- state.map(s => !s.creating && s.pending.isEmpty),
+              hidden <-- state.map(s => s.pending.isEmpty),
               child.text <-- state.map { s =>
-                if s.creating then "Creating conversation…"
-                else if s.currentPending.nonEmpty then "Waiting for the terminal result…"
+                if s.currentPending.nonEmpty then "Waiting for the terminal result…"
                 else if s.pending.nonEmpty then "Waiting for another conversation…"
                 else ""
               }

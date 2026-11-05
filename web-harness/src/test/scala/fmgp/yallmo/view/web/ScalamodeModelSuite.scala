@@ -13,12 +13,11 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class ScalamodeModelSuite extends FunSuite {
-  private val human = AgentId("human")
+  private val human = AgentId("web-user-human")
   private val agent = AgentId("assistant")
   private val info = Initialize.Result(
-    Version,
     "test",
-    Identity(human, Role.Operator),
+    Identity(UserId("human"), Role.Operator, Chunk(UserId.chatAgent(UserId("human")), human)),
     List(AgentsInvoke.method),
     Nil,
     MaxBlobChunkBytes,
@@ -192,7 +191,7 @@ final class ScalamodeModelSuite extends FunSuite {
   test("viewers, missing methods, unknown agents, empty and oversized code never invoke") {
     val h = new Harness
     val variants = List(
-      info.copy(identity = Identity(human, Role.Viewer)),
+      info.copy(identity = Identity(UserId("human"), Role.Viewer, Chunk(UserId.chatAgent(UserId("human")), human))),
       info.copy(methods = Nil),
       info.copy(configuredAgentIds = Some(Chunk.empty))
     )

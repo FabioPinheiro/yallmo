@@ -12,11 +12,10 @@ import java.time.Instant
 import zio.Chunk
 
 final class VoiceSuite extends FunSuite {
-  private val human = AgentId("human")
+  private val human = AgentId("web-user-human")
   private val info = Initialize.Result(
-    Version,
     "test",
-    Identity(human, Role.Operator),
+    Identity(UserId("human"), Role.Operator, Chunk(UserId.chatAgent(UserId("human")), human)),
     List(BlobsUpload.method, AgentsInvoke.method),
     Nil,
     MaxBlobChunkBytes,
@@ -104,7 +103,7 @@ final class VoiceSuite extends FunSuite {
     val recorder = new Recorder
     val voice = model(chat, new Rpc, recorder, mutable.ArrayBuffer.empty)
     val unavailable = List(
-      info.copy(identity = Identity(human, Role.Viewer)),
+      info.copy(identity = Identity(UserId("human"), Role.Viewer, Chunk(UserId.chatAgent(UserId("human")), human))),
       info.copy(methods = List(AgentsInvoke.method)),
       info.copy(methods = List(BlobsUpload.method)),
       info.copy(configuredAgentIds = None),
@@ -248,7 +247,6 @@ final class VoiceSuite extends FunSuite {
     chat.newConversation("")
     chat.draft("still editable")
     assertEquals(chat.state.now().pending, None)
-    assert(!chat.state.now().creating)
     assertEquals(chat.state.now().current.draft, "still editable")
     assertEquals(chat.state.now().sendBlockedReason, Some("Finish or discard dictation before sending."))
   }

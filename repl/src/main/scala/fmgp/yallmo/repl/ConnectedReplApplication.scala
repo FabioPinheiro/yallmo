@@ -34,12 +34,16 @@ final class ConnectedReplApplication private (
     ConnectedReplApplication.make(client, userId, Some(id), initialState.logLevel)
 
   private def withSnapshot(state: ReplState, stored: SessionSnapshot): ReplState =
-    state.copy(sessionId = Some(stored.id.value), remoteHeadMessageId = stored.messages.lastOption.map(_.id))
+    state.copy(
+      sessionId = Some(stored.id.value),
+      remoteHeadMessageId = stored.messages.lastOption.map(_.id),
+      remoteNewSessionName = None,
+      remoteSubmissionUncertain = false
+    )
 
   private def remoteFailure(
       state: ReplState,
-      error: OrchestratorClient.Error,
-      creating: Boolean = false
+      error: OrchestratorClient.Error
   ): ReplTransition = {
     val message = error match {
       case OrchestratorClient.Error.Remote(error) if error.code == ErrorCode.Busy =>
@@ -50,76 +54,81 @@ final class ConnectedReplApplication private (
           if Set(ErrorCode.Unauthorized, ErrorCode.Forbidden, ErrorCode.NotFound, ErrorCode.Rejected, -32601, -32602)
             .contains(error.code) =>
         "Remote request rejected. Check session, configured agent and negotiated permissions; nothing was retried."
-      case _ if creating =>
-        "Remote create outcome is unknown. Inspect /session list before manually creating or submitting again; no automatic retry."
       case _ => ConnectedReplApplication.Uncertain
     }
-    ReplTransition(state, Chunk(ReplEvent.AgentFailed(message)))
+    val uncertain = error match {
+      case OrchestratorClient.Error.Remote(error) => !TurnSubmit.isKnownRejection(error.code)
+      case _                                      => true
+    }
+    ReplTransition(state.copy(remoteSubmissionUncertain = uncertain), Chunk(ReplEvent.AgentFailed(message)))
   }
 
-  private def create(state: ReplState, name: Option[String]): UIO[ReplTransition] =
+  /** Prepare a local draft; no remote session exists until its first submit. */
+  private def newConversation(state: ReplState, name: Option[String]): UIO[ReplTransition] =
     ZIO
-      .fromEither(name match {
-        case None        => Right(None)
-        case Some(value) => SessionId.from(value).map(Some(_))
-      })
-      .foldZIO(
-        _ => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.SessionFailed("Invalid session ID.")))),
-        id =>
-          client
-            .createSession(id)
-            .fold(
-              error => remoteFailure(state, error, creating = true),
-              stored =>
-                ReplTransition(
-                  withSnapshot(state, stored).copy(remoteResetContinuation = false),
-                  Chunk(ReplEvent.SessionReset)
-                )
-            )
+      .fromEither(
+        name.fold[Either[String, Option[SessionId]]](Right(None))(value => SessionId.from(value).map(Some(_)))
+      )
+      .fold(
+        _ => ReplTransition(state, Chunk(ReplEvent.SessionFailed("Invalid session ID."))),
+        parsed =>
+          ReplTransition(
+            state.copy(
+              sessionId = None,
+              remoteHeadMessageId = None,
+              remoteNewSessionName = parsed,
+              remoteSubmissionUncertain = false,
+              remoteResetContinuation = false
+            ),
+            Chunk(ReplEvent.SessionReset)
+          )
       )
 
-  private def prompt(state: ReplState, text: String): UIO[ReplTransition] = selectedAgentId match {
-    case None =>
-      ZIO.succeed(
-        ReplTransition(
-          state,
-          Chunk(
-            ReplEvent.AgentFailed(
-              "No configured agent selected. Choose --agent <id> or press Esc, a before submitting a prompt."
+  private def prompt(state: ReplState, text: String): UIO[ReplTransition] =
+    if state.remoteSubmissionUncertain then
+      ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.AgentFailed(ConnectedReplApplication.Uncertain))))
+    else
+      selectedAgentId match {
+        case None =>
+          ZIO.succeed(
+            ReplTransition(
+              state,
+              Chunk(
+                ReplEvent.AgentFailed(
+                  "No configured agent selected. Choose --agent <id> or press Esc, a before submitting a prompt."
+                )
+              )
             )
           )
-        )
-      )
-    case Some(agent) =>
-      // Retain create's returned ID before the single submit attempt, including all failure outcomes.
-      val prepared = if state.sessionId.nonEmpty then ZIO.succeed(ReplTransition(state, Chunk.empty))
-      else create(state, None)
-      prepared.flatMap { created =>
-        if created.state.sessionId.isEmpty then ZIO.succeed(created)
-        else
+        case Some(agent) =>
+          val target = state.sessionId match {
+            case Some(id) => SessionId.from(id).map(TurnSubmit.Target.Existing(_))
+            case None     => Right(TurnSubmit.Target.New(state.remoteNewSessionName))
+          }
           ZIO
-            .fromEither(SessionId.from(created.state.sessionId.get))
+            .fromEither(target)
             .foldZIO(
-              _ => ZIO.succeed(ReplTransition(created.state, Chunk(ReplEvent.SessionFailed("Invalid session ID.")))),
-              id =>
+              _ => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.SessionFailed("Invalid session ID.")))),
+              destination =>
                 client
                   .submitTurn(
-                    id,
+                    destination,
                     agent,
                     AgentTask(text),
-                    created.state.remoteHeadMessageId,
-                    created.state.remoteResetContinuation
+                    userId,
+                    state.remoteHeadMessageId,
+                    state.remoteResetContinuation
                   )
                   .fold(
-                    error => remoteFailure(created.state, error),
+                    error => remoteFailure(state, error),
                     {
                       case TurnOutcome.Succeeded(stored, _, messages) =>
                         ReplTransition(
-                          withSnapshot(created.state, stored).copy(remoteResetContinuation = false),
+                          withSnapshot(state, stored).copy(remoteResetContinuation = false),
                           Chunk(ReplEvent.SnapshotDelta(messages))
                         )
                       case TurnOutcome.Failed(acceptance, stored, _) =>
-                        val retained = stored.fold(created.state)(withSnapshot(created.state, _))
+                        val retained = stored.fold(state)(withSnapshot(state, _))
                         val message = acceptance match {
                           case PromptAcceptance.Accepted =>
                             "Remote execution failed after prompt acceptance; the prompt remains in history."
@@ -127,18 +136,19 @@ final class ConnectedReplApplication private (
                           case PromptAcceptance.Unknown     => ConnectedReplApplication.Uncertain
                         }
                         ReplTransition(
-                          retained.copy(remoteResetContinuation = if acceptance == PromptAcceptance.Accepted then false
-                          else retained.remoteResetContinuation),
+                          retained.copy(
+                            remoteResetContinuation = if acceptance == PromptAcceptance.Accepted then false
+                            else retained.remoteResetContinuation,
+                            remoteSubmissionUncertain = acceptance == PromptAcceptance.Unknown
+                          ),
                           stored.fold(Chunk.empty[ReplEvent])(s =>
                             Chunk(ReplEvent.SnapshotTranscript(s.messages, Some(s.id.value)))
-                          ) :+
-                            ReplEvent.AgentFailed(message)
+                          ) :+ ReplEvent.AgentFailed(message)
                         )
                     }
                   )
             )
       }
-  }
 
   def submit(state: ReplState, line: String): UIO[ReplTransition] = {
     def emit(event: ReplEvent) = ZIO.succeed(ReplTransition(state, Chunk(event)))
@@ -196,7 +206,7 @@ final class ConnectedReplApplication private (
             case ReplCommand.Session(SessionCommand.Resume(id)) => snapshot(id, resume = true)
             case ReplCommand.History                            =>
               state.sessionId.fold(emit(ReplEvent.SnapshotTranscript(Chunk.empty, None)))(snapshot(_, resume = false))
-            case ReplCommand.NewSession(name) if canSubmit => create(state, name)
+            case ReplCommand.NewSession(name) if canSubmit => newConversation(state, name)
             case _                                         => unsupported
           }
         case Right(ReplInput.Prompt(value)) if canSubmit => prompt(state, value.value)
@@ -210,13 +220,13 @@ object ConnectedReplApplication {
   val Notice =
     "Connected READ-ONLY: session list/resume/history and agent preference only. User name is unauthenticated metadata. No local provider configuration or voice."
   val OperatorNotice =
-    "Connected trusted local, unauthenticated: prompts and /new execute on the configured server. Claimed user names are impersonable; never expose publicly. No local provider configuration or voice."
+    "Connected trusted local, unauthenticated: prompts execute on the configured server; /new prepares a local draft. Claimed user names are impersonable; never expose publicly. No local provider configuration or voice."
   val Unsupported =
     "Unavailable in connected read-only mode: prompts, /new, /tools, /debug, providers/login and voice/TTS."
   val OperatorUnsupported =
     "Unavailable remotely: /tools, /debug print|export and voice/TTS. Provider login, when advertised, is in Esc, p. /debug request requires server diagnostic permission."
   val Uncertain =
-    "Remote outcome is unknown; work may still complete. Refresh /history (or reconnect and resume the known session) before any manual resend. No automatic retry or cancellation."
+    "Remote outcome is unknown; work may still complete. Inspect /session list and resume the saved session (or refresh /history for a known session) before any manual resend. No automatic retry or cancellation."
   private[repl] val Commands = Set("/help", "/history", "/session", "/log", "/exit")
   private[repl] def commands(canSubmit: Boolean, canReadRequests: Boolean = false): Set[String] =
     Commands ++ Option.when(canSubmit)("/new") ++ Option.when(canReadRequests)("/debug")
@@ -260,7 +270,7 @@ object ConnectedReplApplication {
         .map(_ => new ConnectedProviderService(client))
       executable = capabilities.exists(info =>
         info.identity.role == Role.Operator &&
-          info.methods.contains(SessionsCreate.method) && info.methods.contains(TurnSubmit.method)
+          info.methods.contains(TurnSubmit.method)
       )
     } yield new ConnectedReplApplication(
       client,

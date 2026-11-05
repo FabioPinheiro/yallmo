@@ -71,27 +71,27 @@ final class YallmoProtocolSuite extends FunSuite {
   }
 
   test("initialize is an ordinary JSON-RPC request with typed named params") {
-    val request = JsonRpc.Request(Json.Str("r1"), Initialize.method, Initialize.Params(Version, "repl"))
+    val request = JsonRpc.Request(Json.Str("r1"), Initialize.method, Initialize.Params("repl"))
     assertWire(
       request,
-      """{"id":"r1","method":"initialize","params":{"protocolVersion":1,"clientName":"repl"},"jsonrpc":"2.0"}"""
+      """{"id":"r1","method":"initialize","params":{"clientName":"repl"},"jsonrpc":"2.0"}"""
     )
   }
 
   test("initialize optional human label roundtrips and absent/null fields preserve anonymous clients") {
     assertWire(
-      Initialize.Params(Version, "repl", Some(agentId)),
-      """{"protocolVersion":1,"clientName":"repl","userId":"agent1"}"""
+      Initialize.Params("repl", Some(agentId).map(id => UserId(AgentId.value(id).stripPrefix("user-")))),
+      """{"clientName":"repl","userId":"agent1"}"""
     )
     assertEquals(
-      """{"protocolVersion":1,"clientName":"browser"}""".fromJson[Initialize.Params],
-      Right(Initialize.Params(Version, "browser"))
+      """{"clientName":"browser"}""".fromJson[Initialize.Params],
+      Right(Initialize.Params("browser"))
     )
     assertEquals(
-      """{"protocolVersion":1,"clientName":"browser","userId":null}""".fromJson[Initialize.Params],
-      Right(Initialize.Params(Version, "browser"))
+      """{"clientName":"browser","userId":null}""".fromJson[Initialize.Params],
+      Right(Initialize.Params("browser"))
     )
-    assert("""{"protocolVersion":1,"clientName":"repl","userId":" "}""".fromJson[Initialize.Params].isLeft)
+    assert("""{"clientName":"repl","userId":" "}""".fromJson[Initialize.Params].isLeft)
   }
 
   test("parameterless queries use an empty object, not an invented tagged command") {
@@ -103,10 +103,10 @@ final class YallmoProtocolSuite extends FunSuite {
   test("agents.invoke reuses full Message input/output without session fields") {
     val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))
     val output = Message(MessageData(agentId, Some(input.id), Instant.EPOCH, Message.Assistant("answer")))
-    val params = AgentsInvoke.Params(agentId, input)
+    val params = AgentsInvoke.Params(agentId, input, input.agentId)
     assertWire(
       JsonRpc.Request(Json.Str("invoke"), AgentsInvoke.method, params),
-      s"""{"id":"invoke","method":"agents.invoke","params":{"agentId":"agent1","input":${input.toJson}},"jsonrpc":"2.0"}"""
+      s"""{"id":"invoke","method":"agents.invoke","params":{"agentId":"agent1","input":${input.toJson},"actingAgentId":"human"},"jsonrpc":"2.0"}"""
     )
     assertWire(
       JsonRpc.Success[AgentsInvoke.Result](Json.Str("invoke"), output),
@@ -114,15 +114,15 @@ final class YallmoProtocolSuite extends FunSuite {
     )
     val audio = Message(input.data.copy(payload = MessagePayload.AudioAttachment(blobId, AudioFormat.Wav)))
     assertEquals(
-      AgentsInvoke.Params(agentId, audio).toJson.fromJson[AgentsInvoke.Params],
-      Right(AgentsInvoke.Params(agentId, audio))
+      AgentsInvoke.Params(agentId, audio, audio.agentId).toJson.fromJson[AgentsInvoke.Params],
+      Right(AgentsInvoke.Params(agentId, audio, audio.agentId))
     )
     assert(!params.toJson.contains("sessionId"))
   }
 
   test("agents.invoke rejects legacy/session controls, missing input and mismatched message hashes") {
     val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))
-    val params = AgentsInvoke.Params(agentId, input)
+    val params = AgentsInvoke.Params(agentId, input, input.agentId)
     List("\"sessionId\":\"s1\"", "\"expectedHead\":null", "\"resetContinuation\":false").foreach { extra =>
       val json = params.toJson.dropRight(1) + "," + extra + "}"
       assert(json.fromJson[AgentsInvoke.Params].isLeft)
@@ -132,23 +132,24 @@ final class YallmoProtocolSuite extends FunSuite {
   }
 
   test("turn.submit uses an optional expected-head message ID") {
-    val params = TurnSubmit.Params(sessionId, agentId, AgentTask("Hello"))
+    val params =
+      TurnSubmit.Params(TurnSubmit.Target.Existing(sessionId), agentId, AgentTask("Hello"), AgentId("user-human"))
     assertWire(
       JsonRpc.Request(Json.Str("r3"), TurnSubmit.method, params),
-      """{"id":"r3","method":"turn.submit","params":{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"resetContinuation":false},"jsonrpc":"2.0"}"""
+      """{"id":"r3","method":"turn.submit","params":{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","resetContinuation":false},"jsonrpc":"2.0"}"""
     )
     assertWire(
       params.copy(expectedHead = Some(head)),
-      s"""{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":"${MessageId
+      s"""{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","expectedHead":"${MessageId
           .value(head)}","resetContinuation":false}"""
     )
     assertEquals(
-      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"}}"""
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human"}"""
         .fromJson[TurnSubmit.Params],
       Right(params)
     )
     assertEquals(
-      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":null}"""
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","expectedHead":null}"""
         .fromJson[TurnSubmit.Params],
       Right(params)
     )
@@ -156,8 +157,14 @@ final class YallmoProtocolSuite extends FunSuite {
 
   test("turn.submit resetContinuation is an explicit boolean defaulting to false") {
     assertWire(
-      TurnSubmit.Params(sessionId, agentId, AgentTask("Hello"), resetContinuation = true),
-      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"resetContinuation":true}"""
+      TurnSubmit.Params(
+        TurnSubmit.Target.Existing(sessionId),
+        agentId,
+        AgentTask("Hello"),
+        AgentId("user-human"),
+        resetContinuation = true
+      ),
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","resetContinuation":true}"""
     )
   }
 
@@ -268,8 +275,6 @@ final class YallmoProtocolSuite extends FunSuite {
 
   test("read and administrative operation params are concrete derived DTOs") {
     assertWire(SessionsGet.Params(sessionId), """{"sessionId":"s1"}""")
-    assertWire(SessionsCreate.Params(), "{}")
-    assertWire(SessionsCreate.Params(Some(SessionId.unsafe("new-session"))), """{"name":"new-session"}""")
     assertWire(
       SessionsFork.Params(sessionId, Some(SessionId.unsafe("fork"))),
       """{"sourceSessionId":"s1","name":"fork"}"""
@@ -317,26 +322,35 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire[RunStatus](RunStatus.Running, "\"running\"")
     assertWire(
       Initialize.Result(
-        Version,
         "instance1",
-        Identity(AgentId("human"), Role.Operator),
+        Identity(UserId("human"), Role.Operator, Chunk(AgentId("human"), UserId.websiteAgent(UserId("human")))),
         List(SessionsList.method),
         Nil,
         MaxBlobChunkBytes
       ),
-      """{"protocolVersion":1,"serverInstanceId":"instance1","identity":{"id":"human","role":"operator"},"methods":["sessions.list"],"notifications":[],"maxBlobChunkBytes":65536}"""
+      """{"serverInstanceId":"instance1","identity":{"id":"human","role":"operator","agentIds":["human","web-user-human"]},"methods":["sessions.list"],"notifications":[],"maxBlobChunkBytes":65536}"""
     )
   }
 
-  test("initialize optional configured assistant IDs are omitted for old peers and roundtrip without private config") {
-    val old = Initialize.Result(Version, "instance1", Identity(agentId, Role.Viewer), Nil, Nil, MaxBlobChunkBytes)
-    assert(!old.toJson.contains("configuredAgentIds"))
-    val capable = old.copy(configuredAgentIds = Some(Chunk(agentId)))
+  test("initialize advertises configured assistant IDs without exposing private config") {
+    val viewer = Initialize.Result(
+      "instance1",
+      Identity(
+        UserId(AgentId.value(agentId).stripPrefix("user-")),
+        Role.Viewer,
+        Chunk(agentId, UserId.websiteAgent(UserId(AgentId.value(agentId).stripPrefix("user-"))))
+      ),
+      Nil,
+      Nil,
+      MaxBlobChunkBytes
+    )
+    assert(!viewer.toJson.contains("configuredAgentIds"))
+    val capable = viewer.copy(configuredAgentIds = Some(Chunk(agentId)))
     assertWire(
       capable,
-      """{"protocolVersion":1,"serverInstanceId":"instance1","identity":{"id":"agent1","role":"viewer"},"methods":[],"notifications":[],"maxBlobChunkBytes":65536,"configuredAgentIds":["agent1"]}"""
+      """{"serverInstanceId":"instance1","identity":{"id":"agent1","role":"viewer","agentIds":["agent1","web-user-agent1"]},"methods":[],"notifications":[],"maxBlobChunkBytes":65536,"configuredAgentIds":["agent1"]}"""
     )
-    assertEquals(old.toJson.fromJson[Initialize.Result], Right(old))
+    assertEquals(viewer.toJson.fromJson[Initialize.Result], Right(viewer))
   }
 
   test("disabled commands.get draft retains codec compatibility but is not activated") {
@@ -401,22 +415,24 @@ final class YallmoProtocolSuite extends FunSuite {
     assert("""{"agentId":" "}""".fromJson[ToolsList.Params].isLeft)
     assert("""{"blobId":"not-a-uuid","offset":0}""".fromJson[BlobsRead.Params].isLeft)
     assert("""{"sessionId":"s1","messageId":"sha256:bad"}""".fromJson[DiagnosticsMessage.Params].isLeft)
-    assert("""{"name":"../private"}""".fromJson[SessionsCreate.Params].isLeft)
+    assert("""{"kind":"new","name":"../private"}""".fromJson[TurnSubmit.Target].isLeft)
     assert("""{"sourceSessionId":"s1","expectedHead":"sha256:bad"}""".fromJson[SessionsFork.Params].isLeft)
     assert("""{"sourceSessionId":"s1","expectedHead":{"kind":"empty"}}""".fromJson[SessionsFork.Params].isLeft)
     assert(
-      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":"sha256:bad"}"""
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","expectedHead":"sha256:bad"}"""
         .fromJson[TurnSubmit.Params]
         .isLeft
     )
     assert(
-      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"expectedHead":{"kind":"empty"}}"""
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human","expectedHead":{"kind":"empty"}}"""
         .fromJson[TurnSubmit.Params]
         .isLeft
     )
     assert("\"maybe\"".fromJson[PromptAcceptance].isLeft)
     assert(
-      """{"agentId":"agent1","task":{"prompt":"Hello"}}""".fromJson[TurnSubmit.Params].isLeft
+      """{"agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human"}"""
+        .fromJson[TurnSubmit.Params]
+        .isLeft
     )
   }
 
@@ -441,6 +457,44 @@ final class YallmoProtocolSuite extends FunSuite {
     assert(!encoded.contains("private-item"))
     assert(!encoded.contains("private-ciphertext"))
     assertEquals(session.messages.head.payload, MessagePayload.Reasoning(Some("Public summary"), continuation))
+  }
+
+  test("authoring requests require an explicit acting agent and conversation target") {
+    assert("{}".fromJson[TurnSubmit.Params].isLeft)
+    assert(
+      """{"target":{"kind":"existing","sessionId":"s1"},"agentId":"agent1","task":{"prompt":"Hello"}}"""
+        .fromJson[TurnSubmit.Params]
+        .isLeft
+    )
+    val input = Message(MessageData(AgentId("user-human"), None, Instant.EPOCH, Message.User("hello")))
+    assert(s"""{"agentId":"agent1","input":${input.toJson}}""".fromJson[AgentsInvoke.Params].isLeft)
+    assert("""{"actingAgentId":" "}""".fromJson[TurnSubmit.Params].isLeft)
+  }
+
+  test("submit targets distinguish explicit new conversations from existing sessions") {
+    assertWire[TurnSubmit.Target](TurnSubmit.Target.New(), """{"kind":"new"}""")
+    assertWire[TurnSubmit.Target](TurnSubmit.Target.New(Some(sessionId)), """{"kind":"new","name":"s1"}""")
+    assertWire[TurnSubmit.Target](TurnSubmit.Target.Existing(sessionId), """{"kind":"existing","sessionId":"s1"}""")
+    List("{}", """{"kind":"other"}""", """{"kind":"existing"}""", """{"kind":"new","sessionId":"s1"}""").foreach(json =>
+      assert(json.fromJson[TurnSubmit.Target].isLeft)
+    )
+    assert(
+      """{"sessionId":"s1","agentId":"agent1","task":{"prompt":"Hello"},"actingAgentId":"user-human"}"""
+        .fromJson[TurnSubmit.Params]
+        .isLeft
+    )
+  }
+
+  test("initialize has one strict current contract, without application version fields") {
+    val params = Initialize.Params("client", Some(UserId("fabio")))
+    assertEquals(params.toJson, """{"clientName":"client","userId":"fabio"}""")
+    assert("""{"clientName":"client","protocolVersion":1}""".fromJson[Initialize.Params].isLeft)
+    assert("{}".fromJson[Initialize.Params].isLeft)
+    val result =
+      Initialize.Result("server", Identity(UserId("fabio"), Role.Viewer, Chunk.empty), Nil, Nil, MaxBlobChunkBytes)
+    assertEquals(result.toJson.fromJson[Initialize.Result], Right(result))
+    assert((result.toJson.dropRight(1) + ",\"protocolVersion\":1}").fromJson[Initialize.Result].isLeft)
+    assert(!result.toJson.contains("protocolVersion"))
   }
 
   private def assertWire[A: JsonCodec](value: A, expected: String): Unit = {

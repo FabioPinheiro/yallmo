@@ -1,7 +1,7 @@
 package fmgp.yallmo.repl
 
 import zio.*
-import fmgp.yallmo.model.AgentId
+import fmgp.yallmo.model.UserId
 import fmgp.yallmo.server.{OrchestratorClient, OrchestratorWSClient}
 import fmgp.yallmo.repl.terminal.TerminalRepl
 
@@ -36,19 +36,16 @@ object ReplMain extends ZIOAppDefault {
   private[repl] def launch(
       options: ReplLaunchOptions,
       terminal: ConnectedReplApplication => Task[Unit] = TerminalRepl.runConnectedSystem,
-      connect: (String, AgentId) => ZIO[Scope, OrchestratorClient.Error, OrchestratorClient] = (endpoint, user) =>
+      connect: (String, UserId) => ZIO[Scope, OrchestratorClient.Error, OrchestratorClient] = (endpoint, user) =>
         OrchestratorWSClient.connect(endpoint, userId = Some(user), clientName = "yallmo-repl")
   ): ZIO[Scope, Throwable, Unit] =
     for {
-      name <- ZIO
-        .fromEither(AgentId.from(options.userName))
-        .mapError(_ => new IllegalArgumentException("Invalid --user-name."))
       user <- ZIO
-        .fromEither(AgentId.from("user-" + AgentId.value(name)))
+        .fromEither(UserId.from(options.userName))
         .mapError(_ => new IllegalArgumentException("Invalid --user-name."))
       client <- connect(options.server, user)
         .mapError(_ => new IllegalStateException("Connected REPL connection failed; no local fallback."))
-      application <- ConnectedReplApplication.make(client, user, options.agentId, options.logLevel)
+      application <- ConnectedReplApplication.make(client, UserId.chatAgent(user), options.agentId, options.logLevel)
       _ <- Console.printLine(application.notice)
       _ <- terminal(application)
     } yield ()

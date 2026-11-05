@@ -1,5 +1,6 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.model.UserId
 import fmgp.yallmo.model.AgentId
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
@@ -13,7 +14,13 @@ final class ProvidersModelSuite extends FunSuite {
   private val methods =
     List(ProvidersList.method, ProvidersLoginStart.method, ProvidersLoginComplete.method, ProvidersLoginCancel.method)
   private val info =
-    Initialize.Result(Version, "server", Identity(AgentId("human"), Role.Operator), methods, Nil, MaxBlobChunkBytes)
+    Initialize.Result(
+      "server",
+      Identity(UserId("human"), Role.Operator, Chunk(AgentId("human"), UserId.websiteAgent(UserId("human")))),
+      methods,
+      Nil,
+      MaxBlobChunkBytes
+    )
   private val entries = Chunk(
     ProviderSummary("account", ProviderKind.ChatGPT, ProviderCredentialStatus.LoggedOut),
     ProviderSummary("local", ProviderKind.OAI, ProviderCredentialStatus.NotApplicable)
@@ -49,7 +56,11 @@ final class ProvidersModelSuite extends FunSuite {
 
   test("viewers, unsupported servers, unknown providers and OAI cannot start login") {
     val h = new Harness
-    h.model.configure(info.copy(identity = Identity(AgentId("viewer"), Role.Viewer)))
+    h.model.configure(
+      info.copy(identity =
+        Identity(UserId("viewer"), Role.Viewer, Chunk(AgentId("viewer"), UserId.websiteAgent(UserId("viewer"))))
+      )
+    )
     h.model.reload()
     h.model.begin("account")
     assert(h.listings.isEmpty)

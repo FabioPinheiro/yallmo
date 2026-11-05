@@ -353,7 +353,7 @@ final class ServerApplicationSuite extends FunSuite {
         connection <- rpc.openConnection
         _ <- ZIO.addFinalizer(rpc.disconnect(connection))
         response <- rpc.handle(
-          JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "test")).toJson,
+          JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params("test")).toJson,
           connection
         )
         result = response.get.fromJson[JsonRpc.Success[Initialize.Result]].toOption.get.result
@@ -387,13 +387,20 @@ final class ServerApplicationSuite extends FunSuite {
         .scoped {
           for {
             root <- temporaryRoot
-            path <- writeConfig(root, config)
+            path <- writeConfig(
+              root,
+              config.copy(agents = config.agents.map { case (id, definition) =>
+                AgentId("user-" + AgentId.value(id)) -> definition
+              })
+            )
             services <- probes()
             application <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](services.layer)
             port <- new OrchestratorWSServer(application.master).start(0)
             endpoint = s"ws://127.0.0.1:$port/rpc"
             failures <- ZIO.foreach(List(first, second))(id =>
-              OrchestratorWSClient.connect(endpoint, userId = Some(id)).either
+              OrchestratorWSClient
+                .connect(endpoint, userId = Some(UserId(AgentId.value(id).stripPrefix("user-"))))
+                .either
             )
             observer <- OrchestratorWSClient.connect(endpoint)
             ids <- observer.listAgentIds
@@ -405,12 +412,12 @@ final class ServerApplicationSuite extends FunSuite {
                 result,
                 Left(
                   fmgp.yallmo.server.OrchestratorClient.Error.Remote(
-                    JsonRpc.Error(ErrorCode.Conflict, "Human identity conflicts with a runtime agent")
+                    JsonRpc.Error(ErrorCode.Conflict, "Owned actor conflicts with a runtime agent")
                   )
                 )
               )
             )
-            assertEquals(ids, Chunk(first, second))
+            assertEquals(ids, Chunk(AgentId("user-first"), AgentId("user-second")))
             assertEquals(registered, ids)
             assert(!calls.exists(_.contains("execute")))
           }

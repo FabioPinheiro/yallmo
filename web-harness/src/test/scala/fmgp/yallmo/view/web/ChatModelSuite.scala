@@ -28,32 +28,34 @@ final class ChatModelSuite extends FunSuite {
   )
   private val completed = empty.copy(messages = Chunk(message))
 
-  test("first Send validates agent, creates once, retains the ID, submits once, and reuses authoritative head") {
+  test("first Send validates agent, submits New once, retains the returned ID, and reuses authoritative head") {
     withModel { (h, model) =>
       model.draft("hello\nworld")
       model.send()
-      assert(!h.sent.exists(_.method == SessionsCreate.method))
+      assert(!h.sent.exists(_.method == "sessions.create"))
       model.selectAgent("historical-not-configured")
       model.send()
-      assert(!h.sent.exists(_.method == SessionsCreate.method))
+      assert(!h.sent.exists(_.method == "sessions.create"))
       model.selectAgent(AgentId.value(assistant))
       model.send()
-      assertEquals(model.state.now().currentPending, Some(ChatPendingMessage("", AgentId("viewer"), "hello\nworld")))
+      assertEquals(
+        model.state.now().currentPending,
+        Some(ChatPendingMessage("", AgentId("user-viewer"), "hello\nworld"))
+      )
       assertEquals(model.state.now().current.snapshot, None)
       assertEquals(model.state.now().current.draft, "")
       model.send()
       for {
-        create <- h.awaitRequest(SessionsCreate.method)
-        _ = h.reply(create, empty)
         turn <- h.awaitRequest(TurnSubmit.method)
-        _ = assertEquals(model.state.now().active, "chat")
+        _ = assertEquals(model.state.now().active, "")
         _ = assertEquals(
           model.state.now().currentPending,
-          Some(ChatPendingMessage("chat", AgentId("viewer"), "hello\nworld"))
+          Some(ChatPendingMessage("", AgentId("user-viewer"), "hello\nworld"))
         )
         _ = assertEquals(model.state.now().conversations("").draft, "")
         first = decode[TurnSubmit.Params](turn.params.toJson)
         _ = assertEquals(first.task.prompt, "hello\nworld")
+        _ = assertEquals(first.target, TurnSubmit.Target.New())
         _ = assert(first.resetContinuation)
         _ = model.send()
         _ = h.reply(
@@ -75,16 +77,16 @@ final class ChatModelSuite extends FunSuite {
         _ = assertEquals(model.state.now().current.draft, "switch agent")
         _ = assert(model.state.now().current.resetContinuation)
       } yield {
-        assertEquals(params.sessionId, empty.id)
+        assertEquals(params.target, TurnSubmit.Target.Existing(empty.id))
         assertEquals(params.expectedHead, Some(message.id))
         assert(!params.resetContinuation)
-        assertEquals(h.sent.count(_.method == SessionsCreate.method), 1)
+        assertEquals(h.sent.count(_.method == "sessions.create"), 0)
         assertEquals(h.sent.count(_.method == TurnSubmit.method), 2)
       }
     }
   }
 
-  test("sending clears the composer and preserves the next draft through creation, success and failure") {
+  test("sending clears the composer and preserves the next draft through submission, success and failure") {
     withModel { (h, model) =>
       model.draft("first prompt")
       model.selectAgent(AgentId.value(assistant))
@@ -92,8 +94,6 @@ final class ChatModelSuite extends FunSuite {
       assertEquals(model.state.now().current.draft, "")
       model.draft("typed during creation")
       for {
-        create <- h.awaitRequest(SessionsCreate.method)
-        _ = h.reply(create, empty)
         first <- h.awaitRequest(TurnSubmit.method)
         _ = assertEquals(model.state.now().current.draft, "typed during creation")
         _ = assertEquals(decode[TurnSubmit.Params](first.params.toJson).task.prompt, "first prompt")
@@ -188,12 +188,12 @@ final class ChatModelSuite extends FunSuite {
         _ = h.client.close()
         _ <- until(model.state.now().pending.isEmpty)
         _ = assert(model.state.now().current.notice.contains("may still be running"))
-        _ <- h.initialize(methods = List(SessionsCreate.method, TurnSubmit.method))
+        _ <- h.initialize(methods = List(TurnSubmit.method))
       } yield {
         assertEquals(model.state.now().current.draft, "recoverable")
         assert(model.state.now().current.reloadRequired)
         assertEquals(h.sent.count(_.method == TurnSubmit.method), 2)
-        assertEquals(h.sent.count(_.method == SessionsCreate.method), 0)
+        assertEquals(h.sent.count(_.method == "sessions.create"), 0)
       }
     }
   }
@@ -201,13 +201,11 @@ final class ChatModelSuite extends FunSuite {
   test("failed terminal outcomes render only supplied snapshots and keep recoverable draft behind a reload gate") {
     withModel { (h, model) =>
       val storedPrompt =
-        empty.copy(messages = Chunk(message.copy(role = "user", agentId = AgentId("viewer"), content = "keep me")))
+        empty.copy(messages = Chunk(message.copy(role = "user", agentId = AgentId("user-viewer"), content = "keep me")))
       model.draft("keep me")
       model.selectAgent(AgentId.value(assistant))
       model.send()
       for {
-        create <- h.awaitRequest(SessionsCreate.method)
-        _ = h.reply(create, empty)
         turn <- h.awaitRequest(TurnSubmit.method)
         _ = h.reply(
           turn,
@@ -232,7 +230,7 @@ final class ChatModelSuite extends FunSuite {
   test("identical successive prompts keep their own preview until the authoritative snapshot replaces it atomically") {
     withModel { (h, model) =>
       val prompt = "same\n<plain text>"
-      val user = message.copy(agentId = AgentId("viewer"), role = "user", content = prompt)
+      val user = message.copy(agentId = AgentId("user-viewer"), role = "user", content = prompt)
       val firstSnapshot = empty.copy(messages = Chunk(user))
       val secondSnapshot = empty.copy(messages = Chunk(user, user.copy(id = MessageId.unsafe("sha256:" + "b" * 64))))
       val owner = new ManualOwner
@@ -242,8 +240,6 @@ final class ChatModelSuite extends FunSuite {
       model.selectAgent(AgentId.value(assistant))
       model.send()
       val result = for {
-        create <- h.awaitRequest(SessionsCreate.method)
-        _ = h.reply(create, empty)
         first <- h.awaitRequest(TurnSubmit.method)
         _ = h.reply(
           first,
@@ -278,33 +274,65 @@ final class ChatModelSuite extends FunSuite {
     }
   }
 
-  test(
-    "create failure clears only the temporary preview, retaining the draft; explicit New creates no preview or turn"
-  ) {
+  test("New prepares a named draft without RPC; first rejection retains its draft without a phantom session") {
     withModel { (h, model) =>
-      model.draft("recover after create failure")
       model.selectAgent(AgentId.value(assistant))
+      model.newConversation("named")
+      assertEquals(model.state.now().current.name, Some(SessionId.unsafe("named")))
+      assertEquals(model.state.now().current.snapshot, None)
+      assert(!h.sent.exists(_.method == TurnSubmit.method))
+      model.draft("recoverable")
       model.send()
-      assert(model.state.now().currentPending.nonEmpty)
       for {
-        create <- h.awaitRequest(SessionsCreate.method)
-        _ = h.sockets.last.events.message(JsonRpc.Failure(create.id, JsonRpc.Error(ErrorCode.Busy, "Busy")).toJson)
-        _ <- until(!model.state.now().creating)
-        _ = assertEquals(model.state.now().currentPending, None)
-        _ = assertEquals(model.state.now().current.snapshot, None)
-        _ = assertEquals(model.state.now().current.draft, "recover after create failure")
-        _ = assert(model.state.now().current.notice.contains("may have been created"))
-        _ = model.newConversation("")
-        _ = assertEquals(model.state.now().pending, None)
-        explicit <- h.awaitRequest(SessionsCreate.method, skip = 1)
-        _ = h.reply(explicit, empty)
-        _ <- until(!model.state.now().creating)
+        turn <- h.awaitRequest(TurnSubmit.method)
+        _ = assertEquals(
+          decode[TurnSubmit.Params](turn.params.toJson).target,
+          TurnSubmit.Target.New(Some(SessionId.unsafe("named")))
+        )
+        _ = h.sockets.last.events
+          .message(JsonRpc.Failure(turn.id, JsonRpc.Error(ErrorCode.Conflict, "Duplicate name")).toJson)
+        _ <- until(model.state.now().pending.isEmpty)
       } yield {
-        assertEquals(model.state.now().current.snapshot, Some(empty))
-        assertEquals(model.state.now().current.draft, "")
-        assertEquals(model.state.now().conversations("").draft, "recover after create failure")
-        assertEquals(model.state.now().currentPending, None)
-        assert(!h.sent.exists(_.method == TurnSubmit.method))
+        assertEquals(model.state.now().current.snapshot, None)
+        assertEquals(model.state.now().current.draft, "recoverable")
+        assert(!model.state.now().current.reloadRequired)
+        assert(!h.sent.exists(_.method == "sessions.create"))
+      }
+    }
+  }
+
+  test("a lost first submit result blocks another New submission and directs recovery through the session list") {
+    withModel { (h, model) =>
+      model.selectAgent(AgentId.value(assistant))
+      model.draft("only once")
+      model.send()
+      for {
+        _ <- h.awaitRequest(TurnSubmit.method)
+        _ = h.client.close()
+        _ <- until(model.state.now().pending.isEmpty)
+        _ = model.send()
+      } yield {
+        assert(model.state.now().current.reloadRequired)
+        assertEquals(model.state.now().current.draft, "only once")
+        assert(model.state.now().current.notice.contains("session list"))
+        assertEquals(h.sent.count(_.method == TurnSubmit.method), 1)
+      }
+    }
+  }
+
+  test("an internal RPC error on first submit blocks a second New request") {
+    withModel { (h, model) =>
+      model.selectAgent(AgentId.value(assistant))
+      model.draft("once")
+      model.send()
+      for {
+        turn <- h.awaitRequest(TurnSubmit.method)
+        _ = h.sockets.last.events.message(JsonRpc.Failure(turn.id, JsonRpc.Error.InternalError).toJson)
+        _ <- until(model.state.now().pending.isEmpty)
+        _ = model.send()
+      } yield {
+        assert(model.state.now().current.reloadRequired)
+        assertEquals(h.sent.count(_.method == TurnSubmit.method), 1)
       }
     }
   }
@@ -320,7 +348,7 @@ final class ChatModelSuite extends FunSuite {
         model.send()
         assertEquals(notices.toList, List(UiNotice(reason, "warn")))
         assertEquals(reason, "Choose an agent before sending.")
-        assert(!h.sent.exists(_.method == SessionsCreate.method))
+        assert(!h.sent.exists(_.method == "sessions.create"))
         model.selectAgent(AgentId.value(assistant))
         assert(model.state.now().canSend)
         model.disable()
@@ -367,7 +395,7 @@ final class ChatModelSuite extends FunSuite {
     val h = new OrchestratorWSClientSuite.Harness()
     val model = new ChatModel(h.client, notify)
     h.onRequest = request => if request.method == SessionsList.method then h.reply(request, zio.json.ast.Json.Arr())
-    h.initialize(methods = List(SessionsCreate.method, TurnSubmit.method), configured = Some(Chunk(assistant, other)))
+    h.initialize(methods = List(TurnSubmit.method), configured = Some(Chunk(assistant, other)))
       .flatMap { info => model.configure(info); test(h, model) }
       .andThen { case _ => h.client.close() }
   }

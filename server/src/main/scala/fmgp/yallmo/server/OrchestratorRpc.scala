@@ -1,6 +1,6 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, YallmoError}
+import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, UserId, YallmoError}
 import fmgp.yallmo.orchestration.{BlobUploader, OrchestratorLive}
 import fmgp.yallmo.server.application.ServerApplication
 import fmgp.yallmo.server.jsonrpc.JsonRpc
@@ -29,7 +29,12 @@ private[server] final class OrchestratorRpc(
 
   private val instanceId = UUID.randomUUID().toString
   // Presence only: never inserted into the executable runtime registry or storage.
-  private val humans = TrieMap.empty[UUID, AgentId]
+  private val humans = TrieMap.empty[UUID, UserId]
+  // Process-lifetime ownership is independent of connection presence and never supplied by request authors.
+  private val ownership = TrieMap.empty[UserId, Chunk[AgentId]]
+
+  private def actors(user: UserId): Chunk[AgentId] =
+    ownership.getOrElse(user, Chunk(UserId.chatAgent(user), UserId.websiteAgent(user)))
 
   def openConnection: UIO[Connection] =
     for {
@@ -119,9 +124,6 @@ private[server] final class OrchestratorRpc(
       decode[Initialize.Params](params).flatMap { request =>
         connection.state.modifyZIO { current =>
           for {
-            _ <- ZIO
-              .fail(JsonRpc.Error(ErrorCode.UnsupportedVersion, "Unsupported protocol version"))
-              .unless(request.protocolVersion == Version)
             _ <- current match {
               case ConnectionState.Closed => ZIO.fail(JsonRpc.Error(ErrorCode.Unauthorized, "Connection closed"))
               case ConnectionState.Initialized(id) if id != request.userId =>
@@ -129,23 +131,25 @@ private[server] final class OrchestratorRpc(
               case _ => ZIO.unit
             }
             registered <- domain(master.listAgentIds)
-            knownUser <- request.userId.fold[UIO[Boolean]](ZIO.succeed(false)) { id =>
-              configured.fold[UIO[Boolean]](ZIO.succeed(false))(_.runtime.isUser(id))
+            owned = request.userId.fold(Chunk.empty[AgentId])(actors)
+            _ <- ZIO.foreachDiscard(owned.filter(registered.contains)) { id =>
+              for {
+                known <- configured.fold[UIO[Boolean]](ZIO.succeed(false))(_.runtime.isUser(id))
+                _ <- ZIO
+                  .fail(JsonRpc.Error(ErrorCode.Conflict, "Owned actor conflicts with a runtime agent"))
+                  .unless(known)
+              } yield ()
             }
-            _ <- ZIO
-              .fail(JsonRpc.Error(ErrorCode.Conflict, "Human identity conflicts with a runtime agent"))
-              .when(request.userId.exists(registered.contains) && !knownUser)
             result <- encode(
               Initialize.Result(
-                Version,
                 instanceId,
                 Identity(
-                  request.userId.getOrElse(AgentId("local-viewer")),
-                  if permitted(request.userId) then Role.Operator else Role.Viewer
+                  request.userId.getOrElse(UserId("local-viewer")),
+                  if permitted(request.userId) then Role.Operator else Role.Viewer,
+                  owned
                 ),
                 if permitted(request.userId) then
                   methods ++ List(
-                    SessionsCreate.method,
                     TurnSubmit.method,
                     DiagnosticsRequest.method,
                     BlobsUpload.method,
@@ -163,7 +167,10 @@ private[server] final class OrchestratorRpc(
             )
             _ <- ZIO.when(current == ConnectionState.Uninitialized) {
               ZIO.foreachDiscard(request.userId) { id =>
-                ZIO.succeed(humans.put(connection.id, id)) *>
+                ZIO.succeed {
+                  ownership.getOrElseUpdate(id, owned)
+                  humans.put(connection.id, id)
+                } *>
                   ZIO.logInfo(s"Viewer identity registered userId=${escapedHumanId(id)}")
               }
             }
@@ -193,7 +200,7 @@ private[server] final class OrchestratorRpc(
             )
           case AgentsList.method =>
             decode[Empty](params) *> domain(master.listAgentIds).flatMap { values =>
-              encode((values ++ Chunk.fromIterable(humans.values)).distinct.sortBy(AgentId.value))
+              encode((values ++ Chunk.fromIterable(humans.values).flatMap(actors)).distinct.sortBy(AgentId.value))
             }
           case BlobsList.method =>
             decode[Empty](params) *> domain(master.listBlobIds).flatMap(values => encode(values.sortBy(_.value)))
@@ -202,22 +209,22 @@ private[server] final class OrchestratorRpc(
             connection.state.modifyZIO { current =>
               (operator(current) *> upload(params, connection)).map(result => (result, current))
             }.uninterruptible
-          case BlobsRead.method                             => readBlob(params)
-          case SessionsCreate.method if configured.nonEmpty =>
-            for {
-              author <- operator(state)
-              request <- decode[SessionsCreate.Params](params)
-              result <- configured.get.create(author, request.name).flatMap(encode(_))
-            } yield result
+          case BlobsRead.method                         => readBlob(params)
           case TurnSubmit.method if configured.nonEmpty =>
             for {
-              author <- operator(state)
               request <- decode[TurnSubmit.Params](params)
-              outcome <- ZIO.logAnnotate("sessionId", request.sessionId.value) {
+              author <- acting(state, request.actingAgentId)
+              outcome <- ZIO.logAnnotate(
+                "sessionId",
+                request.target match {
+                  case TurnSubmit.Target.Existing(id) => id.value
+                  case TurnSubmit.Target.New(name)    => name.fold("new")(_.value)
+                }
+              ) {
                 ZIO.logAnnotate("agentId", AgentId.value(request.agentId)) {
                   configured.get.submit(
                     author,
-                    request.sessionId,
+                    request.target,
                     request.agentId,
                     request.task.prompt,
                     request.expectedHead,
@@ -229,8 +236,8 @@ private[server] final class OrchestratorRpc(
             } yield result
           case AgentsInvoke.method if configured.nonEmpty =>
             for {
-              author <- operator(state)
               request <- decode[AgentsInvoke.Params](params)
+              author <- acting(state, request.actingAgentId)
               response <- configured.get.invoke(author, request.agentId, request.input)
               result <- encode(response)
             } yield result
@@ -272,16 +279,24 @@ private[server] final class OrchestratorRpc(
         }
       } yield result
 
-  private def permitted(human: Option[AgentId]): Boolean =
-    configured.nonEmpty && human.exists(id => AgentId.value(id).trim.nonEmpty)
+  private def permitted(human: Option[UserId]): Boolean =
+    configured.nonEmpty && human.nonEmpty
 
-  private def operator(state: ConnectionState): IO[JsonRpc.Error, AgentId] = state match {
+  private def operator(state: ConnectionState): IO[JsonRpc.Error, UserId] = state match {
     case ConnectionState.Initialized(Some(id)) if permitted(Some(id)) => ZIO.succeed(id)
     case _ => ZIO.fail(JsonRpc.Error(ErrorCode.Forbidden, "Operator permission unavailable for this connection"))
   }
 
-  private def escapedHumanId(id: AgentId): String =
-    AgentId.value(id).toJson.flatMap { char =>
+  private def acting(state: ConnectionState, id: AgentId): IO[JsonRpc.Error, AgentId] =
+    for {
+      user <- operator(state)
+      _ <- ZIO
+        .fail(JsonRpc.Error(ErrorCode.Forbidden, "Acting agent is not owned by the connected user"))
+        .unless(ownership.get(user).exists(_.contains(id)))
+    } yield id
+
+  private def escapedHumanId(id: UserId): String =
+    UserId.value(id).toJson.flatMap { char =>
       if Character.isISOControl(char) then f"\\u${char.toInt}%04x" else char.toString
     }
 
@@ -401,7 +416,7 @@ private[server] final class OrchestratorRpc(
 private[server] object OrchestratorRpc {
   enum ConnectionState {
     case Uninitialized
-    case Initialized(userId: Option[AgentId])
+    case Initialized(userId: Option[UserId])
     case Closed
   }
 

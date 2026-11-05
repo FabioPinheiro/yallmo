@@ -17,7 +17,7 @@ sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
 sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
-`--user-name <id>` is required; the claimed human ID sent to the server is `user-<id>`, not authentication.
+`--user-name <id>` is required; the claimed `UserId` sent to the server is `<id>`, not authentication. Chat requests explicitly act as the owned `user-<id>` actor.
 `--agent <id>` is optional. Without a selection prompts cause no writes/session creation; use the agent picker to choose.
 `--log-level` defaults to `warning`. `--config`/`--storage` are server-only. `--transcriber-agent` is rejected while
 connected voice integration is pending; it never activates a local fallback.
@@ -38,7 +38,7 @@ sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080
 ```
 
 **Trusted environment only:** access is assumed already authenticated outside the server; there is no server authentication.
-Configured server + initialized claimed human enables Operator with `sessions.create`, `turn.submit` and
+Configured server + initialized claimed human enables Operator with `turn.submit` and
 `diagnostics.request`, for REPL and browser clients regardless of Origin or peer address. Required `--user-name` supplies
 an impersonable claimed author, **not an authenticated identity**. Host/Origin are unrestricted; anonymous clients stay
 read-only. Keep all access paths trusted and never expose/proxy publicly. The listener always binds to `0.0.0.0`
@@ -95,11 +95,12 @@ Output carries a warning and terminal controls are sanitized. No server filesyst
 ### Prompt and session state
 
 Select `--agent <id>` or choose an agent in the picker **before prompting**: no selection means explicit guidance and zero writes/session
-creation. The first prompt calls `sessions.create` once, immediately retains the returned ID in its resulting state,
-then calls `turn.submit` once. Later prompts reuse that ID. `/new [name]` explicitly creates a remote session when
-permitted and clears last-known head/reset intent. Failed create preserves the previous session. No client `Session`,
-`MessageData`, core persistence, duplicate prompt preappend, transcript fabrication or private provider state is used.
-Remote runContext remains empty. Success renders the actual durable delta, not the whole conversation repeatedly.
+creation. The first prompt sends one `turn.submit` with `target: {kind: "new", name?: SessionId}`.
+Its returned snapshot establishes the session ID; later prompts use `target: {kind: "existing", sessionId}`.
+`/new [name]` only prepares a local draft and clears last-known head/reset intent. No server request or empty session
+is created until the next prompt. A duplicate requested name conflicts; it never resumes a session implicitly.
+No client `Session`, `MessageData`, core persistence, duplicate prompt preappend, transcript fabrication or private
+provider state is used. Remote runContext remains empty. Success renders the durable delta.
 
 Fresh `/history`/resume/outcomes track the last-known head. A known head is sent as `expectedHead`; absent knowledge
 omits the condition (not a made-up empty-head requirement). Busy/stale-head leaves client state intact and directs a
@@ -109,9 +110,10 @@ is preserved; server restart derives fresh opaque-continuation boundaries. Local
 
 Accepted execution failure retains the prompt, returned snapshot/head/session, and shows safe failure text. An Unknown
 outcome (including lost transport reply, defect or shutdown) is **not proof of nonacceptance**: work may still complete.
-The created/known session ID is retained; refresh `/history`, or reconnect and `/session resume <id>` plus `/history`,
-before **manual resend**. No automatic create/submit retry, replay, deduplication, exactly-once, run registry, status or
-cancel API exists. Lost create response can leave an unknown empty session: inspect `/session list` before deciding.
+Any returned session ID is retained; refresh `/history`, or reconnect and `/session resume <id>` plus `/history`,
+before **manual resend**. If the first reply was lost, the ID may not be known: inspect `/session list` and resume the
+saved conversation. Unknown outcomes (including InternalError) block another prompt until explicit recovery.
+No automatic submit retry, replay, deduplication, exactly-once, run registry, status or cancel API exists.
 Closing/Ctrl+C only abandons the local wait; accepted application-owned work survives disconnect. Restart the client
 and resume to observe durable completion. Server shutdown stops work/finalizers before releasing storage/tools/lease;
 a terminal Unknown outcome may carry the best safe snapshot, never a rollback guarantee.
@@ -120,7 +122,7 @@ Public snapshots/deltas render original role/content/author/tool/blob references
 Bodies retain multiline text/tabs and normalize carriage returns; metadata stays single-line. Failed reads retain
 session/preferences. `/log` respects actual CLI log level initially and the current preference for later remote calls.
 
-Initialize sends `clientName: "yallmo-repl"` and `userId` once; clientName is not privilege. Human presence is cleaned on
+Initialize sends `clientName: "yallmo-repl"` and `userId` once; initialization returns owned actors, and submit explicitly selects the chat actor; clientName is not privilege. Human presence is cleaned on
 disconnect, while submitted dynamically registered authors may remain in the registry for process lifetime. Same-name
 viewers are deduplicated; neither registration nor presence is identity verification. Independent sessions execute
 concurrently. Short filesystem mutation coordination is separate from nonwaiting same-session turn exclusion; provider/

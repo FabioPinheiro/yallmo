@@ -1,6 +1,6 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.model.{AgentId, BlobId, Message}
+import fmgp.yallmo.model.{AgentId, BlobId, Message, UserId}
 import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -43,7 +43,7 @@ final class OrchestratorWSClient private[web] (
   private var openingTimer = Option.empty[SetTimeoutHandle]
 
   /** Completes after initialization. Calling this again while connected reuses the same connection. */
-  def connect(userId: Option[AgentId] = None): Future[Initialize.Result] = {
+  def connect(userId: Option[UserId] = None): Future[Initialize.Result] = {
     if socket.isEmpty then {
       if ready.isCompleted then ready = Promise[Initialize.Result]()
       generation += 1
@@ -56,12 +56,12 @@ final class OrchestratorWSClient private[web] (
             openingTimer = None
             send[Initialize.Params, Initialize.Result](
               Initialize.method,
-              Initialize.Params(Version, "web-harness", userId)
+              Initialize.Params("web-harness", userId)
             )
               .onComplete {
                 case Success(info) if current == generation =>
-                  if info.protocolVersion != Version || info.maxBlobChunkBytes <= 0 || info.maxBlobChunkBytes > MaxBlobChunkBytes
-                  then terminate(new RuntimeException("Incompatible server protocol"))
+                  if info.maxBlobChunkBytes <= 0 || info.maxBlobChunkBytes > MaxBlobChunkBytes
+                  then terminate(new RuntimeException("Invalid server initialization"))
                   else {
                     chunkBytes = info.maxBlobChunkBytes
                     handshake.trySuccess(info)
@@ -91,8 +91,6 @@ final class OrchestratorWSClient private[web] (
     Future
       .fromTry(Try(SessionId.from(id).fold(reason => throw new IllegalArgumentException(reason), identity)))
       .flatMap(id => request(SessionsGet.method, SessionsGet.Params(id)))
-  def createSession(name: Option[SessionId] = None): Future[SessionSnapshot] =
-    request(SessionsCreate.method, SessionsCreate.Params(name))
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
   def invokeAgent(params: AgentsInvoke.Params): Future[Message] = request(AgentsInvoke.method, params)
   def uploadBlob(params: BlobsUpload.Params): Future[BlobsUpload.Result] = request(BlobsUpload.method, params)
@@ -256,10 +254,10 @@ object OrchestratorWSClient {
   final class RpcException(val error: JsonRpc.Error) extends RuntimeException(error.message)
 
   def canChat(info: Initialize.Result): Boolean =
-    List(SessionsCreate.method, TurnSubmit.method).forall(info.methods.contains)
+    info.methods.contains(TurnSubmit.method)
 
-  def claimedUser(name: String): Option[AgentId] =
-    Option.when(name.trim.nonEmpty)(AgentId("user-" + name.trim))
+  def claimedUser(name: String): Option[UserId] =
+    Option.when(name.trim.nonEmpty)(UserId(name.trim))
 
   private[web] trait Socket {
     def send(text: String): Unit

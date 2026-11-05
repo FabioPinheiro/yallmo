@@ -15,7 +15,7 @@ import scala.util.{Failure, Success}
   *
   * @param snapshot
   *   Last confirmed server snapshot, including the message head used for the next submission's concurrency check.
-  *   Absent before creation or the first successful history read; never contains the temporary pending card.
+  *   Absent before the first submit result or successful history read; never contains the temporary pending card.
   * @param draft
   *   Editable, unsent composer text. On failure, submitted text is restored only when this is still empty.
   * @param draftVersion
@@ -37,6 +37,7 @@ import scala.util.{Failure, Success}
   */
 private[web] final case class ChatConversation(
     snapshot: Option[SessionSnapshot] = None,
+    name: Option[SessionId] = None,
     draft: String = "",
     draftVersion: Long = 0L,
     agent: Option[AgentId] = None,
@@ -46,14 +47,14 @@ private[web] final case class ChatConversation(
     notice: String = ""
 )
 
-/** Captured user input displayed immediately while creation or turn submission is outstanding.
+/** Captured user input displayed immediately while turn submission is outstanding.
   *
   * This is a presentation-only preview, not a persisted message, delivery acknowledgement, or retry queue. Completion
   * removes it alongside the authoritative snapshot update; failures remove it and preserve draft/recovery guidance.
   *
   * @param conversation
-  *   Owning conversation's map key. The empty string identifies the initial unsaved conversation while creation is
-  *   pending; it is replaced with the returned session ID before submitting the turn.
+  *   Owning conversation's map key. The empty string identifies the initial unsaved conversation until the first submit
+  *   returns a session ID.
   * @param author
   *   Claimed human identity from connection initialization, captured at Send time; not an authenticated identity.
   * @param prompt
@@ -64,28 +65,25 @@ private[web] final case class ChatPendingMessage(conversation: String, author: A
 /** Application-root chat state shared by the sidebar, toolbar and routed conversation view.
   *
   * Conversation keys are server session IDs, except `""`, which always exists for the initial unsaved conversation. The
-  * active key must exist in the map. Only one create/turn flow may be outstanding in this browser client, even when the
-  * user browses another conversation. This is UI state, not a wire or persistence model.
+  * active key must exist in the map. Only one submission may be outstanding in this browser client, even when the user
+  * browses another conversation. This is UI state, not a wire or persistence model.
   *
   * @param active
   *   Key of the conversation currently shown and edited; switching it does not redirect an outstanding turn's result.
   * @param conversations
-  *   Retained per-conversation snapshots, drafts and preferences. First-send creation transfers the unsaved draft and
-  *   pending preview to the returned session ID, then resets the unsaved entry.
+  *   Retained per-conversation snapshots, drafts and preferences. The first submit result transfers the unsaved draft
+  *   and pending preview to the returned session ID, then resets the unsaved entry.
   * @param sessions
   *   Last successfully fetched server summaries used by the conversation sidebar, not the source of transcript data.
   * @param agents
   *   Executable assistant IDs advertised by initialization; unlike the general registry, excludes human/presence IDs.
   * @param enabled
-  *   Whether the initialized connection advertises the RPC methods needed to create sessions and submit turns. A
-  *   capability/UI gate, not authentication or authorization implemented by this model.
+  *   Whether the initialized connection advertises the RPC methods needed to submit turns. A capability/UI gate, not
+  *   authentication or authorization implemented by this model.
   * @param pending
   *   The client's single outstanding submitted-input preview, possibly owned by a conversation other than `active`.
-  * @param creating
-  *   Whether session creation is outstanding. Explicit New conversation sets this without a pending message; first Send
-  *   sets both until creation completes.
   * @param voiceBusy
-  *   Blocks Send and session creation during explicit dictation; draft editing remains enabled.
+  *   Blocks Send and preparing a new conversation during explicit dictation; draft editing remains enabled.
   * @param listError
   *   Latest session-list read error displayed in the sidebar; cleared by a successful list refresh.
   */
@@ -96,7 +94,6 @@ private[web] final case class ChatState(
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Option[ChatPendingMessage] = None,
-    creating: Boolean = false,
     voiceBusy: Boolean = false,
     listError: String = ""
 ) {
@@ -113,7 +110,6 @@ private[web] final case class ChatState(
   /** First reason Send cannot proceed, shared by the button gate and rejected-keyboard-send notifications. */
   def sendBlockedReason: Option[String] =
     if !enabled then Some("Reconnect to a chat-enabled server before sending.")
-    else if creating then Some("Wait for conversation creation to finish.")
     else if voiceBusy then Some("Finish or discard dictation before sending.")
     else if pending.nonEmpty then Some("Wait for the pending turn to finish before sending.")
     else if current.loading then Some("Wait for history to load before sending.")
@@ -131,8 +127,8 @@ private[web] final case class ChatState(
   *
   * Lives outside routed views so drafts and pending input survive navigation. Reads use version checks to ignore stale
   * responses; turn callbacks update their original conversation, not whichever is currently selected. Send captures
-  * input once, creates a session if needed, then submits once. Terminal snapshots replace the temporary preview; no
-  * message is persisted by the browser and no request is automatically retried or replayed.
+  * input once and submits once with an explicit new/existing target. Terminal snapshots replace the temporary preview;
+  * no message is persisted by the browser and no request is automatically retried or replayed.
   *
   * @param client
   *   Shared application-root WebSocket adapter; connection lifecycle is managed by App.
@@ -152,9 +148,12 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     state.update(s => s.copy(conversations = s.conversations.updated(id, f(s.conversations(id)))))
 
   def configure(info: Initialize.Result): Unit = {
-    initializedIdentity = Some(info.identity.id)
+    initializedIdentity = info.identity.chatAgent
     state.update(
-      _.copy(enabled = OrchestratorWSClient.canChat(info), agents = info.configuredAgentIds.toList.flatMap(_.toList))
+      _.copy(
+        enabled = OrchestratorWSClient.canChat(info) && initializedIdentity.nonEmpty,
+        agents = info.configuredAgentIds.toList.flatMap(_.toList)
+      )
     )
     refreshList()
   }
@@ -222,11 +221,11 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
 
   def selectAgent(value: String): Unit = {
     val s = state.now()
-    if !s.creating && s.currentPending.isEmpty then
+    if s.currentPending.isEmpty then
       edit(s.active)(_.copy(agent = s.agents.find(AgentId.value(_) == value), resetContinuation = true))
   }
 
-  def resume(id: String): Unit = if !state.now().creating then {
+  def resume(id: String): Unit = {
     state.update(s =>
       s.copy(
         active = id,
@@ -271,11 +270,22 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     }
   }
 
-  /** Explicit creation is optional; the ordinary Send path creates only after validating the chosen agent. */
+  /** New conversation is a local draft. Submission is the only remote authoring operation. */
   def newConversation(name: String): Unit = {
     val s = state.now()
-    if s.enabled && s.pending.isEmpty && !s.creating && !s.voiceBusy then
-      create(name, ChatConversation(agent = s.current.agent), false)
+    if s.enabled && s.pending.isEmpty && !s.voiceBusy then {
+      val parsed = if name.trim.isEmpty then Right(None) else SessionId.from(name.trim).map(Some(_))
+      parsed match {
+        case Left(error) => notify(UiNotice(error, "warn"))
+        case Right(id)   =>
+          state.update(current =>
+            current.copy(
+              active = "",
+              conversations = current.conversations.updated("", ChatConversation(agent = s.current.agent, name = id))
+            )
+          )
+      }
+    }
   }
 
   def send(): Unit = {
@@ -289,63 +299,7 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
             conversations = s.conversations.updated(s.active, s.current.copy(draft = "", notice = ""))
           )
         )
-        if s.active.isEmpty then create("", s.current, true)
-        else submit(s.active)
-    }
-  }
-
-  private def create(name: String, conversation: ChatConversation, sendAfter: Boolean): Unit = {
-    val parsed = if name.trim.isEmpty then Right(None) else SessionId.from(name.trim).map(Some(_))
-    parsed match {
-      case Left(error) =>
-        edit(state.now().active)(_.copy(notice = error))
-        notify(UiNotice(error, "warn"))
-      case Right(id) =>
-        state.update(_.copy(creating = true))
-        client.createSession(id).onComplete {
-          case Success(snapshot) =>
-            val key = snapshot.id.value
-            // Keep the returned ID before submitting. A failed turn must never create a second session.
-            state.update(s =>
-              s.copy(
-                active = key,
-                creating = false,
-                pending = s.pending.map(_.copy(conversation = key)),
-                conversations = s.conversations
-                  .updated(
-                    key,
-                    conversation.copy(
-                      snapshot = Some(snapshot),
-                      draft = if sendAfter then s.conversations("").draft else conversation.draft
-                    )
-                  )
-                  .updated("", if sendAfter then ChatConversation() else s.conversations(""))
-              )
-            )
-            refreshList()
-            if sendAfter then submit(key)
-          case Failure(error) =>
-            notify(
-              UiNotice(
-                s"Conversation creation failed: ${error.getMessage}. Review the session list before retrying.",
-                "error"
-              )
-            )
-            state.update { s =>
-              val draft = if s.current.draft.isEmpty then s.currentPending.fold("")(_.prompt) else s.current.draft
-              s.copy(
-                creating = false,
-                pending = None,
-                conversations = s.conversations.updated(s.active, s.current.copy(draft = draft))
-              )
-            }
-            edit(state.now().active)(
-              _.copy(notice =
-                s"Conversation creation failed: ${error.getMessage}. Reload the session list before creating again; it may have been created."
-              )
-            )
-            refreshList()
-        }
+        submit(s.active)
     }
   }
 
@@ -353,9 +307,12 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     val s = state.now()
     val conversation = s.conversations(id)
     val params = TurnSubmit.Params(
-      conversation.snapshot.get.id,
+      conversation.snapshot.fold[TurnSubmit.Target](TurnSubmit.Target.New(conversation.name))(s =>
+        TurnSubmit.Target.Existing(s.id)
+      ),
       conversation.agent.get,
       AgentTask(s.pending.get.prompt),
+      s.pending.get.author,
       conversation.snapshot.flatMap(_.messages.lastOption.map(_.id)),
       conversation.resetContinuation
     )
@@ -380,16 +337,18 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
             draft = recoveryDraft,
             reloadRequired = true,
             resetContinuation = true,
-            notice =
+            notice = if snapshot.orElse(conversation.snapshot).nonEmpty then
               s"${error.message} (prompt: $acceptance). Draft retained. Reload history before manually sending again."
+            else
+              s"${error.message} (prompt: $acceptance). Draft retained. Inspect the session list and resume any saved conversation before manually resending."
           )
-        case Failure(error: OrchestratorWSClient.RpcException) =>
+        case Failure(error: OrchestratorWSClient.RpcException) if TurnSubmit.isKnownRejection(error.error.code) =>
           notify(UiNotice(s"Turn rejected: ${error.getMessage}. Reload history before resending.", "error"))
           conversation.copy(
             draft = recoveryDraft,
-            reloadRequired = true,
+            reloadRequired = conversation.snapshot.nonEmpty,
             resetContinuation = true,
-            notice = s"${error.getMessage}. Reload history before manually sending again."
+            notice = s"${error.getMessage}. Review the request before manually sending again."
           )
         case Failure(error) =>
           notify(
@@ -403,10 +362,15 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
             reloadRequired = true,
             resetContinuation = true,
             notice =
-              s"Result unknown: ${error.getMessage}. The turn may still be running. Reconnect and reload history before manually resending; do not duplicate a running turn."
+              s"Result unknown: ${error.getMessage}. The turn may still be running. Inspect the session list and resume the saved conversation before manually resending; do not duplicate a running turn."
           )
       }
-      state.update(s => s.copy(pending = None, conversations = s.conversations.updated(id, updated)))
+      state.update { s =>
+        val key = updated.snapshot.fold(id)(_.id.value)
+        val conversations = if key == id then s.conversations.updated(id, updated)
+        else s.conversations.updated(key, updated).updated(id, ChatConversation())
+        s.copy(active = if s.active == id then key else s.active, pending = None, conversations = conversations)
+      }
       refreshList()
     }
   }

@@ -175,7 +175,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
             .Request(
               Json.Str("init"),
               Initialize.method,
-              Initialize.Params(Version, "logging-test", None)
+              Initialize.Params("logging-test", None)
             )
             .toJson,
           connection

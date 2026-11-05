@@ -124,7 +124,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             _ => ZIO.dieMessage("terminal must not start"),
             connect = (endpoint, user) => {
               assertEquals(endpoint, "ws://127.0.0.1:8080/rpc")
-              assertEquals(user, AgentId("user-human"))
+              assertEquals(user, UserId("human"))
               calls.update(_ + 1) *> ZIO.fail(fmgp.yallmo.server.OrchestratorClient.Error.Disconnected)
             }
           )
@@ -260,7 +260,9 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     })
   }
 
-  test("application wait loss retains session; same socket reads work; reconnect history sees detached completion") {
+  test(
+    "first-submit wait loss recovers the session from the list; same socket reads work; reconnect history sees detached completion"
+  ) {
     run(ZIO.scoped {
       for {
         entered <- Promise.make[Nothing, Unit]
@@ -269,20 +271,21 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         app <- configured(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(providerAnswer))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         client <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
           .mapError(error => new Exception(error.toString))
         connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
         created <- connected.submit(connected.initialState, "/new detached")
         wait <- connected.submit(created.state, "keep running").fork
         _ <- entered.await
-        during <- connected.submit(created.state, "/history")
+        resumedDuring <- connected.submit(created.state, "/session resume detached")
+        during <- connected.submit(resumedDuring.state, "/history")
         list <- connected.submit(created.state, "/session list")
         busy <- connected.submit(during.state, "must not append")
         _ <- client.close
         lost <- wait.join
         _ <- release.succeed(())
         observer <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
           .mapError(error => new Exception(error.toString))
         reconnected <- ConnectedReplApplication.make(observer, human, Some(AgentId("bob")))
         resumed <- reconnected.submit(reconnected.initialState, "/session resume detached")
@@ -293,7 +296,8 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         )
         count <- calls.get
       } yield {
-        assertEquals(lost.state.sessionId, Some("detached")); assert(lost.events.toString.contains("unknown"))
+        assertEquals(lost.state.sessionId, None); assert(lost.state.remoteSubmissionUncertain);
+        assert(lost.events.toString.contains("unknown"))
         assertEquals(
           during.events.head.asInstanceOf[ReplEvent.SnapshotTranscript].messages.map(_.content),
           Chunk("keep running")
@@ -382,7 +386,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         cached <- app.configured.get.runtime.resolve(AgentId("bob"))
         port <- new OrchestratorWSServer(app.master, app.configured).start(0)
         client <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
           .mapError(error => new Exception(error.toString))
         connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
         providers = connected.connectedProviders.get

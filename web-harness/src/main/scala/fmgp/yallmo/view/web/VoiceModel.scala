@@ -55,10 +55,12 @@ private[web] final class VoiceModel(
 
   def configure(info: Initialize.Result): Unit = {
     val enabled =
-      info.identity.role == Role.Operator && info.configuredAgentIds.exists(_.contains(VoiceTransfer.Transcriber)) &&
+      info.identity.websiteAgent.nonEmpty && info.identity.role == Role.Operator && info.configuredAgentIds.exists(
+        _.contains(VoiceTransfer.Transcriber)
+      ) &&
         List(BlobsUpload.method, AgentsInvoke.method).forall(info.methods.contains)
-    if !enabled || !identity.contains(info.identity.id) then cancel(false)
-    identity = Option.when(enabled)(info.identity.id)
+    if !enabled || identity != info.identity.websiteAgent then cancel(false)
+    identity = info.identity.websiteAgent.filter(_ => enabled)
     state.update(_.copy(available = enabled))
   }
 
@@ -70,7 +72,7 @@ private[web] final class VoiceModel(
 
   def start(target: VoiceDraftTarget): Unit = {
     val s = chat.state.now()
-    if state.now().available && !state.now().busy && supported && !s.creating && s.pending.isEmpty then {
+    if state.now().available && !state.now().busy && supported && s.pending.isEmpty then {
       generation += 1
       val current = generation
       chat.setVoiceBusy(true)

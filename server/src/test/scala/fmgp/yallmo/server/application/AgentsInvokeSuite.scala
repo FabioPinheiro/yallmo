@@ -24,7 +24,7 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class AgentsInvokeSuite extends FunSuite {
-  private val human = AgentId("human")
+  private val human = AgentId("user-human")
   private val assistant = AgentId("assistant")
   private val providerId = ProviderId.unsafe("fake")
   private val input = Message(MessageData(human, None, Instant.EPOCH, Message.User("hello")))
@@ -50,8 +50,8 @@ final class AgentsInvokeSuite extends FunSuite {
           root <- if persisted then temporaryRoot.map(Some(_)) else ZIO.none
           seen <- Ref.make(Vector.empty[String])
           fixture <- make(request => request.body.asString.flatMap(body => seen.update(_ :+ body)).as(answer), root)
-          existing <- fixture.backend.create(human, Some(SessionId.unsafe("unrelated")))
-          _ <- fixture.backend.submit(human, existing.id, assistant, "earlier")
+          existing <- seed(fixture.backend, human, Some(SessionId.unsafe("unrelated")))
+          _ <- fixture.backend.submit(human, TurnSubmit.Target.Existing(existing.id), assistant, "earlier")
           before <- fixture.live.loadSession(existing.id)
           reply <- invoke(fixture)
           output = decode[JsonRpc.Success[Message]](reply).result
@@ -90,14 +90,24 @@ final class AgentsInvokeSuite extends FunSuite {
         calls <- Ref.make(0)
         fixture <- make(_ => calls.update(_ + 1).as(answer))
         uninitialized <- fixture.rpc.openConnection
-        unauthorized <- call(fixture.rpc, uninitialized, AgentsInvoke.method, AgentsInvoke.Params(assistant, input))
+        unauthorized <- call(
+          fixture.rpc,
+          uninitialized,
+          AgentsInvoke.method,
+          AgentsInvoke.Params(assistant, input, human)
+        )
         viewer <- fixture.rpc.openConnection
         info <- initialize(fixture.rpc, viewer, None)
-        forbidden <- call(fixture.rpc, viewer, AgentsInvoke.method, AgentsInvoke.Params(assistant, input))
+        forbidden <- call(fixture.rpc, viewer, AgentsInvoke.method, AgentsInvoke.Params(assistant, input, human))
         readonly = new OrchestratorRpc(fixture.live)
         readonlyConnection <- readonly.openConnection
         readonlyInfo <- initialize(readonly, readonlyConnection, Some(human))
-        unavailable <- call(readonly, readonlyConnection, AgentsInvoke.method, AgentsInvoke.Params(assistant, input))
+        unavailable <- call(
+          readonly,
+          readonlyConnection,
+          AgentsInvoke.method,
+          AgentsInvoke.Params(assistant, input, human)
+        )
         spoof = Message(input.data.copy(agentId = assistant))
         spoofed <- invoke(fixture, spoof)
         _ <- fixture.rpc.disconnect(uninitialized) *> fixture.rpc.disconnect(viewer) *> readonly.disconnect(
@@ -531,11 +541,7 @@ final class AgentsInvokeSuite extends FunSuite {
         _ <- send(
           "init",
           Initialize.method,
-          Initialize
-            .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", Some(human))
-            .toJsonAST
-            .toOption
-            .get
+          Initialize.Params("test", Some(UserId(AgentId.value(human).stripPrefix("user-")))).toJsonAST.toOption.get
         )
         _ <- replies.take
         blob = BlobId.fresh()
@@ -547,7 +553,7 @@ final class AgentsInvokeSuite extends FunSuite {
         begun <- replies.take
         _ = assertEquals(decode[JsonRpc.Success[BlobsUpload.Result]](begun).result, BlobsUpload.Result.Begun(blob))
         audio = Message(input.data.copy(payload = MessagePayload.AudioAttachment(blob, AudioFormat.Wav)))
-        _ <- send("invoke", AgentsInvoke.method, AgentsInvoke.Params(assistant, audio).toJsonAST.toOption.get)
+        _ <- send("invoke", AgentsInvoke.method, AgentsInvoke.Params(assistant, audio, human).toJsonAST.toOption.get)
         _ <- fixture.live.listMessages.repeatUntil(_.exists(_.id == audio.id))
         before <- calls.get
         _ <- send("read", MessagesList.method, Empty().toJsonAST.toOption.get)
@@ -629,7 +635,7 @@ final class AgentsInvokeSuite extends FunSuite {
     } yield Fixture(runtime, backend, rpc, connection)
 
   private def invoke(fixture: Fixture, message: Message = input, recipient: AgentId = assistant): UIO[String] =
-    call(fixture.rpc, fixture.connection, AgentsInvoke.method, AgentsInvoke.Params(recipient, message))
+    call(fixture.rpc, fixture.connection, AgentsInvoke.method, AgentsInvoke.Params(recipient, message, human))
 
   private def initialize(
       rpc: OrchestratorRpc,
@@ -640,7 +646,7 @@ final class AgentsInvokeSuite extends FunSuite {
       rpc,
       connection,
       Initialize.method,
-      Initialize.Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "test", user)
+      Initialize.Params("test", user.map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
     )
 
   private def call[A: JsonCodec](
@@ -693,4 +699,14 @@ final class AgentsInvokeSuite extends FunSuite {
       .run(effect.timeoutFail(new AssertionError("Invoke test timed out"))(20.seconds))
       .getOrThrowFiberFailure()
   }
+  private def seed(
+      backend: ServerApplication.Configured,
+      author: AgentId,
+      name: Option[SessionId]
+  ): IO[YallmoError, SessionSnapshot] =
+    for {
+      _ <- backend.runtime.registerUser(author)
+      session <- backend.assembly.submission(author, None).create(name.map(_.value))
+    } yield SessionSnapshot.from(session)
+
 }

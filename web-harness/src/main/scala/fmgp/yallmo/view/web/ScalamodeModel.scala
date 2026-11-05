@@ -72,12 +72,13 @@ private[web] final class ScalamodeModel(
 
   def configure(info: Initialize.Result): Unit = {
     version += 1
-    identity = Some(info.identity.id)
+    identity = info.identity.websiteAgent
     val agents = info.configuredAgentIds.toList.flatMap(_.toList)
     state.update(s =>
       s.copy(
         agents = agents,
-        enabled = info.identity.role == Role.Operator && info.methods.contains(AgentsInvoke.method),
+        enabled =
+          identity.nonEmpty && info.identity.role == Role.Operator && info.methods.contains(AgentsInvoke.method),
         pending = false
       )
     )
@@ -115,7 +116,7 @@ private[web] final class ScalamodeModel(
         version += 1
         val requestVersion = version
         state.update(_.copy(pending = true, result = None, notice = ""))
-        Try(invoke(AgentsInvoke.Params(agent, input))).fold(Future.failed, value => value).onComplete {
+        Try(invoke(AgentsInvoke.Params(agent, input, input.agentId))).fold(Future.failed, value => value).onComplete {
           case Success(message) if requestVersion == version =>
             val correlated = message.agentId == agent && message.parentId.contains(input.id) && (message.payload match {
               case MessagePayload.ToolOutput(output) => output.callId == call.id && output.name == call.name

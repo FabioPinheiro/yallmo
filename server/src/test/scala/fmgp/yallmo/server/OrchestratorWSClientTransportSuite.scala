@@ -1,5 +1,6 @@
 package fmgp.yallmo.server
 
+import fmgp.yallmo.model.UserId
 import fmgp.yallmo.model.AgentId
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -18,9 +19,8 @@ import zio.json.ast.Json
 /** A wire peer is necessary: zio-http Text(String) cannot emit an initial frame ending inside a UTF-8 code point. */
 final class OrchestratorWSClientTransportSuite extends FunSuite {
   private val initialization = Initialize.Result(
-    Version,
     "wire-peer",
-    Identity(AgentId("peer"), Role.Viewer),
+    Identity(UserId("peer"), Role.Viewer, Chunk(AgentId("peer"), UserId.websiteAgent(UserId("peer")))),
     Nil,
     Nil,
     MaxBlobChunkBytes

@@ -11,9 +11,9 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class OrchestratorRpcSuite extends FunSuite {
-  private val executable = AgentId("runtime-agent")
-  private val alice = AgentId("alice")
-  private val bob = AgentId("bob")
+  private val executable = AgentId("user-runtime-agent")
+  private val alice = AgentId("user-alice")
+  private val bob = AgentId("user-bob")
 
   private def master: IO[YallmoError, OrchestratorLive[Any]] =
     RuntimeInstances
@@ -24,17 +24,22 @@ final class OrchestratorRpcSuite extends FunSuite {
       }))
       .flatMap(OrchestratorLive.inMemory(_))
 
-  test("failed version, params and registered-agent collisions never initialize or publish presence") {
+  test("invalid params and registered-agent collisions never initialize or publish presence") {
     run(for {
       live <- master
       rpc = new OrchestratorRpc(live)
       observer <- rpc.openConnection
       _ <- init(rpc, observer, None)
       connection <- rpc.openConnection
-      version <- init(rpc, connection, Some(alice), 99)
       invalid <- rpc
         .handle(
-          """{"jsonrpc":"2.0","id":"bad","method":"initialize","params":{"protocolVersion":1,"clientName":"test","userId":" "}}""",
+          """{"jsonrpc":"2.0","id":"bad","method":"initialize","params":{"clientName":"test","userId":" "}}""",
+          connection
+        )
+        .map(_.get)
+      obsolete <- rpc
+        .handle(
+          """{"jsonrpc":"2.0","id":"obsolete","method":"initialize","params":{"clientName":"test","protocolVersion":1}}""",
           connection
         )
         .map(_.get)
@@ -43,8 +48,8 @@ final class OrchestratorRpcSuite extends FunSuite {
       ids <- agents(rpc, observer)
       _ <- rpc.disconnect(connection)
     } yield {
-      assertEquals(error(version).code, ErrorCode.UnsupportedVersion)
       assertEquals(error(invalid), JsonRpc.Error.InvalidParams)
+      assertEquals(error(obsolete), JsonRpc.Error.InvalidParams)
       assertEquals(error(collision).code, ErrorCode.Conflict)
       assertEquals(error(unauthorized).code, ErrorCode.Unauthorized)
       assertEquals(ids, Chunk(executable))
@@ -60,7 +65,6 @@ final class OrchestratorRpcSuite extends FunSuite {
       same <- init(rpc, connection, Some(alice))
       changed <- init(rpc, connection, Some(bob))
       removed <- init(rpc, connection, None)
-      version <- init(rpc, connection, Some(alice), 99)
       ids <- agents(rpc, connection)
       anonymous <- rpc.openConnection
       anonFirst <- init(rpc, anonymous, None)
@@ -71,7 +75,14 @@ final class OrchestratorRpcSuite extends FunSuite {
     } yield {
       val result = success[Initialize.Result](first)
       assertEquals(success[Initialize.Result](same), result)
-      assertEquals(result.identity, Identity(alice, Role.Viewer))
+      assertEquals(
+        result.identity,
+        Identity(
+          UserId(AgentId.value(alice).stripPrefix("user-")),
+          Role.Viewer,
+          Chunk(alice, UserId.websiteAgent(UserId(AgentId.value(alice).stripPrefix("user-"))))
+        )
+      )
       assertEquals(
         result.methods.toSet,
         Set("initialize", "sessions.list", "sessions.get", "messages.list", "agents.list", "blobs.list", "blobs.read")
@@ -80,9 +91,11 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(result.notifications, Nil)
       assertEquals(error(changed).code, ErrorCode.Conflict)
       assertEquals(error(removed).code, ErrorCode.Conflict)
-      assertEquals(error(version).code, ErrorCode.UnsupportedVersion)
-      assertEquals(ids.toSet, Set(executable, alice))
-      assertEquals(success[Initialize.Result](anonFirst).identity, Identity(AgentId("local-viewer"), Role.Viewer))
+      assertEquals(ids.toSet, Set(executable, alice, UserId.websiteAgent(UserId("alice"))))
+      assertEquals(
+        success[Initialize.Result](anonFirst).identity,
+        Identity(UserId("local-viewer"), Role.Viewer, Chunk.empty)
+      )
       assertEquals(success[Initialize.Result](anonAgain), success[Initialize.Result](anonFirst))
       assertEquals(error(added).code, ErrorCode.Conflict)
     })
@@ -105,7 +118,7 @@ final class OrchestratorRpcSuite extends FunSuite {
     } yield {
       assertEquals(replies.count(_.fromJson[JsonRpc.Success[Initialize.Result]].isRight), 1)
       assertEquals(replies.count(_.fromJson[JsonRpc.Failure].toOption.exists(_.error.code == ErrorCode.Conflict)), 1)
-      assertEquals(bound.size, 2)
+      assertEquals(bound.size, 3)
       assertEquals(error(closed).code, ErrorCode.Unauthorized)
       assertEquals(after, Chunk(executable))
       assertEquals(registered, Chunk(executable))
@@ -115,12 +128,17 @@ final class OrchestratorRpcSuite extends FunSuite {
   private def init(
       rpc: OrchestratorRpc,
       connection: OrchestratorRpc.Connection,
-      human: Option[AgentId],
-      version: Int = Version
+      human: Option[AgentId]
   ): UIO[String] =
     rpc
       .handle(
-        JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params(version, "test", human)).toJson,
+        JsonRpc
+          .Request(
+            Json.Str("init"),
+            Initialize.method,
+            Initialize.Params("test", human.map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+          )
+          .toJson,
         connection
       )
       .map(_.get)

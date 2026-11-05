@@ -164,7 +164,7 @@ The elapsed timer highlights the last five seconds. At **30 seconds**, recording
 notification announces the limit, and transcription starts once. There is no beep or automatic restart. Repeat with a
 new explicit click. Starting capture stops browser speech; Read buttons are disabled only while microphone capture is
 active to avoid recording synthesized speech.
-Send/session creation/reconnect are blocked during dictation, while the draft stays editable.
+Send/new conversation/reconnect are blocked during dictation, while the draft stays editable.
 Leaving Chat, switching conversations, page exit/freeze or disconnect discards capture and prevents stale results from changing any draft.
 
 The resampler/WAV encoder (`vite/audio-core.js`), browser adapters (`vite/browser-audio.js`) and AudioWorklet
@@ -193,9 +193,10 @@ stop/discard, reach the limit, edit the draft while waiting, navigate/disconnect
 ## Chat (trusted browser)
 
 Open **Chat** (`#/chat`) from the full-height left sidebar. Each page load defaults to `fabio` and connects once
-as `user-fabio`. Edit the compact toolbar's **Username** and press **Reconnect** to apply it; typing never disconnects.
+as `UserId("fabio")`. Chat explicitly acts as `user-fabio`; voice and scalamode act as `web-user-fabio`,
+invoking configured recipients over that same connection without creating implicit sessions or reconnecting. Edit the compact toolbar's **Username** and press **Reconnect** to apply it; typing never disconnects.
 With an unchanged name, Reconnect reuses the connected socket and refreshes state. Empty names disable Reconnect;
-creation, pending turns and connection setup also block it. Claimed authorship is **not authentication**: every reachable
+pending turns and connection setup also block it. Claimed authorship is **not authentication**: every reachable
 client can claim a name and execute configured agents/tools. Keep the backend and Vite proxy on trusted networks.
 
 Choose an agent in the shared toolbar from the configured IDs advertised by `initialize` (not the mixed runtime
@@ -204,33 +205,34 @@ A blocked send attempt shows a small temporary notification (also logged to the 
 agent, a warning appears beside the disabled Send button. Failures also notify, while important recovery instructions
 remain in the conversation. Notifications expire after five seconds and never retry requests.
 
-The first Send creates a conversation only after an agent is selected, retains its returned ID and submits once.
-Later turns reuse that session and its known head. **New conversation** also creates an empty session; expand
-**Name (optional)** to supply a safe name. Choose an existing session, including a REPL session, in the sidebar to
+The first Send issues one `turn.submit` with an explicit New target, only after an agent is selected.
+The response supplies the session ID; later turns use Existing with that ID and its known head.
+**New conversation** prepares a local draft only; expand **Name (optional)** to choose the name used on first submit.
+No empty remote session or separate create request is sent. Choose an existing session, including a REPL session, in the sidebar to
 resume it in Chat from any view. On narrow screens, **Menu** expands navigation and conversations. Agent changes
 and resumes reset the next provider continuation without clearing history or drafts.
 
 The transcript uses authoritative persisted snapshots and the inspector's message/tool cards and downloads.
-Send immediately adds a temporary user card labeled **Pending — not yet confirmed saved**, even while the first
-conversation is being created. It captures the submitted text and connected identity, follows its conversation across
+Send immediately adds a temporary user card labeled **Pending — not yet confirmed saved**, including the first submit for a new conversation. It captures the submitted text and connected identity, follows its conversation across
 tabs, and is replaced by the returned snapshot on completion, never persisted by the browser. Sending clears the
 composer immediately and leaves it editable for your next draft; Send stays blocked while waiting, with the waiting
 status beside it. Completion never erases that next draft. On failure or disconnect, the temporary card clears and
 recovery instructions remain; the submitted text is restored only if the composer is still empty. There is no streaming,
 progress or execution cancellation for chat turns, and no automatic retry. Dictation uses the independent upload/invoke path above.
-Turn submission has no read deadline; ordinary reads, creation and diagnostics remain bounded. A pending turn and
+Turn submission has no read deadline; ordinary reads and diagnostics remain bounded. A pending turn and
 per-conversation drafts live at application root and survive tab/session navigation, but not page reloads.
 New messages, including pending cards, follow the scroll position only when near the bottom.
 
-Busy/conflict, failed outcomes and uncertain transport results preserve your next draft (or restore the submitted text
-if empty) and require a successful history
-reload before manual resend. A disconnected turn **may still be running**: reconnect, inspect history, and avoid
+Failures preserve your next draft (or restore the submitted text if empty). Existing conversations require history
+reload before manual resend. A rejected first submission retains a local draft without inventing a remote session.
+Unknown first-submit results, including InternalError, block another send: inspect the session list and explicitly resume
+the saved conversation before manually resending. A disconnected turn **may still be running**: reconnect, inspect history, and avoid
 sending a duplicate prompt. Reconnect never replays requests. The client also exposes `diagnostics.request` through
 the shared protocol DTOs; a diagnostics UI is intentionally deferred.
 
 Validation: `sbt ';webHarness/testOnly *;webHarness/compile;webHarness/fastLinkJS'`; production: `sbt 'webHarness/fullLinkJS'` then
 `npm --prefix web-harness/vite run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
-cover create-once/send-once, configured agents, stored heads, draft retention, continuation reset, stale responses,
+cover single-submit New/Existing targets, local-only New drafts, lost-first-reply recovery, configured agents, stored heads, draft retention, continuation reset, stale responses,
 failed outcomes and uncertain transport. Manual smoke check: verify the default identity, edit a name and Reconnect, send to a configured agent, switch views
 while waiting, resume a REPL session, change agents, and verify narrow-screen sidebar and scroll behavior.
 

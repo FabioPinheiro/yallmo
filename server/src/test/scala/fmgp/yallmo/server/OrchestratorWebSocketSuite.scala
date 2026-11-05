@@ -26,7 +26,7 @@ import zio.json.*
 import zio.json.ast.Json
 
 final class OrchestratorWebSocketSuite extends FunSuite {
-  private val author = AgentId("human")
+  private val author = AgentId("user-human")
   private val sessionId = SessionId.unsafe("session-one")
   private val agent = new Agent[Any] {
     val id: AgentId = author
@@ -89,10 +89,16 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         _ <- initialize(browser)
         observer <- OrchestratorWSClient.connect(endpoint)
         initial <- observer.listAgentIds
-        alice = AgentId("alice")
-        bob = AgentId("bob")
-        pair <- ZIO.foreachPar(1 to 2)(_ => OrchestratorWSClient.connect(endpoint, userId = Some(alice)))
-        other <- OrchestratorWSClient.connect(endpoint, userId = Some(bob), clientName = "connected-repl")
+        alice = AgentId("user-alice")
+        bob = AgentId("user-bob")
+        pair <- ZIO.foreachPar(1 to 2)(_ =>
+          OrchestratorWSClient.connect(endpoint, userId = Some(UserId(AgentId.value(alice).stripPrefix("user-"))))
+        )
+        other <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(bob).stripPrefix("user-"))),
+          clientName = "connected-repl"
+        )
         bound <- other.initialize("different-client-metadata")
         all <- observer.listAgentIds
         _ <- pair.head.close
@@ -109,10 +115,17 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         browserIds <- browser.read
       } yield {
         assertEquals(initial, Chunk(author))
-        assertEquals(bound.identity, Identity(bob, Role.Viewer))
-        assertEquals(all, Chunk(alice, bob, author))
+        assertEquals(
+          bound.identity,
+          Identity(
+            UserId(AgentId.value(bob).stripPrefix("user-")),
+            Role.Viewer,
+            Chunk(bob, UserId.websiteAgent(UserId(AgentId.value(bob).stripPrefix("user-"))))
+          )
+        )
+        assertEquals(all.toSet, Set(alice, bob, author, AgentId("web-user-alice"), AgentId("web-user-bob")))
         assertEquals(retained, all)
-        assertEquals(isolated, Chunk(bob, author))
+        assertEquals(isolated.toSet, Set(bob, author, AgentId("web-user-bob")))
         assertEquals(finalIds, Chunk(author))
         assertEquals(registered, Chunk(author))
         assertEquals(decode[JsonRpc.Success[Chunk[AgentId]]](browserIds).result, Chunk(author))
@@ -141,7 +154,11 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             label = AgentId("evil\n\u001b[31m\u009b2J")
             _ <- socket.send(
               JsonRpc
-                .Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "raw", Some(label)))
+                .Request(
+                  Json.Str("init"),
+                  Initialize.method,
+                  Initialize.Params("raw", Some(label).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+                )
                 .toJson
             )
             _ <- socket.read
@@ -151,7 +168,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             removal <- identityLog
             absent <- observer.listAgentIds
           } yield {
-            assert(present.contains(label))
+            assert(present.contains(AgentId("user-" + AgentId.value(label))))
             assertEquals(absent, Chunk(author))
             assert(registration.contains("registered"))
             assert(removal.contains("removed"))
@@ -174,17 +191,29 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         master <- live
         port <- new OrchestratorWSServer(master).start(0)
         human <- raw(port)
-        alice = AgentId("alice")
-        replies <- ZIO.foreach(List(Some(alice), Some(alice), Some(AgentId("bob")), None)) { id =>
+        alice = AgentId("user-alice")
+        replies <- ZIO.foreach(List(Some(alice), Some(alice), Some(AgentId("user-bob")), None)) { id =>
           human.send(
-            JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "raw", id)).toJson
+            JsonRpc
+              .Request(
+                Json.Str("init"),
+                Initialize.method,
+                Initialize.Params("raw", id.map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+              )
+              .toJson
           ) *> human.read
         }
         browser <- raw(port)
         _ <- initialize(browser)
         _ <- initialize(browser)
         _ <- browser.send(
-          JsonRpc.Request(Json.Str("add"), Initialize.method, Initialize.Params(Version, "raw", Some(alice))).toJson
+          JsonRpc
+            .Request(
+              Json.Str("add"),
+              Initialize.method,
+              Initialize.Params("raw", Some(alice).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+            )
+            .toJson
         )
         added <- browser.read
         _ <- browser.send(JsonRpc.Request(Json.Str("agents"), AgentsList.method, Empty()).toJson)
@@ -192,7 +221,11 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       } yield {
         assertEquals(
           decode[JsonRpc.Success[Initialize.Result]](replies.head).result.identity,
-          Identity(alice, Role.Viewer)
+          Identity(
+            UserId(AgentId.value(alice).stripPrefix("user-")),
+            Role.Viewer,
+            Chunk(alice, UserId.websiteAgent(UserId(AgentId.value(alice).stripPrefix("user-"))))
+          )
         )
         assertEquals(replies(1), replies.head)
         assertEquals(
@@ -200,7 +233,10 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           List(ErrorCode.Conflict, ErrorCode.Conflict)
         )
         assertEquals(decode[JsonRpc.Failure](added).error.code, ErrorCode.Conflict)
-        assertEquals(decode[JsonRpc.Success[Chunk[AgentId]]](ids).result, Chunk(alice, author))
+        assertEquals(
+          decode[JsonRpc.Success[Chunk[AgentId]]](ids).result.toSet,
+          Set(alice, author, AgentId("web-user-alice"))
+        )
       }
     })
   }
@@ -275,11 +311,13 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         socket <- raw(port)
         _ <- socket.send("""{"jsonrpc":"2.0","id":"before","method":"sessions.list","params":{}}""")
         before <- socket.read
-        _ <- socket.send(JsonRpc.Request(Json.Str("version"), Initialize.method, Initialize.Params(99, "test")).toJson)
-        version <- socket.read
         _ <- socket.send(
           JsonRpc
-            .Request(Json.Str("collision"), Initialize.method, Initialize.Params(Version, "test", Some(author)))
+            .Request(
+              Json.Str("collision"),
+              Initialize.method,
+              Initialize.Params("test", Some(author).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+            )
             .toJson
         )
         collision <- socket.read
@@ -295,7 +333,6 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         isolated <- other.read
       } yield {
         assertEquals(decode[JsonRpc.Failure](before).error.code, ErrorCode.Unauthorized)
-        assertEquals(decode[JsonRpc.Failure](version).error.code, ErrorCode.UnsupportedVersion)
         assertEquals(decode[JsonRpc.Failure](collision).error.code, ErrorCode.Conflict)
         assertEquals(decode[JsonRpc.Failure](unauthorized).error.code, ErrorCode.Unauthorized)
         assertEquals(unpolluted, Chunk(author))
@@ -344,7 +381,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         port <- new OrchestratorWSServer(master).start(0)
         socket <- raw(port)
         _ <- socket.send(
-          """{"jsonrpc":"2.0","id":"utf8","method":"initialize","params":{"protocolVersion":1,"clientName":"""",
+          """{"jsonrpc":"2.0","id":"utf8","method":"initialize","params":{"clientName":"""",
           false
         )
         _ <- socket.send("日本🙂\"}}", true)
@@ -361,7 +398,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         seen <- Ref.make(Vector.empty[Initialize.Params])
-        alice = AgentId("alice")
+        alice = AgentId("user-alice")
         port <- peer(
           (_, _) => ZIO.unit,
           initializeWith = Some { (channel, request) =>
@@ -371,9 +408,12 @@ final class OrchestratorWebSocketSuite extends FunSuite {
               request.id,
               Initialize
                 .Result(
-                  Version,
                   "peer",
-                  Identity(params.userId.getOrElse(author), Role.Viewer),
+                  Identity(
+                    params.userId.getOrElse(UserId("local-viewer")),
+                    Role.Viewer,
+                    params.userId.fold(Chunk.empty[AgentId])(id => Chunk(UserId.chatAgent(id), UserId.websiteAgent(id)))
+                  ),
                   Nil,
                   Nil,
                   MaxBlobChunkBytes
@@ -383,15 +423,29 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           }
         )
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(alice), clientName = "repl")
+        client <- OrchestratorWSClient.connect(
+          s"ws://127.0.0.1:$port/rpc",
+          userId = Some(UserId(AgentId.value(alice).stripPrefix("user-"))),
+          clientName = "repl"
+        )
         repeated <- client.initialize("renamed")
         requests <- seen.get
       } yield {
         assertEquals(
           requests,
-          Vector(Initialize.Params(Version, "repl", Some(alice)), Initialize.Params(Version, "renamed", Some(alice)))
+          Vector(
+            Initialize.Params("repl", Some(alice).map(id => UserId(AgentId.value(id).stripPrefix("user-")))),
+            Initialize.Params("renamed", Some(alice).map(id => UserId(AgentId.value(id).stripPrefix("user-"))))
+          )
         )
-        assertEquals(repeated.identity, Identity(alice, Role.Viewer))
+        assertEquals(
+          repeated.identity,
+          Identity(
+            UserId(AgentId.value(alice).stripPrefix("user-")),
+            Role.Viewer,
+            Chunk(alice, UserId.websiteAgent(UserId(AgentId.value(alice).stripPrefix("user-"))))
+          )
+        )
       }
     })
   }
@@ -411,7 +465,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                       JsonRpc
                         .Failure(
                           request.id,
-                          JsonRpc.Error(ErrorCode.UnsupportedVersion, "Unsupported protocol version")
+                          JsonRpc.Error(ErrorCode.Forbidden, "Initialization rejected")
                         )
                         .toJson
                     )
@@ -423,11 +477,24 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                   request.id,
                   Initialize
                     .Result(
-                      Version,
                       "old-peer",
                       Identity(
-                        if mode == "ignored" then author else AgentId("alice"),
-                        if mode == "operator" then Role.Operator else Role.Viewer
+                        UserId(
+                          AgentId
+                            .value(if mode == "ignored" then author else AgentId("user-alice"))
+                            .stripPrefix("user-")
+                        ),
+                        if mode == "operator" then Role.Operator else Role.Viewer,
+                        Chunk(
+                          if mode == "ignored" then author else AgentId("user-alice"),
+                          UserId.websiteAgent(
+                            UserId(
+                              AgentId
+                                .value(if mode == "ignored" then author else AgentId("user-alice"))
+                                .stripPrefix("user-")
+                            )
+                          )
+                        )
                       ),
                       Nil,
                       Nil,
@@ -439,7 +506,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             },
             onClose = closed.succeed(()).unit
           )
-          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(AgentId("alice"))).either
+          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId("alice"))).either
           _ <- closed.await.timeoutFail(new AssertionError("Failed initialize leaked its socket"))(3.seconds)
         } yield {
           if mode == "rejected" then
@@ -447,7 +514,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
               result,
               Left(
                 OrchestratorClient.Error.Remote(
-                  JsonRpc.Error(ErrorCode.UnsupportedVersion, "Unsupported protocol version")
+                  JsonRpc.Error(ErrorCode.Forbidden, "Initialization rejected")
                 )
               )
             )
@@ -659,9 +726,12 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                         .Success(
                           request.id,
                           Initialize.Result(
-                            Version,
                             "peer",
-                            Identity(author, Role.Viewer),
+                            Identity(
+                              UserId(AgentId.value(author).stripPrefix("user-")),
+                              Role.Viewer,
+                              Chunk(author, UserId.websiteAgent(UserId(AgentId.value(author).stripPrefix("user-"))))
+                            ),
                             List(SessionsList.method, AgentsList.method),
                             Nil,
                             MaxBlobChunkBytes
@@ -732,7 +802,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
 
   private def initialize(socket: Raw): Task[Unit] =
     socket.send(
-      JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params(Version, "test")).toJson
+      JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params("test")).toJson
     ) *> socket.read.unit
 
   private def decode[A: JsonDecoder](value: String): A = value.fromJson[A].fold(fail(_), identity)

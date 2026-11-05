@@ -18,6 +18,10 @@ import fmgp.yallmo.server.application.SessionSubmission
   *   after an agent change or session resume; later continuations belong to the current runtime binding
   * @param remoteHeadMessageId
   *   last confirmed public snapshot head, used only by connected submission; None omits the precondition
+  * @param remoteNewSessionName
+  *   Optional name of a local connected draft; no server session exists until submit.
+  * @param remoteSubmissionUncertain
+  *   Blocks another submission after a lost or unknown outcome until explicit recovery.
   * @param remoteResetContinuation
   *   client-only reset intent for the next remote turn; never a provider continuation or local history offset
   */
@@ -28,7 +32,9 @@ final case class ReplState(
     lastProviderRequest: Option[Path] = None,
     continuationStart: Int = 0, // TODO REVIEW considered for removal
     remoteHeadMessageId: Option[MessageId] = None,
-    remoteResetContinuation: Boolean = false
+    remoteResetContinuation: Boolean = false,
+    remoteNewSessionName: Option[SessionId] = None,
+    remoteSubmissionUncertain: Boolean = false
 ) {
 
   /** Refreshes durable conversation state without changing client preferences or provider continuation boundaries. */

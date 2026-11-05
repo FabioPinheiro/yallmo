@@ -1,4 +1,4 @@
-# Yallmo wire protocol v1
+# Yallmo wire protocol
 
 **Implemented: viewer reads and configured execution for trusted browser and REPL clients.**
 Access is assumed already authenticated outside this server; it performs no authentication or Host/Origin checks.
@@ -14,11 +14,13 @@ Provider administration and browser OAuth use JSON-RPC on the same WebSocket. Ge
 
 ## Connection and capabilities
 
-Send `initialize` first. Protocol `1` is independent of JSON-RPC `"2.0"`. Initialization is negotiation, **not authentication**.
+Send `initialize` first. Initialization binds the user and advertises capabilities; it is **not authentication**.
+Client and server share one current contract. There is no application protocol version field, version negotiation or
+backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"`.
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Operator additionally advertises `sessions.create`, `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
+Operator additionally advertises `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
@@ -30,11 +32,23 @@ with network access can claim an author and execute configured agents/tools, so 
 Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
 also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed by this catalog; explicit operator diagnostics may show the request model.
 The server independently resolves configured assistants; it never accepts executable code or provider state from a
-turn request. `agents.invoke` accepts an authored Message only when its author matches the initialized identity. Identity rebinding is rejected. Configured/caller-supplied agent ID collisions are rejected;
-known dynamically registered human authors can reconnect.
+turn request. Initialization binds a `UserId`, not a message author. `Identity = {id: UserId, role: Role,
+agentIds: [AgentId]}` advertises server-owned actors, separate from `configuredAgentIds` recipients. The trusted-local
+policy provisions `user-<UserId>` for chat and `web-user-<UserId>` for website/harness operations. Ownership mappings
+last for the handler's process lifetime and are reconstructed deterministically after restart; there is no ownership
+management or authentication API. Anonymous viewers have no owned actors.
+
+Every authoring request (`turn.submit`, `agents.invoke`) requires `actingAgentId`. The server
+checks it against the connected user's ownership before mutation/execution; `agents.invoke` additionally requires
+`input.data.agentId == actingAgentId`. Missing actors are InvalidParams; unowned actors or mismatched authors are
+Forbidden. Recipient `agentId` remains separate and all configured capability checks still apply. Chat and website
+actors share one connection; switching actors needs neither reinitialization nor a new session. Read-only and
+connection-owned administrative/blob requests do not author messages and remain user/connection-scoped.
+User rebinding is rejected. Owned actors colliding with executable runtime IDs are rejected; registered human
+actors can reconnect. There is no implicit-author fallback.
 
 Presence is connection-owned and cleaned on disconnect; duplicate same-name viewers retain presence while connected.
-A human registered on create/submit/invoke remains in the runtime registry for the process lifetime, independently of active
+A human registered on submit/invoke remains in the runtime registry for the process lifetime, independently of active
 viewers. Neither retention nor a stable label is authentication or durable identity.
 
 ## Framing and bounds
@@ -57,7 +71,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 - **8** nonwaiting connection workers. Saturation closes with **1013**; no unbounded task/semaphore waiter queue.
   Outgoing text/control sends are serialized. Reads on the same socket remain responsive during a blocked turn.
 - JVM client: at most **128** pending requests; correlation by ID, late replies ignored after interruption/deadline.
-  Read/create deadlines default to **15 seconds**; `turn.submit` and `providers.login.complete` deliberately have **no read deadline**.
+  Read deadlines default to **15 seconds**; `turn.submit` and `providers.login.complete` deliberately have **no read deadline**.
 - Both clients fail pending waits on close/error and never reconnect/replay automatically. A deadline or disconnect
   is a lost local wait, not evidence that server work stopped.
 - JVM transport uses public JDK WebSocket, which sends no Origin by default. It retains strict Unicode/UTF-8 byte
@@ -68,13 +82,12 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 
 | Method | `params` | `result` |
 | --- | --- | --- |
-| `initialize` | `{protocolVersion: Int, clientName: String, userId?: AgentId}` | `{protocolVersion: Int, serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int, configuredAgentIds?: [AgentId]}` |
+| `initialize` | `{clientName: String, userId?: UserId}` | `{serverInstanceId: String, identity: Identity, methods: [String], notifications: [String], maxBlobChunkBytes: Int, configuredAgentIds?: [AgentId]}` |
 | `sessions.list` | `{}` | `[SessionSummary]` |
 | `sessions.get` | `{sessionId: SessionId}` | `SessionSnapshot` |
-| `sessions.create` | `{name?: SessionId}` | `SessionSnapshot` |
 | `messages.list` | `{}` | `[MessageSnapshot]` |
 | `agents.list` | `{}` | `[AgentId]` |
-| `agents.invoke` | `{agentId: AgentId, input: Message}`; no session controls | `Message` (recipient's response payload) |
+| `agents.invoke` | `{agentId: AgentId, input: Message, actingAgentId: AgentId}`; no session controls | `Message` (recipient's response payload) |
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
 | `blobs.upload` | Discriminated command (below), no session ID | Discriminated result (below) |
@@ -83,14 +96,15 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `providers.login.complete` | `{attemptId: String, redirectUrl: String}` | `{restartRequired: Boolean}` |
 | `providers.login.cancel` | `{attemptId: String}` | `{}` |
 | `diagnostics.request` | `{sessionId: SessionId}` | `{providerRequest?: JsonObject}` |
-| `turn.submit` | `{sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
+| `turn.submit` | `{target: SubmitTarget, agentId: AgentId, task: AgentTask, actingAgentId: AgentId, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
 Existing domain types/codecs are reused. IDs encode as strings: safe path-segment `SessionId`, `sha256:` plus
 64 lowercase hex characters for `MessageId`, canonical lowercase UUID for `BlobId`. Timestamps use ISO-8601 `Instant`.
 Collections encode as arrays. Protocol-local codecs do not alter storage formats.
 
-- `Identity = {id: AgentId, role: "viewer" | "operator"}`.
+- `Identity = {id: UserId, role: "viewer" | "operator", agentIds: [AgentId]}`; owned acting agents are separate from configured recipients.
 - `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId]}`.
+- `SubmitTarget = {kind: "new", name?: SessionId} | {kind: "existing", sessionId: SessionId}`. The target is mandatory; legacy top-level `sessionId` is rejected. `expectedHead` is valid only for existing targets.
 - `AgentTask = {prompt: String}`; `AgentResult = {agentId: AgentId, text: String}`.
 - `Message = {id: MessageId, data: {agentId: AgentId, parentId?: MessageId, timestamp: String, payload: MessagePayload}}`.
   The shared codec verifies `id` against the canonical encoded `data`; payload variants retain their existing tagged JSON.
@@ -233,9 +247,9 @@ reads/listing rather than assuming a safe retry. Browser dictation uses these co
 
 `agents.invoke` handles one configured agent turn or an explicit tool call, not an agent loop, without requiring or creating a session. It is available only on configured
 servers to initialized Operators; anonymous clients get Forbidden and unconfigured servers return MethodNotFound.
-Params have exactly `agentId` (recipient) and `input` (full Message). Extra params, including `sessionId`,
+Params have exactly `agentId` (recipient), `input` (full Message) and `actingAgentId` (owned actor). Extra params, including `sessionId`,
 `expectedHead` and `resetContinuation`, are InvalidParams. Message hash/field validation happens during decoding.
-The input author must match the initialized claimed identity (Forbidden otherwise); this is still not authentication.
+The input author must match the explicitly selected owned actor (Forbidden otherwise); this is still not authentication.
 
 Input and output payloads are not restricted by the transport or Orchestrator: the configured recipient determines what
 it supports and returns. An optional parent must already exist, but does not implicitly load parent history.
@@ -308,10 +322,18 @@ trusted-environment listener publicly. The REPL displays documents only on expli
 
 ## Submission, continuation and failure semantics
 
-Create returns an empty session with initialized human authorship. Names are IDs, never paths. Only generated-name
-create collisions retry server-side; an explicit duplicate conflicts. A session must already exist for `turn.submit`.
-The REPL selects a configured agent **before** any prompt-induced create, retains create's returned ID even if the
-subsequent submit fails, then submits exactly once. Later prompts reuse the ID. `/new [name]` explicitly creates once.
+`turn.submit` is the only conversation-authoring operation. There is no `sessions.create` endpoint.
+The caller explicitly selects `{kind: "new", name?: SessionId}` or `{kind: "existing", sessionId: SessionId}`.
+New validates ownership, recipient configuration/capabilities and parameters before allocating a session, then submits
+its first prompt in that same application-owned operation. Generated IDs use `main-<UUID>`; names are safe IDs, not
+paths. A duplicate explicit name conflicts and is never treated as a resume. Existing never allocates a missing session.
+`expectedHead` with New is InvalidParams. Both target variants use the same actor/recipient checks and runner.
+
+Success and execution-failure responses carry the allocated session snapshot/ID whenever it can be established,
+including a pre-acceptance execution failure. Allocation and message persistence are not a rollback transaction:
+an interrupted or failed first submit may leave a recoverable empty session. Once a session is allocated, execution
+is never retried by allocating another. The REPL and website send one New request for the first prompt and Existing
+for later prompts. `/new [name]` and **New conversation** prepare local drafts only, without RPC or empty remote sessions.
 
 The application owns work, not the socket. A short root-local storage mutex coordinates filesystem mutation/publication
 and snapshot capture; **no provider/tool work is held under it**. Nonwaiting same-session turn exclusion rejects Busy
@@ -348,15 +370,16 @@ application-owned Promise, including typed errors, defects, shutdown and already
 its finalizers stop **before** storage/tool ownership and root lease release. Uncooperative finalizers can delay shutdown.
 No terminal registry is retained. Ctrl+C abandons local waiting only; it never issues remote cancellation.
 
-After unknown transport outcome, refresh `/history` or reconnect, resume the known session and read history before
-**manual** resend. A lost create response may leave an unknown empty session: use `/session list`; never automatically
-create/submit again. A lost turn response may still yield durable completion. Busy/stale-head retains current client
+After an unknown transport outcome, refresh `/history` for a known session, or inspect `/session list` and explicitly
+resume the saved conversation if the first reply was lost. Both clients block another submission until explicit recovery;
+there is no automatic retry. An InternalError also means unknown, not proof that no session was allocated.
+A lost submit response may still yield durable completion. Busy/stale-head retains current client
 session/head; refresh before another manual attempt. There is no automatic reconciliation or safe replay claim.
 
 Example request (one terminal result when the connection remains usable):
 
 ```json
-{"jsonrpc":"2.0","id":"r3","method":"turn.submit","params":{"sessionId":"s1","agentId":"bob","task":{"prompt":"Hello"},"resetContinuation":false}}
+{"jsonrpc":"2.0","id":"r3","method":"turn.submit","params":{"target":{"kind":"existing","sessionId":"s1"},"agentId":"bob","task":{"prompt":"Hello"},"actingAgentId":"user-fabio","resetContinuation":false}}
 ```
 
 ## Errors and disabled definitions
@@ -366,7 +389,6 @@ Standard JSON-RPC codes: -32700 Parse error, -32600 Invalid Request, -32601 Meth
 
 | Code | Meaning |
 | --- | --- |
-| -32001 | Unsupported protocol version |
 | -32002 | Unauthorized / initialization required |
 | -32003 | Forbidden / operator operation unavailable |
 | -32004 | Not found |

@@ -13,13 +13,11 @@ trait OrchestratorClient {
   /** Cached negotiation only: never performs a second initialization/network request. */
   def capabilities: UIO[Option[Initialize.Result]] = ZIO.none
   @scala.annotation.nowarn("msg=unused explicit parameter")
-  def createSession(name: Option[SessionId] = None): IO[OrchestratorClient.Error, SessionSnapshot] =
-    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
-  @scala.annotation.nowarn("msg=unused explicit parameter")
   def submitTurn(
-      sessionId: SessionId,
+      target: TurnSubmit.Target,
       agentId: AgentId,
       task: fmgp.yallmo.orchestration.AgentTask,
+      actingAgentId: AgentId,
       expectedHead: Option[fmgp.yallmo.model.MessageId] = None,
       resetContinuation: Boolean = false
   ): IO[OrchestratorClient.Error, TurnOutcome] =

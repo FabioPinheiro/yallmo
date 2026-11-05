@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.{UserId, YallmoError}
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.model.{AgentId, ToolKey}
 import fmgp.yallmo.orchestration.{AgentTask, SessionId}
@@ -26,7 +27,7 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
     val executable = sys.env.get("YALLMO_TEST_SCALA_CLI")
     assume(executable.nonEmpty, "Set YALLMO_TEST_SCALA_CLI for the configured cross-JVM acceptance check")
     val agent = AgentId("private-reader")
-    val human = AgentId("operator")
+    val human = AgentId("user-operator")
     val provider = ProviderId.unsafe("local-fake")
     val code = """for {
       |  text <- fs.readUtf8("notes.txt")
@@ -124,12 +125,22 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
           .provideEnvironment(uiServer)
         endpoint = s"ws://127.0.0.1:$uiPort/rpc"
         viewer <- OrchestratorWSClient.connect(endpoint)
-        denied <- viewer.createSession(Some(SessionId.unsafe("denied"))).either
+        denied <- viewer
+          .submitTurn(TurnSubmit.Target.New(Some(SessionId.unsafe("denied"))), agent, AgentTask("denied"), human)
+          .either
         before <- requests.get
-        client <- OrchestratorWSClient.connect(endpoint, userId = Some(human))
+        client <- OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
+        )
         info <- client.capabilities
-        session <- client.createSession(Some(SessionId.unsafe("private-read")))
-        outcome <- client.submitTurn(session.id, agent, AgentTask("read the selected private notes"))
+        session <- seed(application.configured.get, human, Some(SessionId.unsafe("private-read")))
+        outcome <- client.submitTurn(
+          TurnSubmit.Target.Existing(session.id),
+          agent,
+          AgentTask("read the selected private notes"),
+          human
+        )
         stored <- client.loadSession(session.id)
         bodies <- requests.get
       } yield {
@@ -163,4 +174,14 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
         .getOrThrowFiberFailure()
     }
   }
+  private def seed(
+      backend: ServerApplication.Configured,
+      author: AgentId,
+      name: Option[SessionId]
+  ): IO[YallmoError, SessionSnapshot] =
+    for {
+      _ <- backend.runtime.registerUser(author)
+      session <- backend.assembly.submission(author, None).create(name.map(_.value))
+    } yield SessionSnapshot.from(session)
+
 }

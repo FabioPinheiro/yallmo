@@ -37,13 +37,13 @@ final class SdlcServiceSuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          tasks <- service.setTasks(List(PlanTaskSimplifiedModel("", "Investigate")))
+          tasks <- service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Investigate")))
           saved <- service.setIntents(
             List(
               PlanIntentSimplifiedModel(
                 "",
                 "Reliable authentication\nFailures stay below 0.1%",
-                dependsOn = tasks.map(_.id)
+                dependsOn = tasks.map(_.id.value)
               )
             )
           )
@@ -72,10 +72,10 @@ final class SdlcServiceSuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          task <- service.setTasks(List(PlanTaskSimplifiedModel("", "Task")))
+          task <- service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Task")))
           created <- service.setIntents(
             List(
-              PlanIntentSimplifiedModel("", "First", task.map(_.id), archived = true),
+              PlanIntentSimplifiedModel("", "First", task.map(_.id.value), archived = true),
               PlanIntentSimplifiedModel("", "Second")
             )
           )
@@ -111,7 +111,9 @@ final class SdlcServiceSuite extends FunSuite {
           before <- fs.readUtf8(PlanIntentStorage.JournalPath)
           badIntent <- service.setIntents(List(intent.head.copy(dependsOn = List("T-99")))).either
           badTask <- service
-            .setTasks(List(PlanTaskSimplifiedModel("", "Unknown contribution", contributesTo = List("I-99"))))
+            .setTasks(
+              List(PlanTaskSimplifiedModel(PlanTaskId.New, "Unknown contribution", contributesTo = List("I-99")))
+            )
             .either
           after <- fs.readUtf8(PlanIntentStorage.JournalPath)
         } yield {

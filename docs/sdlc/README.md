@@ -55,7 +55,7 @@ Use `sdlc_list` with `{}` to discover the first 50 nonarchived tasks and intents
 {"query": "authentication", "limit": 20, "includeArchived": false}
 ```
 
-Results contain `items` with ID, a title (first line, at most 160 characters),
+Results contain `items` with ID, a title (explicit for tasks; first line for intents, at most 160 characters),
 `expectedRevision`, optional task state and archived flag. This is a summary,
 **not replacement content**: use ReadTask/ReadIntent before editing.
 
@@ -73,7 +73,7 @@ Arguments (a JSON array, not a JSON-encoded string):
 ```json
 {
   "tasksJson": [
-    {"id": "", "text": "Investigate authentication failures"}
+    {"id": "", "title": "Investigate authentication failures"}
   ]
 }
 ```
@@ -92,7 +92,7 @@ unmentioned tasks remain unchanged. Empty input is a no-op. The runtime preserve
 For example, updating the minimal task created above at revision 1:
 
 ```json
-{"tasksJson": [{"id": "T-1", "text": "Investigate and document authentication failures", "expectedRevision": 1}]}
+{"tasksJson": [{"id": "T-1", "title": "Investigate authentication failures", "description": "Document the failure and completion conditions.", "expectedRevision": 1}]}
 ```
 
 **Stale versions reject the whole batch before any write**, even when other
@@ -101,11 +101,69 @@ how to merge before retrying. A successful changed snapshot advances its revisio
 a no-op at the current revision does not. Retrying an already-committed update
 with its old revision yields a conflict rather than guessing that the retry is safe.
 
+Task `refs` are ordered `[relationship, ID]` tuples, for example:
+
+```json
+"refs": [["subtask", "T-2"], ["dependsOn", "T-3"], ["leftoverOf", "T-4"]]
+```
+
+Relationships are `subtask` (contained work), `dependsOn` (prerequisite work),
+and `leftoverOf` (origin of remaining work). A target may occur under different
+relationships, but duplicate pairs and self-links are rejected. Task IDs use the
+opaque Scala type `PlanTaskId`, encoded as ordinary JSON strings. `PlanTaskId.New`
+encodes as `""` to request allocation; it cannot be a reference target or stored ID.
+
 Task references must exist after the batch is applied. Dependency and subtask
-graphs must be acyclic; self-links and duplicate relationships are rejected.
+graphs must each be acyclic; leftover origins do not imply dependencies.
 Containment may have multiple parents. Contributions must reference existing
 intents; intent dependencies must reference existing tasks. The shared service
 serializes these cross-journal checks with mutations.
+
+## Markdown and task steps
+
+Tasks have a required plain-text `title` (nonblank, single-line, at most 160
+characters) and a Markdown `description` (at most 8000 characters, default `""`).
+Intent `text` remains Markdown. Tasks may also include an ordered `steps`
+checklist; step descriptions are Markdown and step titles are single-line plain text:
+
+```json
+{
+  "tasksJson": [{
+    "id": "",
+    "title": "Improve authentication",
+    "description": "Make session renewal **reliable**.",
+    "steps": [
+      {"done": true, "title": "Reproduce the failure"},
+      {"done": false, "title": "Implement renewal", "description": "Add **regression tests**."}
+    ]
+  }]
+}
+```
+
+Each step requires `done` (boolean) and `title`; `description` defaults to `""`.
+Use at most 100 steps, each with a nonblank single-line title of at most 160
+characters and a description of at most 2000 characters. Steps are lightweight
+checklist items, not independently addressable tasks linked with `subtask` refs. Completing all steps
+does not automatically change task state.
+
+Stored and simplified tasks expose `toMarkdown`, combining an escaped title
+heading, the Markdown description, and a `## Steps` section using `- [x]` / `- [ ]`
+checkboxes and nested descriptions. The generated Markdown is not stored or
+included as a duplicate JSON field. The HTTP inspector renders descriptions and
+steps, offers Copy Markdown, and places Raw JSON beside the expand/collapse control.
+
+Legacy stored task `text` migrates to `description` verbatim, deriving `title`
+from its first nonblank line (heading markers removed, limited to 160 characters).
+New task inputs require `title` and must use `description`, not `text`; mixed
+old/new content fields fail explicitly. Existing journals without `steps` decode
+with an empty checklist. Legacy stored
+`subtasks`, `dependsOn`, and `leftoverOf` task lists migrate to `refs` on read;
+new writes/checkpoints use only `refs`. Mixed old/new relationship fields fail
+explicitly. Agent task inputs must use `refs`; intent `dependsOn` and task
+`contributesTo` remain unchanged. As with other
+planning fields, replacement updates that omit `steps` clear the checklist:
+read first and preserve it when editing. Discovery searches step titles and
+descriptions as well as the main narrative.
 
 ## ReadTask
 
@@ -139,10 +197,18 @@ Intent tool results use `PlanIntentSimplifiedModel`, not stored metadata.
 
 ## HTTP inspector
 
-Open the website at **`#/sdlc`** (navigation shortcut `8`). Each card initially
-shows its ID and the first line of `text` as a title; its button expands/collapses
-the complete stored JSON, including timestamps, revision and relationships. Tasks and
-intents have independent loading, empty and error states and a manual refresh.
+Open the website at **`#/sdlc`** (navigation shortcut `8`). Cards show their ID,
+task state, a text-only completed/total step count, and title inline, with archive
+badges where relevant. Copy Markdown and Raw JSON are adjacent header controls,
+available even when the card is collapsed. Expand to read
+sanitized Markdown, ordered read-only steps, assumptions, and linked relationships.
+Copy the combined Markdown or use Raw JSON beside the +/− control to inspect
+the complete stored object (including timestamps, revision, and unknown fields)
+independently of the description's expanded state.
+Search and task-state filters run locally; archived records are hidden until
+included. Relationship buttons reveal and focus their target, including archived
+records. Tasks and intents have independent loading, empty, and error states and
+a manual refresh. The page is read-only: checklists do not update storage.
 
 The page reads same-origin HTTP endpoints, never WebSocket/RPC data:
 

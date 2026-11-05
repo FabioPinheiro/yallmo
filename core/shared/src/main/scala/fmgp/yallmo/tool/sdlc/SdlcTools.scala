@@ -17,14 +17,28 @@ import zio.json.*
 /** Agent-facing planning tools over the same server-owned service used by the HTTP inspector. */
 object SdlcTools {
   private[sdlc] val MaxArgumentBytes = 128 * 1024
+  private val stepSchema = JsonSchema.ObjectSchema(
+    properties = Map(
+      "done" -> JsonSchema.BooleanSchema(Some("Whether this checklist item is complete; does not change task state")),
+      "title" -> JsonSchema.StringSchema(Some("Nonblank single-line plain-text summary; at most 60 characters")),
+      "description" -> JsonSchema.StringSchema(Some("Optional Markdown details; at most 1000 characters"))
+    ),
+    required = Set("done", "title")
+  )
   private val taskSchema = JsonSchema.ObjectSchema(
     properties = Map(
       "id" -> JsonSchema.StringSchema(Some("Existing stable task ID, or empty string to allocate a new ID")),
-      "text" -> JsonSchema.StringSchema(Some("Work description and completion conditions; at most 8000 characters")),
+      "title" -> JsonSchema.StringSchema(Some("Nonblank single-line plain-text task title; at most 160 characters")),
+      "description" -> JsonSchema.StringSchema(
+        Some("Markdown work description and completion conditions; at most 8000 characters; defaults to empty")
+      ),
+      "steps" -> JsonSchema
+        .ArraySchema(stepSchema, Some("Ordered local checklist, at most 100 items; not subtask IDs")),
       "state" -> JsonSchema.StringSchema(allowedValues = Chunk("open", "doing", "done", "dropped")),
-      "subtasks" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
-      "dependsOn" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
-      "leftoverOf" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
+      "refs" -> JsonSchema.ArraySchema(
+        JsonSchema.ArraySchema(JsonSchema.StringSchema(), Some("Exactly two strings: [relationship, task ID]")),
+        Some("Task references as [relationship, ID] tuples; relationship is subtask, dependsOn, or leftoverOf")
+      ),
       "contributesTo" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
       "assumptions" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
       "archived" -> JsonSchema.BooleanSchema(),
@@ -32,7 +46,7 @@ object SdlcTools {
         Some("Echo the version returned by Read; 0 only when id is empty for creation")
       )
     ),
-    required = Set("id", "text")
+    required = Set("id", "title")
   )
 
   val SetDefinition: AgentToolDefinition = AgentToolDefinition(
@@ -58,7 +72,9 @@ object SdlcTools {
   private val intentSchema = JsonSchema.ObjectSchema(
     properties = Map(
       "id" -> JsonSchema.StringSchema(Some("Existing stable intent ID, or empty string to allocate a new ID")),
-      "text" -> JsonSchema.StringSchema(Some("Desired outcome and success conditions; at most 8000 characters")),
+      "text" -> JsonSchema.StringSchema(
+        Some("Markdown desired outcome and success conditions; at most 8000 characters")
+      ),
       "dependsOn" -> JsonSchema.ArraySchema(JsonSchema.StringSchema()),
       "archived" -> JsonSchema.BooleanSchema(),
       "expectedRevision" -> JsonSchema.IntegerSchema(
@@ -91,7 +107,7 @@ object SdlcTools {
   val ListDefinition: AgentToolDefinition = AgentToolDefinition(
     key = ToolKey.SdlcList,
     description =
-      "Discover tasks and intents by ID or text. Returns compact summaries, not replacement content; ReadTask/ReadIntent before editing. By default excludes archived records. limit defaults to 50 (max 100); continue with nextAfterId as afterId using the same query/filter.",
+      "Discover tasks and intents by ID, Markdown text, or task step content. Returns compact summaries, not replacement content; ReadTask/ReadIntent before editing. By default excludes archived records. limit defaults to 50 (max 100); continue with nextAfterId as afterId using the same query/filter.",
     inputSchema = JsonSchema.ObjectSchema(
       Map(
         "query" -> JsonSchema.StringSchema(),

@@ -20,22 +20,26 @@ final class SdlcSafetySuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          tasks <- service.setTasks(List(PlanTaskSimplifiedModel("", "One"), PlanTaskSimplifiedModel("", "Two")))
+          tasks <- service.setTasks(
+            List(PlanTaskSimplifiedModel(PlanTaskId.New, "One"), PlanTaskSimplifiedModel(PlanTaskId.New, "Two"))
+          )
           intents <- service.setIntents(List(PlanIntentSimplifiedModel("", "Outcome")))
           taskA <- service.readTasks(List("T-1"))
           taskB <- service.readTasks(List("T-1"))
-          first <- service.setTasks(List(taskA.head.copy(text = "First agent's edit")))
+          first <- service.setTasks(List(taskA.head.copy(title = "First agent's edit")))
           before <- fs.readUtf8(PlanTaskStorage.JournalPath)
           stale <- service
             .setTasks(
-              List(taskB.head.copy(assumptions = List("Stale belief")), tasks(1).copy(text = "Must not commit"))
+              List(taskB.head.copy(assumptions = List("Stale belief")), tasks(1).copy(title = "Must not commit"))
             )
             .either
           after <- fs.readUtf8(PlanTaskStorage.JournalPath)
           secondTask <- service.readTasks(List("T-2"))
           _ <- service.setIntents(List(intents.head.copy(text = "New outcome")))
           staleIntent <- service.setIntents(List(intents.head.copy(archived = true))).either
-          missingRevision <- service.setTasks(List(PlanTaskSimplifiedModel("T-1", "No version"))).either
+          missingRevision <- service
+            .setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.unsafe("T-1"), "No version")))
+            .either
           // Re-read and preserve the other agent's changes, then the edit succeeds.
           fresh <- service.readTasks(List("T-1"))
           merged <- service.setTasks(List(fresh.head.copy(assumptions = List("Checked belief"))))
@@ -47,7 +51,7 @@ final class SdlcSafetySuite extends FunSuite {
           assertEquals(secondTask.head, tasks(1))
           assertEquals(first.head.expectedRevision, 2L)
           assertEquals(merged.head.expectedRevision, 3L)
-          assertEquals(merged.head.text, "First agent's edit")
+          assertEquals(merged.head.title, "First agent's edit")
         }
       }
     }
@@ -58,9 +62,9 @@ final class SdlcSafetySuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          created <- service.setTasks(List(PlanTaskSimplifiedModel("", "Task")))
+          created <- service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Task")))
           results <- ZIO.foreachPar(List("Agent A", "Agent B"))(text =>
-            service.setTasks(List(created.head.copy(text = text))).either
+            service.setTasks(List(created.head.copy(title = text))).either
           )
           current <- service.readTasks(List("T-1"))
         } yield {
@@ -74,11 +78,14 @@ final class SdlcSafetySuite extends FunSuite {
 
   test("legacy histories infer versions and continue safely across checkpoint and reopen") {
     withRoot { (_, fs) =>
-      val legacyTask = PlanTask("T-1", "Old", time, time)
+      val legacyTask = PlanTask(PlanTaskId.unsafe("T-1"), "Old", time, time)
       val legacyIntent = PlanIntent("I-1", "Old outcome", time, time)
       def legacy[A: JsonEncoder](value: A): String = {
         val array = ujson.read(List(value).toJson)
-        array.arr.foreach(record => { val _ = record.obj.remove("revision") })
+        array.arr.foreach { record =>
+          val _ = record.obj.remove("revision")
+          val _ = record.obj.remove("steps")
+        }
         array.render() + "\n"
       }
       run {
@@ -86,7 +93,7 @@ final class SdlcSafetySuite extends FunSuite {
           _ <- fs.createDirectories("sdlc")
           _ <- fs.writeUtf8(
             PlanTaskStorage.JournalPath,
-            legacy(legacyTask) + legacy(legacyTask.copy(text = "Second")),
+            legacy(legacyTask) + legacy(legacyTask.copy(title = "Second")),
             WriteMode.CreateNew
           )
           _ <- fs.writeUtf8(
@@ -99,15 +106,55 @@ final class SdlcSafetySuite extends FunSuite {
           intents <- service.readIntents(List("I-1"))
           _ <- service.checkpoint
           reopened <- SdlcService.make(fs, fs)
-          saved <- reopened.setTasks(List(tasks.head.copy(text = "Third")))
+          saved <- reopened.setTasks(List(tasks.head.copy(title = "Third")))
           savedIntent <- reopened.setIntents(List(intents.head.copy(text = "Third outcome")))
           full <- reopened.listTasks
         } yield {
           assertEquals(tasks.head.expectedRevision, 2L)
+          assertEquals(tasks.head.steps, Nil)
           assertEquals(intents.head.expectedRevision, 2L)
           assertEquals(saved.head.expectedRevision, 3L)
           assertEquals(savedIntent.head.expectedRevision, 3L)
           assertEquals(full.head.createdAt, time)
+        }
+      }
+    }
+  }
+
+  test("legacy task relationship lists survive replay, updates and checkpoint as refs") {
+    withRoot { (_, fs) =>
+      val metadata = s""""createdAt":"$time","updatedAt":"$time""""
+      val legacy =
+        s"""[{"id":"T-1","text":"Parent",$metadata,"subtasks":["T-2"],"dependsOn":["T-2"],"leftoverOf":[]},{"id":"T-2","text":"Child",$metadata,"subtasks":[],"dependsOn":[],"leftoverOf":["T-1"]}]""" + "\n"
+      run {
+        for {
+          _ <- fs.createDirectories("sdlc")
+          _ <- fs.writeUtf8(PlanTaskStorage.JournalPath, legacy, WriteMode.CreateNew)
+          service <- SdlcService.make(fs, fs)
+          tasks <- service.readTasks(List("T-1", "T-2"))
+          saved <- service.setTasks(List(tasks.head.copy(title = "Revised parent")))
+          _ <- service.checkpoint
+          compacted <- fs.readUtf8(PlanTaskStorage.JournalPath)
+          reopened <- SdlcService.make(fs, fs)
+          read <- reopened.readTasks(List("T-1", "T-2"))
+        } yield {
+          assertEquals(
+            tasks.head.refs,
+            List(
+              PlanTaskRelationship.Subtask -> PlanTaskId.unsafe("T-2"),
+              PlanTaskRelationship.DependsOn -> PlanTaskId.unsafe("T-2")
+            )
+          )
+          assertEquals(read, List(saved.head, tasks(1)))
+          assertEquals(saved.head.refs, tasks.head.refs)
+          assertEquals(tasks.head.title, "Parent")
+          assertEquals(tasks.head.description, "Parent")
+          assertEquals(saved.head.description, "Parent")
+          assert(!compacted.contains("\"text\":"))
+          assert(compacted.contains("\"refs\""))
+          assert(!compacted.contains("\"subtasks\""))
+          assert(!compacted.contains("\"dependsOn\":"))
+          assert(!compacted.contains("\"leftoverOf\":"))
         }
       }
     }
@@ -120,9 +167,9 @@ final class SdlcSafetySuite extends FunSuite {
           service <- SdlcService.make(fs, fs)
           _ <- service.setTasks(
             List(
-              PlanTaskSimplifiedModel("", "First title\nSearchable details"),
-              PlanTaskSimplifiedModel("", "Archived title", archived = true),
-              PlanTaskSimplifiedModel("", "x" * 800)
+              PlanTaskSimplifiedModel(PlanTaskId.New, "First title", description = "Searchable details"),
+              PlanTaskSimplifiedModel(PlanTaskId.New, "Archived title", archived = true),
+              PlanTaskSimplifiedModel(PlanTaskId.New, "x" * 160)
             )
           )
           _ <- service.setIntents(List(PlanIntentSimplifiedModel("", "Outcome")))
@@ -160,7 +207,7 @@ final class SdlcSafetySuite extends FunSuite {
 
   test("completing/archiving work frees active capacity without removing or recycling its ID") {
     withRoot { (_, fs) =>
-      val tasks = (1 to 1000).map(n => PlanTask(s"T-$n", "Task", time, time, revision = 1L)).toList
+      val tasks = (1 to 1000).map(n => PlanTask(PlanTaskId.unsafe(s"T-$n"), "Task", time, time, revision = 1L)).toList
       val intents = (1 to 1000).map(n => PlanIntent(s"I-$n", "Intent", time, time, revision = 1L)).toList
       def journal[A: JsonEncoder](records: List[A]): String = records.grouped(100).map(_.toJson + "\n").mkString
       run {
@@ -169,18 +216,18 @@ final class SdlcSafetySuite extends FunSuite {
           _ <- fs.writeUtf8(PlanTaskStorage.JournalPath, journal(tasks), WriteMode.CreateNew)
           _ <- fs.writeUtf8(PlanIntentStorage.JournalPath, journal(intents), WriteMode.CreateNew)
           service <- SdlcService.make(fs, fs)
-          fullTasks <- service.setTasks(List(PlanTaskSimplifiedModel("", "Over capacity"))).either
+          fullTasks <- service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Over capacity"))).either
           fullIntents <- service.setIntents(List(PlanIntentSimplifiedModel("", "Over capacity"))).either
           _ <- service.setTasks(List(tasks.head.toSimplifiedModel.copy(state = TaskState.Done)))
           _ <- service.setIntents(List(intents.head.toSimplifiedModel.copy(archived = true)))
           _ <- service.checkpoint
-          added <- service.setTasks(List(PlanTaskSimplifiedModel("", "New task")))
+          added <- service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "New task")))
           addedIntent <- service.setIntents(List(PlanIntentSimplifiedModel("", "New intent")))
           old <- service.readIntents(List("I-1"))
         } yield {
           assert(fullTasks.isLeft)
           assert(fullIntents.isLeft)
-          assertEquals(added.head.id, "T-1001")
+          assertEquals(added.head.id.value, "T-1001")
           assertEquals(addedIntent.head.id, "I-1001")
           assert(old.head.archived)
           assertEquals(old.head.expectedRevision, 2L)
@@ -191,7 +238,7 @@ final class SdlcSafetySuite extends FunSuite {
 
   test("current-state size is bounded before writing, leaving checkpoint headroom") {
     withRoot { (root, fs) =>
-      val large = PlanTaskSimplifiedModel("", "Large task", assumptions = List.fill(100)("x" * 2000))
+      val large = PlanTaskSimplifiedModel(PlanTaskId.New, "Large task", assumptions = List.fill(100)("x" * 2000))
       run {
         for {
           storage <- PlanTaskStorage.make(fs, fs)
@@ -251,7 +298,7 @@ final class SdlcSafetySuite extends FunSuite {
   test("checkpoint restores exhausted journal capacity and retains exact historical data") {
     withRoot { (root, fs) =>
       val original = (1 to PlanTaskStorage.MaxRecords).map { n =>
-        List(PlanTask("T-1", s"Version $n", time, time, revision = n.toLong)).toJson + "\n"
+        List(PlanTask(PlanTaskId.unsafe("T-1"), s"Version $n", time, time, revision = n.toLong)).toJson + "\n"
       }.mkString
       run {
         for {
@@ -259,9 +306,9 @@ final class SdlcSafetySuite extends FunSuite {
           _ <- fs.writeUtf8(PlanTaskStorage.JournalPath, original, WriteMode.CreateNew)
           storage <- PlanTaskStorage.make(fs, fs)
           current <- storage.readTasks(List("T-1"))
-          full <- storage.set(List(current.head.copy(text = "Next version"))).either
+          full <- storage.set(List(current.head.copy(title = "Next version"))).either
           _ <- storage.checkpoint
-          saved <- storage.set(List(current.head.copy(text = "Next version")))
+          saved <- storage.set(List(current.head.copy(title = "Next version")))
           files <- fs.list("sdlc/history")
           backup <- fs.readUtf8("sdlc/history/" + files.head)
         } yield {
@@ -301,7 +348,7 @@ final class SdlcSafetySuite extends FunSuite {
             assert(failed.isLeft, clues(failure, proxy.calls))
             if Files.exists(root.resolve(PlanTaskStorage.JournalPath + ".maintenance")) then
               assert(current.isLeft, clues(failure, proxy.calls))
-            else assertEquals(current.map(_.map(_.text)), Right(List("Second")))
+            else assertEquals(current.map(_.map(_.title)), Right(List("Second")))
           }
         }
       }
@@ -318,7 +365,7 @@ final class SdlcSafetySuite extends FunSuite {
           failed <- storage.checkpoint.either
           reopened <- PlanTaskStorage.make(fs, fs)
           read <- reopened.listTasks.either
-          create <- reopened.set(List(PlanTaskSimplifiedModel("", "Do not allocate T-1 again"))).either
+          create <- reopened.set(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Do not allocate T-1 again"))).either
           backups <- fs.list("sdlc/history")
           backup <- fs.readUtf8("sdlc/history/" + backups.head)
         } yield {
@@ -334,8 +381,8 @@ final class SdlcSafetySuite extends FunSuite {
   private def seed(fs: FileSystem): IO[FsError, Unit] =
     fs.createDirectories("sdlc") *> fs.writeUtf8(
       PlanTaskStorage.JournalPath,
-      List(PlanTask("T-1", "First", time, time)).toJson + "\n" +
-        List(PlanTask("T-1", "Second", time, time)).toJson + "\n",
+      List(PlanTask(PlanTaskId.unsafe("T-1"), "First", time, time)).toJson + "\n" +
+        List(PlanTask(PlanTaskId.unsafe("T-1"), "Second", time, time)).toJson + "\n",
       WriteMode.CreateNew
     )
 

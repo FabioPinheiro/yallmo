@@ -75,15 +75,35 @@ restrict this administrative interface to trusted users and use HTTPS/WSS or a s
 
 Open **SDLC** (`#/sdlc`, NORMAL shortcut `8`) to inspect stored **Tasks** and **Intents**. The page reads
 `GET /api/sdlc/tasks` and `GET /api/sdlc/intents` independently over same-origin HTTP, bypassing browser caches.
-Each endpoint must return a **bare JSON array** of full stored objects. Objects require string `id` (nonempty) and
-`text` fields; all fields are retained, including timestamps, relationships, task state, archived status and unknown fields.
+Each endpoint must return a **bare JSON array** of full stored objects. Tasks have a nonempty string `id`, an explicit
+plain-text `title`, and a Markdown `description` (default empty). Intents retain `text`; legacy text-only records are
+also readable. All fields are retained, including timestamps, relationships, task state, archives and unknown fields.
 There is no core dependency, schema simplification or editing API.
 
-Cards initially show only the ID and the first line of `text` (trimmed; CRLF supported; empty first lines use `(Untitled)`).
-Activate the card's keyboard-accessible button to expand/collapse the complete pretty-printed JSON. All content is
-rendered as text, never HTML. Each section has independent loading, empty and error states. **Refresh** (or NORMAL `r`)
-reloads both sections once; there is no polling or automatic retry. Late responses from older refreshes or an unmounted
-page are ignored. Requests already in flight are not aborted.
+Cards use a compact inline header: **ID · state · completed/total steps · title** (with archive badges where relevant).
+The step count is text-only, without a progress bar; long headers wrap naturally on small screens. Task titles are explicit
+(inferred from Markdown for intents/legacy records). Expand a card
+with its native button (mouse, Enter, or Space) to read the Markdown narrative, ordered read-only steps, assumptions,
+and relationships. Relationship buttons reveal, expand, and focus the target task/intent, clearing filters and showing
+archives when necessary. **Copy Markdown** and **Raw JSON** sit together in the header, available even when collapsed.
+Raw JSON sits near the +/− control and toggles the complete stored object independently
+of the description. Missing/unloaded targets are shown as disabled buttons. Step completion remains independent
+of task state; this page never writes planning data.
+
+Search matches IDs, narrative, step titles/descriptions, assumptions, and relationship targets. The task-state filter
+applies only to tasks. Archived records are hidden by default and can be included with the archive checkbox. Counts
+show visible versus loaded records. **Copy Markdown** exports the task title as a heading, description, and checkbox
+steps (or the intent narrative). Clipboard denial/unavailability produces a visible error. There is no separate
+Markdown-source disclosure. Raw JSON retains all metadata and unknown fields.
+
+Markdown is parsed with Marked and sanitized with DOMPurify through a mount-owned Vite/Scala.js bridge. Raw HTML is
+shown literally, embedded images never load, and only inert formatting/table/link elements are allowed. Link URLs are
+restricted to HTTP(S)/mailto (including relative HTTP(S) URLs), with `noopener noreferrer` in a new tab. A missing/failed
+bridge falls back to plain text, never unsanitized HTML. Other application views retain their existing text-only policy.
+
+Each section has independent loading, empty, filtered-empty, and error states. **Refresh** (or NORMAL `r`) reloads both
+sections once; there is no polling or automatic retry. Late responses from older refreshes or an unmounted page are
+ignored. Requests already in flight are not aborted.
 
 SDLC reads do **not** use `OrchestratorWSClient`, RPC initialization, a selected agent or a connected WebSocket.
 The existing application shell still attempts its ordinary WebSocket connection for other views; a disconnected status
@@ -93,14 +113,13 @@ configuration. Data comes from `<--storage>/sdlc/tasks.jsonl` and `intents.jsonl
 policy, with no WebSocket identity or agent allowlist required; keep this sensitive read surface private. Vite's
 HTTP development proxy forwards these same-origin requests to the backend.
 
-Focused checks: `sbt ';webHarness/testOnly *Sdlc*Suite *ViewWebSuite;clientHarnessJVM/test;clientHarnessJS/test'`.
-Model tests cover independent section loading/errors, refresh recovery, stale responses and unmount/remount behavior;
-decoder tests cover boundary errors and full-object retention. A headless browser smoke check with mocked HTTP and a
-closed WebSocket verified initial collapsed cards, literal markup, Enter/Space expansion, complete JSON, independent
-empty/error states, refresh/loading, navigation during pending responses and narrow-screen layout. An additional
-production-bundle smoke against the actual server HTTP routes, with WebSocket blocked, verified real task/intent
-JSON, initially collapsed cards, expand/collapse, refresh and a nonoverflowing 390px viewport. HTTP route tests also
-cover full metadata, readonly behavior, empty stores and sanitized failures.
+Focused checks: `sbt 'webHarness/testOnly *Sdlc*Suite'` and `npm --prefix web-harness/vite test`.
+Model/decoder tests cover independent loading/errors, stale responses, unmount/remount, structured fields, search and
+archive/state filters, Markdown export, and full-object retention. JavaScript tests exercise formatting and sanitizer
+behavior in jsdom. Headless browser smoke checks with mocked HTTP verified keyboard expansion, sanitized Markdown,
+read-only checklist progress, copy/export, raw JSON, filters, navigation to archived tasks and related intents, refresh
+recovery after an independent endpoint failure, and a nonoverflowing 375px viewport. HTTP route tests also cover full
+metadata, readonly behavior, empty stores and sanitized failures.
 
 ## Scalamode
 

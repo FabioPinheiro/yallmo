@@ -14,7 +14,7 @@ import zio.*
   */
 final class PlanTaskStorage private (read: FsRead, write: FsWrite, lock: Semaphore) {
   import PlanTaskStorage.*
-  private val journalFile = new PlanJournal[PlanTask](read, write, JournalPath, _.id)
+  private val journalFile = new PlanJournal[PlanTask](read, write, JournalPath, _.id.value)
 
   /** Preserve history and compact current state under the same store lock. */
   def checkpoint: IO[FsError, Unit] = lock.withPermit {
@@ -30,12 +30,13 @@ final class PlanTaskStorage private (read: FsRead, write: FsWrite, lock: Semapho
     for {
       _ <- check(ids.size <= MaxBatchSize, s"Read at most $MaxBatchSize tasks at a time")
       _ <- check(ids.distinct.size == ids.size && ids.forall(validId), "Use unique task IDs such as T-1")
+      taskIds = ids.map(PlanTaskId.unsafe)
       journal <- load
       _ <- check(
-        ids.forall(journal.current.contains),
-        s"Unknown task IDs: ${ids.filterNot(journal.current.contains).mkString(", ")}"
+        taskIds.forall(journal.current.contains),
+        s"Unknown task IDs: ${taskIds.filterNot(journal.current.contains).mkString(", ")}"
       )
-    } yield ids.map(id => journal.current(id).toSimplifiedModel)
+    } yield taskIds.map(id => journal.current(id).toSimplifiedModel)
   }
 
   /** Replaces only supplied tasks. Empty IDs request allocation; nonempty IDs must already exist.
@@ -92,12 +93,12 @@ final class PlanTaskStorage private (read: FsRead, write: FsWrite, lock: Semapho
     } yield snapshots.map(_.toSimplifiedModel)
   }
 
-  private final case class Journal(current: Map[String, PlanTask], contents: PlanJournal.Contents[PlanTask])
+  private final case class Journal(current: Map[PlanTaskId, PlanTask], contents: PlanJournal.Contents[PlanTask])
 
   private def load: IO[FsError, Journal] =
     for {
       contents <- journalFile.load
-      current <- ZIO.foldLeft(contents.records)(Map.empty[String, PlanTask]) { case (state, (original, index)) =>
+      current <- ZIO.foldLeft(contents.records)(Map.empty[PlanTaskId, PlanTask]) { case (state, (original, index)) =>
         def corrupt(message: String) = FsError.InvalidJson(JournalPath, index.toLong + 1, message)
         val previous = state.get(original.id)
         // Old journals have no revision field. Infer each legacy version; checkpoints retain their positive versions.
@@ -139,28 +140,41 @@ object PlanTaskStorage {
   private def check(condition: Boolean, message: => String): IO[FsError, Unit] =
     ZIO.fail(FsError.InvalidArgument(message)).unless(condition).unit
 
-  private def validId(id: String): Boolean = id.matches("T-[1-9][0-9]{0,9}")
+  private def validId(id: String): Boolean = PlanTaskId.from(id).isRight
 
   private def validateTask(task: PlanTaskSimplifiedModel, allowEmptyId: Boolean): Either[String, Unit] = {
-    val taskLinks = List(task.subtasks, task.dependsOn, task.leftoverOf)
     for {
       _ <- Either.cond(task.expectedRevision >= 0, (), "expectedRevision must be nonnegative")
       _ <- Either.cond(
-        validId(task.id) || (allowEmptyId && task.id.isEmpty),
+        validId(task.id.value) || (allowEmptyId && task.id.isEmpty),
         (),
         "Use a task ID such as T-1, or empty id for a new task"
       )
       _ <- Either.cond(
-        task.text.trim.nonEmpty && task.text.length <= 8000,
+        task.title.trim.nonEmpty && task.title.length <= 160 && !task.title.exists(c => c == '\n' || c == '\r'),
         (),
-        "Task text must contain 1–8000 characters"
+        "Task title must be nonblank, single-line, and at most 160 characters"
       )
       _ <- Either.cond(
-        taskLinks.forall(ids => ids.size <= MaxTasks && ids.distinct.size == ids.size && ids.forall(validId)),
+        task.description.length <= 8000,
         (),
-        "Task relationships must contain unique task IDs"
+        "Task Markdown description must contain at most 8000 characters"
       )
-      _ <- Either.cond(taskLinks.flatten.forall(_ != task.id), (), "A task cannot reference itself")
+      _ <- Either.cond(
+        task.steps.size <= 100 && task.steps.forall(step =>
+          step.title.trim.nonEmpty && step.title.length <= 160 &&
+            !step.title.exists(c => c == '\n' || c == '\r') && step.description.length <= 2000
+        ),
+        (),
+        "Use at most 100 steps with nonblank single-line titles of at most 160 characters and Markdown descriptions of at most 2000 characters"
+      )
+      _ <- Either.cond(
+        task.refs.groupBy(_._1).values.forall(_.size <= MaxTasks) &&
+          task.refs.distinct.size == task.refs.size && task.refs.forall(ref => validId(ref._2.value)),
+        (),
+        "Task refs must contain unique (relationship, task ID) pairs and at most 1000 targets per relationship"
+      )
+      _ <- Either.cond(task.refs.forall(_._2 != task.id), (), "A task cannot reference itself")
       _ <- Either.cond(
         task.contributesTo.size <= MaxTasks && task.contributesTo.distinct.size == task.contributesTo.size && task.contributesTo
           .forall(_.matches("I-[1-9][0-9]{0,9}")),
@@ -175,33 +189,38 @@ object PlanTaskStorage {
     } yield ()
   }
 
-  private def allocate(tasks: List[PlanTaskSimplifiedModel], existing: Set[String]): List[PlanTaskSimplifiedModel] = {
+  private def allocate(
+      tasks: List[PlanTaskSimplifiedModel],
+      existing: Set[PlanTaskId]
+  ): List[PlanTaskSimplifiedModel] = {
     var used = existing
     var next = 1
     tasks.map { task =>
       if task.id.nonEmpty then task
       else {
-        while used.contains(s"T-$next") do next += 1
-        val id = s"T-$next"
+        while used.contains(PlanTaskId.unsafe(s"T-$next")) do next += 1
+        val id = PlanTaskId.unsafe(s"T-$next")
         used += id
         task.copy(id = id)
       }
     }
   }
 
-  private def validateGraph(tasks: Map[String, PlanTask]): Either[String, Unit] = {
+  private def validateGraph(tasks: Map[PlanTaskId, PlanTask]): Either[String, Unit] = {
     val missing = tasks.valuesIterator
-      .flatMap(task => task.subtasks ++ task.dependsOn ++ task.leftoverOf)
+      .flatMap(_.refs.map(_._2))
       .filterNot(tasks.contains)
       .toSet
     if missing.nonEmpty then Left(s"Unknown task references: ${missing.toList.sorted.mkString(", ")}")
-    else if cyclic(tasks, _.subtasks) then Left("Subtask containment must not contain cycles")
-    else if cyclic(tasks, _.dependsOn) then Left("Task dependencies must not contain cycles")
+    else if cyclic(tasks, task => task.refs.collect { case (PlanTaskRelationship.Subtask, id) => id }) then
+      Left("Subtask containment must not contain cycles")
+    else if cyclic(tasks, task => task.refs.collect { case (PlanTaskRelationship.DependsOn, id) => id }) then
+      Left("Task dependencies must not contain cycles")
     else Right(())
   }
 
   /** Kahn traversal avoids recursive stack growth on long task chains. */
-  private def cyclic(tasks: Map[String, PlanTask], links: PlanTask => List[String]): Boolean = {
+  private def cyclic(tasks: Map[PlanTaskId, PlanTask], links: PlanTask => List[PlanTaskId]): Boolean = {
     val incoming = scala.collection.mutable.Map.from(tasks.keysIterator.map(_ -> 0))
     tasks.valuesIterator.foreach(task => links(task).foreach(id => incoming(id) += 1))
     val ready = scala.collection.mutable.Queue.from(incoming.iterator.collect { case (id, 0) => id })

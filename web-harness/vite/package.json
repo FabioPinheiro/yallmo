@@ -10,6 +10,11 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "devDependencies": {
+    "jsdom": "29.1.1",
     "vite": "7.3.7"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "marked": "18.1.3"
   }
 }

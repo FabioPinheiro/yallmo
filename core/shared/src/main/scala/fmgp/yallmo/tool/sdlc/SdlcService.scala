@@ -59,7 +59,12 @@ object SdlcService {
           intentRecords <- intents.listIntents
           needle = query.trim.toLowerCase
           matches = (taskRecords.map(task =>
-            (PlanSummary(task.id, title(task.text), task.revision, Some(task.state), task.archived), task.text)
+            (
+              PlanSummary(task.id.value, task.title, task.revision, Some(task.state), task.archived),
+              task.title + "\n" + task.description + task.steps
+                .map(step => s"\n${step.title}\n${step.description}")
+                .mkString
+            )
           ) ++
             intentRecords.map(intent =>
               (PlanSummary(intent.id, title(intent.text), intent.revision, None, intent.archived), intent.text)
@@ -98,7 +103,7 @@ object SdlcService {
             _ <- ZIO.when(models.exists(_.dependsOn.nonEmpty)) {
               for {
                 current <- tasks.listTasks
-                _ <- referencesExist(models.flatMap(_.dependsOn), current.map(_.id).toSet, "task")
+                _ <- referencesExist(models.flatMap(_.dependsOn), current.map(_.id.value).toSet, "task")
               } yield ()
             }
             saved <- intents.set(models)

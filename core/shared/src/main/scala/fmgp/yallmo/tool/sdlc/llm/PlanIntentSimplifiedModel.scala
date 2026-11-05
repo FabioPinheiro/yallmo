@@ -4,7 +4,7 @@ import fmgp.yallmo.tool.sdlc.PlanIntent
 import java.time.Instant
 import zio.json.JsonCodec
 
-/** Outcome content visible to agents and users, without storage timestamps.
+/** Markdown outcome content visible to agents and users, without storage timestamps.
   *
   * This is a replacement snapshot, not a patch: omitted lists and archive visibility use their defaults. Echo
   * expectedRevision from the last read when updating. Zero is accepted only for new records (empty ID).

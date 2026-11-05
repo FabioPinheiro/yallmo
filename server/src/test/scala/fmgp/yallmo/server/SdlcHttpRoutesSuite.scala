@@ -3,7 +3,7 @@ package fmgp.yallmo.server
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.model.Agent
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances}
-import fmgp.yallmo.tool.sdlc.{PlanIntent, PlanIntentStorage, PlanTask, SdlcService, SdlcTools}
+import fmgp.yallmo.tool.sdlc.{PlanIntent, PlanIntentStorage, PlanTask, PlanTaskId, SdlcService, SdlcTools}
 import fmgp.yallmo.tool.sdlc.llm.{PlanIntentSimplifiedModel, PlanTaskSimplifiedModel}
 import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.ExternalToolCall
@@ -48,14 +48,21 @@ final class SdlcHttpRoutesSuite extends FunSuite {
       for {
         fixture <- start
         created <- fixture.service.setTasks(
-          List(PlanTaskSimplifiedModel("", "Task title\nComplete body", assumptions = List("Known callers")))
+          List(
+            PlanTaskSimplifiedModel(
+              PlanTaskId.New,
+              "Task title",
+              description = "Complete body",
+              assumptions = List("Known callers")
+            )
+          )
         )
         intents <- fixture.service.setIntents(
           List(
             PlanIntentSimplifiedModel(
               "",
               "Intent title\nSuccess criteria",
-              dependsOn = created.map(_.id),
+              dependsOn = created.map(_.id.value),
               archived = true
             )
           )
@@ -75,6 +82,10 @@ final class SdlcHttpRoutesSuite extends FunSuite {
         assert(taskResponse.body().contains("createdAt") && taskResponse.body().contains("updatedAt"))
         assert(intentResponse.body().contains("createdAt") && intentResponse.body().contains("updatedAt"))
         assertEquals(fullTasks.size, 1, "Historical task snapshots must not appear as duplicate current records")
+        assertEquals(fullTasks.head.title, "Task title")
+        assertEquals(fullTasks.head.description, "Complete body")
+        assert(taskResponse.body().contains("\"title\"") && taskResponse.body().contains("\"description\""))
+        assert(!taskResponse.body().contains("\"text\""))
       }
     })
   }
@@ -120,7 +131,7 @@ final class SdlcHttpRoutesSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         fixture <- start
-        _ <- fixture.service.setTasks(List(PlanTaskSimplifiedModel("", "Readable task")))
+        _ <- fixture.service.setTasks(List(PlanTaskSimplifiedModel(PlanTaskId.New, "Readable task")))
         _ <- fixture.fs.writeUtf8(PlanIntentStorage.JournalPath, "PRIVATE invalid content\n", WriteMode.Replace)
         failed <- request(fixture.port, "/api/sdlc/intents")
         tasks <- request(fixture.port, "/api/sdlc/tasks")

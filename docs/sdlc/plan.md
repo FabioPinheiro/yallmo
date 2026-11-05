@@ -44,6 +44,7 @@ do not repeat a project ID. Multi-project selection remains future work.
 ### 3.1 Tasks at every scale
 
 - Use the same Task structure for broad work and small concrete actions.
+- Give each task an explicit plain-text `title` and a Markdown `description`; intent content retains `text`.
 - Represent decomposition with a list of subtask IDs, not nested task objects.
 - Subtask order is the current preferred display/execution order, not a hard dependency.
 - Use explicit dependencies when work actually requires other work.
@@ -66,19 +67,22 @@ percentage needs an agreed interpretation before it becomes a useful field.
 
 ### 3.3 Relationships
 
-Relationships are simple lists of stable IDs on the relevant record. There is no
-separate Link class or arbitrary graph schema.
+Task-to-task relationships use an ordered `refs` list of `(PlanTaskRelationship,
+PlanTaskId)` tuples, encoded as `[relationship, ID]` JSON arrays. Intent
+requirements and task-to-intent contributions retain dedicated ID lists. There
+is no separate Link record or arbitrary graph schema.
 
 | Field | On | References | Meaning |
 | --- | --- | --- | --- |
-| `subtasks` | Task | Tasks | Work contained in this task, in current order |
-| `dependsOn` | Task | Tasks | Prerequisite work |
+| `refs: ["subtask", ID]` | Task | Tasks | Work contained in this task, in current order |
+| `refs: ["dependsOn", ID]` | Task | Tasks | Prerequisite work |
 | `dependsOn` | Intent | Tasks | Required work before declaring the outcome achieved |
-| `leftoverOf` | Task | Tasks | Work from which this remaining work originated |
+| `refs: ["leftoverOf", ID]` | Task | Tasks | Work from which this remaining work originated |
 | `contributesTo` | Task | Intents | Outcomes this work is expected to help |
 
-The initial named cross-task relationships are `dependsOn` and `leftoverOf`.
-Containment and intent contribution have their dedicated lists.
+The supported task relationships are `subtask`, `dependsOn`, and `leftoverOf`.
+Intent contribution has its dedicated list. Duplicate pairs are rejected, while
+different relationships may reference the same target.
 
 Containment, display order, contribution, and leftover origin do not imply a
 prerequisite dependency. Intent dependencies describe achievement requirements;
@@ -158,7 +162,7 @@ assumption. Assumptions on intents are a possible later extension, not required 
 ### 3.8 Leftovers
 
 - Existing unfinished work keeps its existing task ID.
-- Newly discovered remaining work can be a new task with `leftoverOf` references.
+- Newly discovered remaining work can be a new task with `["leftoverOf", ID]` references.
 - Leftover origin does not imply a dependency.
 - Remaining work must stay visible after its origin is closed or archived.
 - Do not label required unfinished scope as optional leftover merely to declare a task done.
@@ -234,7 +238,8 @@ Task JSON includes the stable ID and planning content, for example:
 ```json
 {
   "id": "T-1",
-  "text": "Rename the authentication method after checking callers",
+  "title": "Rename the authentication method",
+  "description": "Check callers before renaming and document completion conditions.",
   "assumptions": ["No external clients use the current name"]
 }
 ```
@@ -300,9 +305,12 @@ Useful views:
 - **Changes:** evolving descriptions, decisions, and leftover work.
 - **Archive/search:** older work, still reachable by stable ID.
 
-The initial `#/sdlc` page displays current tasks and intents, including archived
-records. Each card shows its ID and the first line of text as its title; a button
-expands/collapses the full JSON. It loads complete stored objects via read-only
+The `#/sdlc` page displays current tasks and intents, with an option to include
+archived records. Cards show identity, Markdown-aware titles, state and checklist
+progress. Expanded cards render sanitized Markdown, ordered read-only steps,
+assumptions and navigable relationships, with combined Markdown export. Raw JSON
+is available beside the +/− control, independently of the content expansion. Search and task-state filters operate locally.
+It loads complete stored objects via read-only
 HTTP `GET /api/sdlc/tasks` and `GET /api/sdlc/intents`, not WebSocket/RPC or
 simplified LLM models. Server startup creates the shared service used by both
 HTTP and agent tools. This is an inspection view, not yet a history browser or

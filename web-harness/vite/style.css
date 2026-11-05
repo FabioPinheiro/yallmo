@@ -168,8 +168,11 @@ time { color: var(--text-muted); margin-left: auto; }
 pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 details { margin-top: 1rem; color: var(--text-muted); font-size: .75rem; }
 summary { cursor: pointer; }
-.message-body { color: inherit; font-size: inherit; }
-.message-body summary { color: var(--link); font-size: .85rem; }
+.message-toggle { display: flex; align-items: center; gap: .6rem; min-width: 0; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; overflow-wrap: anywhere; }
+.message-chevron { color: var(--text-muted); flex-shrink: 0; }
+.message-meta time { white-space: nowrap; }
+.message-identity { position: relative; margin: 0; font-size: inherit; }
+.message-identity-panel { position: absolute; z-index: 5; right: 0; top: calc(100% + .5rem); width: min(36rem, 75vw); padding: .75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-sidebar); box-shadow: 0 4px 16px var(--shadow); }
 .result-fields { display: flex; flex-wrap: wrap; gap: .5rem; margin: .8rem 0; font-size: .8rem; }
 .result-fields:empty { display: none; }
 .result-field { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: .35rem; padding: .3rem .5rem; border-radius: 5px; background: var(--surface-hover); overflow-wrap: anywhere; }

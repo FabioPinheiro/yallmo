@@ -451,14 +451,16 @@ object App {
   ): HtmlElement =
     div(
       cls := "messages",
-      children <-- messages.split(_.id) { (_, _, message) => messageCard(message, client, speech) }
+      children <-- messages.split(_.id) { (_, initial, message) => messageCard(initial, message, client, speech) }
     )
 
   private def messageCard(
+      initial: MessageSnapshot,
       message: Signal[MessageSnapshot],
       client: OrchestratorWSClient,
       speech: MessageSpeech
-  ): HtmlElement =
+  ): HtmlElement = {
+    val collapsed = Var(MessageText.startsCollapsed(initial.role, initial.content))
     articleTag(
       cls <-- message.map(value =>
         value.role match {
@@ -469,25 +471,39 @@ object App {
       ),
       div(
         cls := "message-meta",
-        span(cls := "role", child.text <-- message.map(_.role)),
-        strong(child.text <-- message.map(value => AgentId.value(value.agentId))),
-        span(child.text <-- message.map(_.toolName.fold("")(_.value))),
-        timeTag(child.text <-- message.map(_.timestamp.toString)),
+        MessageBodyView.toggle(
+          collapsed,
+          span(cls := "role", child.text <-- message.map(_.role)),
+          strong(child.text <-- message.map(value => AgentId.value(value.agentId))),
+          span(child.text <-- message.map(_.toolName.fold("")(_.value)))
+        ),
+        timeTag(
+          title := "UTC",
+          child.text <-- message.map(value => MessageText.formatTimestamp(value.timestamp))
+        ),
+        detailsTag(
+          cls := "message-identity",
+          summaryTag("Message identity"),
+          div(
+            cls := "message-identity-panel",
+            code(child.text <-- message.map(value => s"ID: ${value.id}")),
+            code(child.text <-- message.map(value => s"Parent: ${value.parentId.getOrElse("(root)")}"))
+          )
+        ),
         speech.buttonFor(message.map(_.content))
       ),
-      child <-- message.map(messageBody),
       div(
-        cls := "attachments",
-        children <-- message.map(_.blobIds.toList).split(identity) { (id, _, _) =>
-          downloadButton(id, s"Download attachment ${id.value}", client)
-        }
-      ),
-      detailsTag(
-        summaryTag("Message identity"),
-        code(child.text <-- message.map(value => s"ID: ${value.id}")),
-        code(child.text <-- message.map(value => s"Parent: ${value.parentId.getOrElse("(root)")}"))
+        hidden <-- collapsed.signal,
+        child <-- message.map(messageBody),
+        div(
+          cls := "attachments",
+          children <-- message.map(_.blobIds.toList).split(identity) { (id, _, _) =>
+            downloadButton(id, s"Download attachment ${id.value}", client)
+          }
+        )
       )
     )
+  }
 
   private def downloadButton(id: BlobId, label: String, client: OrchestratorWSClient): HtmlElement = {
     val busy = Var(false)
@@ -567,7 +583,7 @@ object App {
             code(MessageId.value(message.id)),
             small(s"Parent: ${message.parentId.getOrElse("(root)")}")
           ),
-          messageCard(Val(message), client, speech)
+          messageCard(message, Val(message), client, speech)
         ),
         if depth >= 32 then
           if children.contains(Some(message.id)) then

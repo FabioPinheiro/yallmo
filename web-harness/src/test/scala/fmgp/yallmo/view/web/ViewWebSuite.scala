@@ -50,6 +50,28 @@ final class ViewWebSuite extends FunSuite {
     assertEquals(MessageText.format("user", raw), raw)
   }
 
+  test("message timestamps use UTC seconds without ISO separators or fractional seconds") {
+    List(
+      "2026-10-31T13:28:57.307235756Z" -> "2026-10-31 13:28:57",
+      "2026-01-02T03:04:05Z" -> "2026-01-02 03:04:05",
+      "2026-12-31T23:59:59.999999999Z" -> "2026-12-31 23:59:59"
+    ).foreach { (input, expected) =>
+      assertEquals(MessageText.formatTimestamp(java.time.Instant.parse(input)), expected)
+    }
+  }
+
+  test("tool cards always start collapsed; ordinary short messages stay open") {
+    List("tool_call", "tool_result").foreach { role =>
+      assert(MessageText.startsCollapsed(role, "ok"))
+      assert(MessageText.startsCollapsed(role, ""))
+    }
+    List("user", "assistant").foreach { role =>
+      assert(!MessageText.startsCollapsed(role, "short text"))
+      assert(MessageText.startsCollapsed(role, "x" * 1201))
+      assert(MessageText.startsCollapsed(role, List.fill(17)("line").mkString("\n")))
+    }
+  }
+
   test("long content collapses by character count or line count") {
     assert(!MessageText.isLong("short text"))
     assert(!MessageText.isLong("x" * 1200))

@@ -264,18 +264,22 @@ private[web] object ChatView {
         App.messageList(messages, client, speech),
         child <-- pending.map {
           case Some(message) =>
+            val collapsed = Var(MessageText.isLong(message.prompt))
             div(
               cls := "messages",
               articleTag(
                 cls := "message message-user",
                 div(
                   cls := "message-meta",
-                  span(cls := "role", "user"),
-                  strong(AgentId.value(message.author)),
+                  MessageBodyView.toggle(
+                    collapsed,
+                    span(cls := "role", "user"),
+                    strong(AgentId.value(message.author))
+                  ),
                   span(role := "status", "Pending — not yet confirmed saved"),
                   speech.buttonFor(Val(message.prompt))
                 ),
-                MessageBodyView(message.prompt)
+                div(hidden <-- collapsed.signal, MessageBodyView(message.prompt))
               )
             )
           case None => emptyNode

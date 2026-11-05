@@ -36,8 +36,10 @@ all messages, a small CSS conversation tree,
 registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
-invalid JSON falls back to literal text. Long text starts collapsed in native details elements. Graph nodes expand to
-the same message cards, including tool results and attachment links.
+invalid JSON falls back to literal text. Tool calls/results and long messages start collapsed to their header line;
+the header toggle expands the body and attachments without a separate text disclosure row. Short messages start open.
+Message identity is available beside the UTC timestamp, formatted as `YYYY-MM-DD HH:mm:ss`.
+Graph nodes expand to the same message cards, including tool results and attachment links.
 
 ## Shared Markdown and code blocks
 

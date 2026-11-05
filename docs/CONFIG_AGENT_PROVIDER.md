@@ -105,6 +105,34 @@ The output still contains any literal credentials from the source: do not log, s
 
 For current capability configuration and enforcement, see [Capabilities architecture](Capabilities_Architecture.md).
 
+### Shared SDLC tool configuration
+
+Configured servers register `sdlc_list`, `sdlc_set`, `sdlc_read_task`,
+`sdlc_set_intents` and `sdlc_read_intent` automatically.
+Agents without a `capabilities.tools` allowlist inherit them. To enable them for
+an explicitly restricted agent, include the keys in that agent's existing entry:
+
+```yaml
+agents:
+  bob:
+    # Keep existing agentType, providerIds and config.
+    capabilities:
+      tools: [bash, sdlc_list, sdlc_set, sdlc_read_task, sdlc_set_intents, sdlc_read_intent]
+```
+
+This list replaces the inherited tool set: retain `readFile`, `listFiles`,
+`scalamode`, etc. if the agent should also use them. An empty list disables tools.
+Restart the server after editing the configuration.
+
+SDLC data is shared by all authorized agents at `<--storage>/sdlc/tasks.jsonl`
+and `<--storage>/sdlc/intents.jsonl`.
+With `--storage ./server-storage`, its root is **`./server-storage/sdlc`**.
+Paths are relative to the server working directory, not the config file.
+Neither `--workspace` nor per-agent `filesystem.root` changes this location.
+The server storage directory must already exist; the `sdlc` subdirectory is
+created on the first mutation. Embedded in-memory runtimes without server disk
+storage do not expose these tools. See [SDLC tools](../plan-tool/README.md).
+
 ### Per-agent filesystem configuration
 
 `AgentConfig` accepts an optional typed `filesystem` field. Existing configurations omit it and retain their behavior.

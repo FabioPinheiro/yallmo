@@ -3,7 +3,8 @@
 `OrchestratorWSServer(master, configured = None)` hosts static assets and JSON-RPC `/rpc` on the same listener
 (fixed to `0.0.0.0`) using one supplied runtime/storage owner. A supplied master alone is read-only. Standalone `--config`
 provides the existing configured backend for server-owned prompt execution; no additional runner/service is created.
-HTTP serves static assets and upgrade only, not conversation/blob REST endpoints.
+HTTP serves static assets, WebSocket upgrades and read-only SDLC inspection;
+conversation/blob requests still use JSON-RPC, not REST endpoints.
 
 **Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
 initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit`, `agents.invoke`,
@@ -90,6 +91,35 @@ can repeat provider/tool side effects. Inspect message history before manually r
 See [wire contract](PROTOCOL.md#independent-agent-invocation) for authorization, limits and persistence semantics.
 The [browser dictation UI](../web-harness/README.md#dictation) uses this path and generic uploads; no voice-specific
 endpoint or session is introduced. General execution cancellation remains separate pending work.
+
+## Shared planning tools
+
+Configured workspace startup registers `sdlc_list`, `sdlc_set`, `sdlc_read_task`,
+`sdlc_set_intents` and `sdlc_read_intent`; agents inherit them unless an explicit
+`capabilities.tools` allowlist excludes them. Storage uses `FsRead`/`FsWrite` at
+`<--storage>/sdlc/tasks.jsonl` and `<--storage>/sdlc/intents.jsonl`. With
+`--storage ./server-storage`, both journals are in `./server-storage/sdlc`.
+
+The main creates one `SdlcService`, shared by all agent tools and HTTP routes.
+Replacement edits require the `expectedRevision` returned by a full read; stale
+batches are rejected. `sdlc_list` provides bounded summaries/search for discovery.
+For explicit history-preserving checkpoint maintenance, stop the server and run
+`server/runMain fmgp.yallmo.server.SdlcMaintenanceMain ./server-storage`.
+Neither `--workspace` nor selecting another agent filesystem changes it.
+Startup itself creates no planning files.
+
+Open **SDLC** (`#/sdlc`) to inspect full stored task/intent JSON. The page uses
+`GET /api/sdlc/tasks` and `GET /api/sdlc/intents`, returning bare arrays with
+timestamps and archived records. It does not use WebSocket/RPC for this data.
+HTTP requests invoke no agents, create no conversations, and cannot mutate plans.
+
+These endpoints are available in standalone viewer-only mode too, with no
+WebSocket identity/agent selection required. **Any trusted-host reader can read
+planning text; agent tool allowlists do not filter HTTP inspection.** Embedded
+hosts enable it by passing their shared service as `sdlc = Some(service)` to
+`OrchestratorWSServer`. Responses are noncacheable; journal errors return sanitized
+JSON failures. Unknown application/API paths remain 404.
+See [SDLC configuration, usage and storage guarantees](../plan-tool/README.md).
 
 ## Submission lifetime and uncertainty
 

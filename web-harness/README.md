@@ -27,13 +27,13 @@ npm --prefix web-harness/vite run dev
 
 The backend must be running on loopback port 8080 (`sbt 'server/run --storage ./zzz'`). Vite uses `host: true` to listen
 on all interfaces, including Docker, and proxies `/rpc` with `ws: true` to `ws://127.0.0.1:8080`, preserving the real
-browser Origin. Keep the dev server/proxy private: publish Docker's Vite port on host loopback only (for example
+browser Origin. It also proxies `/api/sdlc` over HTTP to `http://127.0.0.1:8080`. Keep the dev server/proxy private: publish Docker's Vite port on host loopback only (for example
 `127.0.0.1:5173:5173`), or use a trusted network. Backend loopback binding alone does not protect the Vite proxy.
 
-Static assets still use HTTP; application requests and attachment bytes use JSON-RPC exclusively. No Scala.js/Vite sbt
-bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat and show sessions,
+Static assets and SDLC inspection use HTTP; other application requests and attachment bytes use JSON-RPC. No Scala.js/Vite sbt
+bridge is needed: Vite imports the output of the separately-running linker. Nine hash-linked navigation links provide chat and show sessions,
 all messages, a small CSS conversation tree,
-registry agent IDs, stored blob IDs, the Scalamode playground and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
+registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
 invalid JSON falls back to plain text. Long text starts collapsed in native details elements. Graph nodes expand to
@@ -42,10 +42,11 @@ the same message cards, including tool results and attachment links.
 One application-root WebSocket is shared across tabs, initialized on mount and closed on unmount/unload. Reconnect
 explicitly reconnects after a disconnect; failed queries are not replayed automatically. Attachment downloads validate
 and assemble bounded base64 chunks into a local browser Blob (64 MiB maximum), with local object-URL cleanup and
-visible partial-transfer errors. There is no Fetch client or HTTP blob fallback.
+visible partial-transfer errors. There is no HTTP blob fallback; Fetch is used only for SDLC inspection.
 
 The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RPC/application protocol and domain types.
-There is no direct source inclusion, JVM core dependency or duplicate browser DTO layer. The cross-projects use
+There is no direct source inclusion or JVM core dependency. SDLC uses a small browser projection backed by the full JSON AST,
+not duplicated core PlanTask/PlanIntent codecs. The cross-projects use
 `shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.
 
 ## Providers and ChatGPT login
@@ -58,7 +59,7 @@ localhost page fails to load. Click **Complete login**. **Login saved and active
 immediately, without restarting the Yallmo server. Already-running requests keep their existing connection. If the
 server can only save (for example, a profile added after startup), it explicitly reports that a restart is required.
 
-All application traffic uses the existing WebSocket (`providers.list`, `providers.login.start/complete/cancel`).
+All provider-management traffic uses the existing WebSocket (`providers.list`, `providers.login.start/complete/cancel`).
 OpenAI login itself opens separately over HTTPS. Tokens and PKCE verifier remain server-side; the callback field is
 transient, cleared on submit and tab exit, and never enters chat/history/browser storage. Pending attempts survive tab
 navigation but expire after 15 minutes and are dropped on disconnect. A pending start/save disables toolbar reconnect;
@@ -69,6 +70,37 @@ logout and general configuration reload are intentionally excluded. Successful l
 provider's live credentials and lazily rebinds its dependent agents, preserving their existing filesystem capabilities. Automatic token refresh is not the Reconnect button: it
 already occurs during inference and remains memory-only. The server's claimed Operator identity is not authentication;
 restrict this administrative interface to trusted users and use HTTPS/WSS or a secure tunnel for remote access.
+
+## SDLC inspection
+
+Open **SDLC** (`#/sdlc`, NORMAL shortcut `8`) to inspect stored **Tasks** and **Intents**. The page reads
+`GET /api/sdlc/tasks` and `GET /api/sdlc/intents` independently over same-origin HTTP, bypassing browser caches.
+Each endpoint must return a **bare JSON array** of full stored objects. Objects require string `id` (nonempty) and
+`text` fields; all fields are retained, including timestamps, relationships, task state, archived status and unknown fields.
+There is no core dependency, schema simplification or editing API.
+
+Cards initially show only the ID and the first line of `text` (trimmed; CRLF supported; empty first lines use `(Untitled)`).
+Activate the card's keyboard-accessible button to expand/collapse the complete pretty-printed JSON. All content is
+rendered as text, never HTML. Each section has independent loading, empty and error states. **Refresh** (or NORMAL `r`)
+reloads both sections once; there is no polling or automatic retry. Late responses from older refreshes or an unmounted
+page are ignored. Requests already in flight are not aborted.
+
+SDLC reads do **not** use `OrchestratorWSClient`, RPC initialization, a selected agent or a connected WebSocket.
+The existing application shell still attempts its ordinary WebSocket connection for other views; a disconnected status
+or connection notification does not block SDLC HTTP reads. Reconnect can also refresh the active page.
+Standalone server startup creates the shared SDLC service and serves both HTTP endpoints, even without an agent
+configuration. Data comes from `<--storage>/sdlc/tasks.jsonl` and `intents.jsonl`. HTTP inspection follows the trusted-host
+policy, with no WebSocket identity or agent allowlist required; keep this sensitive read surface private. Vite's
+HTTP development proxy forwards these same-origin requests to the backend.
+
+Focused checks: `sbt ';webHarness/testOnly *Sdlc*Suite *ViewWebSuite;clientHarnessJVM/test;clientHarnessJS/test'`.
+Model tests cover independent section loading/errors, refresh recovery, stale responses and unmount/remount behavior;
+decoder tests cover boundary errors and full-object retention. A headless browser smoke check with mocked HTTP and a
+closed WebSocket verified initial collapsed cards, literal markup, Enter/Space expansion, complete JSON, independent
+empty/error states, refresh/loading, navigation during pending responses and narrow-screen layout. An additional
+production-bundle smoke against the actual server HTTP routes, with WebSocket blocked, verified real task/intent
+JSON, initially collapsed cards, expand/collapse, refresh and a nonoverflowing 390px viewport. HTTP route tests also
+cover full metadata, readonly behavior, empty stores and sanitized failures.
 
 ## Scalamode
 

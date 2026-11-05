@@ -41,6 +41,17 @@ h1 { font-size: 1.4rem; margin: .25rem 0; }
 h2 { font-size: 1.1rem; overflow-wrap: anywhere; }
 .transcript { padding: 1.5rem 2rem; min-width: 0; }
 .page { padding: 1.5rem 2rem; max-width: 1100px; margin: auto; }
+/* SDLC cards expose only identity/title until their native button is activated. */
+.sdlc-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.sdlc-section { margin-top: 1.5rem; min-width: 0; }
+.sdlc-section h3 { font-size: 1rem; }
+.sdlc-cards { display: grid; gap: .65rem; }
+.sdlc-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); min-width: 0; }
+.sdlc-card-toggle { display: grid; grid-template-columns: minmax(0, 1fr); gap: .4rem; width: 100%; text-align: left; border: 0; padding: 1rem; }
+.sdlc-card-id { margin: 0; font-size: .8rem; color: var(--text-muted); }
+.sdlc-card-title { font-weight: 650; overflow-wrap: anywhere; }
+.sdlc-card-toggle[aria-expanded="true"] { border-radius: 10px 10px 0 0; background: var(--surface-selected); }
+.sdlc-json { margin: 0; padding: 1rem; border-top: 1px solid var(--border); max-height: 60vh; overflow: auto; }
 .id-list { padding-left: 1.2rem; overflow-wrap: anywhere; }
 .id-list li { margin: .8rem 0; }
 .blob-list { list-style: none; padding: 0; margin: 1.25rem 0; display: grid; gap: .65rem; }

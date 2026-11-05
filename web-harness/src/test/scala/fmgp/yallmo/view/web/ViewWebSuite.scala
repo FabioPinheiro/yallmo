@@ -23,12 +23,19 @@ final class ViewWebSuite extends FunSuite {
     }
     assertEquals(ViewRoute.parse("#/chat"), ViewRoute.Chat)
     assertEquals(ViewRoute.Chat.href, "#/chat")
+    assertEquals(ViewRoute.parse("#/sdlc"), ViewRoute.Sdlc)
+    assertEquals(ViewRoute.Sdlc.title, "SDLC")
+    assertEquals(ViewRoute.Sdlc.href, "#/sdlc")
+    assertEquals(ViewRoute.parse("#/providers"), ViewRoute.Providers)
+    assertEquals(ViewRoute.Providers.title, "Providers")
+    assertEquals(ViewRoute.Providers.href, "#/providers")
     assertEquals(ViewRoute.parse("#/unknown"), ViewRoute.Sessions(None))
     assertEquals(ViewRoute.parse("#/sessions/%ZZ"), ViewRoute.Sessions(None))
   }
 
   test("navigation shortcuts come from typed catalog actions, including selected-session routes") {
-    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "6", "7", "p"))
+    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "p", "6", "7", "8"))
+    assertEquals(ViewRoute.tabs.slice(4, 7), List(ViewRoute.Agents, ViewRoute.Providers, ViewRoute.Blobs))
     assertEquals(ViewRoute.Sessions(Some("existing")).command, ViewRoute.Sessions(None).command)
   }
 

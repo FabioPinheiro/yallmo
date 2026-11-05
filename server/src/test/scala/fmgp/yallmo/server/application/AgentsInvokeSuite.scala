@@ -268,45 +268,58 @@ final class AgentsInvokeSuite extends FunSuite {
     })
   }
 
-  test("direct tools retain configured denial and approval gates without inference") {
-    run(ZIO.scoped {
-      for {
-        executions <- Ref.make(0)
-        approvals <- Ref.make(0)
-        tool = new AgentTool[Any] {
-          val definition = fmgp.yallmo.tool.ScalaTool.definition
-          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            executions.update(_ + 1).as(ExternalToolResult("must not run"))
-        }
-        guarded = ToolApproval.guard(
-          tool,
-          new ToolApproval[Any] {
-            def approve(definition: AgentToolDefinition, call: ExternalToolCall): IO[YallmoError, Unit] =
-              approvals.update(_ + 1) *> ZIO.fail(YallmoError.InvalidConfig("Approval denied"))
+  for (toolDefinition, arguments) <- List(
+      fmgp.yallmo.tool.ScalaTool.definition -> """{"code":"42"}""",
+      fmgp.yallmo.tool.sdlc.SdlcTools.SetDefinition -> """{"tasksJson":[]}""",
+      fmgp.yallmo.tool.sdlc.SdlcTools.ReadTaskDefinition -> """{"taskIds":[]}""",
+      fmgp.yallmo.tool.sdlc.SdlcTools.SetIntentsDefinition -> """{"intentsJson":[]}""",
+      fmgp.yallmo.tool.sdlc.SdlcTools.ReadIntentDefinition -> """{"intentIds":[]}""",
+      fmgp.yallmo.tool.sdlc.SdlcTools.ListDefinition -> "{}"
+    )
+  do
+    test(s"direct ${toolDefinition.key} retains configured denial and approval gates without inference") {
+      run(ZIO.scoped {
+        for {
+          executions <- Ref.make(0)
+          approvals <- Ref.make(0)
+          tool = new AgentTool[Any] {
+            val definition = toolDefinition
+            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+              executions.update(_ + 1).as(ExternalToolResult("must not run"))
           }
-        )
-        allowed = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))))
-        )
-        denied <- make(_ => ZIO.dieMessage("No provider inference"), tools = Chunk(guarded))
-        permitted <- make(_ => ZIO.dieMessage("No provider inference"), configuration = allowed, tools = Chunk(guarded))
-        request = Message(
-          input.data.copy(payload =
-            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), ToolKey.Scalamode, """{"code":"42"}"""))
+          guarded = ToolApproval.guard(
+            tool,
+            new ToolApproval[Any] {
+              def approve(definition: AgentToolDefinition, call: ExternalToolCall): IO[YallmoError, Unit] =
+                approvals.update(_ + 1) *> ZIO.fail(YallmoError.InvalidConfig("Approval denied"))
+            }
           )
-        )
-        deniedReply <- invoke(denied, request)
-        approvedReply <- invoke(permitted, request)
-        count <- executions.get
-        gates <- approvals.get
-      } yield {
-        assertEquals(count, 0)
-        assertEquals(gates, 1)
-        assert(deniedReply.contains("ToolUnavailableToAgent"))
-        assert(approvedReply.contains("Approval denied"))
-      }
-    })
-  }
+          allowed = config.copy(agents =
+            Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(toolDefinition.key)))))
+          )
+          denied <- make(_ => ZIO.dieMessage("No provider inference"), tools = Chunk(guarded))
+          permitted <- make(
+            _ => ZIO.dieMessage("No provider inference"),
+            configuration = allowed,
+            tools = Chunk(guarded)
+          )
+          request = Message(
+            input.data.copy(payload =
+              Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), toolDefinition.key, arguments))
+            )
+          )
+          deniedReply <- invoke(denied, request)
+          approvedReply <- invoke(permitted, request)
+          count <- executions.get
+          gates <- approvals.get
+        } yield {
+          assertEquals(count, 0)
+          assertEquals(gates, 1)
+          assert(deniedReply.contains("ToolUnavailableToAgent"))
+          assert(approvedReply.contains("Approval denied"))
+        }
+      })
+    }
 
   test("other payloads and existing parents are accepted without inheriting parent history") {
     run(ZIO.scoped {

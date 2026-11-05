@@ -4,6 +4,7 @@ import fmgp.yallmo.fs.{FileSystem, FsRead}
 import fmgp.yallmo.model.{ToolKey, YallmoError}
 import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
 import fmgp.yallmo.tool.*
+import fmgp.yallmo.tool.sdlc.{SdlcService, SdlcTools}
 import zio.*
 
 import java.nio.file.Path
@@ -25,7 +26,7 @@ final case class ToolAvailability(
     unavailable: Chunk[(ToolKey, Chunk[String])]
 )
 
-/** Shared core tool composition for an explicitly supplied workspace. */
+/** Core tool composition: process/read tools use the workspace; SDLC uses shared server storage. */
 object ApplicationTools {
   type Environment = BashExecutor & GitClient & ScalaCodeExecutor
 
@@ -33,10 +34,23 @@ object ApplicationTools {
     BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live
 
   /** Probes requirements without executing tools and logs availability once at startup. */
-  def evaluate(workspace: Path): URIO[Environment, StartupTools] =
+  def evaluate(
+      workspace: Path,
+      storageRoot: Option[Path],
+      sharedSdlc: Option[SdlcService] = None
+  ): URIO[Environment, StartupTools] =
     for {
       filesystem <- FileSystem.open(workspace.toString).option
       hasWorkspace = filesystem.nonEmpty
+      storage <- ZIO.foreach(storageRoot)(root => FileSystem.open(root.toString).option).map(_.flatten)
+      service <- sharedSdlc match {
+        case Some(value) => ZIO.some(value)
+        case None        => ZIO.foreach(storage)(fs => SdlcService.make(fs, fs))
+      }
+      sdlc = service.map(SdlcTools.make)
+      storageReason =
+        if storageRoot.isEmpty then "SDLC tools require server filesystem storage"
+        else "server storage is not an accessible directory"
       hasBash <- ZIO.serviceWithZIO[BashExecutor](_.isAvailable)
       gitStatus <- ZIO.serviceWithZIO[GitClient] { git =>
         git.isAvailable.flatMap {
@@ -54,7 +68,8 @@ object ApplicationTools {
           gitStatus.left.toOption.map(reason => ToolKey.RepositoryChanges -> Chunk(reason)),
           Option.unless(hasScala)(ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")),
         ).flatten
-      )
+      ) ++ (if service.isEmpty then SdlcTools.Definitions.map(definition => definition.key -> Chunk(storageReason))
+            else Chunk.empty)
       available = Chunk.fromIterable(
         List[Option[AgentTool[Environment]]](
           filesystem.map(fs => bindFilesystem(new ReadFileTool, fs)),
@@ -64,10 +79,15 @@ object ApplicationTools {
           Option.when(hasScala)(new ScalaTool()),
         ).flatten
       )
-      startupTools = StartupTools(available, ToolAvailability(available.map(_.definition.key), unavailable), filesystem)
+      allAvailable = available ++ sdlc.getOrElse(Chunk.empty)
+      startupTools = StartupTools(
+        allAvailable,
+        ToolAvailability(allAvailable.map(_.definition.key), unavailable),
+        filesystem
+      )
       _ <- ZIO.logDebug(s"Startup tool availability: ${startupTools.availability}")
       _ <- ZIO.logInfo(
-        s"Available tools (${available.size}): ${available.map(_.definition.key).mkString(", ")}"
+        s"Available tools (${allAvailable.size}): ${allAvailable.map(_.definition.key).mkString(", ")}"
       )
     } yield startupTools
 

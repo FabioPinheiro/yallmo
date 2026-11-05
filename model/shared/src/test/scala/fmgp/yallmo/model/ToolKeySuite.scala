@@ -11,13 +11,18 @@ final class ToolKeySuite extends FunSuite {
     ToolKey.Bash -> "bash",
     ToolKey.RepositoryChanges -> "repositoryChanges",
     ToolKey.Scalamode -> "scalamode",
+    ToolKey.SdlcSet -> "sdlc_set",
+    ToolKey.SdlcReadTask -> "sdlc_read_task",
+    ToolKey.SdlcSetIntents -> "sdlc_set_intents",
+    ToolKey.SdlcReadIntent -> "sdlc_read_intent",
+    ToolKey.SdlcList -> "sdlc_list",
     ToolKey.CoachListApplications -> "coach_list_applications",
     ToolKey.CoachGetApplication -> "coach_get_application",
     ToolKey.CoachSaveApplication -> "coach_save_application"
   )
 
   test("built-in keys are unique and retain their wire values") {
-    assertEquals(builtins.map(_._1).distinct.size, 8)
+    assertEquals(builtins.map(_._1).distinct.size, 13)
     builtins.foreach { (key, wire) =>
       assertEquals(key.value, wire)
       assertEquals(key.toJson, s"\"$wire\"")

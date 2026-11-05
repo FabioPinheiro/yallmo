@@ -14,7 +14,12 @@ final class ApplicationToolsSuite extends FunSuite {
     ToolKey.ListFiles,
     ToolKey.Bash,
     ToolKey.RepositoryChanges,
-    ToolKey.Scalamode
+    ToolKey.Scalamode,
+    ToolKey.SdlcSet,
+    ToolKey.SdlcReadTask,
+    ToolKey.SdlcSetIntents,
+    ToolKey.SdlcReadIntent,
+    ToolKey.SdlcList
   )
 
   test("startup selects only tools whose requirements pass without executing tools") {
@@ -22,17 +27,31 @@ final class ApplicationToolsSuite extends FunSuite {
       val (tools, calls) = run {
         for {
           services <- probes(git = false)
-          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
           calls <- services.calls.get
         } yield (tools, calls)
       }
-      val expected = Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
+      val expected = Chunk(
+        ToolKey.ReadFile,
+        ToolKey.ListFiles,
+        ToolKey.Bash,
+        ToolKey.Scalamode,
+        ToolKey.SdlcSet,
+        ToolKey.SdlcReadTask,
+        ToolKey.SdlcSetIntents,
+        ToolKey.SdlcReadIntent,
+        ToolKey.SdlcList
+      )
       assertEquals(tools.available.map(_.definition.key), expected)
       assertEquals(
         tools.availability,
         ToolAvailability(expected, Chunk(ToolKey.RepositoryChanges -> Chunk("git is not available on PATH")))
       )
       assertEquals(calls, Vector("bash.available", "git.available", "scala.available"))
+      assert(
+        !Files.exists(workspace.resolve(fmgp.yallmo.tool.sdlc.PlanTaskStorage.Directory)),
+        "Startup must not create planning storage"
+      )
     }
   }
 
@@ -42,8 +61,8 @@ final class ApplicationToolsSuite extends FunSuite {
         val (first, second, calls) = run {
           for {
             services <- probes()
-            first <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
-            second <- ApplicationTools.evaluate(otherWorkspace).provideLayer(services.layer)
+            first <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
+            second <- ApplicationTools.evaluate(otherWorkspace, Some(otherWorkspace)).provideLayer(services.layer)
             calls <- services.calls.get
           } yield (first, second, calls)
         }
@@ -72,10 +91,13 @@ final class ApplicationToolsSuite extends FunSuite {
         val tools = run {
           for {
             services <- probes(bash = false, git = false, scala = false)
-            tools <- ApplicationTools.evaluate(invalid).provideLayer(services.layer)
+            tools <- ApplicationTools.evaluate(invalid, Some(workspace)).provideLayer(services.layer)
           } yield tools
         }
-        assertEquals(tools.available, Chunk.empty)
+        assertEquals(
+          tools.available.map(_.definition.key),
+          Chunk(ToolKey.SdlcSet, ToolKey.SdlcReadTask, ToolKey.SdlcSetIntents, ToolKey.SdlcReadIntent, ToolKey.SdlcList)
+        )
         assertEquals(
           tools.availability.unavailable,
           Chunk(
@@ -95,12 +117,22 @@ final class ApplicationToolsSuite extends FunSuite {
       val tools = run {
         for {
           services <- probes(worktree = false)
-          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
         } yield tools
       }
       assertEquals(
         tools.available.map(_.definition.key),
-        Chunk(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
+        Chunk(
+          ToolKey.ReadFile,
+          ToolKey.ListFiles,
+          ToolKey.Bash,
+          ToolKey.Scalamode,
+          ToolKey.SdlcSet,
+          ToolKey.SdlcReadTask,
+          ToolKey.SdlcSetIntents,
+          ToolKey.SdlcReadIntent,
+          ToolKey.SdlcList
+        )
       )
       assertEquals(
         tools.availability.unavailable,
@@ -114,7 +146,7 @@ final class ApplicationToolsSuite extends FunSuite {
       val (results, calls) = run {
         for {
           services <- probes(allowExecution = true)
-          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
           _ <- services.calls.set(Vector.empty)
           results <- ZIO
             .foreach(
@@ -142,8 +174,8 @@ final class ApplicationToolsSuite extends FunSuite {
         val results = run {
           for {
             services <- probes()
-            one <- ApplicationTools.evaluate(first).provideLayer(services.layer)
-            two <- ApplicationTools.evaluate(second).provideLayer(services.layer)
+            one <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
+            two <- ApplicationTools.evaluate(second, Some(second)).provideLayer(services.layer)
             results <- ZIO.foreach(Chunk(one, two)) { tools =>
               tools.available
                 .find(_.definition.key == ToolKey.ReadFile)
@@ -163,7 +195,7 @@ final class ApplicationToolsSuite extends FunSuite {
       val (definition, result, calls) = run {
         for {
           services <- probes(allowExecution = true)
-          tools <- ApplicationTools.evaluate(workspace).provideLayer(services.layer)
+          tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
           scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
           result <- scala
             .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
@@ -174,6 +206,131 @@ final class ApplicationToolsSuite extends FunSuite {
       assertEquals(definition, ScalaTool.definition)
       assertEquals(result.text, "fake output")
       assert(calls.contains("scala:(1 to 10).sum"))
+    }
+  }
+
+  test("SDLC tools are available without process dependencies and execute with their captured server storage") {
+    withWorkspace { workspace =>
+      val (created, read, calls) = run {
+        for {
+          services <- probes(bash = false, git = false, scala = false)
+          tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
+          created <- tools.available
+            .find(_.definition.key == ToolKey.SdlcSet)
+            .get
+            .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"Plan the change"}]}"""))
+            .provideLayer(services.layer)
+          read <- tools.available
+            .find(_.definition.key == ToolKey.SdlcReadTask)
+            .get
+            .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+            .provideLayer(services.layer)
+          calls <- services.calls.get
+        } yield (created, read, calls)
+      }
+      assertEquals(ujson.read(created.text)(0)("id").str, "T-1")
+      assertEquals(read, created)
+      assert(Files.exists(workspace.resolve(fmgp.yallmo.tool.sdlc.PlanTaskStorage.JournalPath)))
+      assertEquals(calls, Vector("bash.available", "git.available", "scala.available"))
+    }
+  }
+
+  test("separate server storage roots keep separate SDLC journals") {
+    withWorkspace { first =>
+      withWorkspace { second =>
+        val (read, isolated) = run {
+          for {
+            services <- probes()
+            one <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
+            _ <- one.available
+              .find(_.definition.key == ToolKey.SdlcSet)
+              .get
+              .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"First workspace"}]}"""))
+              .provideLayer(services.layer)
+            reopened <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
+            two <- ApplicationTools.evaluate(second, Some(second)).provideLayer(services.layer)
+            read <- reopened.available
+              .find(_.definition.key == ToolKey.SdlcReadTask)
+              .get
+              .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+              .provideLayer(services.layer)
+            isolated <- two.available
+              .find(_.definition.key == ToolKey.SdlcReadTask)
+              .get
+              .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+              .provideLayer(services.layer)
+              .either
+          } yield (read, isolated)
+        }
+        assertEquals(ujson.read(read.text)(0)("text").str, "First workspace")
+        assert(isolated.isLeft)
+        assert(!Files.exists(second.resolve(fmgp.yallmo.tool.sdlc.PlanTaskStorage.Directory)))
+      }
+    }
+  }
+
+  test("SDLC follows shared server storage across workspace changes") {
+    withWorkspace { storage =>
+      withWorkspace { firstWorkspace =>
+        withWorkspace { secondWorkspace =>
+          val read = run {
+            for {
+              services <- probes()
+              first <- ApplicationTools.evaluate(firstWorkspace, Some(storage)).provideLayer(services.layer)
+              _ <- first.available
+                .find(_.definition.key == ToolKey.SdlcSet)
+                .get
+                .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"Shared plan"}]}"""))
+                .provideLayer(services.layer)
+              // The earlier owner is no longer used; reopening uses the same journal with a different workspace.
+              second <- ApplicationTools.evaluate(secondWorkspace, Some(storage)).provideLayer(services.layer)
+              read <- second.available
+                .find(_.definition.key == ToolKey.SdlcReadTask)
+                .get
+                .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+                .provideLayer(services.layer)
+            } yield read
+          }
+          assertEquals(ujson.read(read.text)(0)("text").str, "Shared plan")
+          assert(Files.exists(storage.resolve("sdlc/tasks.jsonl")))
+          assert(!Files.exists(firstWorkspace.resolve("sdlc")))
+          assert(!Files.exists(secondWorkspace.resolve("sdlc")))
+        }
+      }
+    }
+  }
+
+  test("missing or inaccessible server storage disables only SDLC tools") {
+    withWorkspace { workspace =>
+      Files.createSymbolicLink(workspace.resolve("storage-link"), workspace)
+      List(
+        None,
+        Some(workspace.resolve("missing")),
+        Some(workspace.resolve("notes.txt")),
+        Some(workspace.resolve("storage-link"))
+      )
+        .foreach { storageRoot =>
+          val tools = run {
+            for {
+              services <- probes()
+              tools <- ApplicationTools.evaluate(workspace, storageRoot).provideLayer(services.layer)
+            } yield tools
+          }
+          assertEquals(
+            tools.available.map(_.definition.key),
+            allKeys.filterNot(key => fmgp.yallmo.tool.sdlc.SdlcTools.Definitions.exists(_.key == key))
+          )
+          assertEquals(
+            tools.availability.unavailable.map(_._1),
+            Chunk(
+              ToolKey.SdlcSet,
+              ToolKey.SdlcReadTask,
+              ToolKey.SdlcSetIntents,
+              ToolKey.SdlcReadIntent,
+              ToolKey.SdlcList
+            )
+          )
+        }
     }
   }
 

@@ -2,6 +2,7 @@ package fmgp.yallmo.server
 
 import fmgp.yallmo.orchestration.OrchestratorLive
 import fmgp.yallmo.server.application.ServerApplication
+import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.*
 import zio.http.*
 
@@ -12,11 +13,12 @@ import zio.http.*
   */
 final class OrchestratorWSServer(
     master: OrchestratorLive[?],
-    configured: Option[ServerApplication.Configured] = None
+    configured: Option[ServerApplication.Configured] = None,
+    sdlc: Option[SdlcService] = None
 ) {
   private val rpc = new OrchestratorRpc(master, configured)
 
-  val routes: Routes[Any, Nothing] = Routes(
+  private val hostRoutes: Routes[Any, Nothing] = Routes(
     RoutePattern.any -> handler { (_: Path, request: Request) =>
       val response =
         if request.method != Method.GET then
@@ -26,6 +28,12 @@ final class OrchestratorWSServer(
       response.map(WebAssets.secure(request, _))
     }
   )
+
+  /** Specific SDLC HTTP routes precede the SPA/WebSocket fallback. No RPC connection is needed to inspect a plan. */
+  val routes: Routes[Any, Nothing] = sdlc match {
+    case Some(service) => new SdlcHttpRoutes(service).routes ++ hostRoutes
+    case None          => hostRoutes
+  }
 
   def start(port: Int = 8080): ZIO[Scope, Throwable, Int] =
     for {

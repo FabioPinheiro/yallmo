@@ -136,7 +136,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           .provideEnvironment(ZEnvironment(selectedFilesystemClient))
         opened <- runtime
           .openWorkspaceRpc(
-            None,
+            Some(root),
             root,
             toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor)),
             "ws://127.0.0.1:1/rpc"
@@ -147,6 +147,32 @@ final class ApplicationRuntimeSuite extends FunSuite {
         workspace <- runtime.resolve(fallback)
         again <- runtime.resolve(first)
         failed <- runtime.resolve(invalid).either
+        setRequest = Message(
+          MessageData(
+            human.id,
+            None,
+            java.time.Instant.EPOCH,
+            MessagePayload.ToolCall(
+              FunctionCall(
+                FunctionCallId.unsafe("shared-plan-set"),
+                ToolKey.SdlcSet,
+                """{"tasksJson":[{"id":"","text":"Shared by both agents"}]}"""
+              )
+            )
+          )
+        )
+        savedPlan <- opened._1.invoke(setRequest, one)
+        readRequest = Message(
+          MessageData(
+            human.id,
+            None,
+            java.time.Instant.EPOCH,
+            MessagePayload.ToolCall(
+              FunctionCall(FunctionCallId.unsafe("shared-plan-read"), ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}""")
+            )
+          )
+        )
+        sharedPlan <- opened._1.invoke(readRequest, two)
         results <- ZIO.foreachPar(List(one -> "one", two -> "two", workspace -> "workspace")) { (binding, expected) =>
           val input = Message(
             MessageData(
@@ -179,6 +205,11 @@ final class ApplicationRuntimeSuite extends FunSuite {
         assert(folderReply.payload.contentStr.contains("notes.txt"))
         assertEquals(capabilities.size, 4, "Folder execution must not invoke scalamode")
         assertEquals(results.size, 3)
+        assertEquals(sharedPlan.payload.contentStr, savedPlan.payload.contentStr)
+        assert(sharedPlan.payload.contentStr.contains("Shared by both agents"))
+        assert(Files.exists(root.resolve("sdlc/tasks.jsonl")))
+        assert(!Files.exists(oneRoot.resolve("sdlc")))
+        assert(!Files.exists(twoRoot.resolve("sdlc")))
         assertEquals(turn.result, AgentResult(second, "two"))
         assert(failed.isLeft, "An invalid explicit private root must not fall back to workspace")
         assert(one.filesystem.get eq again.filesystem.get)
@@ -424,6 +455,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           for {
             root <- temporaryRoot
             workspace <- ZIO.attempt(Files.createDirectory(root.resolve("workspace")))
+            _ <- ZIO.attempt(Files.createDirectory(root.resolve("storage")))
             _ <- ZIO.attempt(Files.writeString(workspace.resolve("notes.txt"), "fake content"))
             client = toolClient(requests)
             runtime <- ApplicationRuntime.make(config, Chunk(human)).provideEnvironment(ZEnvironment(client))
@@ -447,8 +479,22 @@ final class ApplicationRuntimeSuite extends FunSuite {
             requestCount <- requests.get
           } yield {
             assert(running, "Tool services must remain open after workspace startup and both submissions")
-            assertEquals(availability.available, Chunk(ToolKey.ReadFile, ToolKey.ListFiles))
-            assertEquals(assembled.context(None).tools, Chunk(ReadFileTool.definition, ListFilesTool.definition))
+            assertEquals(
+              availability.available,
+              Chunk(
+                ToolKey.ReadFile,
+                ToolKey.ListFiles,
+                ToolKey.SdlcSet,
+                ToolKey.SdlcReadTask,
+                ToolKey.SdlcSetIntents,
+                ToolKey.SdlcReadIntent,
+                ToolKey.SdlcList
+              )
+            )
+            assertEquals(
+              assembled.context(None).tools,
+              Chunk(ReadFileTool.definition, ListFilesTool.definition) ++ fmgp.yallmo.tool.sdlc.SdlcTools.Definitions
+            )
             assertEquals(firstTurn.result, AgentResult(first, "read successfully"))
             assertEquals(secondTurn.result, AgentResult(second, "read successfully"))
             assertEquals(firstTurn.session.id, secondTurn.session.id)
@@ -855,7 +901,18 @@ final class ApplicationRuntimeSuite extends FunSuite {
         body.asString.flatMap { text =>
           requests.update(_ + 1) *> ZIO.attempt {
             val request = ujson.read(text)
-            assertEquals(request("tools").arr.map(_("function")("name").str).toSet, Set("readFile", "listFiles"))
+            assertEquals(
+              request("tools").arr.map(_("function")("name").str).toSet,
+              Set(
+                "readFile",
+                "listFiles",
+                "sdlc_set",
+                "sdlc_read_task",
+                "sdlc_set_intents",
+                "sdlc_read_intent",
+                "sdlc_list"
+              )
+            )
             val messages = request("messages").arr.filterNot(_("role").str == "system")
             if messages.last("role").str == "tool" then {
               assertEquals(messages.last("content").str, "fake content")

@@ -2,6 +2,7 @@ package fmgp.yallmo.server.application
 
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import fmgp.yallmo.LlmProviderPayloadDebug
+import fmgp.yallmo.tool.sdlc.SdlcService
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
 import fmgp.yallmo.model.llm.ProviderContinuation
@@ -270,32 +271,35 @@ object ServerApplication {
       storage: Path,
       configPath: Option[Path],
       workspace: Option[Path],
-      endpoint: String
+      endpoint: String,
+      sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope & Environment & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ServerApplication] =
     ZIO.serviceWithZIO[fmgp.rpc.RpcWebSocket.RpcRoute] { route =>
-      openConfigured(storage, configPath, workspace, Some(route -> endpoint))
+      openConfigured(storage, configPath, workspace, Some(route -> endpoint), sharedSdlc)
     }
 
   /** Viewer mode never loads configuration or probes tools. All standalone modes acquire the same scoped lease. */
   def open(
       storage: Path,
       configPath: Option[Path] = None,
-      workspace: Option[Path] = None
+      workspace: Option[Path] = None,
+      sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope & Environment, Throwable, ServerApplication] =
-    openConfigured(storage, configPath, workspace, None)
+    openConfigured(storage, configPath, workspace, None, sharedSdlc)
 
   private def openConfigured(
       storage: Path,
       configPath: Option[Path],
       workspace: Option[Path],
-      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)]
+      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
+      sharedSdlc: Option[SdlcService]
   ): ZIO[Scope & Environment, Throwable, ServerApplication] =
     ZIO.uninterruptibleMask { restore =>
       for {
         parent <- ZIO.service[Scope]
         // Failed opens release ownership immediately, even if the caller catches the failure in a longer-lived scope.
         ownership <- parent.fork
-        application <- restore(compose(storage, configPath, workspace, rpc))
+        application <- restore(compose(storage, configPath, workspace, rpc, sharedSdlc))
           .provideSomeEnvironment[Scope & Environment](_.add[Scope](ownership))
           .onExit {
             case Exit.Success(_) => ZIO.unit
@@ -308,7 +312,8 @@ object ServerApplication {
       storage: Path,
       configPath: Option[Path],
       workspace: Option[Path],
-      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)]
+      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
+      sharedSdlc: Option[SdlcService]
   ): ZIO[Scope & Environment, Throwable, ServerApplication] =
     for {
       _ <- ZIO
@@ -338,10 +343,17 @@ object ServerApplication {
             runtime <- ApplicationRuntime.make(config, Chunk.empty)
             environment <- ZIO.environment[ToolEnvironment]
             opened <- (rpc match {
-              case None => runtime.openWorkspace(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment))
+              case None =>
+                runtime.openWorkspace(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment), sharedSdlc)
               case Some((route, endpoint)) =>
                 runtime
-                  .openWorkspaceRpc(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment), endpoint)
+                  .openWorkspaceRpc(
+                    Some(root),
+                    selectedWorkspace,
+                    ZLayer.succeedEnvironment(environment),
+                    endpoint,
+                    sharedSdlc
+                  )
                   .provideSomeEnvironment[Scope](_.add[fmgp.rpc.RpcWebSocket.RpcRoute](route))
             }).mapError(error =>
               new IllegalStateException(

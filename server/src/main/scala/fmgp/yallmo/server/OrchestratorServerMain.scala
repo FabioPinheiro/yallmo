@@ -6,6 +6,8 @@ import scala.util.Try
 import fmgp.yallmo.server.application.ServerApplication
 import zio.*
 import fmgp.rpc.RpcWebSocket
+import fmgp.yallmo.fs.FileSystem
+import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.http.Server
 
 /** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
@@ -40,8 +42,12 @@ object OrchestratorServerMain extends ZIOAppDefault {
       _ <- ZIO.logDebug(s"Opening storage ${options.storage.toAbsolutePath.normalize()}")
       _ <- ZIO
         .scoped(for {
+          storageRoot <- ZIO.attemptBlocking(options.storage.toRealPath())
+          filesystem <- FileSystem.open(storageRoot.toString).mapError(error => new java.io.IOException(error.toString))
+          // Exactly one planning service is shared by agent tools and HTTP routes, even in viewer-only mode.
+          sdlc <- SdlcService.make(filesystem, filesystem)
           application <- options.config match {
-            case None    => ServerApplication.open(options.storage, options.config, options.workspace)
+            case None    => ServerApplication.open(storageRoot, options.config, options.workspace, Some(sdlc))
             case Some(_) =>
               for {
                 route <- RpcWebSocket.route()
@@ -49,15 +55,16 @@ object OrchestratorServerMain extends ZIOAppDefault {
                 port <- Server.install(route.routes).provideEnvironment(http)
                 application <- ServerApplication
                   .openRpc(
-                    options.storage,
+                    storageRoot,
                     options.config,
                     options.workspace,
-                    s"ws://127.0.0.1:$port/rpc"
+                    s"ws://127.0.0.1:$port/rpc",
+                    Some(sdlc)
                   )
                   .provideSomeEnvironment[Scope & ServerApplication.Environment](_.add[RpcWebSocket.RpcRoute](route))
               } yield application
           }
-          bound <- new OrchestratorWSServer(application.master, application.configured)
+          bound <- new OrchestratorWSServer(application.master, application.configured, Some(sdlc))
             .start(options.port)
           _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)")
           _ <- ZIO.never

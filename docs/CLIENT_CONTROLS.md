@@ -50,6 +50,8 @@ The global command shortcut and native navigation/activation controls also work 
 | `4` | Conversation graph | |
 | `5` | Agents registry | This is not the configured-agent selector. |
 | `6` | Blobs | |
+| `7` | Scalamode | Run restricted Scala through the selected agent. |
+| `8` | SDLC | Read-only HTTP task/intent inspector; expand cards to view full JSON. |
 | `j` / `k` | Focus next / previous control | Skips hidden/disabled controls; entering a text field switches to INSERT. |
 | `s` | Choose conversation | Focuses the conversation list and expands mobile navigation when needed. |
 | `n` | New conversation | Uses the same optional name and capability/busy checks as its button. |

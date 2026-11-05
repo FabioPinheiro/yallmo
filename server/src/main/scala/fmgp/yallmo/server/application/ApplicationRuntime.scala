@@ -8,6 +8,7 @@ import java.nio.file.Path
 import zio.*
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.FsRead
+import fmgp.yallmo.tool.sdlc.SdlcService
 import fmgp.yallmo.tool.{ScalaTool, ReadFileTool, ListFilesTool}
 import fmgp.yallmo.model.ToolKey
 import zio.http.Client
@@ -112,30 +113,33 @@ final class ApplicationRuntime private (
   private[application] def openWorkspace(
       storageRoot: Option[Path],
       workspace: Path,
-      services: ULayer[ApplicationTools.Environment]
+      services: ULayer[ApplicationTools.Environment],
+      sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
-    openWorkspaceConfigured(storageRoot, workspace, services, None)
+    openWorkspaceConfigured(storageRoot, workspace, services, None, sharedSdlc)
 
   /** Enables filesystem effects only when the caller supplies its own live route and trusted endpoint. */
   private[application] def openWorkspaceRpc(
       storageRoot: Option[Path],
       workspace: Path,
       services: ULayer[ApplicationTools.Environment],
-      endpoint: String
+      endpoint: String,
+      sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope & RpcWebSocket.RpcRoute, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
     ZIO.serviceWithZIO[RpcWebSocket.RpcRoute] { route =>
-      openWorkspaceConfigured(storageRoot, workspace, services, Some(route -> endpoint))
+      openWorkspaceConfigured(storageRoot, workspace, services, Some(route -> endpoint), sharedSdlc)
     }
 
   private def openWorkspaceConfigured(
       storageRoot: Option[Path],
       workspace: Path,
       services: ULayer[ApplicationTools.Environment],
-      rpc: Option[(RpcWebSocket.RpcRoute, String)]
+      rpc: Option[(RpcWebSocket.RpcRoute, String)],
+      sharedSdlc: Option[SdlcService]
   ): ZIO[Scope, YallmoError, (ApplicationRuntime.Assembly[Any], ToolAvailability)] =
     for {
       environment <- services.build
-      startup <- ApplicationTools.evaluate(workspace).provideEnvironment(environment)
+      startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc).provideEnvironment(environment)
       tools = startup.available.map { tool =>
         new AgentTool[Any] {
           override val definition: AgentToolDefinition = tool.definition

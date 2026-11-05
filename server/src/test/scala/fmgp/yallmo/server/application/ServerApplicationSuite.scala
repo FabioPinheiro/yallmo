@@ -109,7 +109,18 @@ final class ServerApplicationSuite extends FunSuite {
         assertEquals(configured.assembly.context(None).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
         assertEquals(
           configured.assembly.context(None).tools.map(_.key).toSet,
-          Set(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.RepositoryChanges, ToolKey.Scalamode)
+          Set(
+            ToolKey.ReadFile,
+            ToolKey.ListFiles,
+            ToolKey.Bash,
+            ToolKey.RepositoryChanges,
+            ToolKey.Scalamode,
+            ToolKey.SdlcSet,
+            ToolKey.SdlcReadTask,
+            ToolKey.SdlcSetIntents,
+            ToolKey.SdlcReadIntent,
+            ToolKey.SdlcList
+          )
         )
         assertEquals(
           calls,
@@ -138,7 +149,18 @@ final class ServerApplicationSuite extends FunSuite {
         calls <- services.calls.get
       } yield {
         assertEquals(configured.workspace, workspace.toRealPath())
-        assertEquals(configured.assembly.context(None).tools.map(_.key).toSet, Set(ToolKey.ReadFile, ToolKey.ListFiles))
+        assertEquals(
+          configured.assembly.context(None).tools.map(_.key).toSet,
+          Set(
+            ToolKey.ReadFile,
+            ToolKey.ListFiles,
+            ToolKey.SdlcSet,
+            ToolKey.SdlcReadTask,
+            ToolKey.SdlcSetIntents,
+            ToolKey.SdlcReadIntent,
+            ToolKey.SdlcList
+          )
+        )
         assertEquals(
           calls,
           Vector("bash.available", "git.available", "scala.available")
@@ -156,7 +178,17 @@ final class ServerApplicationSuite extends FunSuite {
         application <- ServerApplication.open(root, Some(path), Some(root)).provideSomeLayer[Scope](services.layer)
       } yield assertEquals(
         application.configured.get.assembly.context(None).tools.map(_.key).toSet,
-        Set(ToolKey.ReadFile, ToolKey.ListFiles, ToolKey.Bash, ToolKey.Scalamode)
+        Set(
+          ToolKey.ReadFile,
+          ToolKey.ListFiles,
+          ToolKey.Bash,
+          ToolKey.Scalamode,
+          ToolKey.SdlcSet,
+          ToolKey.SdlcReadTask,
+          ToolKey.SdlcSetIntents,
+          ToolKey.SdlcReadIntent,
+          ToolKey.SdlcList
+        )
       )
     })
   }

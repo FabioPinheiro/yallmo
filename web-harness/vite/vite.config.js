@@ -24,6 +24,10 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     strictPort: true,
     proxy: {
+      "/api/sdlc": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+      },
       "/rpc": {
         target: "ws://127.0.0.1:8080",
         ws: true,

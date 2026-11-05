@@ -45,6 +45,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)
 - [Attachments and blob storage](docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
 - [Orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
+- [Shared SDLC planning tools](plan-tool/README.md) — agent tools, task/intent journals and the HTTP-backed web inspector.
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation graph](server/README.md#website-behavior-and-downloads) — implemented session/message inspector.

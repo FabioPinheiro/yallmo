@@ -274,6 +274,7 @@ object App {
               case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
               case ViewRoute.Scalamode    => ScalamodeView(scalamode, selectedAgent)
               case ViewRoute.Providers    => ProvidersView(providers, refreshes)
+              case ViewRoute.Sdlc         => SdlcView(refreshes)
               case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
               case ViewRoute.Messages     =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>

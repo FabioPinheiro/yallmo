@@ -8,17 +8,8 @@ import munit.FunSuite
 import zio.json.*
 
 final class ViewWebSuite extends FunSuite {
-  test("session hashes round-trip and malformed hashes do not throw") {
-    List("main", "session-one", "session.with.dots", "space name").foreach { id =>
-      assertEquals(SessionRoute.parse(SessionRoute.href(id)), Some(id))
-    }
-    List("", "#/", "#/sessions/", "#/other/main", "#/sessions/%ZZ").foreach { hash =>
-      assertEquals(SessionRoute.parse(hash), None)
-    }
-  }
-
-  test("all tabs and selected sessions round-trip through hash navigation") {
-    (ViewRoute.tabs :+ ViewRoute.Sessions(Some("my-session"))).foreach { page =>
+  test("all tabs round-trip through hash navigation") {
+    ViewRoute.tabs.foreach { page =>
       assertEquals(ViewRoute.parse(page.href), page)
     }
     assertEquals(ViewRoute.parse("#/chat"), ViewRoute.Chat)
@@ -29,14 +20,18 @@ final class ViewWebSuite extends FunSuite {
     assertEquals(ViewRoute.parse("#/providers"), ViewRoute.Providers)
     assertEquals(ViewRoute.Providers.title, "Providers")
     assertEquals(ViewRoute.Providers.href, "#/providers")
-    assertEquals(ViewRoute.parse("#/unknown"), ViewRoute.Sessions(None))
-    assertEquals(ViewRoute.parse("#/sessions/%ZZ"), ViewRoute.Sessions(None))
   }
 
-  test("navigation shortcuts come from typed catalog actions, including selected-session routes") {
-    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "2", "3", "4", "5", "p", "6", "7", "8"))
-    assertEquals(ViewRoute.tabs.slice(4, 7), List(ViewRoute.Agents, ViewRoute.Providers, ViewRoute.Blobs))
-    assertEquals(ViewRoute.Sessions(Some("existing")).command, ViewRoute.Sessions(None).command)
+  test("empty, unknown and former Sessions hashes fall back to Chat") {
+    List("", "#/", "#/unknown", "#/sessions", "#/sessions/", "#/sessions/existing", "#/sessions/%ZZ").foreach { hash =>
+      assertEquals(ViewRoute.parse(hash), ViewRoute.Chat)
+    }
+    assertEquals(ViewRoute.tabs.toSet, ViewRoute.values.toSet)
+  }
+
+  test("navigation shortcuts come from typed catalog actions and preserve remaining bindings") {
+    assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "3", "4", "5", "p", "6", "7", "8"))
+    assertEquals(ViewRoute.tabs.slice(3, 6), List(ViewRoute.Agents, ViewRoute.Providers, ViewRoute.Blobs))
   }
 
   test("only function calls and outputs pretty-print valid JSON, without changing invalid JSON or text") {

@@ -45,7 +45,6 @@ The global command shortcut and native navigation/activation controls also work 
 | `?` | Open website commands | Searchable list of actions. |
 | `Ctrl+K` / `Cmd+K` — **global** | Open website commands | Works while typing, too. |
 | `1` | Chat | |
-| `2` | Sessions | |
 | `3` | All messages | |
 | `4` | Conversation graph | |
 | `5` | Agents registry | This is not the configured-agent selector. |

@@ -19,7 +19,6 @@ enum ControlAction(val id: String, val webLabel: String, val terminalLabel: Stri
   case Normal extends ControlAction("normal", "NORMAL", "NORMAL", Some("Escape"))
   case Commands extends ControlAction("commands", "Website commands", "commands", Some("?"))
   case Chat extends ControlAction("chat", "Go to Chat", "chat", Some("1"))
-  case Sessions extends ControlAction("sessions", "Go to Sessions", "sessions", Some("2"))
   case Messages extends ControlAction("messages", "Go to All messages", "messages", Some("3"))
   case Graph extends ControlAction("graph", "Go to Conversation graph", "graph", Some("4"))
   case AgentRegistry extends ControlAction("agent-registry", "Go to Agents", "agent registry", Some("5"))

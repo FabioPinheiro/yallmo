@@ -31,9 +31,10 @@ browser Origin. It also proxies `/api/sdlc` over HTTP to `http://127.0.0.1:8080`
 `127.0.0.1:5173:5173`), or use a trusted network. Backend loopback binding alone does not protect the Vite proxy.
 
 Static assets and SDLC inspection use HTTP; other application requests and attachment bytes use JSON-RPC. No Scala.js/Vite sbt
-bridge is needed: Vite imports the output of the separately-running linker. Nine hash-linked navigation links provide chat and show sessions,
+bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat,
 all messages, a small CSS conversation tree,
-registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
+registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
+from the conversation sidebar; empty, unknown and former Sessions hashes open Chat. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
 invalid JSON falls back to literal text. Tool calls/results and long messages start collapsed to their header line;
@@ -43,7 +44,7 @@ Graph nodes expand to the same message cards, including tool results and attachm
 
 ## Shared Markdown and code blocks
 
-SDLC descriptions/steps and all message cards (Chat, pending prompts, Sessions, All messages and Graph) share the
+SDLC descriptions/steps and all message cards (Chat, pending prompts, All messages and Graph) share the
 sanitized Markdown renderer. Fenced `scala` blocks use highlight.js with only the Scala grammar bundled, in the shared
 dark palette. Language tags are case-insensitive; unknown/unlabeled languages and Scala blocks over 50,000 characters
 remain readable plain code. Inline code stays inline. Fenced `mermaid` blocks retain diagram rendering and source access

@@ -3,7 +3,7 @@ package fmgp.yallmo.view.web
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.model.{AgentId, BlobId, MessageId, UserId}
-import fmgp.yallmo.server.protocol.YallmoProtocol.{MessageSnapshot, SessionSnapshot}
+import fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot
 import org.scalajs.dom
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -271,12 +271,11 @@ object App {
             idAttr := "content",
             tabIndex := -1,
             child <-- route.signal.distinct.map {
-              case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
-              case ViewRoute.Scalamode    => ScalamodeView(scalamode, selectedAgent)
-              case ViewRoute.Providers    => ProvidersView(providers, refreshes)
-              case ViewRoute.Sdlc         => SdlcView(refreshes)
-              case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
-              case ViewRoute.Messages     =>
+              case ViewRoute.Chat      => ChatView(chat, client, speech, voice)
+              case ViewRoute.Scalamode => ScalamodeView(scalamode, selectedAgent)
+              case ViewRoute.Providers => ProvidersView(providers, refreshes)
+              case ViewRoute.Sdlc      => SdlcView(refreshes)
+              case ViewRoute.Messages  =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>
                   messageList(messages, client, speech)
                 )
@@ -322,85 +321,6 @@ object App {
                 }
             }
           )
-        )
-      )
-    )
-  }
-
-  private def sessionPage(
-      id: Option[String],
-      refreshes: Signal[Unit],
-      client: OrchestratorWSClient,
-      speech: MessageSpeech
-  ): HtmlElement = {
-    val sessions = refreshes.flatMapSwitch(_ => load(client.sessions()))
-    val details: Signal[LoadState[Option[SessionSnapshot]]] = refreshes.flatMapSwitch { _ =>
-      id match {
-        case Some(value) =>
-          load(client.session(value)).map {
-            case LoadState.Loading         => LoadState.Loading
-            case LoadState.Ready(session)  => LoadState.Ready(Option(session))
-            case LoadState.Failed(message) => LoadState.Failed(message)
-          }
-        case None => Val(LoadState.Ready(None))
-      }
-    }
-    div(
-      cls := "workspace",
-      asideTag(
-        h2("Sessions"),
-        status(sessions),
-        p(
-          cls := "muted",
-          child.text <-- sessions.map {
-            case LoadState.Ready(Nil) => "No sessions yet."
-            case _                    => ""
-          }
-        ),
-        ul(
-          cls := "session-list",
-          children <-- values(sessions).split(_.id.value) { (sessionId, _, summary) =>
-            li(
-              a(
-                href := SessionRoute.href(sessionId),
-                cls := (if id.contains(sessionId) then "session selected" else "session"),
-                span(cls := "session-name", sessionId),
-                span(
-                  cls := "muted",
-                  child.text <-- summary.map(value =>
-                    s"${value.messageCount} messages · ${value.agentIds.mkString(", ")}"
-                  )
-                )
-              )
-            )
-          }
-        )
-      ),
-      sectionTag(
-        cls := "transcript",
-        status(details),
-        child <-- details.map {
-          case LoadState.Ready(Some(session)) =>
-            div(
-              h2(session.id.value),
-              p(cls := "muted", s"Participants: ${session.agentIds.mkString(", ")}"),
-              if session.messages.isEmpty then p("This session has no messages.") else emptyNode
-            )
-          case LoadState.Ready(None) =>
-            div(
-              cls := "empty-state",
-              h2("Your sessions, at a glance"),
-              p("Choose a session to inspect its transcript.")
-            )
-          case _ => emptyNode
-        },
-        messageList(
-          details.map {
-            case LoadState.Ready(Some(session)) => session.messages.toList
-            case _                              => Nil
-          },
-          client,
-          speech
         )
       )
     )

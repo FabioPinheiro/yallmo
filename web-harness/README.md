@@ -31,9 +31,9 @@ browser Origin. Keep the dev server/proxy private: publish Docker's Vite port on
 `127.0.0.1:5173:5173`), or use a trusted network. Backend loopback binding alone does not protect the Vite proxy.
 
 Static assets still use HTTP; application requests and attachment bytes use JSON-RPC exclusively. No Scala.js/Vite sbt
-bridge is needed: Vite imports the output of the separately-running linker. Seven hash-linked navigation links provide chat and show sessions,
+bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat and show sessions,
 all messages, a small CSS conversation tree,
-registry agent IDs, stored blob IDs and the Scalamode playground. Reconnect refreshes the active view; requests from an unmounted tab cannot update
+registry agent IDs, stored blob IDs, the Scalamode playground and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
 invalid JSON falls back to plain text. Long text starts collapsed in native details elements. Graph nodes expand to
@@ -47,6 +47,28 @@ visible partial-transfer errors. There is no Fetch client or HTTP blob fallback.
 The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RPC/application protocol and domain types.
 There is no direct source inclusion, JVM core dependency or duplicate browser DTO layer. The cross-projects use
 `shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.
+
+## Providers and ChatGPT login
+
+Open **Providers** (`#/providers`, NORMAL shortcut `p`) on a configured server as a trusted Operator. This lists existing
+provider IDs/types and credential presence only; it does not test whether credentials are valid. For a ChatGPT profile,
+click **Log in** / **Reconnect login**, open the OpenAI authorization link in a new tab, and approve access. Paste the
+full final `http://localhost:1455/auth/callback` URL (including code and state) into the private field, even if that
+localhost page fails to load. Click **Complete login**. **Login saved and active** means new requests use the tokens
+immediately, without restarting the Yallmo server. Already-running requests keep their existing connection. If the
+server can only save (for example, a profile added after startup), it explicitly reports that a restart is required.
+
+All application traffic uses the existing WebSocket (`providers.list`, `providers.login.start/complete/cancel`).
+OpenAI login itself opens separately over HTTPS. Tokens and PKCE verifier remain server-side; the callback field is
+transient, cleared on submit and tab exit, and never enters chat/history/browser storage. Pending attempts survive tab
+navigation but expire after 15 minutes and are dropped on disconnect. A pending start/save disables toolbar reconnect;
+network loss makes the outcome uncertain. Reload providers before starting another login; nothing is replayed.
+
+Cancel discards only a still-pending attempt, not an exchange already underway. New provider creation, endpoint editing,
+logout and general configuration reload are intentionally excluded. Successful login updates only the selected
+provider's live credentials and lazily rebinds its dependent agents, preserving their existing filesystem capabilities. Automatic token refresh is not the Reconnect button: it
+already occurs during inference and remains memory-only. The server's claimed Operator identity is not authentication;
+restrict this administrative interface to trusted users and use HTTPS/WSS or a secure tunnel for remote access.
 
 ## Scalamode
 

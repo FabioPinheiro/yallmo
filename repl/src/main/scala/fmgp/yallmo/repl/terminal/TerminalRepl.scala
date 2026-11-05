@@ -47,20 +47,24 @@ final class TerminalRepl[R] private[terminal] (
     this(application, reader, Some(recorder), createBrowserAudioBridge)
 
   private val loginInput =
-    Option.when(!application.remoteConnection)(new TerminalProviderLoginInput(reader.getTerminal, Some(reader)))
+    Option.when(!application.remoteConnection || application.connectedProviders.nonEmpty)(
+      new TerminalProviderLoginInput(reader.getTerminal, Some(reader))
+    )
   private val terminalStatus = new TerminalVoiceModeStatus(
     reader,
     application.activeAgent,
     application.remoteConnection,
     application.selectedAgentId,
-    application.canSubmit
+    application.canSubmit,
+    application.connectedProviders.nonEmpty
   )
-  private val providerMenu = Option.when(!application.remoteConnection)(new TerminalProviderMode(reader))
+  private val providerMenu = Option.when(!application.remoteConnection || application.connectedProviders.nonEmpty)(
+    new TerminalProviderMode(reader, application.remoteConnection)
+  )
   private val agentMenu = new TerminalAgentMode(reader)
-  private val providerClient = Option
-    .unless(application.remoteConnection)(application.providerCatalog)
-    .flatten
-    .map(TerminalProviderMenu.client)
+  private val providerClient =
+    if application.remoteConnection then application.connectedProviders.map(TerminalProviderMenu.client)
+    else application.providerCatalog.map(TerminalProviderMenu.client)
   private val menus = new TerminalMenus(
     reader,
     application.activeAgent,
@@ -179,7 +183,7 @@ final class TerminalRepl[R] private[terminal] (
           .flatMap(result => ZIO.succeed(providerMenu.foreach(_.complete(result))))
       case Action.Login(id, method) =>
         ZIO.foreachDiscard(loginInput)(
-          _.profileLogin(id, method, application.providerLogin)
+          _.profileLogin(id, method, application.providerLoginRunner)
             .flatMap(result => ZIO.succeed(providerMenu.foreach(_.completeLogin(result))))
         )
       case Action.Close => ZIO.unit
@@ -202,7 +206,10 @@ final class TerminalRepl[R] private[terminal] (
                 .printLine(
                   if application.remoteConnection then
                     if application.canSubmit then
-                      "TRUSTED LOCAL, UNAUTHENTICATED: a: configured agent; i: prompts; q: exit. /new [name], /session list|resume <id>, /history, /log. Ctrl+C never cancels server work."
+                      "TRUSTED LOCAL, UNAUTHENTICATED: a: configured agent; i: prompts; q: exit. /new [name], /session list|resume <id>, /history, /log. Ctrl+C never cancels server work." +
+                        (if application.connectedProviders.nonEmpty then
+                           " PROVIDERS: Esc, p; select ChatGPT, Enter/l to log in privately."
+                         else "")
                     else
                       "READ-ONLY: a: agent preference; i: commands; q: exit. /help, /session list, /session resume <id>, /history, /log, /exit."
                   else
@@ -338,7 +345,9 @@ object TerminalRepl {
         )
         .flatMap(_.run)
 
-  /** Connected entry requires no recorder and never constructs browser, voice or provider-login services. */
+  /** Connected entry requires no recorder, browser/audio server, local provider config or OAuth implementation.
+    * Negotiated provider login uses only the supplied WebSocket and terminal-private input.
+    */
   def runConnectedSystem(application: ConnectedReplApplication): Task[Unit] =
     ZIO.acquireReleaseWith(ZIO.attemptBlocking(TerminalBuilder.builder().system(true).build()))(closeTerminal) {
       terminal => runConnectedWithTerminal(application, terminal)

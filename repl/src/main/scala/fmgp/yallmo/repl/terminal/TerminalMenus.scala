@@ -6,7 +6,7 @@ import org.jline.keymap.KeyMap
 import org.jline.reader.{Binding, LineReader, Reference}
 import org.jline.utils.InfoCmp.Capability
 
-/** Local menus never interpret or submit the editable draft as a menu command. */
+/** Terminal menus never interpret or submit the editable draft as a menu command. */
 private[terminal] final class TerminalMenus(
     reader: LineReader,
     activeAgent: Option[ReplActiveAgent],
@@ -18,10 +18,10 @@ private[terminal] final class TerminalMenus(
 
   def install(): Unit = {
     installNormal()
-    if !remoteConnection then installMenu(ProviderKeyMap)
+    if !remoteConnection || openProvider.nonEmpty then installMenu(ProviderKeyMap)
     installMenu(AgentsKeyMap)
     if openAgents.isEmpty then fallbackAgents.foreach(_.install())
-    if !remoteConnection then
+    if !remoteConnection || openProvider.nonEmpty then
       bind(LineReader.VICMD, ControlAction.Providers) {
         openProvider match {
           case Some(open) => open()
@@ -91,19 +91,27 @@ private[terminal] object TerminalMenus {
   val ProviderKeyMap = "provider"
   val AgentsKeyMap = "agents"
 
-  def hintForKeyMap(keyMap: String, remoteConnection: Boolean = false, canSubmit: Boolean = false): String = {
+  def hintForKeyMap(
+      keyMap: String,
+      remoteConnection: Boolean = false,
+      canSubmit: Boolean = false,
+      canManageProviders: Boolean = false
+  ): String = {
     import ControlAction.*
-    if remoteConnection && canSubmit then
+    val providerHint = if canManageProviders then s" · ${Providers.terminalHint} (server login)" else ""
+    if remoteConnection && canManageProviders && keyMap == TerminalProviderMode.KeyMapName then
+      "[PROVIDERS · SERVER]  Up/Down: select · Enter: inspect · ChatGPT details: Enter/l login · Esc: back"
+    else if remoteConnection && canSubmit then
       keyMap match {
         case LineReader.VICMD =>
-          s"[TRUSTED LOCAL · UNAUTHENTICATED]  ${Agents.terminalHint} (configured agent) · ${Edit.terminalHint} (prompts) · ${Exit.terminalHint}"
+          s"[TRUSTED LOCAL · UNAUTHENTICATED]  ${Agents.terminalHint} (configured agent) · ${Edit.terminalHint} (prompts) · ${Exit.terminalHint}$providerHint"
         case AgentsKeyMap => s"[AGENTS]  Model/provider unknown · Enter: select · ${Normal.terminalHint}"
         case _ => "[CONNECTED]  Enter: submit · /new [name] · /history · /session list|resume <id> · /log · /exit"
       }
     else if remoteConnection then
       keyMap match {
         case LineReader.VICMD =>
-          s"[READ-ONLY]  ${Agents.terminalHint} (agent preference) · ${Edit.terminalHint} (commands) · ${Exit.terminalHint}"
+          s"[READ-ONLY]  ${Agents.terminalHint} (agent preference) · ${Edit.terminalHint} (commands) · ${Exit.terminalHint}$providerHint"
         case AgentsKeyMap => s"[AGENTS]  IDs only; capability unknown · Enter: prefer · ${Normal.terminalHint}"
         case _            => "[READ-ONLY]  /help · /session list|resume <id> · /history · /log · /exit"
       }

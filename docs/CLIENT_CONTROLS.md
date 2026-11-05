@@ -11,8 +11,9 @@ internals; this is the source of truth for how to operate the clients.
 - [For developers: ClientHarness](#for-developers-clientharness)
 
 > **Availability matters:** the website supports chat and dictation when the server/browser advertise the required
-> capabilities. The current REPL entry point is a connected client: provider administration, voice and speech are
-> **not enabled there**. Their retained implementations are documented separately below, not as available CLI features.
+> capabilities. The connected REPL supports provider listing and private ChatGPT login when the server advertises all
+> four provider methods for an Operator. Provider creation, voice and speech are **not enabled there**; their retained
+> embedded implementations are documented separately below.
 
 ## Modes at a glance
 
@@ -23,6 +24,7 @@ internals; this is the source of truth for how to operate the clients.
 | **Website command menu** | Search for an action; `Up`/`Down` or `Tab`/`Shift+Tab` changes focus; `Enter` activates. | `Esc` closes it and restores the previous focus. |
 | **Website agent selector** | Use the native selector's arrows and `Enter`; page shortcuts do not intercept selection. | `Esc` leaves the selector. |
 | **REPL AGENTS picker** | `Up`/`Down` or `j`/`k` highlights; `Enter` chooses the agent. | `Esc`/`Ctrl+C` cancels to NORMAL; `i` edits the existing draft. |
+| **REPL PROVIDERS picker** | Inspect server profiles and privately log in to ChatGPT when negotiated. | `Esc` backs out to NORMAL, preserving the draft. |
 | **DICTATION — recording** | `Space` stops and transcribes; `Esc` discards. | Stopping proceeds to transcription; cancelling keeps the draft unchanged. |
 | **DICTATION — setup / processing** | `Esc` cancels setup or discards the pending result. Space only stops an already-started browser recording. | Completion or cancellation exits dictation. |
 
@@ -78,6 +80,11 @@ for startup options, negotiated capabilities and slash commands.
 | NORMAL | `i` | Enter INSERT to type a prompt or slash command. |
 | INSERT | `Esc` | Return to NORMAL; keep the draft. |
 | NORMAL | `a` | Open AGENTS for this client's configured-agent choice/preference. |
+| NORMAL | `p` | Open server PROVIDERS when provider administration is negotiated. |
+| PROVIDERS | `Up`/`Down` or `j`/`k`; `Enter` | Highlight and inspect an existing provider; no creation form. |
+| PROVIDERS | `r` | Reload safe provider summaries from the server. |
+| ChatGPT details | `Enter` / `l` | Start private browser login/re-login for this exact provider. |
+| PROVIDERS | `Esc` | Back to the list, then NORMAL, preserving the draft/cursor. |
 | AGENTS | `Up`/`Down` or `j`/`k` | Highlight an agent. |
 | AGENTS | `Enter` | Choose the highlighted agent; does not submit a chat prompt. |
 | AGENTS | `Esc` / `Ctrl+C` | Cancel to NORMAL without changing the draft or selection. |
@@ -94,6 +101,19 @@ on a connected client. Read-only connections can choose a preference, but cannot
 
 `?` and Ctrl/Cmd+K are website commands, not implemented REPL shortcuts. Likewise, website `n`, `r`, `s`, `u` and
 numbered view shortcuts do not become terminal bindings simply because both clients use ClientHarness.
+
+**REPL login recipe:** `Esc` → `p` → choose a ChatGPT provider → `Enter` → `Enter` or `l`. Open the displayed
+OpenAI link, approve access, then paste the **full** final localhost callback URL into the hidden prompt. The localhost
+page may fail to load; copy its address anyway. Successful login normally activates tokens for new server requests
+immediately, with no restart or agent reselection. A saved-only fallback explicitly asks for restart.
+
+Private callback input bypasses parsing, chat buffers, Tab completion and persistent
+history; login leaves the selected agent/session and exact draft/cursor unchanged. Empty input, `cancel`, Ctrl+C or EOF
+cancels before exchange. Once completion may have been sent, Enter/Ctrl+C/EOF only abandons the local wait: the server
+may still save. Uncertain outcomes are not retried; reload providers before starting again. The pending attempt is
+best-effort discarded on every exit; a start whose reply was lost may remain until replacement, disconnect or expiry.
+Viewers/older servers do not advertise/install these controls. All OAuth, tokens, config writes and activation stay on
+the server via the existing WebSocket; no local provider config or browser/audio server is initialized.
 
 ## Dictation
 
@@ -122,16 +142,16 @@ Review durable results before manually retrying uncertain work. Completion never
 
 ## Retained terminal audio and provider controls
 
-**Reference only:** these implementations/tests remain in the repository, but provider administration, voice/TTS and
-the embedded browser-audio bridge are not enabled by the current connected REPL CLI. There is no local-mode flag or
-fallback. Do not use this table as evidence of remote support.
+**Embedded reference only:** these implementations/tests remain in the repository. Connected provider listing/login
+is described above; provider creation forms, voice/TTS and the embedded browser-audio bridge remain unavailable in the
+connected CLI. There is no local-mode flag or fallback. Do not infer remote support for those retained features.
 
 | Retained mode | Key | Action |
 | --- | --- | --- |
 | NORMAL | `p` | Open the provider catalog, independent of chat-agent selection. |
 | PROVIDER list | `Up`/`Down` or `j`/`k`; `Enter` | Highlight; inspect/New/confirm. |
 | PROVIDER list | `r` | Refresh the catalog from its configuration file. |
-| ChatGPT provider details only | `Enter` or `l` | Start browser login/re-login; no global login action. |
+| ChatGPT provider details only | `Enter` or `l` | Start browser login/re-login for the selected profile. |
 | PROVIDER | `Esc` | Back to the list, then NORMAL; `i` edits again from NORMAL. |
 | Provider forms | Text / `Backspace`; `Enter` | Append/erase, then advance to review; only **Save provider** writes. Letters such as `j`/`k`/`l`/`d` are form text. |
 | Provider forms | `Esc`; `Ctrl+C` / **Cancel** | Go back; abandon the form draft. Publication already started is not rolled back. |
@@ -149,7 +169,7 @@ or extra chat prompt lines to scrollback.
 The chat cursor is hidden during picker interaction and restored on return, login handoff, interruption or exit.
 Private provider login bypasses chat parsing/history and restores the same profile's details afterward. In the private
 callback prompt, empty input, `cancel`, Ctrl+C or EOF cancels; during browser exchange, Enter/Ctrl+C/EOF cancels.
-There is no `/login` slash command. See [provider configuration and credential handling](REPL.md#provider-catalog).
+See [provider configuration and credential handling](REPL.md#provider-catalog).
 
 Setup and storage/privacy details stay in [retained terminal voice documentation](REPL.md#editable-voice-insertion) and
 [browser-audio setup](../browser-STT-TTS/README.md); they do not redefine the bindings here.

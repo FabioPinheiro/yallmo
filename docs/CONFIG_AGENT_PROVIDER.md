@@ -12,19 +12,21 @@ sbt --server -no-server 'repl/run --user-name operator --agent bob'
 `--user-name` is required and validated as an `AgentId`; the client sends claimed human ID `user-<id>`.
 `--agent` is optional; absent means no selection. `--log-level` remains a local display flag. The default server
 is `ws://127.0.0.1:8080/rpc`; `--server` overrides it. Connection failure exits without local fallback.
-`--config`/`--storage` belong only to the server. `--transcriber-agent` is rejected; remote voice/login transport is pending.
+`--config`/`--storage` belong only to the server. `--transcriber-agent` is rejected; terminal voice integration is pending. Provider listing/login is available in the web harness and negotiated REPL.
 There is no OS-name, first-agent or default-selection fallback, nor client-local config/provider/audio bootstrap.
 
 **Migration:** top-level `userName`, `defaultAgentId` and `transcriberAgent` no longer apply. Loading legacy fields
 emits a sanitized warning; use `--user-name` and `--agent` for client preferences. There is no current CLI transcription
 selection. Raw catalog edits preserve arbitrary unknown file fields without making them active server settings.
 
-Configured trusted-local prompt execution is enabled: the server alone owns providers, tools, config and durable storage.
-Authentication is **explicitly deferred** for actual loopback peers with absent Origin and a claimed human. Usernames
-are impersonable authorship, not authentication; retain loopback/Host/Origin checks and never publicly expose/proxy.
-Anonymous and Origin-bearing browser connections remain viewers. Operators additionally receive `sessions.create`,
-`turn.submit` and the read-only `diagnostics.request` used by `/debug request`. Provider-login/voice/human-interaction
-transport and other diagnostics remain pending remotely.
+Configured trusted-environment prompt execution is enabled: the server alone owns providers, tools, config and durable
+storage. There is no authentication or Host/Origin restriction: a nonempty claimed human ID enables Operator on a
+configured backend, including browser connections. Usernames are impersonable authorship, not authentication;
+restrict direct/proxied access to trusted users and never expose this server publicly. Anonymous connections remain
+viewers. Operators receive execution, upload, diagnostic and provider catalog/login methods. The web harness offers
+[ChatGPT login](../web-harness/README.md#providers-and-chatgpt-login); the connected terminal offers the same server-side
+flow through its provider picker with hidden callback input and no local OAuth/config access.
+Voice/human-interaction transport and other diagnostics remain pending remotely.
 
 ```sh
 mkdir -p ./server-storage
@@ -80,14 +82,22 @@ The output still contains any literal credentials from the source: do not log, s
 - `RuntimeInstances.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
 - `OrchestratorLive` delegates resolution to the registry. Its only factories are `inMemory(instances)` and `filesystem(root, instances)`; callers must construct `RuntimeInstances` explicitly. Already-created agents go through `RuntimeInstances.fromAgents(agents)` first.
 - Lookups do not contact providers or authenticate. ChatGPT profiles use independent literal credentials; refresh is deferred until inference, shared by agents using the same connection, and retained **only in memory**.
-- A registry uses a fixed configuration snapshot. Creating another registry from the same Config creates independent caches. No automatic reload/rebuild/save policy is implied.
+- A registry uses a fixed configuration snapshot except for explicit `updateChatGptCredentials`: it publishes a fresh
+  provider connection and invalidates only that provider's configured dependent agents. Rooted filesystem capabilities
+  are retained across rebinding. Existing callers keep the old connection; future lookups share the new generation.
+  Creating another registry from the same Config still creates independent caches. No general config reload/save is implied.
 - `ReplMain` always connects to the selected/default endpoint and builds `ConnectedReplApplication`. It never calls
   `ApplicationRuntime.load` or opens an embedded workspace. Existing embedded adapters remain for feature integration
   and tests, but are not startup paths. `ReplStartup.fromRuntime` requires an explicitly supplied runtime.
 - The server retains core persist–run–persist and session storage. Client agent selection preserves session/history,
-  with continuation reset intent sent on the next turn. No live config reload is implemented.
-- Provider administration/login, voice and debug transport remain pending. Their existing local implementations and
-  tests are preserved for follow-up integration; absence from the connected client is not a reason to delete them.
+  with continuation reset intent sent on the next turn. General live configuration reload is not implemented.
+- The web harness exposes safe provider listing and ChatGPT OAuth over WebSocket, with private atomic saves followed
+  by live credential activation (`restartRequired: false`). No restart/reselection is needed for existing runtime
+  profiles. A save-only fallback explicitly requires restart for absent/incompatible runtime profiles. Persistence and
+  activation share a commit lock. The connected terminal exposes listing/login only, not provider creation or endpoint
+  editing. Voice and remaining debug integration are pending.
+  Existing local implementations/tests remain for follow-up integration; absence from the connected terminal is not
+  a reason to delete them.
 
 - Audio payloads contain a `BlobId`, not bytes. `Orchestrator.turn` and REPL native bindings supply the blob reader;
   direct audio adapter calls must supply it themselves. Voice persists audio before inference, independently of active chat.
@@ -174,7 +184,7 @@ The following describes the retained embedded provider UI, not a connected-clien
 
 `ProviderCatalog` lives in `server.application`, including private locked atomic raw-tree edits. The terminal still
 renders provider menus and runs `ProviderLoginService` in-process against this catalog. Profile creation/login does
-not change the runtime snapshot; restart after saving. There is no global `/login` command. Listing does not contact
+not change the runtime snapshot; restart after saving. Listing does not contact
 providers or test credentials. Cancellation and failures before save leave credentials untouched.
 
 Credentials are literal private values; no environment substitution or global credential store exists. Keep the

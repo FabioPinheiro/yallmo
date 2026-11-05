@@ -156,7 +156,7 @@ private[terminal] final class TerminalProviderLoginInput(terminal: Terminal, lin
   def profileLogin(
       id: ProviderId,
       method: LoginMethod,
-      service: Option[ProviderLoginService]
+      service: Option[ProviderLoginService.Login]
   ): UIO[ProviderLoginService.Result] =
     privateInput {
       for {
@@ -181,6 +181,12 @@ private[terminal] final class TerminalProviderLoginInput(terminal: Terminal, lin
           ZIO.succeed(ProviderLoginService.Result.Failed(ProviderLoginService.Error.AuthenticationFailed))
         )(_.run(id, method, interaction))
       } yield result
-    }.catchAll(_ => ZIO.succeed(ProviderLoginService.Result.Failed(ProviderLoginService.Error.AuthenticationFailed)))
+    }.catchAll(_ =>
+      ZIO.succeed(
+        service.fold[ProviderLoginService.Result](
+          ProviderLoginService.Result.Failed(ProviderLoginService.Error.AuthenticationFailed)
+        )(_.inputFailure)
+      )
+    )
 
 }

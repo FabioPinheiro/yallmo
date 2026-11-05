@@ -16,7 +16,7 @@ final class ProviderLoginService(
     catalog: ProviderCatalog,
     auth: OpenAiCodexAuth.OAuthFlow,
     loginTimeout: Duration = OpenAiCodexAuth.BrowserLoginTimeout
-) {
+) extends ProviderLoginService.Login {
   import ProviderLoginService.*
 
   def run(id: ProviderId, method: LoginMethod, interaction: LoginInteraction): UIO[Result] =
@@ -68,6 +68,12 @@ final class ProviderLoginService(
 
 object ProviderLoginService {
 
+  /** Private terminal interaction boundary, implemented by both local and connected login services. */
+  trait Login {
+    def inputFailure: Result = Result.Failed(Error.AuthenticationFailed)
+    def run(id: ProviderId, method: LoginMethod, interaction: LoginInteraction): UIO[Result]
+  }
+
   /** Fixed categories only: never contains provider/transport exceptions, tokens, or callback URLs. */
   enum Error {
     case AuthenticationFailed
@@ -75,7 +81,7 @@ object ProviderLoginService {
   }
 
   enum Result {
-    case Saved, Cancelled, TimedOut
+    case Saved, Activated, Cancelled, TimedOut, Uncertain
     case Failed(error: Error)
   }
 }

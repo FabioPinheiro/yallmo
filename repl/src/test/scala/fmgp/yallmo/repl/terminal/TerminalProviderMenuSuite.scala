@@ -127,6 +127,34 @@ final class TerminalProviderMenuSuite extends FunSuite {
     assert(menu.lines.mkString.contains("Cannot read provider configuration"))
   }
 
+  test("connected provider menus only inspect existing profiles and expose no creation or endpoint fields") {
+    val menu = new TerminalProviderMenu(remoteConnection = true)
+    menu.open(); menu.takeAction()
+    menu.complete(Right(Reply.Listed(entries)))
+    assert(!menu.lines.mkString.contains("New provider"))
+    press(menu, Input.Down, Input.Down)
+    assertEquals(menu.state.screen, Screen.Browse(0))
+    press(menu, Input.Enter); menu.takeAction()
+    menu.complete(Right(Reply.Loaded(Some(account))))
+    assert(!menu.lines.mkString.contains("Endpoint:"))
+    press(menu, Input.Text("l"))
+    assertEquals(menu.takeAction(), Some(Action.Login(account.id, LoginMethod.Browser)))
+    menu.completeLogin(fmgp.yallmo.repl.ProviderLoginService.Result.Activated)
+    menu.takeAction()
+    menu.complete(Right(Reply.Loaded(Some(account))))
+    assert(menu.lines.mkString.contains("no restart or reselection"))
+    menu.completeLogin(fmgp.yallmo.repl.ProviderLoginService.Result.Uncertain)
+    menu.takeAction()
+    menu.complete(Right(Reply.Loaded(Some(account))))
+    assert(menu.lines.mkString.contains("server may still save"))
+    assert(!menu.lines.mkString.contains("no credentials saved"))
+    val empty = new TerminalProviderMenu(remoteConnection = true)
+    empty.open(); empty.takeAction(); empty.complete(Right(Reply.Listed(Vector.empty)))
+    press(empty, Input.Up, Input.Down, Input.Enter)
+    assertEquals(empty.state.screen, Screen.Browse(0))
+    assertEquals(empty.takeAction(), None)
+  }
+
   test("OAI type, isolated ID/base URL editing, backtracking and explicit save retain exact input") {
     val menu = opened()
     newForm(menu)

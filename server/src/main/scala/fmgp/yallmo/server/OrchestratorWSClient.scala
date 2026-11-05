@@ -59,6 +59,13 @@ final class OrchestratorWSClient private (
 
   override def providerRequest(sessionId: SessionId): IO[Error, DiagnosticsRequest.Result] =
     request(DiagnosticsRequest.method, DiagnosticsRequest.Params(sessionId))
+  override def listProviders: IO[Error, ProvidersList.Result] = request(ProvidersList.method, Empty())
+  override def startProviderLogin(params: ProvidersLoginStart.Params): IO[Error, ProvidersLoginStart.Result] =
+    request(ProvidersLoginStart.method, params)
+  override def completeProviderLogin(params: ProvidersLoginComplete.Params): IO[Error, ProvidersLoginComplete.Result] =
+    request(ProvidersLoginComplete.method, params)
+  override def cancelProviderLogin(params: ProvidersLoginCancel.Params): IO[Error, Empty] =
+    request(ProvidersLoginCancel.method, params)
   override def listSessions: IO[Error, Chunk[SessionSummary]] = request(SessionsList.method, Empty())
   override def loadSession(id: SessionId): IO[Error, SessionSnapshot] =
     request(SessionsGet.method, SessionsGet.Params(id))
@@ -108,7 +115,9 @@ final class OrchestratorWSClient private (
                   .tapError(_ => (disconnect(state, Error.Disconnected) *> channel.shutdown).uninterruptible)
                 value <- promise.await
               } yield value
-            value <- if method == TurnSubmit.method then wait else wait.timeoutFail(Error.RequestTimedOut)(timeout)
+            value <-
+              if method == TurnSubmit.method || method == ProvidersLoginComplete.method then wait
+              else wait.timeoutFail(Error.RequestTimedOut)(timeout)
             decoded <- ZIO.fromEither(value.as[A]).mapError(_ => Error.InvalidResponse)
           } yield decoded
         }.ensuring(state.update(current => current.copy(pending = current.pending - id)))

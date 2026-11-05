@@ -18,10 +18,11 @@ import scala.jdk.CollectionConverters.*
   * restores the chat text/cursor; no form field enters its history. All methods touching JLine must run on the client's
   * terminal thread, never concurrently with readLine.
   */
-private[terminal] final class TerminalProviderMode(reader: StatusLineReader) extends TerminalMode {
+private[terminal] final class TerminalProviderMode(reader: StatusLineReader, remoteConnection: Boolean = false)
+    extends TerminalMode {
   import TerminalProviderMenu.*
 
-  private val menu = new TerminalProviderMenu
+  private val menu = new TerminalProviderMenu(remoteConnection)
   private var suspended: Option[Buffer] = None
   private val keyMapName = TerminalProviderMode.KeyMapName
 
@@ -59,7 +60,7 @@ private[terminal] final class TerminalProviderMode(reader: StatusLineReader) ext
     )
   }
 
-  /** Called by a local menu widget during readLine, not outside a line-editing session. */
+  /** Called by a terminal menu widget during readLine, not outside a line-editing session. */
   def open(): Unit = {
     menu.open()
     yieldToClient()
@@ -152,8 +153,11 @@ private[terminal] final class TerminalProviderMode(reader: StatusLineReader) ext
     */
   private def visibleMenu(): AttributedString = {
     val columns = reader.getTerminal.getWidth.max(1)
-    val lines = menu.lines :+
-      "Catalog only: active agent/runtime unchanged. Configure agent references and restart to use additions."
+    val lines =
+      menu.lines :+ (if remoteConnection then
+                       "Server-owned providers: login updates credentials only; selected agent, session and draft are preserved."
+                     else
+                       "Catalog only: active agent/runtime unchanged. Configure agent references and restart to use additions.")
     val rows = lines.flatMap { line =>
       new AttributedString(line).columnSplitLength(columns, false, false, reader.getTerminal).asScala
     }

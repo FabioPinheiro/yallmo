@@ -486,6 +486,153 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
   }
 
+  test("live login replaces shared cached agents without touching other profiles or in-flight requests") {
+    run((for {
+      started <- Promise.make[Nothing, Unit]
+      release <- Promise.make[Nothing, Unit]
+      seen <- Ref.make(Vector.empty[String])
+      client = fakeClient(incoming => {
+        val token = incoming.headers.get("Authorization").getOrElse("")
+        seen.update(_ :+ token) *>
+          (if token == s"Bearer ${credentials("first").accessToken}" then started.succeed(()) *> release.await
+           else ZIO.unit)
+            .as(subscriptionResponse)
+      })
+      current <- RuntimeInstances.make(config).provideEnvironment(ZEnvironment(client))
+      _ <- current.registerUser(AgentId("human"))
+      old <- current.getAgent(eve)
+      oldSibling <- current.getAgent(charlie)
+      local <- current.getAgent(bob)
+      untouched <- current.getProvider(otherChatId)
+      active <- old.turn(request).fork
+      _ <- started.await
+      _ <- current.updateChatGptCredentials(chatId, credentials("new-login"))
+      fresh <- current.getAgent(eve)
+      sibling <- current.getAgent(charlie)
+      _ <- fresh.turn(request)
+      _ <- sibling.turn(request)
+      _ <- release.succeed(())
+      oldResult <- active.join
+      sent <- seen.get
+      sameLocal <- current.getAgent(bob)
+      sameOther <- current.getProvider(otherChatId)
+      sameFresh <- current.getAgent(eve)
+      user <- current.isUser(AgentId("human"))
+    } yield {
+      assert(!(fresh eq old))
+      assert(!(sibling eq oldSibling))
+      assert(sameFresh eq fresh)
+      assert(sameLocal eq local)
+      assert(sameOther eq untouched)
+      assert(user)
+      assertEquals(
+        sent,
+        Vector(
+          s"Bearer ${credentials("first").accessToken}",
+          s"Bearer ${credentials("new-login").accessToken}",
+          s"Bearer ${credentials("new-login").accessToken}"
+        )
+      )
+      assertEquals(oldResult.output, Chunk(MessagePayload.Assistant("Hi")))
+    }).timeoutFail(new Exception("Live login deadlock"))(5.seconds))
+  }
+
+  test("live credentials also activate cold/logged-out profiles and invalid updates leave caches intact") {
+    val current = runtime(config.copy(providers = config.providers.updated(chatId, ProviderConfig.ChatGPT())))
+    run(for {
+      loggedOut <- current.getAgent(eve)
+      failure <- loggedOut.turn(request).either
+      _ <- current.updateChatGptCredentials(chatId, credentials("logged-in"))
+      first <- current.getProvider(chatId)
+      agent <- current.getAgent(eve)
+      invalid <- current.updateChatGptCredentials(chatId, credentials("bad").copy(accessToken = "bad token")).either
+      wrong <- current.updateChatGptCredentials(oaiId, credentials("bad")).either
+      missing <- current.updateChatGptCredentials(ProviderId.unsafe("unknown"), credentials("bad")).either
+      after <- current.getProvider(chatId)
+      same <- current.getAgent(eve)
+    } yield {
+      assert(failure.isLeft)
+      assert(!(loggedOut eq agent))
+      assert(List(invalid, wrong, missing).forall(_.isLeft))
+      assert(after eq first)
+      assert(same eq agent)
+    })
+  }
+
+  test("a delayed old token refresh cannot overwrite a newer login generation") {
+    run((for {
+      refreshing <- Promise.make[Nothing, Unit]
+      release <- Promise.make[Nothing, Unit]
+      seen <- Ref.make(Vector.empty[String])
+      client = fakeClient(incoming =>
+        if incoming.url.toString == OpenAiCodexAuth.TokenUrl then
+          (refreshing.succeed(()) *> release.await).as(
+            Response.text(
+              ujson.write(
+                ujson.Obj(
+                  "access_token" -> credentials("old-rotated").accessToken,
+                  "refresh_token" -> "old-rotated-refresh",
+                  "expires_in" -> 3600
+                )
+              )
+            )
+          )
+        else seen.update(_ :+ incoming.headers.get("Authorization").getOrElse("")).as(subscriptionResponse)
+      )
+      current <- RuntimeInstances
+        .make(
+          config
+            .copy(providers = config.providers.updated(chatId, ProviderConfig.ChatGPT(Some(credentials("first", 0L)))))
+        )
+        .provideEnvironment(ZEnvironment(client))
+      old <- current.getAgent(eve)
+      active <- old.turn(request).fork
+      _ <- refreshing.await
+      _ <- current.updateChatGptCredentials(chatId, credentials("new-login"))
+      fresh <- current.getAgent(eve)
+      _ <- fresh.turn(request)
+      _ <- release.succeed(())
+      _ <- active.join
+      _ <- fresh.turn(request)
+      sent <- seen.get
+    } yield {
+      assertEquals(
+        sent,
+        Vector(
+          s"Bearer ${credentials("new-login").accessToken}",
+          s"Bearer ${credentials("old-rotated").accessToken}",
+          s"Bearer ${credentials("new-login").accessToken}"
+        )
+      )
+    }).timeoutFail(new Exception("Login must not wait on an old refresh"))(5.seconds))
+  }
+
+  test("credential replacement preserves a dependent agent's already-rooted filesystem capability") {
+    val root = java.nio.file.Files.createTempDirectory("runtime-login-fs-")
+    try {
+      val definition = config.copy(agents =
+        config.agents.updated(
+          eve,
+          AgentConfig(
+            "ChatGPTAgent",
+            Seq(chatId),
+            filesystem = Some(fmgp.yallmo.orchestration.config.FileSystemConfig(root.toString))
+          )
+        )
+      )
+      val current = runtime(definition)
+      run(for {
+        before <- current.getAgentWithFilesystem(eve)
+        _ <- ZIO.attemptBlocking(java.nio.file.Files.delete(root))
+        _ <- current.updateChatGptCredentials(chatId, credentials("new-login"))
+        after <- current.getAgentWithFilesystem(eve)
+      } yield {
+        assert(!(before._1 eq after._1))
+        assert(before._2.get eq after._2.get)
+      })
+    } finally java.nio.file.Files.deleteIfExists(root)
+  }
+
   test("agents sharing a ChatGPT provider refresh once on first inference and reuse rotated credentials") {
     val definition =
       config.copy(providers = Map(chatId -> ProviderConfig.ChatGPT(Some(credentials("first", 0)))))

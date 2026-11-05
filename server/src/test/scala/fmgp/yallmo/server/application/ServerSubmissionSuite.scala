@@ -119,7 +119,7 @@ final class ServerSubmissionSuite extends FunSuite {
         reloaded <- again.loadSession(created.id)
       } yield {
         assertEquals(info.get.identity, Identity(human, Role.Operator))
-        assertEquals(info.get.methods.size, 12)
+        assertEquals(info.get.methods.size, 16)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -478,13 +478,17 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(5),
+          info.methods.takeRight(9),
           List(
             SessionsCreate.method,
             TurnSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
-            AgentsInvoke.method
+            AgentsInvoke.method,
+            ProvidersList.method,
+            ProvidersLoginStart.method,
+            ProvidersLoginComplete.method,
+            ProvidersLoginCancel.method
           )
         )
         assertEquals(info.notifications, Nil)
@@ -641,13 +645,17 @@ final class ServerSubmissionSuite extends FunSuite {
         val info = decode[JsonRpc.Success[Initialize.Result]](initialized).result
         assertEquals(info.identity, Identity(human, Role.Operator))
         assertEquals(
-          info.methods.takeRight(5),
+          info.methods.takeRight(9),
           List(
             SessionsCreate.method,
             TurnSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
-            AgentsInvoke.method
+            AgentsInvoke.method,
+            ProvidersList.method,
+            ProvidersLoginStart.method,
+            ProvidersLoginComplete.method,
+            ProvidersLoginCancel.method
           )
         )
         assertEquals(decode[JsonRpc.Success[SessionSnapshot]](created).result.id, sessionId)
@@ -1281,6 +1289,306 @@ final class ServerSubmissionSuite extends FunSuite {
           failure == Left(YallmoError.BlobUploadFailed(BlobUploadFailure.Aborted)) ||
             failure == Left(YallmoError.BlobMissing(next))
         )
+      }
+    })
+  }
+
+  test("provider login over WebSocket validates state, saves privately and never traces OAuth material") {
+    val logs = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    val capture = ZLogger.default.map(line => { logs.add(line); () })
+    run(ZIO.scoped {
+      for {
+        _ <- OrchestratorServerMain.configureLogging(LogLevel.Trace, capture).build
+        exchanges <- Ref.make(0)
+        app <- application(
+          request =>
+            request.body.asString.flatMap(body =>
+              ZIO.attempt {
+                assertEquals(request.url.toString, "https://auth.openai.com/oauth/token")
+                assert(body.contains("code=PRIVATE_AUTH_CODE"))
+                assert(body.contains("code_verifier="))
+              } *> exchanges
+                .update(_ + 1)
+                .as(
+                  Response.text(
+                    """{"access_token":"PRIVATE_ACCESS_TOKEN","refresh_token":"PRIVATE_REFRESH_TOKEN","expires_in":3600}"""
+                  )
+                )
+            ),
+          config.copy(providers = config.providers.updated(ProviderId.unsafe("account"), ProviderConfig.ChatGPT()))
+        )
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        ready <- Promise.make[Nothing, WebSocketChannel]
+        replies <- Queue.unbounded[String]
+        socket = Handler.webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
+              ready.succeed(channel).unit
+            case ChannelEvent.Read(WebSocketFrame.Text(value)) => replies.offer(value).unit
+            case _                                             => ZIO.unit
+          }
+        }
+        http <- Client.default.build
+        _ <- socket.connect(s"ws://127.0.0.1:$port/rpc").provideSomeEnvironment[Scope](_.add(http.get[Client]))
+        channel <- ready.await
+        send = (method: String, params: Json) =>
+          channel.send(
+            ChannelEvent.Read(WebSocketFrame.Text(JsonRpc.Request(Json.Str("provider"), method, params).toJson))
+          ) *> replies.take
+        initialized <- send(
+          Initialize.method,
+          Initialize
+            .Params(fmgp.yallmo.server.protocol.YallmoProtocol.Version, "web-test", Some(human))
+            .toJsonAST
+            .toOption
+            .get
+        )
+        before <- send(ProvidersList.method, Json.Obj())
+        started <- send(ProvidersLoginStart.method, ProvidersLoginStart.Params("account").toJsonAST.toOption.get)
+        login = decode[JsonRpc.Success[ProvidersLoginStart.Result]](started).result
+        rejected <- send(
+          ProvidersLoginComplete.method,
+          ProvidersLoginComplete
+            .Params(login.attemptId, "http://localhost:1455/auth/callback?code=PRIVATE_AUTH_CODE&state=wrong")
+            .toJsonAST
+            .toOption
+            .get
+        )
+        startedAgain <- send(ProvidersLoginStart.method, ProvidersLoginStart.Params("account").toJsonAST.toOption.get)
+        next = decode[JsonRpc.Success[ProvidersLoginStart.Result]](startedAgain).result
+        state = java.net.URI
+          .create(next.authorizationUrl)
+          .getRawQuery
+          .split("&")
+          .find(_.startsWith("state="))
+          .get
+          .stripPrefix("state=")
+        params = ProvidersLoginComplete.Params(
+          next.attemptId,
+          s"http://localhost:1455/auth/callback?code=PRIVATE_AUTH_CODE&state=$state"
+        )
+        completed <- send(ProvidersLoginComplete.method, params.toJsonAST.toOption.get)
+        replay <- send(ProvidersLoginComplete.method, params.toJsonAST.toOption.get)
+        after <- send(ProvidersList.method, Json.Obj())
+        count <- exchanges.get
+        sessions <- app.master.listSessions
+        messages <- app.master.listMessages
+        saved <- ZIO.attemptBlocking(Files.readString(app.configured.get.workspace.resolve("config.json")))
+        _ <- channel.shutdown
+      } yield {
+        assert(
+          decode[JsonRpc.Success[Initialize.Result]](initialized).result.methods.contains(ProvidersLoginStart.method)
+        )
+        assertEquals(
+          decode[JsonRpc.Success[ProvidersList.Result]](before).result.find(_.id == "account").get.credentials,
+          ProviderCredentialStatus.LoggedOut
+        )
+        assertEquals(decode[JsonRpc.Failure](rejected).error.code, ErrorCode.Rejected)
+        assertEquals(decode[JsonRpc.Success[ProvidersLoginComplete.Result]](completed).result.restartRequired, false)
+        assertEquals(decode[JsonRpc.Failure](replay).error.code, ErrorCode.NotFound)
+        assertEquals(
+          decode[JsonRpc.Success[ProvidersList.Result]](after).result.find(_.id == "account").get.credentials,
+          ProviderCredentialStatus.Configured
+        )
+        assertEquals(count, 1)
+        assertEquals(sessions, Chunk.empty)
+        assertEquals(messages, Chunk.empty)
+        assert(saved.contains("PRIVATE_ACCESS_TOKEN"))
+        List("PRIVATE_AUTH_CODE", "PRIVATE_ACCESS_TOKEN", "PRIVATE_REFRESH_TOKEN", state, next.attemptId).foreach(
+          secret => assert(!logs.toString.contains(secret), "OAuth material leaked to logs")
+        )
+        assert(!List(before, after, completed, rejected, replay).mkString.contains("PRIVATE_"))
+      }
+    })
+  }
+
+  test("successful provider login activates fresh tokens for the next server turn without rebuilding the application") {
+    def token(account: String): String = {
+      val payload = java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(
+        s"""{"https://api.openai.com/auth":{"chatgpt_account_id":"$account"}}""".getBytes(
+          java.nio.charset.StandardCharsets.UTF_8
+        )
+      )
+      s"header.$payload.synthetic-signature"
+    }
+    val account = ProviderId.unsafe("account")
+    val native = AgentConfig(
+      "ChatGPTAgent",
+      Seq(account),
+      Json.Obj("model" -> Json.Str("test")),
+      capabilities = AgentCapabilities(tools = Some(Set.empty))
+    )
+    val definition = Config(
+      agents = Map(first -> native, second -> native),
+      providers = Map(
+        account -> ProviderConfig.ChatGPT(
+          Some(
+            fmgp.yallmo.orchestration.config.OAuthCredentialsConfig(token("before"), "before-refresh", Long.MaxValue)
+          )
+        )
+      )
+    )
+    run(ZIO.scoped {
+      for {
+        headers <- Ref.make(Vector.empty[String])
+        app <- application(
+          request =>
+            if request.url.toString == "https://auth.openai.com/oauth/token" then
+              ZIO.succeed(
+                Response.text(
+                  ujson.write(
+                    ujson.Obj(
+                      "access_token" -> token("after"),
+                      "refresh_token" -> "after-refresh",
+                      "expires_in" -> 3600
+                    )
+                  )
+                )
+              )
+            else
+              headers
+                .update(_ :+ request.headers.get("Authorization").getOrElse(""))
+                .as(
+                  Response.text(
+                    "data: " + ujson.write(
+                      ujson.Obj(
+                        "type" -> "response.done",
+                        "response" -> ujson.Obj(
+                          "status" -> "completed",
+                          "output" -> ujson.Arr(
+                            ujson.Obj(
+                              "type" -> "message",
+                              "content" -> ujson.Arr(ujson.Obj("type" -> "output_text", "text" -> "answer"))
+                            )
+                          )
+                        )
+                      )
+                    ) + "\n\n"
+                  )
+                )
+          ,
+          definition
+        )
+        backend = app.configured.get
+        warmed <- backend.runtime.resolve(second)
+        session <- backend.create(human, Some(SessionId.unsafe("live-login")))
+        before <- backend.submit(human, session.id, first, "before login")
+        owner = java.util.UUID.randomUUID()
+        login <- backend.providers.start(owner, "account")
+        state = java.net.URI
+          .create(login.authorizationUrl)
+          .getRawQuery
+          .split("&")
+          .find(_.startsWith("state="))
+          .get
+          .stripPrefix("state=")
+        completed <- backend.providers.complete(
+          owner,
+          ProvidersLoginComplete.Params(
+            login.attemptId,
+            s"http://localhost:1455/auth/callback?code=synthetic-code&state=$state"
+          )
+        )
+        after <- backend.submit(human, session.id, second, "after login")
+        rebound <- backend.runtime.resolve(second)
+        sent <- headers.get
+        stored <- app.master.loadSession(session.id)
+        saved <- ZIO.attemptBlocking(
+          Files.readString(backend.workspace.resolve("config.json")).fromJson[Config].toOption.get
+        )
+      } yield {
+        assert(!completed.restartRequired)
+        assert(before.isInstanceOf[TurnOutcome.Succeeded])
+        assert(after.isInstanceOf[TurnOutcome.Succeeded])
+        assert(!(warmed.adapter eq rebound.adapter))
+        assertEquals(sent, Vector(s"Bearer ${token("before")}", s"Bearer ${token("after")}"))
+        assertEquals(
+          stored.messages.map(_.payload),
+          Chunk(
+            MessagePayload.User("before login"),
+            MessagePayload.Assistant("answer"),
+            MessagePayload.User("after login"),
+            MessagePayload.Assistant("answer")
+          )
+        )
+        assertEquals(
+          saved.providers(account).asInstanceOf[ProviderConfig.ChatGPT].credentials.map(_.accessToken),
+          Some(token("after"))
+        )
+        assert(app.master eq backend.assembly.orchestrator)
+      }
+    })
+  }
+
+  test("provider RPCs require a configured operator and bind attempts to the exact connection") {
+    run(ZIO.scoped {
+      for {
+        app <- application(
+          _ => ZIO.dieMessage("Invalid login must not exchange tokens"),
+          config.copy(providers = config.providers.updated(ProviderId.unsafe("account"), ProviderConfig.ChatGPT()))
+        )
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        owner <- rpc.openConnection
+        other <- rpc.openConnection
+        viewer <- rpc.openConnection
+        _ <- initializeUpload(rpc, owner, Some(human))
+        _ <- initializeUpload(rpc, other, Some(human))
+        info <- initializeUpload(rpc, viewer, None)
+        call = (connection: OrchestratorRpc.Connection, method: String, params: Json) =>
+          rpc.handle(JsonRpc.Request(Json.Str("provider"), method, params).toJson, connection).map(_.get)
+        forbidden <- ZIO.foreach(
+          List(
+            ProvidersList.method,
+            ProvidersLoginStart.method,
+            ProvidersLoginComplete.method,
+            ProvidersLoginCancel.method
+          )
+        )(method => call(viewer, method, Json.Obj()))
+        started <- call(owner, ProvidersLoginStart.method, ProvidersLoginStart.Params("account").toJsonAST.toOption.get)
+        login = decode[JsonRpc.Success[ProvidersLoginStart.Result]](started).result
+        _ <- call(
+          other,
+          ProvidersLoginCancel.method,
+          ProvidersLoginCancel.Params(login.attemptId).toJsonAST.toOption.get
+        )
+        foreign <- call(
+          other,
+          ProvidersLoginComplete.method,
+          ProvidersLoginComplete.Params(login.attemptId, "secret-code").toJsonAST.toOption.get
+        )
+        oversized <- call(
+          owner,
+          ProvidersLoginComplete.method,
+          ProvidersLoginComplete
+            .Params(login.attemptId, "x" * (ProvidersLoginComplete.MaxRedirectChars + 1))
+            .toJsonAST
+            .toOption
+            .get
+        )
+        _ <- rpc.disconnect(owner)
+        absent <- app.configured.get.providers
+          .complete(owner.id, ProvidersLoginComplete.Params(login.attemptId, "secret-code"))
+          .either
+        racing <- rpc.openConnection
+        _ <- initializeUpload(rpc, racing, Some(human))
+        raced <- call(racing, ProvidersLoginStart.method, ProvidersLoginStart.Params("account").toJsonAST.toOption.get)
+          .zipPar(rpc.disconnect(racing))
+        _ <- ZIO.foreachDiscard(raced.fromJson[JsonRpc.Success[ProvidersLoginStart.Result]].toOption) { value =>
+          app.configured.get.providers
+            .complete(racing.id, ProvidersLoginComplete.Params(value.result.attemptId, "secret-code"))
+            .either
+            .map { result =>
+              assertEquals(result.swap.toOption.get.code, ErrorCode.NotFound)
+            }
+        }
+        _ <- rpc.disconnect(other)
+        _ <- rpc.disconnect(viewer)
+      } yield {
+        assert(!decode[JsonRpc.Success[Initialize.Result]](info).result.methods.contains(ProvidersList.method))
+        forbidden.foreach(reply => assertEquals(decode[JsonRpc.Failure](reply).error.code, ErrorCode.Forbidden))
+        assertEquals(decode[JsonRpc.Failure](foreign).error.code, ErrorCode.NotFound)
+        assertEquals(decode[JsonRpc.Failure](oversized).error, JsonRpc.Error.InvalidParams)
+        assertEquals(absent.swap.toOption.get.code, ErrorCode.NotFound)
       }
     })
   }

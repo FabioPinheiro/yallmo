@@ -288,7 +288,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         resumed <- reconnected.submit(reconnected.initialState, "/session resume detached")
         complete <- (ZIO.yieldNow *> reconnected.submit(resumed.state, "/history"))
           .repeatUntil(_.events.head.asInstanceOf[ReplEvent.SnapshotTranscript].messages.size == 2)
-        forbidden <- ZIO.foreach(List("/tools", "/debug print", "/login", "/voice", "/tts"))(
+        forbidden <- ZIO.foreach(List("/tools", "/debug print", "/voice", "/tts"))(
           reconnected.submit(complete.state, _)
         )
         count <- calls.get
@@ -319,10 +319,146 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     })
   }
 
+  test("connected provider login uses the same real WebSocket and activates a cached logged-out agent") {
+    val account = ProviderId.unsafe("account")
+    val payload = java.util.Base64.getUrlEncoder.withoutPadding
+      .encodeToString("""{"https://api.openai.com/auth":{"chatgpt_account_id":"synthetic-account"}}""".getBytes(UTF_8))
+    val access = s"header.$payload.signature"
+    run(ZIO.scoped {
+      for {
+        exchanges <- Ref.make(0)
+        generations <- Ref.make(Vector.empty[String])
+        entered <- Promise.make[Nothing, Unit]
+        release <- Promise.make[Nothing, Unit]
+        app <- configured(
+          request =>
+            if request.url.toString == "https://auth.openai.com/oauth/token" then
+              request.body.asString.flatMap(body =>
+                exchanges.update(_ + 1) *>
+                  (if body.contains("code=deadline-test") then entered.succeed(()) *> release.await else ZIO.unit).as(
+                    Response.text(
+                      ujson.write(
+                        ujson
+                          .Obj("access_token" -> access, "refresh_token" -> "server-only-refresh", "expires_in" -> 3600)
+                      )
+                    )
+                  )
+              )
+            else
+              generations
+                .update(_ :+ request.headers.get("Authorization").getOrElse(""))
+                .as(
+                  Response.text(
+                    "data: " + ujson.write(
+                      ujson.Obj(
+                        "type" -> "response.done",
+                        "response" -> ujson.Obj(
+                          "status" -> "completed",
+                          "output" -> ujson.Arr(
+                            ujson.Obj(
+                              "type" -> "message",
+                              "content" -> ujson.Arr(ujson.Obj("type" -> "output_text", "text" -> "logged in"))
+                            )
+                          )
+                        )
+                      )
+                    ) + "\n\n"
+                  )
+                )
+          ,
+          _ =>
+            Config(
+              agents = Map(
+                AgentId("bob") -> AgentConfig(
+                  "ChatGPTAgent",
+                  Seq(account),
+                  zio.json.ast.Json.Obj("model" -> zio.json.ast.Json.Str("test")),
+                  capabilities = AgentCapabilities(tools = Some(Set.empty))
+                )
+              ),
+              providers = Map(account -> ProviderConfig.ChatGPT())
+            )
+        )
+        cached <- app.configured.get.runtime.resolve(AgentId("bob"))
+        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        client <- OrchestratorWSClient
+          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(human))
+          .mapError(error => new Exception(error.toString))
+        connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
+        providers = connected.connectedProviders.get
+        before <- providers.list.mapError(_ => new Exception("Provider list failed"))
+        url <- Ref.make("")
+        interaction = new LoginInteraction {
+          def show(message: String): Task[Unit] =
+            if message.startsWith("Open this OpenAI login URL") then url.set(message.linesIterator.drop(1).mkString)
+            else ZIO.unit
+          def readRedirect: Task[Option[String]] = url.get.map(value => Some(callback(value, "private-callback-code")))
+          def awaitCancellation: Task[Unit] = ZIO.never
+        }
+        result <- providers.run(account, LoginMethod.Browser, interaction)
+        sessionsBeforePrompt <- app.master.listSessions
+        after <- providers.list.mapError(_ => new Exception("Provider list failed"))
+        turn <- connected.submit(connected.initialState, "hello after login")
+        active <- app.configured.get.runtime.resolve(AgentId("bob"))
+        sent <- generations.get
+        next <- client
+          .startProviderLogin(fmgp.yallmo.server.protocol.YallmoProtocol.ProvidersLoginStart.Params("account"))
+          .mapError(error => new Exception(error.toString))
+        noReadDeadline = new Clock {
+          export Clock.ClockLive.{currentTime, currentDateTime, instant, javaClock, localDateTime, nanoTime, scheduler}
+          def sleep(duration: => Duration)(using Trace): UIO[Unit] =
+            if duration == 15.seconds then
+              ZIO.dieMessage("Login completion must not use the short client read deadline")
+            else Clock.ClockLive.sleep(duration)
+        }
+        completion <- client
+          .completeProviderLogin(
+            fmgp.yallmo.server.protocol.YallmoProtocol.ProvidersLoginComplete
+              .Params(next.attemptId, callback(next.authorizationUrl, "deadline-test"))
+          )
+          .withClock(noReadDeadline)
+          .fork
+        _ <- entered.await
+        waiting <- completion.poll
+        _ <- release.succeed(())
+        completed <- completion.join.mapError(error => new Exception(error.toString))
+        count <- exchanges.get
+        _ <- client
+          .cancelProviderLogin(fmgp.yallmo.server.protocol.YallmoProtocol.ProvidersLoginCancel.Params(next.attemptId))
+          .mapError(error => new Exception(error.toString))
+      } yield {
+        assertEquals(result, ProviderLoginService.Result.Activated)
+        assertEquals(before.head.credentials, fmgp.yallmo.server.application.ProviderCatalog.CredentialStatus.LoggedOut)
+        assertEquals(after.head.credentials, fmgp.yallmo.server.application.ProviderCatalog.CredentialStatus.Configured)
+        assertEquals(sessionsBeforePrompt, Chunk.empty)
+        assertEquals(
+          turn.events.collect { case ReplEvent.SnapshotDelta(messages) => messages.map(_.content) }.flatten,
+          Chunk("hello after login", "logged in")
+        )
+        assertEquals(sent, Vector(s"Bearer $access"))
+        assert(!(cached.adapter eq active.adapter))
+        assertEquals(connected.selectedAgentId, Some(AgentId("bob")))
+        assertEquals(waiting, None)
+        assert(!completed.restartRequired)
+        assertEquals(count, 2)
+        assertEquals(connected.providerCatalog, None)
+        assertEquals(connected.providerLogin, None)
+      }
+    })
+  }
+
+  private def callback(url: String, code: String): String = {
+    val state = java.net.URI.create(url).getRawQuery.split("&").find(_.startsWith("state=")).get.stripPrefix("state=")
+    s"http://localhost:1455/auth/callback?code=$code&state=$state"
+  }
+
   private def providerAnswer =
     Response.text("""{"choices":[{"message":{"role":"assistant","content":"server answer"},"finish_reason":"stop"}]}""")
 
-  private def configured(respond: Request => Task[Response]): ZIO[Scope, Throwable, ServerApplication] =
+  private def configured(
+      respond: Request => Task[Response],
+      configuration: Config => Config = identity
+  ): ZIO[Scope, Throwable, ServerApplication] =
     for {
       root <- ZIO.acquireRelease(ZIO.attemptBlocking(Files.createTempDirectory("yallmo-repl-server-"))) { root =>
         ZIO.attemptBlocking {
@@ -343,7 +479,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         ),
         providers = Map(provider -> ProviderConfig.OAI("http://fake.invalid/v1"))
       )
-      path <- ZIO.attemptBlocking(Files.writeString(root.resolve("private-config.json"), config.toJson))
+      path <- ZIO.attemptBlocking(Files.writeString(root.resolve("private-config.json"), configuration(config).toJson))
       service <- ServerApplication
         .open(root, Some(path), Some(root))
         .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(respond)) ++ tools)

@@ -13,11 +13,13 @@ private[terminal] final class TerminalVoiceModeStatus(
     private var activeAgent: Option[ReplActiveAgent] = None,
     remoteConnection: Boolean = false, // FIXME REMOVE!
     private var selectedAgentId: Option[fmgp.yallmo.model.AgentId] = None,
-    canSubmit: Boolean = false
+    canSubmit: Boolean = false,
+    canManageProviders: Boolean = false
 ) extends TerminalMode {
   private val status = Option(Status.getStatus(reader.getTerminal))
 
-  private var currentHint = TerminalMenus.hintForKeyMap(LineReader.VIINS, remoteConnection, canSubmit)
+  private var currentHint =
+    TerminalMenus.hintForKeyMap(LineReader.VIINS, remoteConnection, canSubmit, canManageProviders)
 
   override def install(): Unit = {
     reader match {
@@ -41,7 +43,7 @@ private[terminal] final class TerminalVoiceModeStatus(
   def transcribing(): Unit = update("[TRANSCRIBING]  Processing local voice input…")
 
   def updateForKeyMap(): Unit =
-    update(TerminalMenus.hintForKeyMap(reader.getKeyMap, remoteConnection, canSubmit))
+    update(TerminalMenus.hintForKeyMap(reader.getKeyMap, remoteConnection, canSubmit, canManageProviders))
 
   def close: UIO[Unit] =
     ZIO.attemptBlocking {

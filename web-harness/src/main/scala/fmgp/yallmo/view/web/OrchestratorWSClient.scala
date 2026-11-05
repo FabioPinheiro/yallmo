@@ -19,6 +19,8 @@ import zio.json.ast.Json
 
 /** Browser adapter for the same JSON-RPC contract as the JVM client. One instance belongs to the application root:
   * connect on mount, close on unmount, and explicitly reconnect on Refresh. Requests are never replayed on reconnect.
+  *
+  * FIXME this is not an Orchestrator. It was much more ATM... TODO RENAME
   */
 final class OrchestratorWSClient private[web] (
     endpoint: String,
@@ -94,6 +96,13 @@ final class OrchestratorWSClient private[web] (
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
   def invokeAgent(params: AgentsInvoke.Params): Future[Message] = request(AgentsInvoke.method, params)
   def uploadBlob(params: BlobsUpload.Params): Future[BlobsUpload.Result] = request(BlobsUpload.method, params)
+  def providers(): Future[ProvidersList.Result] = request(ProvidersList.method, Empty())
+  def startProviderLogin(params: ProvidersLoginStart.Params): Future[ProvidersLoginStart.Result] =
+    request(ProvidersLoginStart.method, params)
+  def completeProviderLogin(params: ProvidersLoginComplete.Params): Future[ProvidersLoginComplete.Result] =
+    request(ProvidersLoginComplete.method, params)
+  def cancelProviderLogin(params: ProvidersLoginCancel.Params): Future[Empty] =
+    request(ProvidersLoginCancel.method, params)
   private[web] def connectionVersion: Long = generation
   private[web] def blobChunkBytes: Int = chunkBytes
 
@@ -183,7 +192,9 @@ final class OrchestratorWSClient private[web] (
       val id = nextId.toString
       val result = Promise[Json]()
       // Execution is terminal-response only and may legitimately outlast a read deadline.
-      val timer = Option.when(method != TurnSubmit.method && method != AgentsInvoke.method)(setTimeout(timeoutMillis) {
+      val timer = Option.when(
+        method != TurnSubmit.method && method != AgentsInvoke.method && method != ProvidersLoginComplete.method
+      )(setTimeout(timeoutMillis) {
         pending.remove(id).foreach(_.result.tryFailure(new RuntimeException("Request timed out")))
       })
       pending(id) = Pending(result, timer)

@@ -13,7 +13,9 @@ import fmgp.yallmo.model.ToolKey
 import zio.http.Client
 import zio.json.ast.Json
 
-/** Application-owned configuration snapshot and lazy registry. Construction does not open storage or run agents. */
+/** Application-owned configuration snapshot and lazy registry with explicit live ChatGPT credential replacement.
+  * Construction does not open storage or run agents; other configuration changes still require a new runtime.
+  */
 final class ApplicationRuntime private (
     config: Config,
     val instances: RuntimeInstances[Any],

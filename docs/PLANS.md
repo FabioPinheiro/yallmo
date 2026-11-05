@@ -39,7 +39,7 @@ The client-only startup cutover and `/debug request` transport are delivered; se
 [archived plan and handoff](../completed/README.md#client-only-repl).
 The [REPL guide](REPL.md) and [server guide](../server/README.md) own the current runtime/security contract.
 
-- [ ] Integrate remote `/tools`, richer agent information, provider administration/login, voice/TTS, human interactions and remaining diagnostics (`/debug print|export`). Preserve the existing implementations/tests until parity is decided; do not restore a local startup fallback.
+- [ ] Integrate remote `/tools`, richer agent information, terminal provider creation/editing, voice/TTS, human interactions and remaining diagnostics (`/debug print|export`). Preserve the existing implementations/tests until parity is decided; do not restore a local startup fallback.
 - [ ] Resolve retained legacy voice test failures. The archived request-debug handoff records **231/237 REPL tests passing, six voice failures**; this is historical evidence, not a new test result or a green full-suite claim.
 - [ ] Perform a real-provider, separate-process terminal smoke test; fake-provider/socket coverage is not provider acceptance.
 - [ ] Decide compatibility-code retirement only after feature-parity review. Authentication and run-management/status/cancellation APIs remain separate work; the current deployment requires trusted access.

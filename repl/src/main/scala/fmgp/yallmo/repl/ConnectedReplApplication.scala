@@ -15,16 +15,20 @@ final class ConnectedReplApplication private (
     val agentChoices: Vector[ReplAgentChoice],
     override val canSubmit: Boolean,
     override val canReadRequests: Boolean,
+    override val connectedProviders: Option[ConnectedProviderService],
     logLevel: LogLevel
 ) extends ReplApplicationApi[Any] {
   val initialState = ReplState(logLevel = logLevel)
   val activeAgent = None
   val providerCatalog = None
   val providerLogin = None
+  override def providerLoginRunner: Option[ProviderLoginService.Login] = connectedProviders
   val transcriber = None
   override val remoteConnection = true
 
-  def notice: String = if canSubmit then ConnectedReplApplication.OperatorNotice else ConnectedReplApplication.Notice
+  def notice: String =
+    (if canSubmit then ConnectedReplApplication.OperatorNotice else ConnectedReplApplication.Notice) +
+      (if connectedProviders.nonEmpty then " Provider login: Esc, p, select a ChatGPT provider, Enter/l." else "")
 
   def selectAgent(id: AgentId): IO[YallmoError, ConnectedReplApplication] =
     ConnectedReplApplication.make(client, userId, Some(id), initialState.logLevel)
@@ -204,13 +208,13 @@ final class ConnectedReplApplication private (
 
 object ConnectedReplApplication {
   val Notice =
-    "Connected READ-ONLY: session list/resume/history and agent preference only. User name is unauthenticated metadata. No local providers, login or voice."
+    "Connected READ-ONLY: session list/resume/history and agent preference only. User name is unauthenticated metadata. No local provider configuration or voice."
   val OperatorNotice =
-    "Connected trusted local, unauthenticated: prompts and /new execute on the configured server. Claimed user names are impersonable; never expose publicly. No local providers, login or voice."
+    "Connected trusted local, unauthenticated: prompts and /new execute on the configured server. Claimed user names are impersonable; never expose publicly. No local provider configuration or voice."
   val Unsupported =
     "Unavailable in connected read-only mode: prompts, /new, /tools, /debug, providers/login and voice/TTS."
   val OperatorUnsupported =
-    "Unavailable remotely: /tools, /debug print|export, providers/login and voice/TTS. /debug request requires server diagnostic permission."
+    "Unavailable remotely: /tools, /debug print|export and voice/TTS. Provider login, when advertised, is in Esc, p. /debug request requires server diagnostic permission."
   val Uncertain =
     "Remote outcome is unknown; work may still complete. Refresh /history (or reconnect and resume the known session) before any manual resend. No automatic retry or cancellation."
   private[repl] val Commands = Set("/help", "/history", "/session", "/log", "/exit")
@@ -244,6 +248,16 @@ object ConnectedReplApplication {
       diagnostic = capabilities.exists(info =>
         info.identity.role == Role.Operator && info.methods.contains(DiagnosticsRequest.method)
       )
+      providers = capabilities
+        .filter(info =>
+          info.identity.role == Role.Operator && List(
+            ProvidersList.method,
+            ProvidersLoginStart.method,
+            ProvidersLoginComplete.method,
+            ProvidersLoginCancel.method
+          ).forall(info.methods.contains)
+        )
+        .map(_ => new ConnectedProviderService(client))
       executable = capabilities.exists(info =>
         info.identity.role == Role.Operator &&
           info.methods.contains(SessionsCreate.method) && info.methods.contains(TurnSubmit.method)
@@ -255,6 +269,7 @@ object ConnectedReplApplication {
       ids.map(id => ReplAgentChoice(id, "remote ID (model/provider unknown)", Vector.empty, None)).toVector,
       executable,
       diagnostic,
+      providers,
       logLevel
     )
 }

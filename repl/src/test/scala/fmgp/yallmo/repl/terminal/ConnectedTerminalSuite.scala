@@ -8,7 +8,7 @@ import fmgp.yallmo.repl.*
 import fmgp.yallmo.repl.voice.AudioRecorder
 import fmgp.yallmo.server.OrchestratorClient
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, PipedInputStream, PipedOutputStream}
 import java.nio.charset.StandardCharsets.UTF_8
 import munit.FunSuite
 import org.jline.reader.LineReader
@@ -105,6 +105,130 @@ final class ConnectedTerminalSuite extends FunSuite {
       })
     }
 
+  }
+
+  test("connected provider menu logs in with hidden input and restores the exact draft without local services") {
+    for restart <- List(false, true) do {
+      val pipe = new PipedInputStream(65536)
+      val writer = new PipedOutputStream(pipe)
+      val output = new ByteArrayOutputStream
+      val terminal = new DumbTerminal("connected-login", "xterm", pipe, output, UTF_8)
+      terminal.setSize(new Size(160, 35))
+      val historyFile = java.nio.file.Files.createTempFile("connected-login-history-", ".txt")
+      val variables = new java.util.HashMap[String, Object]()
+      variables.put(LineReader.HISTORY_FILE, historyFile)
+      variables.put(LineReader.AMBIGUOUS_BINDING, java.lang.Long.valueOf(50L))
+      val reader = new StatusLineReader(terminal, variables)
+      reader.setHistory(new org.jline.reader.impl.history.DefaultHistory())
+      reader.getKeyMaps.put(LineReader.MAIN, reader.getKeyMaps.get(LineReader.VIINS))
+      val finished = new java.util.concurrent.atomic.AtomicBoolean(false)
+      val restored = new java.util.concurrent.CopyOnWriteArrayList[(String, Int)]()
+      val displays = new java.util.concurrent.CopyOnWriteArrayList[String]()
+      val calls = new java.util.concurrent.CopyOnWriteArrayList[String]()
+      val callback = "http://localhost:1455/auth/callback?state=synthetic&code=private-code"
+      def send(text: String): Unit = { writer.write(text.getBytes(UTF_8)); writer.flush() }
+      val client = new Reads {
+        override def capabilities = ZIO.some(
+          Initialize.Result(
+            Version,
+            "test",
+            Identity(user, Role.Operator),
+            List(
+              SessionsCreate.method,
+              TurnSubmit.method,
+              ProvidersList.method,
+              ProvidersLoginStart.method,
+              ProvidersLoginComplete.method,
+              ProvidersLoginCancel.method
+            ),
+            Nil,
+            MaxBlobChunkBytes,
+            Some(Chunk(AgentId("bob")))
+          )
+        )
+        override def listProviders = ZIO.succeed {
+          calls.add("list")
+          Chunk(
+            ProviderSummary(
+              "account",
+              ProviderKind.ChatGPT,
+              if finished.get() then ProviderCredentialStatus.Configured else ProviderCredentialStatus.LoggedOut
+            )
+          )
+        }
+        override def startProviderLogin(params: ProvidersLoginStart.Params) = ZIO.succeed {
+          assertEquals(params.providerId, "account")
+          assert(!terminal.getAttributes.getLocalFlag(org.jline.terminal.Attributes.LocalFlag.ECHO))
+          assertEquals(reader.getVariable(LineReader.DISABLE_HISTORY), java.lang.Boolean.TRUE)
+          calls.add("start")
+          send(callback + "\n")
+          ProvidersLoginStart.Result(
+            "attempt",
+            "https://auth.openai.com/oauth/authorize?state=synthetic",
+            Long.MaxValue
+          )
+        }
+        override def completeProviderLogin(params: ProvidersLoginComplete.Params) = ZIO.succeed {
+          assertEquals(params, ProvidersLoginComplete.Params("attempt", callback))
+          calls.add("complete")
+          ProvidersLoginComplete.Result(restart)
+        }
+        override def cancelProviderLogin(params: ProvidersLoginCancel.Params) = ZIO.succeed {
+          calls.add("cancel")
+          finished.set(true)
+          Empty()
+        }
+      }
+      try {
+        val app = run(ConnectedReplApplication.make(client, user, Some(AgentId("bob"))))
+        val attributes = terminal.getAttributes.toString
+        val repl = new TerminalRepl(
+          app,
+          reader,
+          None,
+          throw new AssertionError("Connected login must not acquire a browser/audio server")
+        )
+        val previous = reader.getWidgets.get(LineReader.CALLBACK_INIT)
+        reader.getWidgets.put(
+          LineReader.CALLBACK_INIT,
+          new org.jline.reader.Widget {
+            def apply(): Boolean = {
+              val result = previous.apply()
+              if reader.getKeyMap == TerminalProviderMode.KeyMapName then {
+                restored.add((reader.getBuffer.toString, reader.getBuffer.cursor()))
+                displays.add(
+                  reader
+                    .getDisplayedBufferWithPrompts(new java.util.ArrayList[org.jline.utils.AttributedString]())
+                    .toString
+                )
+                if finished.get() then send("\u001b\u001bq")
+              }
+              result
+            }
+          }
+        )
+        assert(Option(reader.getKeyMaps.get(LineReader.VICMD).getBound("p")).nonEmpty)
+        send("idraft\u001bhp\nl")
+        run(repl.run)
+        import scala.jdk.CollectionConverters.*
+        assert(restored.asScala.nonEmpty)
+        assert(restored.asScala.forall(_ == (("draft", 3))))
+        assertEquals(calls.asScala.count(_ == "start"), 1)
+        assertEquals(calls.asScala.count(_ == "complete"), 1)
+        assertEquals(calls.asScala.count(_ == "cancel"), 1)
+        assert(displays.asScala.exists(_.contains(if restart then "Restart required" else "no restart or reselection")))
+        assert(displays.asScala.forall(text => !text.contains("New provider") && !text.contains("Endpoint:")))
+        assertEquals(reader.getHistory.size(), 1)
+        assertEquals(reader.getHistory.get(0), "/exit")
+        assert(!java.nio.file.Files.readString(historyFile).contains("private-code"))
+        assert(!output.toString(UTF_8).contains("private-code"))
+        assertEquals(terminal.getAttributes.toString, attributes)
+        assertEquals(app.selectedAgentId, Some(AgentId("bob")))
+        assertEquals(app.initialState.sessionId, None)
+      } finally {
+        writer.close(); terminal.close(); java.nio.file.Files.deleteIfExists(historyFile)
+      }
+    }
   }
 
   test("connected completions include only enabled commands and their arguments") {

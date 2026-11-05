@@ -29,6 +29,22 @@ trait OrchestratorClient {
   @scala.annotation.nowarn("msg=unused explicit parameter")
   def providerRequest(sessionId: SessionId): IO[OrchestratorClient.Error, DiagnosticsRequest.Result] =
     ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+
+  /** Optional trusted-operator provider administration; no client-local credentials or config files. */
+  def listProviders: IO[OrchestratorClient.Error, ProvidersList.Result] =
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+  @scala.annotation.nowarn("msg=unused explicit parameter")
+  def startProviderLogin(params: ProvidersLoginStart.Params): IO[OrchestratorClient.Error, ProvidersLoginStart.Result] =
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+  @scala.annotation.nowarn("msg=unused explicit parameter")
+  def completeProviderLogin(
+      params: ProvidersLoginComplete.Params
+  ): IO[OrchestratorClient.Error, ProvidersLoginComplete.Result] =
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+  @scala.annotation.nowarn("msg=unused explicit parameter")
+  def cancelProviderLogin(params: ProvidersLoginCancel.Params): IO[OrchestratorClient.Error, Empty] =
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+
   def listSessions: IO[OrchestratorClient.Error, Chunk[SessionSummary]]
   def loadSession(id: SessionId): IO[OrchestratorClient.Error, SessionSnapshot]
   def listMessages: IO[OrchestratorClient.Error, Chunk[MessageSnapshot]]

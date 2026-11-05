@@ -2,16 +2,17 @@ package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.orchestration.config.ProviderId
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
-import fmgp.yallmo.repl.ProviderLoginService
+import fmgp.yallmo.repl.{ConnectedProviderService, ProviderLoginService}
 import fmgp.yallmo.server.application.ProviderCatalog
 import fmgp.yallmo.server.application.ProviderCatalog.*
 import fmgp.yallmo.repl.LoginMethod
 import zio.IO
 
-/** Local provider UI model. Form text is owned here, never by the chat buffer, parser or history. Only an explicit
-  * confirmation emits Save. The client runs catalog effects, then calls complete before more input.
+/** Provider UI model for local catalog administration or connected listing/login. Form text is owned here, never by the
+  * chat buffer, parser or history. Only an explicit confirmation emits Save. The client runs catalog effects, then
+  * calls complete before more input.
   */
-private[terminal] final class TerminalProviderMenu {
+private[terminal] final class TerminalProviderMenu(remoteConnection: Boolean = false) {
   import TerminalProviderMenu.*
 
   private var current = State()
@@ -45,7 +46,7 @@ private[terminal] final class TerminalProviderMenu {
       case Left(error)                  => current = current.copy(notice = Some(errorMessage(error)))
       case Right(Reply.Listed(entries)) =>
         val index = current.screen match {
-          case Screen.Browse(index) => index.min(entries.size)
+          case Screen.Browse(index) => index.min(if remoteConnection then (entries.size - 1).max(0) else entries.size)
           case _                    => 0
         }
         current = current.copy(entries = entries, screen = Screen.Browse(index), notice = None)
@@ -74,6 +75,10 @@ private[terminal] final class TerminalProviderMenu {
       loginNotice = Some(result match {
         case ProviderLoginService.Result.Saved =>
           "Credentials saved to this profile's private config. Restart required; active agent/runtime unchanged."
+        case ProviderLoginService.Result.Activated =>
+          "Login saved and active on the server. New requests use the new credentials; no restart or reselection needed."
+        case ProviderLoginService.Result.Uncertain =>
+          "Login outcome unknown; the server may still save. Reload providers before manually starting a new login. Nothing was retried."
         case ProviderLoginService.Result.Cancelled => "Profile login cancelled; no credentials saved."
         case ProviderLoginService.Result.TimedOut  => "Profile login timed out; no credentials saved."
         case ProviderLoginService.Result.Failed(_) => "Profile login failed; no credentials saved."
@@ -95,13 +100,13 @@ private[terminal] final class TerminalProviderMenu {
         current.screen match {
           case Screen.Browse(index) =>
             key match {
-              case Input.Up                                     => browse(index - 1)
-              case Input.Down                                   => browse(index + 1)
-              case Input.Text("k")                              => browse(index - 1)
-              case Input.Text("j")                              => browse(index + 1)
-              case Input.Text("r")                              => request(Operation.Refresh)
-              case Input.Enter if index < current.entries.size  => request(Operation.Inspect(current.entries(index).id))
-              case Input.Enter if index == current.entries.size =>
+              case Input.Up                                    => browse(index - 1)
+              case Input.Down                                  => browse(index + 1)
+              case Input.Text("k")                             => browse(index - 1)
+              case Input.Text("j")                             => browse(index + 1)
+              case Input.Text("r")                             => request(Operation.Refresh)
+              case Input.Enter if index < current.entries.size => request(Operation.Inspect(current.entries(index).id))
+              case Input.Enter if !remoteConnection && index == current.entries.size =>
                 current = current.copy(screen = Screen.Types(0), draft = Draft(), notice = None)
               case _ => ()
             }
@@ -149,7 +154,10 @@ private[terminal] final class TerminalProviderMenu {
   }
 
   private def browse(index: Int): Unit =
-    current = current.copy(screen = Screen.Browse(Math.floorMod(index, current.entries.size + 1)), notice = None)
+    current = current.copy(
+      screen = Screen.Browse(Math.floorMod(index, (current.entries.size + (if remoteConnection then 0 else 1)).max(1))),
+      notice = None
+    )
 
   private def back(): Unit = {
     val screen = current.screen match {
@@ -205,7 +213,8 @@ private[terminal] final class TerminalProviderMenu {
         Vector("PROVIDER — configured providers") ++
           (if current.entries.isEmpty then Vector("No configured providers.") else Vector.empty) ++
           choices(
-            current.entries.map(e => s"${display(e.displayId)} [${e.providerType}]") ++ Vector("New provider"),
+            current.entries.map(e => s"${display(e.displayId)} [${e.providerType}]") ++
+              (if remoteConnection then Vector.empty else Vector("New provider")),
             index
           ) ++
           Vector("Up/Down or j/k: select · Enter: open · r: refresh · Esc: NORMAL")
@@ -213,14 +222,15 @@ private[terminal] final class TerminalProviderMenu {
         Vector(
           "PROVIDER configuration",
           s"ID: ${display(entry.displayId)}",
-          s"Type: ${entry.providerType}",
-          s"Endpoint: ${displayEndpoint(entry.endpoint)}",
-          s"Credentials: ${credentialLabel(entry.credentials)}"
-        ) ++ (if entry.providerType == ProviderType.ChatGPT then {
-                val label = if entry.credentials == CredentialStatus.Configured then "Re-login" else "Login"
-                choices(Vector(s"$label (browser)"), index) ++
-                  Vector("Enter or l: browser login")
-              } else Vector.empty) ++ Vector("Esc: provider list")
+          s"Type: ${entry.providerType}"
+        ) ++ (if remoteConnection then Vector.empty else Vector(s"Endpoint: ${displayEndpoint(entry.endpoint)}")) ++
+          Vector(
+            s"Credentials: ${credentialLabel(entry.credentials)}"
+          ) ++ (if entry.providerType == ProviderType.ChatGPT then {
+                  val label = if entry.credentials == CredentialStatus.Configured then "Re-login" else "Login"
+                  choices(Vector(s"$label (browser)"), index) ++
+                    Vector("Enter or l: browser login")
+                } else Vector.empty) ++ Vector("Esc: provider list")
       case Screen.Types(index) =>
         Vector("New provider — choose TYPE") ++ choices(Vector("OAI", "ChatGPT (logged out)"), index) ++ Vector(
           "Up/Down or j/k: select · Enter: choose · Esc: cancel"
@@ -307,6 +317,15 @@ private[terminal] object TerminalProviderMenu {
       case Operation.Refresh            => catalog.list.map(Reply.Listed.apply)
       case Operation.Inspect(id)        => catalog.load(id).map(Reply.Loaded.apply)
       case Operation.Save(id, creation) => catalog.add(id, creation).map(Reply.Saved.apply)
+    }
+  }
+
+  /** Server exposes safe listing only; profile creation is intentionally unavailable on this transport. */
+  def client(service: ConnectedProviderService): Client = new Client {
+    def execute(operation: Operation): IO[Error, Reply] = operation match {
+      case Operation.Refresh     => service.list.map(Reply.Listed.apply)
+      case Operation.Inspect(id) => service.list.map(entries => Reply.Loaded(entries.find(_.id == id)))
+      case Operation.Save(_, _)  => zio.ZIO.fail(Error.InvalidConfig)
     }
   }
 

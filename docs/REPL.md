@@ -48,16 +48,34 @@ A server started without `--config` remains read-only; the client notice/help/co
 An override endpoint must be a `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local
 fallback or automatic reconnect/replay exists. Connection failure exits, including at the default endpoint.
 Connected startup does not load local `yallmo.json`, construct local runtime/tools/providers, or acquire recorder/browser/
-login/transcription/TTS services, **even when prompts are enabled**. `--config`/`--storage` remain server-only;
+OAuth/transcription/TTS services, **even when prompts are enabled**. Negotiated provider login is a WebSocket-only
+adapter with terminal-private input, not client-local OAuth or credential persistence. `--config`/`--storage` remain server-only;
 `--transcriber-agent` fails before connection, including when the default endpoint is used. The existing recorder-free terminal runner is used.
 
 Connected commands: `/help`, `/session list`, `/session resume <id>`, `/history`, `/log <level>`, `/exit`; permitted
 Operators also get **prompts and `/new [name]`**. When `diagnostics.request` is advertised, `/debug request` is also
-available in help/completion. `/tools`, `/debug print|export`, provider catalog/login, voice/TTS, fork and upload
-remain unavailable; no remote capability silently activates a local service. The agent picker chooses a per-client agent
+available in help/completion. Negotiated Operators also get server provider listing/login in the provider picker
+(see [connected controls](CLIENT_CONTROLS.md#connected-repl-keys)). `/tools`, `/debug print|export`, provider creation,
+voice/TTS, fork and upload remain unavailable; no remote capability silently activates a local service. The agent picker chooses a per-client agent
 preference. Use initialize's configured assistant IDs when supplied, not mixed human/presence `agents.list` IDs.
 Server selection validation is independent. Provider/model metadata is unknown and no active local runtime is invented.
 The cached initialization result determines capability; reading it does not issue a second initialize.
+
+### Connected provider login
+
+When all four `providers.*` methods are advertised for an Operator, the provider picker lists existing server profiles
+and offers browser login/re-login in ChatGPT details. No agent selection or chat session is required. Remote provider
+creation and editing forms are not available. [The controls guide](CLIENT_CONTROLS.md#connected-repl-keys) gives the
+key sequence and private callback workflow. Endpoints and tokens are not exposed by remote provider summaries.
+
+The callback never enters chat parsing, buffers or persistent history. The private input guard restores terminal
+settings, draft and cursor, including cancellation/timeout cleanup. The existing socket sends Start, Complete and
+best-effort Cancel requests; the server owns PKCE validation, exchange, private persistence and live activation.
+A successful active result requires no restart or agent reselection; saved-only results explicitly require restart.
+Completion is not subject to the JVM client's short read timeout. Lost replies or abandonment after completion may
+have been sent are **uncertain**, not proof that no credentials were saved. Never retry automatically; reload providers
+before starting again. Start wait loss may leave a pending attempt until replacement, disconnect or server expiry.
+Viewers and older servers retain their existing behavior with no provider widgets or local fallback.
 
 ### `/debug request`
 
@@ -119,8 +137,9 @@ currently enabled commands above are authoritative; there is no CLI local-mode f
 Configure a `ChatGPTAgent` referencing a named `ChatGPT` provider profile and select its agent ID. A logged-out profile
 does not prevent startup; inference requires its literal credentials. Separate profiles never fall back to
 a different profile or a paid platform API. In the line UI, inspect a ChatGPT profile in PROVIDER to
-log in and save credentials privately to that profile's config. Restart is required to use them; login does not
-switch agents or update the running provider snapshot. Token refresh still stays only in memory.
+log in and save credentials privately to that profile's config. This retained **embedded** flow requires restart and
+does not update its running snapshot. The current **connected** picker instead uses server-owned live activation as
+described above; successful active login needs no restart or reselection. Automatic refresh still stays only in memory.
 See [setup and credential limitations](HOW_TO_RUN.md#chatgpt-subscription-profiles).
 
 ## Conversation labels
@@ -162,8 +181,7 @@ requests to the new binding; ordinary conversation messages are preserved. Selec
 inside the picker. Selection is process-local; it does not edit or reload the server config. Empty catalogs
 show setup guidance. Agent creation/deletion is not implemented.
 
-`/login` is not a REPL command: it is treated like any unknown command and excluded from help and Tab completion.
-Login is available only inside the selected ChatGPT provider’s details; there is no global login action.
+Login is scoped to the selected ChatGPT provider’s details in the provider picker.
 The managed catalog is cleared during private authentication input and restored to the same profile's details after
 success, cancellation, timeout or failure, with credential presence reloaded from disk. The exact chat draft/cursor
 remain unchanged; no global credentials are read or modified.
@@ -183,7 +201,7 @@ Select **New provider**, choose a type, and enter an exact, case-sensitive ID:
   endpoint is shown, and the saved profile is logged out. Inspect it to log in, even without a selected agent.
 
 Only **ChatGPT details** offer selectable **Login (browser)** (or **Re-login** when credentials
-are present). OAI details have no login actions; the provider list has no global login entries. Bracketed pastes cannot trigger menu actions. No browser is opened
+are present). OAI details have no login actions. Bracketed pastes cannot trigger menu actions. No browser is opened
 automatically. Paste a browser callback only at the private hidden redirect prompt, never in chat.
 Private-input cancellation controls are listed in the [client controls guide](CLIENT_CONTROLS.md#retained-terminal-audio-and-provider-controls).
 Authentication is timeout bounded.

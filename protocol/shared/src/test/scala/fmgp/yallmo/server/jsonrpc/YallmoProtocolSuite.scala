@@ -17,6 +17,23 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+  test("provider login uses named parameters and exposes no credential fields") {
+    assertWire(ProvidersLoginStart.Params("account"), """{"providerId":"account"}""")
+    assertWire(
+      ProvidersLoginComplete.Params("attempt", "private-callback"),
+      """{"attemptId":"attempt","redirectUrl":"private-callback"}"""
+    )
+    assertWire(ProvidersLoginCancel.Params("attempt"), """{"attemptId":"attempt"}""")
+    assertWire(ProvidersLoginComplete.Result(true), """{"restartRequired":true}""")
+    assertWire(
+      ProviderSummary("account", ProviderKind.ChatGPT, ProviderCredentialStatus.LoggedOut),
+      """{"id":"account","providerType":"ChatGPT","credentials":"logged-out"}"""
+    )
+    assert(!ProvidersLoginComplete.Params("attempt", "private-callback").toString.contains("private-callback"))
+    assert(!ProvidersLoginStart.Result("attempt", "private-url", 1L).toString.contains("private-url"))
+    assert("{}".fromJson[ProvidersLoginComplete.Params].isLeft)
+  }
+
   test("blobs.upload explicit command/result goldens and round trips") {
     val commands: List[(BlobsUpload.Params, String)] = List(
       BlobsUpload.Params.Begin(blobId, 3) -> s"""{"command":"begin","blobId":"${blobId.value}","totalBytes":3}""",

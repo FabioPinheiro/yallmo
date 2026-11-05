@@ -21,9 +21,10 @@ Detached work survives disconnect; Ctrl+C never remotely cancels. A lost reply i
 refresh `/history` (or reconnect/resume the known session) before manual resend. Lost create reply: inspect `/session list`.
 Busy/head conflict preserves state and requires refresh. No automatic retry/replay, status/cancel or exactly-once claim.
 
-No client-local config/storage/runtime/tools/audio/browser/login is initialized, even when prompts are enabled.
+No client-local config/storage/runtime/tools/audio/browser/OAuth is initialized, even when prompts are enabled.
 `/debug request` reads the selected session's latest provider capture when the server advertises diagnostic permission.
-`/tools`, `/debug print|export`, provider catalog/login, voice/TTS and uploads remain unavailable remotely. `--transcriber-agent`
+Negotiated Operators can use the provider picker for server-owned ChatGPT login. `/tools`, `/debug print|export`,
+provider creation, voice/TTS and uploads remain unavailable in the terminal client. `--transcriber-agent`
 is rejected before networking, even without `--server`. `--config`/`--storage` remain server-only; credentials/query/fragment in
 `--server` are rejected. Connection failure exits without local fallback or autodiscovery. Without `--server`, the client connects to
 `ws://127.0.0.1:8080/rpc`; it never starts an embedded application. See [REPL semantics](REPL.md#server-connection).
@@ -46,8 +47,8 @@ The repository-root `yallmo.json`, `yallmo.yaml` and `yallmo.yml` are gitignored
 The file may contain OAuth secrets: do not print or share it. Credential values are literal; `${NAME}` references are not resolved.
 
 `--user-name <id>` is required by the client and sent as claimed human ID `user-<id>`, not authentication.
-The server alone owns tools, providers and durable storage. Provider-login/voice/human-interaction transport remains
-pending; there is no legacy in-process REPL fallback.
+The server alone owns tools, providers and durable storage. Provider listing/login is available in the web harness
+and negotiated connected REPL; terminal provider creation, voice and human-interaction integration remain pending. There is no legacy in-process REPL fallback.
 
 For the [YAML example](examples/yallmo.yaml), format rules, comment-preserving updates and the explicit
 [JSON → YAML migration command](CONFIG_AGENT_PROVIDER.md#explicit-json--yaml-migration), see the configuration guide.
@@ -98,9 +99,15 @@ See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PL
 ## ChatGPT subscription profiles
 
 A configured `ChatGPTAgent` can start logged out, but inference then fails server-side. Profiles use literal private
-credentials in the selected server configuration profile. The client has no provider-login menu or `/login` command;
-provider administration/login transport remains pending. Refreshed credentials currently remain **only in the cached
-server connection's memory**; restarting from stale rotating credentials may require reauthentication.
+credentials in the selected server configuration profile. Open the web harness **Providers** tab (`#/providers`),
+choose **Log in** / **Reconnect login** on an existing ChatGPT profile, approve the OpenAI browser link, and paste the
+full final localhost callback URL into its private field. After **Login saved and active**, new requests use the
+new credentials immediately; **no server restart is needed**. Existing in-flight bindings finish with their previous
+connection. A saved-only fallback explicitly asks for a restart (for example, a profile added outside the running
+configuration snapshot). The connected REPL offers the same server-side login through its provider picker, with
+hidden callback input: see [connected REPL controls](CLIENT_CONTROLS.md#connected-repl-keys). See also [browser login](../web-harness/README.md#providers-and-chatgpt-login).
+Refreshed credentials currently remain **only in the cached server connection's memory**; restarting from stale
+rotating credentials may require reauthentication.
 
 ## Other demos
 

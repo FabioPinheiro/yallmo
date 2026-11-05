@@ -266,6 +266,61 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
+  test("provider administration uses the existing socket and typed login methods") {
+    val h = new Harness()
+    for {
+      _ <- h.initialize()
+      listed = h.client.providers()
+      listRequest <- h.awaitRequest(ProvidersList.method)
+      _ = h.reply(
+        listRequest,
+        Chunk(ProviderSummary("account", ProviderKind.ChatGPT, ProviderCredentialStatus.LoggedOut))
+      )
+      entries <- listed
+      start = h.client.startProviderLogin(ProvidersLoginStart.Params("account"))
+      startRequest <- h.awaitRequest(ProvidersLoginStart.method)
+      _ = assertEquals(
+        decode[ProvidersLoginStart.Params](startRequest.params.toJson),
+        ProvidersLoginStart.Params("account")
+      )
+      _ = h.reply(
+        startRequest,
+        ProvidersLoginStart.Result("attempt", "https://auth.openai.com/oauth/authorize?state=synthetic", 1000L)
+      )
+      attempt <- start
+      complete = h.client.completeProviderLogin(ProvidersLoginComplete.Params(attempt.attemptId, "private-callback"))
+      completeRequest <- h.awaitRequest(ProvidersLoginComplete.method)
+      _ = h.reply(completeRequest, ProvidersLoginComplete.Result(true))
+      result <- complete
+      cancelled = h.client.cancelProviderLogin(ProvidersLoginCancel.Params("attempt"))
+      cancelRequest <- h.awaitRequest(ProvidersLoginCancel.method)
+      _ = h.reply(cancelRequest, Empty())
+      _ <- cancelled
+    } yield {
+      assertEquals(entries.head.id, "account")
+      assert(result.restartRequired)
+      assertEquals(h.sockets.size, 1)
+      h.client.close()
+    }
+  }
+
+  test("token exchange does not use the short read timeout and close never replays it") {
+    val h = new Harness(timeout = 30)
+    for {
+      _ <- h.initialize()
+      completed = h.client.completeProviderLogin(ProvidersLoginComplete.Params("attempt", "private-callback"))
+      _ <- h.awaitRequest(ProvidersLoginComplete.method)
+      _ <- { val p = Promise[Unit](); setTimeout(60)(p.success(())); p.future }
+      _ = assert(!completed.isCompleted)
+      _ = h.client.close()
+      _ <- completed.failed
+      _ <- h.initialize()
+    } yield {
+      assertEquals(h.sent.count(_.method == ProvidersLoginComplete.method), 1)
+      h.client.close()
+    }
+  }
+
   private def decode[A: JsonDecoder](text: String): A = text.fromJson[A].fold(fail(_), identity)
 }
 

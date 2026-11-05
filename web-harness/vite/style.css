@@ -191,3 +191,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .scalamode-page > label, .scalamode-page > div > label { display: grid; gap: .5rem; margin: 1rem 0; }
 .scalamode-page textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
 .scalamode-result { margin-top: 1.5rem; }
+
+/* Provider administration */
+.provider-list { list-style: none; padding: 0; display: grid; gap: 1rem; }
+.provider-card, .provider-login { border: 1px solid var(--border); border-radius: .6rem; padding: 1rem; }
+.provider-card h2 { overflow-wrap: anywhere; }
+.provider-login { margin-top: 1rem; }
+.provider-login label { display: grid; gap: .4rem; margin: 1rem 0; }
+.provider-callback { width: 100%; box-sizing: border-box; }

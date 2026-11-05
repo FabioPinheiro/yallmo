@@ -594,10 +594,16 @@ final class AgentsInvokeSuite extends FunSuite {
       inFlight <- Ref.make(Set.empty[SessionId])
       continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[fmgp.yallmo.model.llm.ProviderContinuation])])
       captures <- Ref.make(VectorMap.empty[SessionId, Path])
+      catalog <- ProviderCatalog.make(Path.of("unused-provider-config.json"))
+      providers <- ProviderAdministration.make(
+        catalog,
+        fmgp.yallmo.provider.openai.OpenAiCodexAuth.oauthFlow(fakeClient(respond))
+      )
       backend = new ServerApplication.Configured(
         runtime,
         assembly,
         Path.of("."),
+        providers,
         scope,
         inFlight,
         continuations,

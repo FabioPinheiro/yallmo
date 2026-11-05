@@ -7,10 +7,11 @@ HTTP serves static assets and upgrade only, not conversation/blob REST endpoints
 
 **Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
 initialized claimed human `userId` enable Operator with `sessions.create`, `turn.submit`, `agents.invoke`,
-`blobs.upload` and `diagnostics.request`,
+`blobs.upload`, `diagnostics.request` and provider catalog/login methods,
 including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
 `clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
-reach the listener (including through a browser or proxy) can claim an author and execute configured agents/tools.
+reach the listener (including through a browser or proxy) can claim an author, execute configured agents/tools,
+and replace provider credentials.
 User names are impersonable metadata/authorship, **not authenticated identities**. Never expose it publicly.
 
 ## Connected terminal prompts or viewer
@@ -32,8 +33,9 @@ Remote provider/model metadata remains unknown; selection is per-client, never a
 Without server `--config`, the same client is a read-only viewer; prompts and `/new` are omitted from help/completions.
 Without client `--server`, the REPL connects to `ws://127.0.0.1:8080/rpc`. It is client-only; connection failure
 never starts a local application.
-`--transcriber-agent` is rejected before networking, with or without an endpoint override. `/tools`, `/debug print|export`, provider catalog/login,
-voice/TTS and attachment upload remain unavailable remotely, even for Operator. See [REPL](../docs/REPL.md).
+`--transcriber-agent` is rejected before networking, with or without an endpoint override. `/tools`, `/debug print|export`,
+provider creation/editing, voice/TTS and attachment upload remain unavailable in the terminal client, even for Operator.
+Negotiated Operators can list providers and log in from the provider picker using the existing WebSocket. See [REPL](../docs/REPL.md).
 
 `/debug request` is enabled only when `diagnostics.request` is negotiated for a trusted-environment Operator. It returns the
 latest actual request capture for the selected session, including failed turns, without inference or client-local file
@@ -44,6 +46,30 @@ over 256 KiB, symlinks and corrupt data without exposing server paths. See [prot
 Initialized human presence is connection-owned and deduplicated. Dynamically registered submitted authors remain for
 runtime/process lifetime after disconnect, independently of viewer cleanup. Configured/supplied ID collisions and
 identity rebinding are rejected; known humans may reconnect. Human labels do not make executable assistants.
+
+## Provider login in the browser
+
+Start with `--config` pointing at your private JSON/YAML configuration, then open the website's **Providers** tab
+(`#/providers`, NORMAL key `p`). Existing providers show their type and credential presence. ChatGPT profiles offer
+**Log in** or **Reconnect login**. Open the OpenAI link, approve access, and paste the full final localhost callback URL
+into the private callback field. The localhost page may fail to load; copy its address anyway. Click **Complete login**,
+then wait for **Login saved and active**. Future requests use the new credentials immediately; no restart or agent
+reselection is needed. Already-running requests keep their previous binding. No model request is needed to log in.
+
+This uses the same application WebSocket and server-owned OAuth/atomic config persistence, not HTTP login endpoints.
+Tokens never return to the browser. Login replaces only the affected runtime provider and lazily rebinds its dependent
+agents, preserving filesystem capabilities and leaving other providers/users untouched. A save-only fallback reports
+`restartRequired: true` if that provider cannot be activated in the startup snapshot (e.g. added externally after
+startup). Saves and activation are serialized so concurrent logins cannot leave disk and runtime out of order.
+This feature does not add profile editing or general configuration reload. Credentials configured
+is not a validity check; automatic refresh during inference remains separate and memory-only. Keep the server private:
+its existing Operator role is a claimed identity, not authentication or a separate administrative authorization boundary.
+See [protocol details](PROTOCOL.md#provider-administration-and-browser-login).
+
+The connected REPL exposes the same server login through its provider picker, using terminal-private hidden callback
+input, not slash commands or local OAuth/config files. See [REPL controls](../docs/CLIENT_CONTROLS.md#connected-repl-keys).
+Both clients honor active versus restart-required results and never retry uncertain login completion. After Complete
+may have been sent, interrupting only abandons the client wait; the server may still save and activate credentials.
 
 ## Independent agent calls
 
@@ -173,7 +199,8 @@ The default endpoint is `ws://127.0.0.1:8080/rpc`; there is no embedded applicat
 It never loads `yallmo.json`, probes tools, constructs providers or acquires local audio/login services.
 `--config`/`--storage` belong to server startup; the REPL rejects them and `--transcriber-agent`.
 Claimed human IDs use `user-<user-name>` and are sufficient authorship for this trusted-environment deployment, not authentication.
-Provider menus/login, voice and interactive human transport remain pending; configured prompts and session/history
+The provider picker exposes server listing and private ChatGPT login when all four provider methods are negotiated;
+provider creation/editing, voice and interactive human transport remain pending. Configured prompts and session/history
 commands use standalone server storage. Existing embedded adapters, audio/voice and debug implementations and their tests are retained for follow-up
 integration; none is entered by the client-only startup path.
 

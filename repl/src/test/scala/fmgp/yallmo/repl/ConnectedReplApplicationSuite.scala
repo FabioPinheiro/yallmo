@@ -118,6 +118,44 @@ final class ConnectedReplApplicationSuite extends FunSuite {
     })
   }
 
+  test("provider login is exposed only with the complete negotiated operator capability set") {
+    val methods =
+      List(ProvidersList.method, ProvidersLoginStart.method, ProvidersLoginComplete.method, ProvidersLoginCancel.method)
+    for (role, advertised) <- List(
+        (Role.Viewer, methods),
+        (Role.Operator, methods.dropRight(1)),
+        (Role.Operator, methods)
+      )
+    do {
+      val client = new Reads {
+        override def capabilities = ZIO.some(
+          Initialize.Result(
+            Version,
+            "test",
+            Identity(user, role),
+            advertised,
+            Nil,
+            MaxBlobChunkBytes,
+            Some(Chunk(agent))
+          )
+        )
+      }
+      run(for {
+        app <- ConnectedReplApplication.make(client, user, Some(agent))
+        next <- app.selectAgent(agent)
+      } yield {
+        val enabled = role == Role.Operator && advertised == methods
+        assertEquals(app.connectedProviders.nonEmpty, enabled)
+        assertEquals(next.providerLoginRunner.nonEmpty, enabled)
+        assertEquals(app.providerCatalog, None)
+        assertEquals(app.providerLogin, None)
+        assertEquals(client.calls, Vector.empty)
+        assertEquals(app.initialState, next.initialState)
+        assertEquals(app.selectedAgentId, next.selectedAgentId)
+      })
+    }
+  }
+
   test("command log thresholds use initial and /log preferences, restore ambient level and survive read failures") {
     run(ZIO.scoped {
       for {

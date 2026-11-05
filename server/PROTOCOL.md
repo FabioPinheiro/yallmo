@@ -8,7 +8,8 @@ The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access.
 DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
 and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
 The browser shares protocol/model sources and uses the same initialization and methods as the REPL. HTTP serves static assets and the WebSocket
-upgrade only; no conversation/blob REST endpoint, login, voice or tool-control API is enabled. Generic binary uploads use JSON-RPC only. Operator-only
+upgrade only; no conversation/blob REST endpoint or dedicated voice/tool-control API is enabled.
+Provider administration and browser OAuth use JSON-RPC on the same WebSocket. Generic binary uploads use JSON-RPC only. Operator-only
 `diagnostics.request` reads existing provider-request captures without executing a turn.
 
 ## Connection and capabilities
@@ -17,7 +18,8 @@ Send `initialize` first. Protocol `1` is independent of JSON-RPC `"2.0"`. Initia
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Operator additionally advertises `sessions.create`, `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`. Notifications are empty.
+Operator additionally advertises `sessions.create`, `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
+`providers.login.cancel`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
 Operator requires a configured backend and a nonempty initialized claimed `userId`, irrespective of Origin or peer
@@ -55,7 +57,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 - **8** nonwaiting connection workers. Saturation closes with **1013**; no unbounded task/semaphore waiter queue.
   Outgoing text/control sends are serialized. Reads on the same socket remain responsive during a blocked turn.
 - JVM client: at most **128** pending requests; correlation by ID, late replies ignored after interruption/deadline.
-  Read/create deadlines default to **15 seconds**; `turn.submit` deliberately has **no read deadline**.
+  Read/create deadlines default to **15 seconds**; `turn.submit` and `providers.login.complete` deliberately have **no read deadline**.
 - Both clients fail pending waits on close/error and never reconnect/replay automatically. A deadline or disconnect
   is a lost local wait, not evidence that server work stopped.
 - JVM transport uses public JDK WebSocket, which sends no Origin by default. It retains strict Unicode/UTF-8 byte
@@ -76,6 +78,10 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
 | `blobs.upload` | Discriminated command (below), no session ID | Discriminated result (below) |
+| `providers.list` | `{}` | `[{id: String, providerType: "OAI" | "ChatGPT", credentials: "not-applicable" | "logged-out" | "configured"}]` |
+| `providers.login.start` | `{providerId: String}` | `{attemptId: String, authorizationUrl: String, expiresAtMillis: Long}` |
+| `providers.login.complete` | `{attemptId: String, redirectUrl: String}` | `{restartRequired: Boolean}` |
+| `providers.login.cancel` | `{attemptId: String}` | `{}` |
 | `diagnostics.request` | `{sessionId: SessionId}` | `{providerRequest?: JsonObject}` |
 | `turn.submit` | `{sessionId: SessionId, agentId: AgentId, task: AgentTask, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
@@ -101,6 +107,56 @@ then ID; session messages are in transcript order.
 `blobs.read`: offset must be nonnegative and no greater than size; maxBytes is 1..65536 decoded bytes. At EOF, data
 is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. Binary frames remain unsupported.
 Normal reads/listing never wait for in-flight uploads; staged bytes are invisible.
+
+## Provider administration and browser login
+
+All four `providers.*` operations require an initialized configured Operator, including listing. This uses the same
+trusted-environment policy as execution, **not an authenticated admin role**. Protect direct and proxied network access;
+anyone able to claim a user can replace provider credentials. Both the browser and connected terminal expose safe
+provider listing and profile-scoped login over the existing socket when these methods are negotiated.
+
+Listing reads the server's current explicit config and returns presence-only summaries; it never tests credentials,
+returns tokens/endpoints, or selects/executes an agent. This first version manages login for existing ChatGPT profiles
+only. Edit the private configuration separately to create profiles. No credentials are read from Pi or Codex files.
+
+Start validates the profile and returns the OpenAI authorization link, an opaque attempt ID and Unix-millisecond
+expiry. PKCE verifier and expected state stay on the server. Attempts belong to the **exact connection**, not the
+claimed name: another same-name connection cannot complete or cancel them. A new Start replaces that connection's
+previous pending attempt. There are at most **64** pending attempts per configured application, expiring after
+**15 minutes**, with scoped periodic cleanup and disconnect cleanup. Capacity exhaustion is Busy.
+
+The user opens OpenAI in their browser and pastes the full final
+`http://localhost:1455/auth/callback?code=...&state=...` URL into the web form or hidden terminal callback prompt. The localhost page may fail to load;
+copy its address anyway. Do not paste it into chat, logs or a shared document. Complete consumes an owned attempt
+before exchanging the code, checks expiry and delegates strict callback/state validation to the existing OAuth flow.
+Failed authorization also consumes the attempt; no mutation is automatically replayed. Callback text is limited to
+**16,384 characters**, attempt IDs to **64**, and Start provider IDs to **1,024**. Unknown, expired, consumed or foreign
+attempts return NotFound; authorization failures return a fixed Rejected error without OAuth error contents.
+
+Cancel is idempotent cleanup of a still-pending owned attempt; it does not cancel an exchange already admitted.
+Authentication is interruptible. After successful authentication, latest-target revalidation and private atomic
+credential persistence and runtime activation finish without interruption. A removed/converted/untrusted profile is never recreated or given
+credentials. Lost replies are uncertain: reload providers before manually starting again. Presence alone does not
+prove that an uncertain reconnect succeeded. Browser and JVM completion waits are not subject to the short read timeout;
+OpenAI exchange itself has the existing 30-second deadline.
+
+Success changes only the selected profile's credentials and preserves other configuration (including YAML comments).
+The standalone configured application then atomically publishes a fresh connection for that runtime profile,
+invalidates its dependent configured agent bindings, and returns `restartRequired: false`. Subsequent lookups share
+the new connection and isolated refresh state; in-flight callers keep their previous connection. Unrelated providers,
+registered users, storage, prompts, model settings and already-rooted filesystem capabilities are unchanged. No
+browser reconnect or agent reselection is required. Disk save and activation share a commit lock so concurrent
+logins publish in the same order. A delayed refresh on a previous connection cannot overwrite the new generation.
+
+A save-only application, or a profile absent/incompatible in the running snapshot (e.g. externally added since
+startup), returns `restartRequired: true`: credentials are durable but the server must restart before using them.
+Clients must not claim live activation in this case. No general config watcher/reload, logout or token export is
+added. Automatic token refresh during inference is separate, remains in memory only, and may rotate the refresh
+token; never assume the disk credentials are still usable after a later server restart.
+
+TRACE redacts login request params and OAuth response fields, including batches and escaped field names. Tokens never
+appear in protocol results. The web UI holds callback text only in transient memory, clears it on submit/tab exit,
+and never writes it to browser storage. Use HTTPS/WSS or a secure tunnel for access beyond a trusted local machine.
 
 ## Generic binary upload
 
@@ -326,7 +382,8 @@ receive no reply. Connection overload is a close, not a run-capacity/ledger API.
 Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
 `TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.
 They are not advertised, prerequisites for active submission, implemented controls or a promised roadmap.
-Provider/login/voice/human-interaction transport and public authentication remain separate pending work.
+Provider creation/editing, voice/human-interaction integration and public authentication remain separate pending work.
+Provider listing/login is implemented over the existing WebSocket for browser and terminal clients.
 
 ## Validation
 

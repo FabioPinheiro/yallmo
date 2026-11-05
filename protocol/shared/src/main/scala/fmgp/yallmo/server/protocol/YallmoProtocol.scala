@@ -134,6 +134,54 @@ object YallmoProtocol {
     type Result = Chunk[AgentId]
   }
 
+  enum ProviderKind derives JsonCodec {
+    case OAI, ChatGPT
+  }
+
+  /** Presence only; configured credentials may be expired or revoked. No secrets or endpoints are exposed. */
+  enum ProviderCredentialStatus derives JsonCodec {
+    @jsonHint("not-applicable") case NotApplicable
+    @jsonHint("logged-out") case LoggedOut
+    @jsonHint("configured") case Configured
+  }
+
+  final case class ProviderSummary(
+      id: String,
+      providerType: ProviderKind,
+      credentials: ProviderCredentialStatus
+  ) derives JsonCodec
+
+  object ProvidersList {
+    val method: String = "providers.list"
+    type Params = Empty
+    type Result = Chunk[ProviderSummary]
+  }
+
+  object ProvidersLoginStart {
+    val method: String = "providers.login.start"
+    final case class Params(providerId: String) derives JsonCodec
+    final case class Result(attemptId: String, authorizationUrl: String, expiresAtMillis: Long) derives JsonCodec {
+      override def toString: String = "ProviderLoginStarted(<redacted>)"
+    }
+  }
+
+  object ProvidersLoginComplete {
+    val method: String = "providers.login.complete"
+    val MaxRedirectChars: Int = 16384
+    final case class Params(attemptId: String, redirectUrl: String) derives JsonCodec {
+      override def toString: String = "ProviderLoginComplete(<redacted>)"
+    }
+
+    /** False means privately saved and active for future runtime requests; true means saved only, requiring restart. */
+    final case class Result(restartRequired: Boolean) derives JsonCodec
+  }
+
+  object ProvidersLoginCancel {
+    val method: String = "providers.login.cancel"
+    final case class Params(attemptId: String) derives JsonCodec
+    type Result = Empty
+  }
+
   object AgentsInvoke {
     val method: String = "agents.invoke"
 

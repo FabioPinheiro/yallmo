@@ -5,7 +5,7 @@ import fmgp.yallmo.fs.{FileSystem, FsRead}
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
 import fmgp.yallmo.model.llm.LlmProvider
 import fmgp.yallmo.model.som.SOMProvider
-import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{AgentConfig, Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.oai.{OAIAgent, OAIConfig, OAILlmProvider}
 import fmgp.yallmo.provider.openai.{ChatGPTAgent, OpenAiCodexClient}
 import zio.*
@@ -13,7 +13,7 @@ import zio.http.Client
 
 import java.nio.file.Path
 
-/** Owns lazy runtime instances for one immutable configuration snapshot.
+/** Owns lazy runtime instances for one configuration snapshot with explicit ChatGPT credential replacement.
   *
   * Successful lookups are cached and concurrent initialization is serialized. Already-created agents retain their
   * identity and environment requirements; configured agents have their dependencies bound at initialization. Neither
@@ -22,7 +22,9 @@ import java.nio.file.Path
   * not cached.
   *
   * The captured HTTP client must outlive this registry. Reusing a Config with a new registry creates independent
-  * caches; changing configuration does not mutate existing instances. ChatGPT refresh stays in connection-local memory.
+  * caches; arbitrary configuration edits do not mutate existing instances. Explicit credential replacement publishes a
+  * new connection for future lookups; callers already holding an agent/provider retain the previous generation.
+  * Automatic ChatGPT refresh stays in connection-local memory.
   *
   * @tparam R
   *   per-turn environment required by caller-supplied agents; configured agents require no extra services
@@ -46,7 +48,13 @@ final class RuntimeInstances[-R] private (
   /** Environment-bound agents constructed lazily from config.agents; supplied agents retain R in registeredAgents. */
   private var initializedAgents = Map.empty[AgentId, (Agent[Any], Option[FsRead])]
 
-  /** Connections constructed lazily from config.providers and shared by agents referencing the same provider ID. */
+  /** Only explicit credential replacement changes these definitions; other configuration remains a snapshot. */
+  private var providerDefinitions = config.providers
+
+  /** Preserve rooted capabilities when dependent agents are rebound after login; never re-resolve their roots. */
+  private var initializedFilesystems = Map.empty[AgentId, FileSystem]
+
+  /** Connections constructed lazily from provider definitions and shared by agents referencing the same provider ID. */
   private var initializedProviders = Map.empty[ProviderId, LlmProvider | SOMProvider]
 
   /** Trusted user identities retained for this registry's lifetime, independently of connection presence. */
@@ -96,6 +104,31 @@ final class RuntimeInstances[-R] private (
     */
   def getProvider(id: ProviderId): IO[YallmoError, LlmProvider | SOMProvider] =
     initializationLock.withPermit(getProviderNow(id))
+
+  /** Publishes a fresh ChatGPT connection and invalidates only its configured dependent agents. No network request,
+    * config-file read/write, model-setting reload or filesystem reopening occurs. Existing in-flight bindings retain
+    * their previous connection; all subsequent lookups share the replacement and its own serialized refresh state.
+    * Invalid credentials, missing profiles and non-ChatGPT/untrusted definitions leave all runtime state unchanged.
+    */
+  def updateChatGptCredentials(id: ProviderId, credentials: OAuthCredentialsConfig): IO[YallmoError, Unit] =
+    initializationLock.withPermit {
+      for {
+        definition <- ZIO.suspendSucceed {
+          providerDefinitions.get(id) match {
+            case Some(value: ProviderConfig.ChatGPT) => ZIO.succeed(value.copy(credentials = Some(credentials)))
+            case _ => ZIO.fail(YallmoError.InvalidConfig("Live login requires an existing ChatGPT runtime profile"))
+          }
+        }
+        replacement <- initializeProvider(definition)
+        _ <- ZIO.succeed {
+          providerDefinitions = providerDefinitions.updated(id, definition)
+          initializedProviders = initializedProviders.updated(id, replacement)
+          initializedAgents = initializedAgents.filterNot { case (agentId, _) =>
+            config.agents.get(agentId).exists(_.providerIds.contains(id))
+          }
+        }
+      } yield ()
+    }
 
   /** Returns a supplied or cached agent; otherwise initializes the configured agent lazily.
     *
@@ -155,7 +188,7 @@ final class RuntimeInstances[-R] private (
         case None           =>
           for {
             definition <- ZIO
-              .fromOption(config.providers.get(id))
+              .fromOption(providerDefinitions.get(id))
               .orElseFail(
                 YallmoError.InvalidConfig(s"No provider is configured with id '${ProviderId.value(id)}'")
               )
@@ -245,6 +278,17 @@ final class RuntimeInstances[-R] private (
     }
 
   private def openAgentFileSystem(id: AgentId, definition: AgentConfig): IO[YallmoError, FileSystem] =
+    ZIO.suspendSucceed {
+      initializedFilesystems.get(id) match {
+        case Some(fs) => ZIO.succeed(fs)
+        case None     =>
+          openAgentFileSystemNow(id, definition).tap(fs =>
+            ZIO.succeed { initializedFilesystems = initializedFilesystems.updated(id, fs) }
+          )
+      }
+    }
+
+  private def openAgentFileSystemNow(id: AgentId, definition: AgentConfig): IO[YallmoError, FileSystem] =
     for {
       settings <- ZIO
         .fromOption(definition.filesystem)
@@ -271,7 +315,7 @@ final class RuntimeInstances[-R] private (
   ): IO[YallmoError, LlmProvider | SOMProvider] =
     definition.providerIds.toList match {
       case id :: Nil =>
-        config.providers.get(id) match {
+        providerDefinitions.get(id) match {
           case Some(_: ProviderConfig.OAI) if expectedType != "OAI" =>
             ZIO.fail(YallmoError.InvalidConfig("ChatGPTAgent requires a ChatGPT provider"))
           case Some(_: ProviderConfig.ChatGPT) if expectedType != "ChatGPT" =>

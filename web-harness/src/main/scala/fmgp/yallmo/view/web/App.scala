@@ -35,6 +35,12 @@ object App {
     val speech = new MessageSpeech(MessageSpeech.browserPlayback, notifications.publish)
     val disconnected = new EventBus[Throwable]
     val client = new OrchestratorWSClient(OrchestratorWSClient.defaultEndpoint, onDisconnect = disconnected.emit)
+    val providers = new ProvidersModel(
+      () => client.providers(),
+      client.startProviderLogin,
+      client.completeProviderLogin,
+      client.cancelProviderLogin
+    )
     val chat = new ChatModel(client, notifications.publish)
     val selectedAgent = chat.state.signal.map(_.current.agent).distinct
     val scalamode = new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent)
@@ -56,6 +62,7 @@ object App {
     var mounted = false
     def close(): Unit = {
       voice.disable()
+      providers.disable()
       scalamode.disable()
       intentionalClose = true
       client.close()
@@ -66,7 +73,7 @@ object App {
       if requestedUser.nonEmpty && !connecting
           .now() && chat.state.now().pending.isEmpty && !chat.state.now().creating && !chat.state
           .now()
-          .voiceBusy && !scalamode.state.now().pending
+          .voiceBusy && !scalamode.state.now().pending && !providers.state.now().busy
       then {
         connecting.set(true)
         connection.set("Connecting…")
@@ -81,6 +88,7 @@ object App {
             chat.configure(info)
             scalamode.configure(info)
             voice.configure(info)
+            providers.configure(info)
             chat.reload()
             refresh.emit(())
             connection.set(if OrchestratorWSClient.canChat(info) then
@@ -90,6 +98,7 @@ object App {
             connecting.set(false)
             voice.disable()
             chat.disable()
+            providers.disable()
             scalamode.disable()
             connection.set(s"Disconnected: ${error.getMessage}")
             notifications.publish(UiNotice(s"Connection failed: ${error.getMessage}", "error"))
@@ -171,6 +180,7 @@ object App {
         if mounted && !intentionalClose then {
           voice.disable()
           chat.disable()
+          providers.disable()
           scalamode.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
           if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
@@ -240,11 +250,11 @@ object App {
             "Reconnect",
             idAttr := "reconnect",
             disabled <-- humanName.signal
-              .combineWith(connecting.signal, chat.state.signal, scalamode.state.signal)
-              .map { case (name, busy, state, scalaState) =>
+              .combineWith(connecting.signal, chat.state.signal, scalamode.state.signal, providers.state.signal)
+              .map { case (name, busy, state, scalaState, providerState) =>
                 OrchestratorWSClient
                   .claimedUser(name)
-                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy || scalaState.pending
+                  .isEmpty || busy || state.pending.nonEmpty || state.creating || state.voiceBusy || scalaState.pending || providerState.busy
               },
             title <-- humanName.signal.map(name =>
               if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
@@ -263,6 +273,7 @@ object App {
             child <-- route.signal.distinct.map {
               case ViewRoute.Chat         => ChatView(chat, client, speech, voice)
               case ViewRoute.Scalamode    => ScalamodeView(scalamode, selectedAgent)
+              case ViewRoute.Providers    => ProvidersView(providers, refreshes)
               case ViewRoute.Sessions(id) => sessionPage(id, refreshes, client, speech)
               case ViewRoute.Messages     =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>

@@ -28,7 +28,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val terminal = new DumbTerminal(new ByteArrayInputStream((redirect + "\n/help\n").getBytes(UTF_8)), output)
     val history = Files.createTempFile("yallmo-login-history-", ".txt")
     val reader = LineReaderBuilder.builder().terminal(terminal).variable(LineReader.HISTORY_FILE, history).build()
-    reader.getHistory.add("/login")
+    reader.getHistory.add("/help")
     reader.getBuffer.write("pending draft")
     reader.getBuffer.cursor(3)
     reader.setVariable(LineReader.DISABLE_HISTORY, false)
@@ -448,8 +448,8 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     } finally terminal.close()
   }
 
-  test("the terminal client handles help, rejects legacy login, and exits without invoking auth or an agent") {
-    val commands = List("/help", "/login", "/login browser", "/exit")
+  test("the terminal client handles help, rejects unknown commands, and exits without invoking an agent") {
+    val commands = List("/help", "/unknown", "/exit")
     val output = new ByteArrayOutputStream()
     val terminal = new DumbTerminal(
       "test",
@@ -497,7 +497,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     }
   }
 
-  test("line PROVIDER list cannot invoke legacy login and restores the exact draft") {
+  test("line PROVIDER list ignores detail-only actions and restores the exact draft") {
     val input = "idraft\u001bhpld\u001baiX\n/exit\n"
     val output = new ByteArrayOutputStream()
     val terminal = new DumbTerminal("test", "xterm", new ByteArrayInputStream(input.getBytes(UTF_8)), output, UTF_8)
@@ -593,7 +593,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       def turn(
           request: fmgp.yallmo.model.llm.AgentTurnRequest
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
-        ZIO.dieMessage("Agent must not run for login commands")
+        ZIO.dieMessage("Agent must not run during provider authentication")
     }
     val user = new Agent[Any] {
       val id = AgentId("user")

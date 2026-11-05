@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
@@ -38,6 +39,7 @@ object ServerApplication {
       val runtime: ApplicationRuntime,
       val assembly: ApplicationRuntime.Assembly[Any],
       val workspace: Path,
+      val providers: ProviderAdministration,
       scope: Scope,
       inFlight: Ref[Set[SessionId]],
       continuations: Ref[Map[SessionId, (AgentId, Set[ProviderContinuation])]],
@@ -353,9 +355,19 @@ object ServerApplication {
             inFlight <- Ref.make(Set.empty[SessionId])
             continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[ProviderContinuation])])
             captures <- Ref.make(VectorMap.empty[SessionId, Path])
+            catalog <- ProviderCatalog.make(path)
+            client <- ZIO.service[Client]
+            providers <- ProviderAdministration.make(
+              catalog,
+              OpenAiCodexAuth.oauthFlow(client),
+              (id, credentials) =>
+                runtime.instances.updateChatGptCredentials(id, credentials).fold(_ => false, _ => true)
+            )
           } yield new ServerApplication(
             assembly.orchestrator,
-            Some(new Configured(runtime, assembly, selectedWorkspace, scope, inFlight, continuations, captures))
+            Some(
+              new Configured(runtime, assembly, selectedWorkspace, providers, scope, inFlight, continuations, captures)
+            )
           )
       }
     } yield application

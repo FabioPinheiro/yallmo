@@ -97,7 +97,7 @@ server over JSON-RPC/WebSocket. ClientHarness is independent of the server, prot
 Remaining work:
 - 
 - Add remote /tools and richer agent information.
-- Migrate provider administration/login, voice execution, human interactions and diagnostics.
+- Migrate remaining provider creation/editing, voice execution, human interactions and diagnostics. Provider listing/login is available in the web harness and connected REPL.
 - Perform a real-provider, separate-process smoke test.
 - Retire local compatibility code only after deciding feature parity.
 - Authentication, cancellation/status APIs and richer run-management machinery.

@@ -11,6 +11,7 @@ enum ViewRoute(val title: String) {
   case Agents extends ViewRoute("Agents")
   case Blobs extends ViewRoute("Blobs")
   case Scalamode extends ViewRoute("Scalamode")
+  case Providers extends ViewRoute("Providers")
 
   def command: ControlAction = this match {
     case Sessions(_) => ControlAction.Sessions
@@ -20,6 +21,7 @@ enum ViewRoute(val title: String) {
     case Agents      => ControlAction.AgentRegistry
     case Blobs       => ControlAction.Blobs
     case Scalamode   => ControlAction.Scalamode
+    case Providers   => ControlAction.Providers
   }
 
   def href: String = this match {
@@ -31,6 +33,7 @@ enum ViewRoute(val title: String) {
     case Agents             => "#/agents"
     case Blobs              => "#/blobs"
     case Scalamode          => "#/scalamode"
+    case Providers          => "#/providers"
   }
 }
 
@@ -43,7 +46,8 @@ object ViewRoute {
       ViewRoute.Graph,
       ViewRoute.Agents,
       ViewRoute.Blobs,
-      ViewRoute.Scalamode
+      ViewRoute.Scalamode,
+      ViewRoute.Providers
     )
 
   def parse(hash: String): ViewRoute = hash match {
@@ -53,6 +57,7 @@ object ViewRoute {
     case "#/agents"    => ViewRoute.Agents
     case "#/blobs"     => ViewRoute.Blobs
     case "#/scalamode" => ViewRoute.Scalamode
+    case "#/providers" => ViewRoute.Providers
     case _             => ViewRoute.Sessions(SessionRoute.parse(hash))
   }
 }

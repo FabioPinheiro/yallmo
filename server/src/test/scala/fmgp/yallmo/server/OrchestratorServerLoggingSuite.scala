@@ -129,6 +129,16 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     ).foreach { payload => assert(!RpcWire.tracePayload(payload).contains("PRIVATE_BINARY")) }
   }
 
+  test("TRACE redacts OAuth URLs, attempt IDs and tokens in batches and escaped keys") {
+    List(
+      """[{"params":{"redirectUrl":"PRIVATE_OAUTH"}},{"result":{"authorizationUrl":"PRIVATE_OAUTH","attemptId":"PRIVATE_OAUTH"}}]""",
+      """{"params":{"redirect\u0055rl":"PRIVATE_OAUTH"}}""",
+      """{"accessToken":"PRIVATE_OAUTH","refreshToken":"PRIVATE_OAUTH","codeVerifier":"PRIVATE_OAUTH"}""",
+      """{"method":"providers.login.complete","params":{"wrongField":"PRIVATE_OAUTH"}}""",
+      """{"params":{"redirectUrl":"PRIVATE_OAUTH""""
+    ).foreach(payload => assert(!RpcWire.tracePayload(payload).contains("PRIVATE_OAUTH")))
+  }
+
   test("missing session messages log the original storage cause while RPC replies remain sanitized") {
     val logs = new CopyOnWriteArrayList[String]()
     val capture = ZLogger.default.map(line => { logs.add(line); () })

@@ -18,12 +18,26 @@ private[server] object RpcWire {
 
   def parse(input: String): Either[String, Json] = JsonRpc.parseDocument(input)
 
-  /** Never log binary base64, even in batches, responses, or malformed requests. */
+  /** Never log binary base64 or OAuth material, even in batches, responses, or malformed requests. */
   def tracePayload(input: String): String = {
     def redact(value: Json): Json = value match {
       case Json.Obj(fields) =>
+        val login = fields.exists {
+          case ("method", Json.Str(method)) => method.startsWith("providers.login.")
+          case _                            => false
+        }
         Json.Obj(fields.map { case (key, item) =>
-          (key, if key == "dataBase64" then Json.Str("<redacted>") else redact(item))
+          val sensitive = Set(
+            "dataBase64",
+            "redirectUrl",
+            "authorizationUrl",
+            "attemptId",
+            "accessToken",
+            "refreshToken",
+            "codeVerifier"
+          ).contains(key) ||
+            (login && key == "params")
+          (key, if sensitive then Json.Str("<redacted>") else redact(item))
         })
       case Json.Arr(values) => Json.Arr(values.map(redact))
       case other            => other

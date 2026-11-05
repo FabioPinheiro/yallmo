@@ -14,6 +14,8 @@ trait ReplApplicationApi[R] {
   def agentChoices: Vector[ReplAgentChoice]
   def providerCatalog: Option[ProviderCatalog]
   def providerLogin: Option[ProviderLoginService]
+  def connectedProviders: Option[ConnectedProviderService] = None
+  def providerLoginRunner: Option[ProviderLoginService.Login] = providerLogin
   def transcriber: Option[Transcriber]
   def remoteConnection: Boolean = false
   def canSubmit: Boolean = true

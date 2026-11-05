@@ -104,7 +104,7 @@ final class TerminalMenusSuite extends FunSuite {
       }
   }
 
-  test("unavailable provider menu cannot dispatch global login or alter the draft and history") {
+  test("unavailable provider menu cannot dispatch actions or alter the draft and history") {
     withMenus("draft\u001bhpld\n\u001baiX\n") { (reader, output) =>
       assertEquals(reader.readLine("test> "), "draXft")
       assertEquals(reader.getHistory.size(), 1)

@@ -46,7 +46,10 @@ private[server] final class OrchestratorRpc(
         }
         .as(((), ConnectionState.Closed))
         .tap(_ =>
-          connection.uploads.getAndSet(Map.empty).flatMap(uploads => ZIO.foreachDiscard(uploads.values)(_.abort.ignore))
+          connection.uploads
+            .getAndSet(Map.empty)
+            .flatMap(uploads => ZIO.foreachDiscard(uploads.values)(_.abort.ignore)) *>
+            ZIO.foreachDiscard(configured)(_.providers.disconnect(connection.id))
         )
     }.uninterruptible
   private val methods = List(
@@ -146,7 +149,11 @@ private[server] final class OrchestratorRpc(
                     TurnSubmit.method,
                     DiagnosticsRequest.method,
                     BlobsUpload.method,
-                    AgentsInvoke.method
+                    AgentsInvoke.method,
+                    ProvidersList.method,
+                    ProvidersLoginStart.method,
+                    ProvidersLoginComplete.method,
+                    ProvidersLoginCancel.method
                   )
                 else methods,
                 Nil,
@@ -226,6 +233,34 @@ private[server] final class OrchestratorRpc(
               request <- decode[AgentsInvoke.Params](params)
               response <- configured.get.invoke(author, request.agentId, request.input)
               result <- encode(response)
+            } yield result
+          case ProvidersList.method if configured.nonEmpty =>
+            operator(state) *> decode[Empty](params) *> configured.get.providers.list.flatMap(encode(_))
+          case ProvidersLoginStart.method if configured.nonEmpty =>
+            // Start admission shares the connection lock with disconnect, so no pending secret can outlive closure.
+            connection.state.modifyZIO { current =>
+              (for {
+                _ <- operator(current)
+                request <- decode[ProvidersLoginStart.Params](params)
+                _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(request.providerId.length <= 1024)
+                started <- configured.get.providers.start(connection.id, request.providerId)
+                result <- encode(started)
+              } yield (result, current))
+            }
+          case ProvidersLoginComplete.method if configured.nonEmpty =>
+            for {
+              _ <- operator(state)
+              request <- decode[ProvidersLoginComplete.Params](params)
+              completed <- configured.get.providers.complete(connection.id, request)
+              result <- encode(completed)
+            } yield result
+          case ProvidersLoginCancel.method if configured.nonEmpty =>
+            for {
+              _ <- operator(state)
+              request <- decode[ProvidersLoginCancel.Params](params)
+              _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(request.attemptId.length <= 64)
+              cancelled <- configured.get.providers.cancel(connection.id, request.attemptId)
+              result <- encode(cancelled)
             } yield result
           case DiagnosticsRequest.method if configured.nonEmpty =>
             for {

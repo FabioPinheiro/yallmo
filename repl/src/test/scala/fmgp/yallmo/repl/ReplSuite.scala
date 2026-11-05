@@ -75,22 +75,6 @@ final class ReplSuite extends FunSuite {
     )
   }
 
-  test("shared command grammar treats login as unknown and excludes it from help, completion and suggestions") {
-    for command <- List("/login", "/login ", "/login browser", "/login invalid") do {
-      val error = ReplGrammar.parse(command).swap.toOption.get
-      assertEquals(error.message, "Unknown command: /login")
-      assert(error.suggestions.isEmpty)
-      assert(ReplGrammar.complete(CompletionRequest(command, command.length)).candidates.isEmpty)
-    }
-    assert(!ReplGrammar.help().exists(_.usage.startsWith("/login")))
-    assert(!ReplGrammar.complete(CompletionRequest("/", 1)).candidates.exists(_.value == "/login"))
-    assert(!ReplGrammar.parse("/lo").swap.toOption.get.suggestions.exists(_.value == "/login"))
-    ReplGrammar.parse("//login") match {
-      case Right(ReplInput.Prompt(prompt)) => assertEquals(prompt.value, "/login")
-      case other                           => fail(s"Expected a literal prompt, got $other")
-    }
-  }
-
   test("line terminal exits only after consecutive Ctrl+C interrupts") {
     assert(!TerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = false))
     assert(TerminalRepl.shouldExitAfterInterrupt(previousReadWasInterrupt = true))
@@ -127,14 +111,6 @@ final class ReplSuite extends FunSuite {
       runContext = RunContext(messages = Chunk(Message.User("keep transcript"))),
       lastProviderRequest = Some(Path.of("keep-request.json"))
     )
-    for command <- List("/login", "/login browser") do {
-      val rejected = runZIO(application.submit(existing, command))
-      assertEquals(rejected.state, existing)
-      assertEquals(
-        rejected.events.collect { case ReplEvent.InputRejected(error) => error.message },
-        Chunk("Unknown command: /login")
-      )
-    }
     assertEquals(
       runZIO(application.submit(existing, "/session list")).events,
       Chunk(ReplEvent.SessionList(Chunk.empty, existing.sessionId))

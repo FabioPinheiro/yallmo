@@ -159,8 +159,6 @@ final class ReplStartupSuite extends FunSuite {
     )
     assert(submit(application, before, "/help").events.exists(_.isInstanceOf[ReplEvent.Help]))
     assert(submit(application, before, "/tools").events.exists(_.isInstanceOf[ReplEvent.ToolAvailability]))
-    val login = submit(application, before, "/login")
-    assert(login.events.exists(_.isInstanceOf[ReplEvent.InputRejected]))
     val created = submit(application, before, "/new notes")
     assertEquals(created.state.sessionId, Some("notes"))
   }
@@ -758,7 +756,7 @@ final class ReplStartupSuite extends FunSuite {
     }
   }
 
-  scopedTest("a logged-out ChatGPT agent starts but cannot infer or invoke global login") {
+  scopedTest("a logged-out ChatGPT agent starts but cannot infer") {
     val current = startup(config, options.copy(agentId = Some(eve)))
     val application = run(current.application)
     assertEquals(application.activeAgent.map(_.agentId), Some("eve"))
@@ -769,6 +767,5 @@ final class ReplStartupSuite extends FunSuite {
     val resumed = submit(application, before, s"/session resume ${failed.state.sessionId.get}")
     assertEquals(resumed.state.runContext.messages, failed.state.runContext.messages)
     assert(failed.events.collect { case ReplEvent.AgentFailed(message) => message }.exists(_.contains("logged out")))
-    assert(submit(application, before, "/login browser").events.exists(_.isInstanceOf[ReplEvent.InputRejected]))
   }
 }

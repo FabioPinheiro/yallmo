@@ -36,8 +36,21 @@ all messages, a small CSS conversation tree,
 registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
-invalid JSON falls back to plain text. Long text starts collapsed in native details elements. Graph nodes expand to
+invalid JSON falls back to literal text. Long text starts collapsed in native details elements. Graph nodes expand to
 the same message cards, including tool results and attachment links.
+
+## Shared Markdown and code blocks
+
+SDLC descriptions/steps and all message cards (Chat, pending prompts, Sessions, All messages and Graph) share the
+sanitized Markdown renderer. Fenced `scala` blocks use highlight.js with only the Scala grammar bundled, in the shared
+dark palette. Language tags are case-insensitive; unknown/unlabeled languages and Scala blocks over 50,000 characters
+remain readable plain code. Inline code stays inline. Fenced `mermaid` blocks retain diagram rendering and source access
+on these routes too.
+
+Tool call JSON stays pretty-printed and literal. Decoded tool-result blocks and Scalamode output/logs preserve whitespace
+and literal Markdown outside top-level fenced blocks, while supporting Scala highlighting and Mermaid inside fences.
+Raw HTML is never executed, Markdown image URLs never load, and code text remains selectable. Metadata, Read speech,
+attachment controls, stored content and SDLC Copy Markdown/Raw JSON exports are unchanged.
 
 One application-root WebSocket is shared across tabs, initialized on mount and closed on unmount/unload. Reconnect
 explicitly reconnects after a disconnect; failed queries are not replayed automatically. Attachment downloads validate
@@ -97,9 +110,24 @@ steps (or the intent narrative). Clipboard denial/unavailability produces a visi
 Markdown-source disclosure. Raw JSON retains all metadata and unknown fields.
 
 Markdown is parsed with Marked and sanitized with DOMPurify through a mount-owned Vite/Scala.js bridge. Raw HTML is
-shown literally, embedded images never load, and only inert formatting/table/link elements are allowed. Link URLs are
+shown literally, Markdown image URLs never load, and only inert formatting/table/link elements are allowed. Link URLs are
 restricted to HTTP(S)/mailto (including relative HTTP(S) URLs), with `noopener noreferrer` in a new tab. A missing/failed
-bridge falls back to plain text, never unsanitized HTML. Other application views retain their existing text-only policy.
+bridge falls back to plain text, never unsanitized HTML. The same bridge is used by message cards throughout the app.
+
+Fenced `scala` blocks in task/intent narratives and step descriptions receive syntax highlighting.
+Fenced `mermaid` blocks render as diagrams, as they do in shared message cards. Mermaid is bundled locally
+and lazy-loaded only when needed, with strict security and HTML labels disabled. Generated SVG is sanitized and shown
+as an inert data-URL image, never inserted as live SVG; callbacks and clickable diagram links are not enabled. Each
+diagram uses the shared dark palette and has a **Diagram source** disclosure; Copy Markdown/Raw JSON preserve the
+original editable source. SVG viewBox dimensions define the intrinsic size, so small/narrow diagrams never stretch to
+fill the card. Previews fit the available width and at most `min(24rem, 55vh)` in height, preserving aspect ratio.
+**Expand diagram** removes the preview height cap; **Fit diagram** restores it. These controls apply to message cards too.
+Invalid/unsupported diagrams or loading failures show a notice and the original code. Application-controlled rendering
+rejects Mermaid configuration directives/frontmatter, raw HTML, image/icon nodes, custom CSS (`classDef`, `style`,
+`linkStyle`), backslash escapes, and sources over 50,000 characters; the renderer also limits edges to 500. These
+resource-bearing features remain source-only so even temporary rendering cannot fetch user-specified images/fonts.
+Raw HTML/SVG fences and other code languages remain escaped code, not executable previews. Unmount cancels late
+updates and removes temporary rendering containers when pending work finishes.
 
 Each section has independent loading, empty, filtered-empty, and error states. **Refresh** (or NORMAL `r`) reloads both
 sections once; there is no polling or automatic retry. Late responses from older refreshes or an unmounted page are

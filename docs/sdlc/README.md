@@ -210,6 +210,33 @@ included. Relationship buttons reveal and focus their target, including archived
 records. Tasks and intents have independent loading, empty, and error states and
 a manual refresh. The page is read-only: checklists do not update storage.
 
+Fenced `scala` blocks in narratives and step descriptions receive syntax
+highlighting using the shared renderer also used by Chat and other message
+cards. Unknown/unlabeled languages and Scala blocks over 50,000 characters
+remain plain code. Fenced `mermaid` blocks render as diagrams,
+with a **Diagram source** disclosure. Diagrams match the application's dark
+palette, preserve their intrinsic scale, and fit within the card width and a
+compact height cap. **Expand diagram** removes that cap; **Fit diagram** restores
+it. Copy Markdown and Raw JSON retain the original source for agent editing. For example:
+
+````markdown
+```mermaid
+flowchart LR
+    request[User request] --> proposal[Agent proposal]
+    proposal --> review{Approved?}
+    review -->|Yes| execute[Execute task]
+    review -->|No| proposal
+```
+````
+
+Rendering is local and lazy-loaded, with strict security, HTML labels disabled,
+and sanitized SVG displayed only as an inert image. Diagram links/callbacks are
+not enabled. Invalid diagrams, configuration directives/frontmatter, raw HTML,
+image/icon nodes, custom CSS (`classDef`, `style`, `linkStyle`), backslash escapes,
+oversized sources (>50,000 characters), or library failures fall back to readable
+source. Resource-bearing features are excluded before temporary rendering;
+Mermaid also limits edges to 500. Other code fences remain literal code.
+
 The page reads same-origin HTTP endpoints, never WebSocket/RPC data:
 
 - `GET /api/sdlc/tasks` returns all current full `PlanTask` objects.

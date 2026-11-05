@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { createMarkdownRenderer } from "./markdown.js";
 
-function render(source) {
+function render(source, options) {
   const dom = new JSDOM("<!doctype html>", { url: "https://example.test/#/sdlc" });
-  const fragment = createMarkdownRenderer(dom.window)(source);
+  const fragment = createMarkdownRenderer(dom.window, options)(source);
   const container = dom.window.document.createElement("div");
   container.appendChild(fragment);
   return container;
@@ -52,4 +52,79 @@ test("code contents are text, not markup", () => {
   const body = render('```html\n<img src=x onerror=alert(1)>\n```');
   assert.equal(body.querySelector("img"), null);
   assert.match(body.querySelector("pre code").textContent, /<img src=x onerror=alert\(1\)>/);
+});
+
+test("Scala fences highlight keywords, strings and numbers without changing code text", () => {
+  const source = 'case class Task(id: String, done: Boolean)\n\nval message = "hello"\nval count = 42';
+  const body = render('```scala\n' + source + '\n```');
+  const code = body.querySelector("code.hljs.language-scala");
+  assert.equal(code.textContent, source + "\n");
+  assert.ok(code.querySelector(".hljs-keyword"));
+  assert.ok(code.querySelector(".hljs-string"));
+  assert.ok(code.querySelector(".hljs-number"));
+});
+
+test("Scala info strings are case-insensitive and never become arbitrary attributes", () => {
+  const body = render('```SCALA title="example" onclick="alert(1)"\nval count = 1\n```');
+  const code = body.querySelector("code.language-scala");
+  assert.ok(code.querySelector(".hljs-keyword"));
+  assert.equal(code.getAttribute("onclick"), null);
+  assert.equal(code.getAttribute("title"), null);
+  assert.equal(body.querySelector("[onclick]"), null);
+});
+
+test("unknown and unlabeled fences stay plain code; Mermaid stays available to its enhancer", () => {
+  const body = render('```unknown\nval count = 1\n```\n\n```\nval count = 1\n```\n\n```mermaid\nflowchart LR\n A-->B\n```');
+  assert.equal(body.querySelectorAll("code").length, 3);
+  assert.equal(body.querySelectorAll(".hljs, span").length, 0);
+  assert.ok(body.querySelector("code.language-mermaid"));
+});
+
+test("HTML-looking Scala strings stay literal after highlighting and sanitization", () => {
+  const source = 'val html = "<img src=x onerror=alert(1)>"\n// <script>alert(1)</script>';
+  const body = render('```scala\n' + source + '\n```');
+  assert.ok(body.querySelector(".hljs-string"));
+  assert.equal(body.querySelector("code").textContent, source + "\n");
+  assert.equal(body.querySelector("img, script, iframe, style, [onerror]"), null);
+});
+
+test("oversized Scala blocks safely fall back to plain code", () => {
+  const source = "// " + "x".repeat(50001);
+  const body = render('```scala\n' + source + '\n```');
+  assert.equal(body.querySelector("code").textContent, source + "\n");
+  assert.equal(body.querySelector("span, .hljs"), null);
+});
+
+test("tool mode preserves literal Markdown, indentation, line breaks, JSON and unsafe HTML", () => {
+  const source = '# literal heading\n*not emphasis*\n    indented log\n\n{"path":"C:\\\\tmp", "n":1}\n<img src=x onerror=alert(1)>\n';
+  const body = render(source, { fencedOnly: true });
+  assert.equal(body.querySelector("pre").textContent, source);
+  assert.equal(body.querySelector("h1, em, img, [onerror]"), null);
+});
+
+test("tool mode highlights fences between logs and keeps Mermaid blocks marked", () => {
+  const before = 'compiler output\n  keep these spaces\n\n';
+  const after = '\n\nexit: 0\n';
+  const body = render(before + '~~~scala\nval count = 42\n~~~' + after + '\n```mermaid\nflowchart LR\n A-->B\n```', { fencedOnly: true });
+  assert.equal(body.querySelector("pre").textContent, before);
+  assert.ok(body.querySelector("code.language-scala .hljs-keyword"));
+  assert.ok(body.querySelector("code.language-mermaid"));
+  assert.ok([...body.querySelectorAll("pre")].some(pre => pre.textContent === after + "\n"));
+});
+
+test("indented tool output remains literal rather than losing its leading spaces", () => {
+  const source = '    one\n      two\n';
+  const body = render(source, { fencedOnly: true });
+  assert.equal(body.querySelector("pre").textContent, source);
+  assert.equal(body.querySelector("code"), null);
+});
+
+test("outer Markdown example fences do not accidentally render their nested examples", () => {
+  const source = '````markdown\n```scala\nval count = 1\n```\n````';
+  for (const fencedOnly of [true, false]) {
+    const body = render(source, { fencedOnly });
+    assert.equal(body.querySelectorAll("pre code").length, 1);
+    assert.equal(body.querySelector("code").textContent, '```scala\nval count = 1\n```\n');
+    assert.equal(body.querySelector("span, .hljs"), null);
+  }
 });

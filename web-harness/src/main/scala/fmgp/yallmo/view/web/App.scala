@@ -535,17 +535,19 @@ object App {
             }
           ),
           result.blocks.map { field =>
-            div(cls := "result-block", strong(cls := "result-label", field.name), textBody(field.text))
+            div(
+              cls := "result-block",
+              strong(cls := "result-label", field.name),
+              MessageBodyView(field.text, markdown = false)
+            )
           }
         )
-      case None => textBody(MessageText.format(message.role, message.content))
+      case None =>
+        MessageBodyView(
+          MessageText.format(message.role, message.content),
+          markdown = message.role != "tool_call" && message.role != "tool_result"
+        )
     }
-
-  // Text nodes only, including decoded tool output. Native details handles expansion without extra state.
-  private def textBody(text: String): HtmlElement =
-    if MessageText.isLong(text) then
-      detailsTag(cls := "message-body", summaryTag(s"Show text (${text.length} characters)"), pre(text))
-    else pre(text)
 
   /** Messages have one parent, so a small HTML/CSS forest is enough; no graph layout library. */
   private def conversationTree(

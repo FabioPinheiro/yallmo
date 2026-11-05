@@ -275,7 +275,7 @@ private[web] object ChatView {
                   span(role := "status", "Pending — not yet confirmed saved"),
                   speech.buttonFor(Val(message.prompt))
                 ),
-                pre(message.prompt)
+                MessageBodyView(message.prompt)
               )
             )
           case None => emptyNode

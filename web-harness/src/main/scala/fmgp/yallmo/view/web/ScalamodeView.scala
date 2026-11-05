@@ -51,12 +51,19 @@ private[web] object ScalamodeView {
                     cls := "result-fields",
                     fields.metadata.map(field => div(cls := "result-field", dt(field.name), dd(field.text)))
                   ),
-                  fields.blocks.map(field => div(cls := "result-block", strong(field.name), pre(field.text)))
+                  fields.blocks.map(field =>
+                    div(cls := "result-block", strong(field.name), MessageBodyView(field.text, markdown = false))
+                  )
                 )
-              case None => pre(result.output)
+              case None => MessageBodyView(result.output, markdown = false)
             },
             if result.logs.isEmpty then emptyNode
-            else detailsTag(summaryTag(s"Logs (${result.logs.size})"), pre(result.logs.mkString("\n"))),
+            else
+              detailsTag(
+                summaryTag(s"Logs (${result.logs.size})"),
+                MarkdownView.blocks(result.logs.mkString("\n"))
+              )
+            ,
             p(cls := "muted", s"Saved response: ${result.message.id}")
           )
       }

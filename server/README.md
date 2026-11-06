@@ -7,7 +7,7 @@ HTTP serves static assets, WebSocket upgrades and read-only SDLC inspection;
 conversation/blob requests still use JSON-RPC, not REST endpoints.
 
 **Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
-initialized claimed human `userId` enable Operator with `turn.submit`, `agents.invoke`,
+initialized claimed human `userId` enable Operator with `turn.submit`, `branches.submit`, `agents.invoke`,
 `blobs.upload`, `diagnostics.request` and provider catalog/login methods,
 including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
 `clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
@@ -346,7 +346,8 @@ Enabled methods:
 - `messages.list`, `agents.list`
 - `blobs.list`, `blobs.read`
 
-Configured trusted-environment Operators additionally enable `turn.submit` with explicit New/Existing targets. Other mutation/control/
+Configured trusted-environment Operators additionally enable `turn.submit` with explicit New/Existing targets and `branches.submit` for a truly
+sessionless managed branch from an exact persisted parent. Other mutation/control/
 diagnostic definitions remain disabled; no progress notifications are advertised. Unix-domain sockets remain deferred.
 The JVM client uses dependency-free public JDK WebSocket (JDK 21+ resource lifecycle), not a synthetic-Origin transport;
 it never bypasses server policy. Read `capabilities` from cached initialization, not a second initialize.
@@ -359,7 +360,7 @@ Models, including System One/macros, compile and test on both platforms; the bro
 The JVM client and transport adapters remain in `server/`.
 
 Both clients correlate concurrent requests over one connection and bound pending requests to 128. Request deadlines
-are 15 seconds by default for reads/create; JVM `turn.submit` has no read deadline. Timeout/interruption abandons the local wait, not server work. Close/error fails pending
+are 15 seconds by default for reads/create; `turn.submit` and `branches.submit` have no short read deadline. Timeout/interruption abandons the local wait, not server work. Close/error fails pending
 requests; late replies are ignored. Neither client automatically reconnects or replays requests.
 
 The browser socket belongs to the application root, opens on mount and closes on unmount/page unload. Tabs reuse it.
@@ -367,13 +368,21 @@ Refresh explicitly reconnects if needed, then refreshes the current tab. Reconne
 
 ## Website behavior and downloads
 
-Five hash-linked tabs preserve browser back/forward and bookmarked session selection:
+Eight hash-linked tabs preserve browser back/forward; the conversation sidebar selects sessions:
 
-- Sessions: session picker and ordered transcript.
+- Chat: session picker, ordered transcript and composer.
 - All messages: each stored message once, including shared/forked history.
-- Conversation graph: expandable HTML/CSS parent/child tree with the same message cards, bounded to 32 levels.
+- Conversation graph: interactive Cytoscape DAG of all stored messages (no depth cutoff), missing-parent placeholders
+  and distinct session → published-head pointers. Stable timestamp/ancestry lanes, gesture pan/zoom and query-only keyboard-selectable search results.
+  Session nodes sit below heads; one draggable message-card inspector closes on outside click or Escape.
+  Live snapshots poll every two seconds while connected and visible, preserving the view and updating sidebar sessions.
+  The bottom composer submits an unnamed branch from the selected message without creating or moving any session.
+  See [Conversation DAG inspector](../docs/CONVERSATION_GRAPH.md) for polling and branch semantics.
 - Agents: registered IDs, without initializing agents.
+- Providers: configured providers and operator login controls.
 - Blobs: actual stored IDs, including unreferenced blobs.
+- Scalamode: direct restricted Scala execution through the configured agent.
+- SDLC: read-only task and intent inspection.
 
 Only the mounted tab queries data. Transcript text is rendered as text, never HTML. Function-call arguments are
 pretty-printed; tool-result JSON fields/output and long-text collapse behavior are preserved.
@@ -426,7 +435,7 @@ bundle were validated during the website migration. Vite reports
 its size advisory for the current approximately 1 MB JavaScript bundle (about 288 KB gzip); bundling succeeds.
 
 Browser smoke checks exercised the packaged production host and Vite proxy using an isolated three-message fixture:
-all five tabs, graph expansion, literal HTML text, multiline tool output, a byte-exact attachment download, one
+all five tabs, graph nodes/inspectors, literal HTML text, multiline tool output, a byte-exact attachment download, one
 application WebSocket/initialization, and zero legacy API requests. The prior broken REST-viewer suite was replaced
 by tests for the new host; no test-source exclusions are needed.
 
@@ -434,7 +443,7 @@ by tests for the new host; no test-source exclusions are needed.
 
 Initialization claims a `UserId` (for example `fabio`) and returns owned actors in `identity.agentIds`.
 Chat selects `user-fabio`; website/harness features select `web-user-fabio` on the same connection.
-`turn.submit` and `agents.invoke` require `actingAgentId`, separate from recipient `agentId`.
+`turn.submit`, `branches.submit` and `agents.invoke` require `actingAgentId`, separate from recipient `agentId`.
 The server validates ownership and invocation message authorship before execution. No implicit sessions or
 authentication are introduced; recipient capability checks remain unchanged. See [the wire contract](PROTOCOL.md#connection-and-capabilities).
 
@@ -442,3 +451,13 @@ Conversation allocation is part of `turn.submit`: use `target: {kind: "new", nam
 and `target: {kind: "existing", sessionId: SessionId}` for later prompts. The separate create endpoint is removed.
 New/Existing are explicit; missing IDs never silently create or resume a session. Execution failures retain any
 allocated session ID, and clients never retry an unknown first submission automatically.
+
+### Unnamed branch execution
+
+`branches.submit` accepts strict `{parentId, agentId, task: {prompt}, actingAgentId}` on configured Operator connections.
+It validates complete immutable ancestry before accepting the user prompt, runs the configured model/tool runner with a
+fresh inherited-provider-continuation scope, and returns distinct `BranchOutcome` terminal data with real public message
+IDs. It never allocates a session or touches membership/head pointers. Generated writes drain and are verified before
+success; uncertain/partial failures require inventory inspection, not automatic retry. Application-owned work survives
+loss of the caller's wait; configured budgets still apply. This is not transactional storage or exactly-once tool execution.
+See [graph composer/API details](../docs/CONVERSATION_GRAPH.md#unnamed-branch-composer) and [the wire contract](PROTOCOL.md#sessionless-branch-submission).

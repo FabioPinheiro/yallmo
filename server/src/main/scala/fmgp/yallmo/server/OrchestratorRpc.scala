@@ -151,6 +151,7 @@ private[server] final class OrchestratorRpc(
                 if permitted(request.userId) then
                   methods ++ List(
                     TurnSubmit.method,
+                    BranchesSubmit.method,
                     DiagnosticsRequest.method,
                     BlobsUpload.method,
                     AgentsInvoke.method,
@@ -232,6 +233,14 @@ private[server] final class OrchestratorRpc(
                   )
                 }
               }
+              result <- encode(outcome)
+            } yield result
+          case BranchesSubmit.method if configured.nonEmpty =>
+            for {
+              request <- decode[BranchesSubmit.Params](params)
+              author <- acting(state, request.actingAgentId)
+              _ <- ZIO.fail(JsonRpc.Error.InvalidParams).when(request.task.prompt.trim.isEmpty)
+              outcome <- configured.get.submitBranch(author, request.parentId, request.agentId, request.task.prompt)
               result <- encode(outcome)
             } yield result
           case AgentsInvoke.method if configured.nonEmpty =>

@@ -95,6 +95,7 @@ private[web] final case class ChatState(
     enabled: Boolean = false,
     pending: Option[ChatPendingMessage] = None,
     voiceBusy: Boolean = false,
+    branchBusy: Boolean = false,
     listError: String = ""
 ) {
 
@@ -110,6 +111,7 @@ private[web] final case class ChatState(
   /** First reason Send cannot proceed, shared by the button gate and rejected-keyboard-send notifications. */
   def sendBlockedReason: Option[String] =
     if !enabled then Some("Reconnect to a chat-enabled server before sending.")
+    else if branchBusy then Some("Wait for the unnamed branch execution before sending.")
     else if voiceBusy then Some("Finish or discard dictation before sending.")
     else if pending.nonEmpty then Some("Wait for the pending turn to finish before sending.")
     else if current.loading then Some("Wait for history to load before sending.")
@@ -147,7 +149,8 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
   private def edit(id: String)(f: ChatConversation => ChatConversation): Unit =
     state.update(s => s.copy(conversations = s.conversations.updated(id, f(s.conversations(id)))))
 
-  def configure(info: Initialize.Result): Unit = {
+  // Graph owns inventory while mounted, including when Live is paused. Defer Chat reads until it returns.
+  def configure(info: Initialize.Result, refreshSessions: Boolean = true): Unit = {
     initializedIdentity = info.identity.chatAgent
     state.update(
       _.copy(
@@ -155,7 +158,16 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
         agents = info.configuredAgentIds.toList.flatMap(_.toList)
       )
     )
-    refreshList()
+    if refreshSessions then refreshList()
+    else {
+      listVersion += 1
+      readVersions = readVersions.map { case (id, version) => id -> (version + 1) }
+      state.update(s =>
+        s.copy(conversations = s.conversations.map { case (id, conversation) =>
+          id -> (if id.nonEmpty then conversation.copy(loading = false, reloadRequired = true) else conversation)
+        })
+      )
+    }
   }
 
   def disable(): Unit = {
@@ -177,6 +189,13 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     if state.now().active.nonEmpty then reload()
   }
 
+  /** Inventory-only update from the graph snapshot; never reload an active transcript or change its draft/continuation.
+    */
+  def updateSummaries(summaries: List[SessionSummary]): Unit = {
+    listVersion += 1
+    state.update(_.copy(sessions = summaries, listError = ""))
+  }
+
   private def refreshList(): Unit = {
     listVersion += 1
     val version = listVersion
@@ -195,6 +214,8 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
     val s = state.now()
     VoiceDraftTarget(s.active, s.current.draft, s.current.draftVersion, selection)
   }
+
+  def setBranchBusy(busy: Boolean): Unit = state.update(_.copy(branchBusy = busy))
 
   def setVoiceBusy(busy: Boolean): Unit = state.update(_.copy(voiceBusy = busy))
 
@@ -221,7 +242,7 @@ private[web] final class ChatModel(client: OrchestratorWSClient, notify: UiNotic
 
   def selectAgent(value: String): Unit = {
     val s = state.now()
-    if s.currentPending.isEmpty then
+    if s.currentPending.isEmpty && !s.branchBusy then
       edit(s.active)(_.copy(agent = s.agents.find(AgentId.value(_) == value), resetContinuation = true))
   }
 

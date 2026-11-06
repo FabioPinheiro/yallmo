@@ -48,7 +48,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Shared SDLC planning tools](plan-tool/README.md) — agent tools, task/intent journals and the HTTP-backed web inspector.
 - [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
-- [Conversation graph](server/README.md#website-behavior-and-downloads) — implemented session/message inspector.
+- [Conversation graph](docs/CONVERSATION_GRAPH.md) — interactive session/message DAG inspector with live 2-second snapshot polling and unnamed branch composer.
 
 ## Project layout
 

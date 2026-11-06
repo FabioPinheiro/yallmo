@@ -20,7 +20,7 @@ backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
-Operator additionally advertises `turn.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
+Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. Notifications are empty.
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
@@ -38,7 +38,7 @@ policy provisions `user-<UserId>` for chat and `web-user-<UserId>` for website/h
 last for the handler's process lifetime and are reconstructed deterministically after restart; there is no ownership
 management or authentication API. Anonymous viewers have no owned actors.
 
-Every authoring request (`turn.submit`, `agents.invoke`) requires `actingAgentId`. The server
+Every authoring request (`turn.submit`, `branches.submit`, `agents.invoke`) requires `actingAgentId`. The server
 checks it against the connected user's ownership before mutation/execution; `agents.invoke` additionally requires
 `input.data.agentId == actingAgentId`. Missing actors are InvalidParams; unowned actors or mismatched authors are
 Forbidden. Recipient `agentId` remains separate and all configured capability checks still apply. Chat and website
@@ -71,7 +71,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 - **8** nonwaiting connection workers. Saturation closes with **1013**; no unbounded task/semaphore waiter queue.
   Outgoing text/control sends are serialized. Reads on the same socket remain responsive during a blocked turn.
 - JVM client: at most **128** pending requests; correlation by ID, late replies ignored after interruption/deadline.
-  Read deadlines default to **15 seconds**; `turn.submit` and `providers.login.complete` deliberately have **no read deadline**.
+  Read deadlines default to **15 seconds**; `turn.submit`, `branches.submit` and `providers.login.complete` deliberately have **no read deadline**.
 - Both clients fail pending waits on close/error and never reconnect/replay automatically. A deadline or disconnect
   is a lost local wait, not evidence that server work stopped.
 - JVM transport uses public JDK WebSocket, which sends no Origin by default. It retains strict Unicode/UTF-8 byte
@@ -96,6 +96,7 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `providers.login.complete` | `{attemptId: String, redirectUrl: String}` | `{restartRequired: Boolean}` |
 | `providers.login.cancel` | `{attemptId: String}` | `{}` |
 | `diagnostics.request` | `{sessionId: SessionId}` | `{providerRequest?: JsonObject}` |
+| `branches.submit` | `{parentId: MessageId, agentId: AgentId, task: {prompt: String}, actingAgentId: AgentId}` (strict fields) | `BranchOutcome` (one terminal response, no session) |
 | `turn.submit` | `{target: SubmitTarget, agentId: AgentId, task: AgentTask, actingAgentId: AgentId, expectedHead?: MessageId, resetContinuation: Boolean = false}` | `TurnOutcome` (one terminal response) |
 
 Existing domain types/codecs are reused. IDs encode as strings: safe path-segment `SessionId`, `sha256:` plus
@@ -320,9 +321,31 @@ Existing capture redaction protects encrypted provider continuations and refuses
 secret scrubber:** conversation/tool text and model details remain sensitive. Never expose this unauthenticated
 trusted-environment listener publicly. The REPL displays documents only on explicit `/debug request`.
 
+## Sessionless branch submission
+
+`branches.submit` requires an initialized configured Operator, an owned acting actor and a configured recipient.
+Parent ancestry must be complete and hash-valid, with complete tool exchanges. Nonblank text only; the client cannot
+supply history, executable code/handles, timestamps, session controls or prompt messages. The server saves the user prompt
+once under the exact parent before running the same configured managed model/tool loop used by session submission.
+No session is created (not even temporarily), joined, forked or published. Existing descendants and reasoning objects remain
+unchanged. Provider request replay excludes inherited opaque continuations; new run-local continuations can be used.
+
+`BranchOutcome` is discriminated by `status`:
+- `succeeded`: `{parentId, promptId, head, result: AgentResult, newMessages: [MessageSnapshot]}`.
+- `failed`: `{parentId, acceptance: "accepted" | "unknown" | "notAccepted", promptId?: MessageId, head?: MessageId,
+  newMessages: [MessageSnapshot], error: ApplicationError}`. `head` is the last confirmed stored active head; an unknown
+  failure does not prove no later objects exist. An attempted prompt ID can be known even if its put acknowledgement failed.
+
+Definite preacceptance rejection uses JSON-RPC errors; prompt write uncertainty is not mislabeled notAccepted.
+The application owns admitted work independently of a connection's wait. Clients never retry/replay it and have no short
+read timeout for this method; configured execution budgets remain enforced. Pending writes drain and inventory is checked
+before success, so the terminal head cannot refer to a missing generated object. Failures can expose verified saved partial
+messages without leaking opaque continuations or provider causes. This is neither rollback/crash-atomic storage nor
+exactly-once tool execution. Inspect `messages.list` after uncertain outcomes; no branch publication/recovery endpoint is added.
+
 ## Submission, continuation and failure semantics
 
-`turn.submit` is the only conversation-authoring operation. There is no `sessions.create` endpoint.
+`turn.submit` is the session-authoring operation; `branches.submit` authors an unnamed, sessionless branch. There is no `sessions.create` endpoint.
 The caller explicitly selects `{kind: "new", name?: SessionId}` or `{kind: "existing", sessionId: SessionId}`.
 New validates ownership, recipient configuration/capabilities and parameters before allocating a session, then submits
 its first prompt in that same application-owned operation. Generated IDs use `main-<UUID>`; names are safe IDs, not

@@ -23,6 +23,11 @@ trait OrchestratorClient {
   ): IO[OrchestratorClient.Error, TurnOutcome] =
     ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
 
+  def submitBranch(params: BranchesSubmit.Params): IO[OrchestratorClient.Error, BranchOutcome] = {
+    val _ = params
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+  }
+
   /** Optional operator diagnostic; reads a captured document, never a client-local/server-supplied file path. */
   @scala.annotation.nowarn("msg=unused explicit parameter")
   def providerRequest(sessionId: SessionId): IO[OrchestratorClient.Error, DiagnosticsRequest.Result] =

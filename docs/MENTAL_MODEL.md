@@ -197,9 +197,10 @@ not live service acceptance. Step 7 integration is approved; independent review 
   than the current pointer; `newMessages` is execution audit, not the active transcript.
 - `Orchestrator.listMessages` is the global immutable object inventory, not a per-session transcript. Follow IDs and
   parent IDs to inspect original, copied and stale-output branches after writes drain, including filesystem reopen.
-  The existing web **All messages** and **Conversation graph** views use this inventory. Expand a graph node to inspect
-  the ID, parent, author and payload; shared ancestors appear once. The graph stops at depth 32, so use All messages
-  for deeper nodes. The Sessions view follows published pointers and does not select unpublished local heads.
+  The web **All messages** and [**Conversation graph**](CONVERSATION_GRAPH.md) views use this inventory. Click a graph
+  node (or select a search result) to inspect ID, parent, author and payload. Shared ancestors
+  appear once, without a depth cutoff. Distinct session nodes point to published heads, including shared heads and
+  empty sessions. Outside highlighted ancestry does not mean discarded; this is not an unpublished-head selector.
 - Graph edges prove ancestry, not rewrite origin. Copy/original and removed-reasoning mappings are identifier-only
   logs; there is no durable operation/provenance journal. Keep the logged IDs if that relationship matters.
 - Pointer-conflict branches remain inspectable but are not automatically named, resumed or attached to sessions.

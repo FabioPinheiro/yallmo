@@ -59,10 +59,10 @@ trait Orchestrator[-R] extends BlobOps {
     * @param task
     *   user task whose prompt is accepted and saved before execution
     * @param execution
-    *   opaque loop handle created by AgentRunner.execution; only submit can execute it, with mandatory transcript
-    *   persistence; its agent must be registered and preserve the response author. Ordinary appends preserve the active
-    *   prefix; an authorized managed rebase may replace that prefix without altering original objects or execution
-    *   audit
+    *   opaque loop handle created by AgentRunner.execution; only orchestration submission operations can execute it,
+    *   with mandatory transcript persistence; its agent must be registered and preserve the response author. Ordinary
+    *   appends preserve the active prefix; an authorized managed rebase may replace that prefix without altering
+    *   original objects or execution audit
     * @return
     *   the last acknowledged session publication, final agent result and execution audit (prompt plus generated
     *   appends), or a [[SessionSubmitFailure]] containing the underlying error and the last acknowledged publication
@@ -75,12 +75,29 @@ trait Orchestrator[-R] extends BlobOps {
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, SessionTurn]
 
+  /** Executes against complete persisted ancestry plus one newly saved user prompt parented exactly to parentId. Never
+    * creates, joins or publishes a session. The configured runner owns the normal managed tool loop. Generated writes
+    * are drained and verified before success; failures can retain partial immutable branches. Repeating the request can
+    * execute again: there is no automatic retry or exactly-once tool guarantee.
+    */
+  def submitBranch[R1](
+      parentId: MessageId,
+      authorId: AgentId,
+      task: AgentTask,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, BranchSubmitFailure, BranchTurn] = {
+    val _ = (parentId, authorId, task, execution)
+    ZIO.fail(
+      BranchSubmitFailure(YallmoError.InvalidConfig("Sessionless branches unsupported"), BranchAcceptance.NotAccepted)
+    )
+  }
+
   /** Saves one message, awaits its blobs and invokes a single-message recipient, not an agent loop. AgentRunner's
-    * invocation adapter rejects model-requested actions; use [[submit]] to execute those with transcript persistence.
-    * Any payload may be submitted/returned; the recipient validates what it supports. A parent must exist but does not
-    * implicitly load history. No session is created or advanced. The exact response payload is saved as a direct child
-    * of input. Failure never rolls back an accepted input, and repeating an invocation may execute again even if that
-    * input is already stored.
+    * invocation adapter rejects model-requested actions; use [[submit]] or [[submitBranch]] to execute those with
+    * transcript persistence. Any payload may be submitted/returned; the recipient validates what it supports. A parent
+    * must exist but does not implicitly load history. No session is created or advanced. The exact response payload is
+    * saved as a direct child of input. Failure never rolls back an accepted input, and repeating an invocation may
+    * execute again even if that input is already stored.
     */
   def invoke[R1](input: Message, execution: AgentInvocation[R1]): ZIO[R1, YallmoError, Message] = {
     val _ = (input, execution)

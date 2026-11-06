@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{AgentId, MessagePayload, YallmoError}
+import fmgp.yallmo.model.{AgentId, Message, MessageId, MessagePayload, YallmoError}
 import zio.{Chunk, ZIO}
 
 /** A configured recipient of one message, not an agent loop. Payload support belongs to the recipient, not storage.
@@ -11,11 +11,12 @@ trait AgentInvocation[-R] {
   private[orchestration] def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload]
 }
 
-/** An opaque configured agent loop, executable only by orchestration through [[Orchestrator.submit]].
+/** An opaque configured agent loop, executable only by orchestration through [[Orchestrator.submit]] or
+  * [[Orchestrator.submitBranch]].
   *
   * AgentRunner.execution binds the agent, capabilities and budget without performing effects. Application code can pass
-  * this handle to submit, but cannot construct its own implementation or invoke the loop directly. The model module
-  * defines this boundary because it cannot depend on the concrete runner in core.
+  * this handle to either submission operation, but cannot construct its own implementation or invoke the loop directly.
+  * The model module defines this boundary because it cannot depend on the concrete runner in core.
   *
   * {{{
   * val execution = runner.execution(agent, staticContext, budget)
@@ -46,3 +47,25 @@ final case class SessionTurn(session: Session, result: AgentResult, newMessages:
 
 /** A failed submission, with the latest saved session when the user prompt was successfully saved. */
 final case class SessionSubmitFailure(error: YallmoError, acceptedSession: Option[Session])
+
+/** No session or pointer is allocated. newMessages contains verified stored artifacts, including the accepted prompt.
+  */
+final case class BranchTurn(
+    parentId: MessageId,
+    promptId: MessageId,
+    head: MessageId,
+    result: AgentResult,
+    newMessages: Chunk[Message]
+)
+
+enum BranchAcceptance { case NotAccepted, Accepted, Unknown }
+
+/** head is the last confirmed stored active head, not a promise that no later objects exist after an unknown failure.
+  */
+final case class BranchSubmitFailure(
+    error: YallmoError,
+    acceptance: BranchAcceptance,
+    promptId: Option[MessageId] = None,
+    head: Option[MessageId] = None,
+    newMessages: Chunk[Message] = Chunk.empty
+)

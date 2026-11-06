@@ -73,8 +73,11 @@ Use the existing API and web inspector; no new UI is needed:
    is accepted prompt plus actual execution, not rebase copies or current context.
 3. In **All messages** / **Conversation graph**, inspect original and copy IDs,
    authors, payloads and parents. The graph uses the global message inventory,
-   shares ancestors and limits display depth to 32. Use All messages for deeper
-   nodes. The Sessions view is pointer-based, not an unpublished-branch selector.
+   shares ancestors without a depth cutoff, and shows session → published-head
+   pointers (including shared heads and empty sessions). Use the floating inspector
+   or query-only keyboard-selectable search results. Outside a highlighted session
+   path does not mean discarded. See [graph behavior](../CONVERSATION_GRAPH.md).
+   This is pointer-based inspection, not an unpublished-branch selector.
 4. The graph has ancestry edges, not durable original-to-copy metadata. Rebase
    mapping/removal provenance is log-only. There is no named-branch recovery UI,
    durable operation journal or automatic resumption of a losing branch. `fork`

@@ -144,7 +144,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.get.methods.size, 15)
+        assertEquals(info.get.methods.size, 16)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -530,9 +530,10 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(8),
+          info.methods.takeRight(9),
           List(
             TurnSubmit.method,
+            BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
             AgentsInvoke.method,
@@ -573,7 +574,18 @@ final class ServerSubmissionSuite extends FunSuite {
         _ <- entered.await
         _ <- release.succeed(())
         outcome <- wait.join
-      } yield assert(outcome.isInstanceOf[TurnOutcome.Succeeded])
+        before <- app.master.loadSession(session.id)
+        branch <- client
+          .submitBranch(
+            BranchesSubmit.Params(before.messages.last.id, first, BranchesSubmit.Task("long branch"), human)
+          )
+          .withClock(noDeadline)
+        after <- app.master.loadSession(session.id)
+      } yield {
+        assert(outcome.isInstanceOf[TurnOutcome.Succeeded])
+        assert(branch.isInstanceOf[BranchOutcome.Succeeded])
+        assertEquals(after, before)
+      }
     })
   }
 
@@ -714,9 +726,10 @@ final class ServerSubmissionSuite extends FunSuite {
           )
         )
         assertEquals(
-          info.methods.takeRight(8),
+          info.methods.takeRight(9),
           List(
             TurnSubmit.method,
+            BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
             AgentsInvoke.method,
@@ -1862,6 +1875,197 @@ final class ServerSubmissionSuite extends FunSuite {
       command: BlobsUpload.Params
   ): UIO[String] =
     rpc.handle(JsonRpc.Request(Json.Str("upload"), BlobsUpload.method, command).toJson, connection).map(_.get)
+
+  test("branches.submit is owned, strict, sessionless, fresh-continuation execution from an old immutable parent") {
+    run(ZIO.scoped {
+      for {
+        seen <- Ref.make(Chunk.empty[String])
+        app <- application(request => request.body.asString.flatMap(body => seen.update(_ :+ body)).as(answer))
+        backend = app.configured.get
+        _ <- backend.runtime.registerUser(human)
+        seeded <- app.master.createSession(SessionId.unsafe("branch-source"), Chunk(human, first))
+        chain <- app.master.append(seeded.id, human, Chunk(MessagePayload.User("ancestor")))
+        reasoning = MessagePayload.Reasoning(
+          Some("visible summary"),
+          fmgp.yallmo.model.llm
+            .ProviderContinuation(fmgp.yallmo.model.llm.ProviderId.unsafe("test"), None, "PRIVATE_BRANCH_CONTINUATION")
+        )
+        parent <- app.master.append(seeded.id, first, Chunk(reasoning, MessagePayload.Assistant("selected old answer")))
+        before <- app.master.append(seeded.id, human, Chunk(MessagePayload.User("unselected descendant")))
+        rpc = new OrchestratorRpc(app.master, app.configured)
+        connection <- rpc.openConnection
+        initialized <- rpc.handle(
+          JsonRpc
+            .Request(Json.Str("init"), Initialize.method, Initialize.Params("test", Some(UserId("local-human"))))
+            .toJson,
+          connection
+        )
+        parentId = parent.messages.last.id
+        params = BranchesSubmit.Params(parentId, first, BranchesSubmit.Task("new branch"), human)
+        rejected <- ZIO.foreach(
+          List(
+            params.copy(actingAgentId = AgentId("user-other")),
+            params.copy(agentId = human),
+            params.copy(parentId = MessageId.sha256("missing")),
+            params.copy(task = BranchesSubmit.Task("  "))
+          )
+        )(value => rpc.handle(JsonRpc.Request(Json.Str("reject"), BranchesSubmit.method, value).toJson, connection))
+        untouched <- app.master.listMessages
+        terminal <- rpc.handle(JsonRpc.Request(Json.Str("branch"), BranchesSubmit.method, params).toJson, connection)
+        after <- app.master.loadSession(seeded.id)
+        sessions <- app.master.listSessions
+        inventory <- app.master.listMessages
+        requests <- seen.get
+        viewer <- rpc.openConnection
+        _ <- rpc.handle(
+          JsonRpc.Request(Json.Str("viewer"), Initialize.method, Initialize.Params("viewer")).toJson,
+          viewer
+        )
+        forbidden <- rpc.handle(JsonRpc.Request(Json.Str("forbidden"), BranchesSubmit.method, params).toJson, viewer)
+        readOnly = new OrchestratorRpc(app.master)
+        readConnection <- readOnly.openConnection
+        _ <- readOnly.handle(
+          JsonRpc.Request(Json.Str("read-init"), Initialize.method, Initialize.Params("read")).toJson,
+          readConnection
+        )
+        unsupported <- readOnly.handle(
+          JsonRpc.Request(Json.Str("unsupported"), BranchesSubmit.method, params).toJson,
+          readConnection
+        )
+      } yield {
+        val info = decode[JsonRpc.Success[Initialize.Result]](initialized.get).result
+        assert(info.methods.contains(BranchesSubmit.method))
+        rejected.foreach(reply => assert(reply.get.fromJson[JsonRpc.Failure].isRight))
+        assertEquals(untouched.size, before.messages.size)
+        val result = decode[JsonRpc.Success[BranchOutcome]](terminal.get).result.asInstanceOf[BranchOutcome.Succeeded]
+        assertEquals(result.parentId, parentId)
+        assertEquals(result.newMessages.head.parentId, Some(parentId))
+        assertEquals(result.newMessages.head.agentId, human)
+        assertEquals(result.newMessages.last.id, result.head)
+        assertEquals(result.newMessages.size, 2)
+        assertEquals(after, before)
+        assertEquals(sessions.map(_.id), Chunk(seeded.id))
+        result.newMessages.foreach(message => assert(inventory.exists(_.id == message.id)))
+        assertEquals(requests.size, 1)
+        assert(
+          requests.head.contains("ancestor") && requests.head.contains("selected old answer") && requests.head.contains(
+            "new branch"
+          )
+        )
+        assert(!requests.head.contains("unselected descendant"))
+        assert(!requests.head.contains("PRIVATE_BRANCH_CONTINUATION"))
+        assertEquals(requests.head.sliding("new branch".length).count(_ == "new branch"), 1)
+        assert(!terminal.get.contains("PRIVATE_BRANCH_CONTINUATION"))
+        assert(inventory.exists(_.payload == reasoning))
+        assertEquals(chain.messages.size, 1)
+        assertEquals(decode[JsonRpc.Failure](forbidden.get).error.code, ErrorCode.Forbidden)
+        assertEquals(decode[JsonRpc.Failure](unsupported.get).error, JsonRpc.Error.MethodNotFound)
+      }
+    })
+  }
+
+  test(
+    "fresh branch execution filters only inherited provider continuations, retaining new ones and stored originals"
+  ) {
+    run(ZIO.scoped {
+      for {
+        app <- application(_ => ZIO.dieMessage("Synthetic runner must not call a provider"))
+        backend = app.configured.get
+        _ <- backend.runtime.registerUser(human)
+        original = MessagePayload.Reasoning(
+          Some("old summary"),
+          fmgp.yallmo.model.llm
+            .ProviderContinuation(fmgp.yallmo.model.llm.ProviderId.unsafe("test"), None, "old-private")
+        )
+        fresh = MessagePayload.Reasoning(
+          Some("fresh summary"),
+          fmgp.yallmo.model.llm
+            .ProviderContinuation(fmgp.yallmo.model.llm.ProviderId.unsafe("test"), None, "fresh-private")
+        )
+        session <- app.master.createSession(SessionId.unsafe("reasoning-source"), Chunk(human, first))
+        before <- app.master.append(session.id, first, Chunk(original, MessagePayload.Assistant("old answer")))
+        calls <- Ref.make(0)
+        key = ToolKey.unsafe("probe")
+        tool = new AgentTool[Any] {
+          val definition = AgentToolDefinition(key, "Synthetic")
+          def execute(call: ExternalToolCall) = { val _ = call; ZIO.succeed(ExternalToolResult("ok")) }
+        }
+        program = new AgentInstance[Any] {
+          val id = first
+          def next(task: AgentTask, context: StaticContext[Any], current: RunContext) = {
+            val _ = (task, context)
+            calls.updateAndGet(_ + 1).flatMap { count =>
+              ZIO.succeed {
+                assert(!current.messages.contains(original))
+                if count == 1 then
+                  AgentTurn(
+                    Some(MessagePayload.Assistant("tool")),
+                    AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(key, "{}")))),
+                    Chunk(fresh)
+                  )
+                else {
+                  assert(current.messages.contains(fresh))
+                  AgentTurn(Some(MessagePayload.Assistant("done")), AgentDecision.FinalAnswer("done"))
+                }
+              }
+            }
+          }
+        }
+        execution = SessionSubmission.branchExecution(
+          new AgentRunner[Any](Map(key -> tool), Map.empty),
+          program,
+          StaticContext[Any]("Synthetic", tools = Chunk(tool.definition))
+        )
+        result <- app.master.submitBranch(before.messages.last.id, human, AgentTask("branch"), execution)
+        after <- app.master.loadSession(session.id)
+        inventory <- app.master.listMessages
+        count <- calls.get
+      } yield {
+        assertEquals(count, 2)
+        assertEquals(after, before)
+        assert(inventory.exists(_.payload == original))
+        assert(result.newMessages.exists(_.payload == fresh))
+        assert(!result.newMessages.map(MessageSnapshot.from).toJson.contains("fresh-private"))
+      }
+    })
+  }
+
+  test("branch failure retains accepted IDs, leaves pointers unchanged and outlives its caller wait") {
+    run(ZIO.scoped {
+      for {
+        entered <- Promise.make[Nothing, Unit]
+        release <- Promise.make[Nothing, Unit]
+        completed <- Promise.make[Nothing, Unit]
+        app <- application(_ =>
+          entered.succeed(()) *> release.await *> completed.succeed(()).as(Response.status(Status.InternalServerError))
+        )
+        backend = app.configured.get
+        _ <- backend.runtime.registerUser(human)
+        session <- app.master.createSession(SessionId.unsafe("unchanged"), Chunk(human))
+        before <- app.master.append(session.id, human, Chunk(MessagePayload.User("old")))
+        waiter <- backend.submitBranch(human, before.messages.last.id, first, "retained branch prompt").fork
+        _ <- entered.await
+        _ <- waiter.interrupt
+        _ <- release.succeed(())
+        _ <- completed.await
+        after <- app.master.loadSession(session.id)
+        inventory <- app.master.listMessages
+        sessions <- app.master.listSessions
+        // A separate failed execution returns confirmed acceptance, not a synthetic session.
+        failed <- backend.submitBranch(human, before.messages.last.id, first, "another branch")
+      } yield {
+        val result = failed.asInstanceOf[BranchOutcome.Failed]
+        assertEquals(result.acceptance, PromptAcceptance.Accepted)
+        assert(result.promptId.nonEmpty && result.head.nonEmpty)
+        assertEquals(result.newMessages.head.parentId, Some(before.messages.last.id))
+        assertEquals(result.newMessages.head.role, "user")
+        assertEquals(after, before)
+        assertEquals(sessions.map(_.id), Chunk(session.id))
+        assert(inventory.exists(_.payload == MessagePayload.User("retained branch prompt")))
+        assert(!result.error.message.contains("http"))
+      }
+    })
+  }
 
   private def application(
       respond: Request => Task[Response],

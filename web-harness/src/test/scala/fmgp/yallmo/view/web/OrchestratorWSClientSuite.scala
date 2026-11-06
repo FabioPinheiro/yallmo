@@ -1,7 +1,7 @@
 package fmgp.yallmo.view.web
 
 import fmgp.yallmo.model.UserId
-import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageData}
+import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageData, MessageId}
 import java.time.Instant
 import fmgp.yallmo.orchestration.{AgentTask, SessionId}
 import zio.Chunk
@@ -227,6 +227,39 @@ final class OrchestratorWSClientSuite extends FunSuite {
       assertEquals(h.sent.count(_.method == Initialize.method), 1)
       assertEquals(info.configuredAgentIds, Some(Chunk(AgentId("assistant"))))
       assertEquals(OrchestratorWSClient.claimedUser("  "), None)
+      h.client.close()
+    }
+  }
+
+  test("branches.submit uses strict sessionless DTOs and no short read deadline") {
+    val h = new Harness(timeout = 30)
+    val parent = MessageId.sha256("branch-parent")
+    val params =
+      BranchesSubmit.Params(parent, AgentId("assistant"), BranchesSubmit.Task("branch"), AgentId("web-user-viewer"))
+    for {
+      _ <- h.initialize(methods = List(BranchesSubmit.method))
+      branch = h.client.submitBranch(params)
+      request <- h.awaitRequest(BranchesSubmit.method)
+      _ = assertEquals(decode[BranchesSubmit.Params](request.params.toJson), params)
+      read = h.client.agents()
+      _ <- h.awaitRequest(AgentsList.method)
+      _ <- read.failed
+      _ = assert(!branch.isCompleted)
+      _ = h.reply(
+        request,
+        BranchOutcome.Failed(
+          parent,
+          PromptAcceptance.Unknown,
+          None,
+          None,
+          Chunk.empty,
+          ApplicationError("unknown", "Inspect saved messages")
+        ): BranchOutcome
+      )
+      result <- branch
+    } yield {
+      assert(result.isInstanceOf[BranchOutcome.Failed])
+      assertEquals(h.sent.count(_.method == BranchesSubmit.method), 1)
       h.client.close()
     }
   }

@@ -46,11 +46,13 @@ private[web] final case class ScalamodeState(
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Boolean = false,
+    branchBusy: Boolean = false,
     result: Option[ScalamodeResult] = None,
     notice: String = ""
 ) {
   def blockedReason(agent: Option[AgentId]): Option[String] =
     if !enabled then Some("Connect as an operator to a server supporting agents.invoke.")
+    else if branchBusy then Some("Wait for the unnamed branch execution.")
     else if pending then Some("Waiting for scalamode. Execution is not cancelled by leaving this page.")
     else if !agent.exists(agents.contains) then Some("Choose a configured agent in the toolbar.")
     else if code.trim.isEmpty then Some("Enter a Scala block.")
@@ -69,6 +71,8 @@ private[web] final class ScalamodeModel(
   val state = Var(ScalamodeState())
   private var identity = Option.empty[AgentId]
   private var version = 0L
+
+  def setBranchBusy(busy: Boolean): Unit = state.update(_.copy(branchBusy = busy))
 
   def configure(info: Initialize.Result): Unit = {
     version += 1

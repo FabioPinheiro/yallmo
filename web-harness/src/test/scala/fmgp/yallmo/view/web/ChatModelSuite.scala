@@ -2,9 +2,9 @@ package fmgp.yallmo.view.web
 
 import com.raquo.airstream.ownership.ManualOwner
 import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.{AgentResult, SessionId}
+import fmgp.yallmo.orchestration.{AgentResult, SessionId, SessionSummary}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
-import fmgp.yallmo.server.protocol.YallmoProtocol.*
+import fmgp.yallmo.server.protocol.YallmoProtocol.{*, given}
 import java.time.Instant
 import munit.FunSuite
 import scala.concurrent.{Future, Promise}
@@ -27,6 +27,87 @@ final class ChatModelSuite extends FunSuite {
     Chunk.empty
   )
   private val completed = empty.copy(messages = Chunk(message))
+
+  test("graph summary updates preserve active transcript, draft, continuation and pending work without new reads") {
+    withModel { (h, model) =>
+      val conversation = ChatConversation(snapshot = Some(completed), draft = "Chat draft", resetContinuation = false)
+      val pending = ChatPendingMessage("chat", AgentId("human"), "Captured input")
+      model.state.update(_.copy(active = "chat", conversations = Map("chat" -> conversation), pending = Some(pending)))
+      val before = model.state.now()
+      val requests = h.sent.size
+      val summaries =
+        List(SessionSummary(empty.id, 5L, Chunk.empty), SessionSummary(SessionId.unsafe("new"), 1L, Chunk.empty))
+      model.updateSummaries(summaries)
+      assertEquals(model.state.now(), before.copy(sessions = summaries, listError = ""))
+      assertEquals(h.sent.size, requests)
+      Future.successful(())
+    }
+  }
+
+  test("graph-owned configure defers reads and gates saved history without changing draft or continuation") {
+    withModel { (h, model) =>
+      h.client.connect().flatMap { info =>
+        val conversation = ChatConversation(
+          snapshot = Some(completed),
+          draft = "Preserved Chat draft",
+          agent = Some(assistant),
+          resetContinuation = false
+        )
+        model.state.update(_.copy(active = "chat", conversations = Map("chat" -> conversation)))
+        val reads = h.sent.size
+        model.configure(info, refreshSessions = false)
+        assertEquals(h.sent.size, reads)
+        assertEquals(model.state.now().current, conversation.copy(reloadRequired = true))
+        assert(!model.state.now().canSend)
+        model.send()
+        assertEquals(h.sent.size, reads)
+        model.reload()
+        for {
+          request <- h.awaitRequest(SessionsGet.method)
+          _ = h.reply(request, completed)
+          _ <- until(!model.state.now().current.loading)
+          _ = assertEquals(model.state.now().current.draft, conversation.draft)
+          _ = assertEquals(model.state.now().current.resetContinuation, false)
+          _ = assert(model.state.now().canSend)
+          lists = h.sent.count(_.method == SessionsList.method)
+          _ = model.configure(info)
+          _ <- h.awaitRequest(SessionsList.method, skip = lists)
+        } yield assertEquals(
+          h.sent.count(_.method == SessionsList.method),
+          lists + 1,
+          "default Chat configure still refreshes"
+        )
+      }
+    }
+  }
+
+  test("graph-owned configure rejects earlier Chat list/history reads instead of publishing paused sidebar changes") {
+    val h = new OrchestratorWSClientSuite.Harness()
+    val model = new ChatModel(h.client)
+    for {
+      info <- h.initialize(methods = List(TurnSubmit.method), configured = Some(Chunk(assistant)))
+      _ = model.configure(info)
+      list <- h.awaitRequest(SessionsList.method)
+      _ = model.resume("chat")
+      read <- h.awaitRequest(SessionsGet.method)
+      _ = model.draft("Retained during reconnect")
+      _ = model.configure(info, refreshSessions = false)
+      _ = h.reply(list, Chunk(SessionSummary(empty.id, 99L, Chunk.empty)))
+      _ = h.reply(read, completed)
+      _ <- {
+        val settled = Promise[Unit]()
+        setTimeout(0)(settled.success(()))
+        settled.future
+      }
+    } yield {
+      assertEquals(model.state.now().sessions, Nil)
+      assertEquals(model.state.now().current.snapshot, None)
+      assertEquals(model.state.now().current.draft, "Retained during reconnect")
+      assert(model.state.now().current.reloadRequired)
+      assert(!model.state.now().current.loading)
+      h.client.close()
+    }
+  }
 
   test("first Send validates agent, submits New once, retains the returned ID, and reuses authoritative head") {
     withModel { (h, model) =>

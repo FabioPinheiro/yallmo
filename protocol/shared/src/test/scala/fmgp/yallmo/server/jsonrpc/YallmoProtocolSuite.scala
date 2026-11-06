@@ -17,6 +17,34 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+  test("branches.submit is strict, sessionless and round-trips distinct terminal outcomes") {
+    val params = BranchesSubmit.Params(head, agentId, BranchesSubmit.Task("hello"), agentId)
+    assertEquals(params.toJson.fromJson[BranchesSubmit.Params], Right(params))
+    assertEquals(BranchesSubmit.method, "branches.submit")
+    assert(!params.toJson.contains("session"))
+    val extra = params.toJson.dropRight(1) + ",\"history\":[]}"
+    assert(extra.fromJson[BranchesSubmit.Params].isLeft)
+    assert(
+      params.toJson
+        .replace("\"prompt\":\"hello\"", "\"prompt\":\"hello\",\"executable\":true")
+        .fromJson[BranchesSubmit.Params]
+        .isLeft
+    )
+    assert(params.toJson.replace(MessageId.value(head), "bad-id").fromJson[BranchesSubmit.Params].isLeft)
+    val success: BranchOutcome = BranchOutcome.Succeeded(head, head, head, AgentResult(agentId, "done"), Chunk.empty)
+    val failure: BranchOutcome = BranchOutcome.Failed(
+      head,
+      PromptAcceptance.Unknown,
+      Some(head),
+      None,
+      Chunk.empty,
+      ApplicationError("execution_unknown", "Inspect saved messages")
+    )
+    List(success, failure).foreach(value => assertEquals(value.toJson.fromJson[BranchOutcome], Right(value)))
+    assert(!success.toJson.contains("session"))
+    assert(!failure.toJson.contains("session"))
+  }
+
   test("provider login uses named parameters and exposes no credential fields") {
     assertWire(ProvidersLoginStart.Params("account"), """{"providerId":"account"}""")
     assertWire(

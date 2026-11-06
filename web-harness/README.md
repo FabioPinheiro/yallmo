@@ -32,7 +32,7 @@ browser Origin. It also proxies `/api/sdlc` over HTTP to `http://127.0.0.1:8080`
 
 Static assets and SDLC inspection use HTTP; other application requests and attachment bytes use JSON-RPC. No Scala.js/Vite sbt
 bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat,
-all messages, a small CSS conversation tree,
+all messages, an interactive timestamp-based conversation DAG,
 registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
 from the conversation sidebar; empty, unknown and former Sessions hashes open Chat. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
@@ -40,7 +40,36 @@ the current view. Function-call JSON is pretty-printed. Tool-result objects show
 invalid JSON falls back to literal text. Tool calls/results and long messages start collapsed to their header line;
 the header toggle expands the body and attachments without a separate text disclosure row. Short messages start open.
 Message identity is available beside the UTC timestamp, formatted as `YYYY-MM-DD HH:mm:ss`.
-Graph nodes expand to the same message cards, including tool results and attachment links.
+Chat and Graph share the full-height conversation layout, header spacing and bottom composer styles. The graph canvas
+fills the remaining space between its controls and composer; typing stays visible without scrolling the whole page.
+Graph reuses columns after short forks finish, reserving node/label space and ancestry-edge intervals. Existing message
+coordinates never move on append, refresh or filtering; session markers remain distinct below their heads. A bounded
+elbow router allows crossings/dotted fallback edges on pathological dense fixed layouts, rather than moving old nodes.
+Mouse hover opens a passive safe inspector without changing selection/composer/focus. It stays over node/card or while
+focused inside; leaving both dismisses it. Click/tap makes the single draggable inspector persistent; unrelated hover
+cannot replace it. Outside click or Escape dismisses it. Touch uses tap, not hover.
+The quiet toolbar has search, **Branches** (All / Current / Current + siblings) and a default-on **Live** checkbox.
+Current shows focused ancestry and every descendant of the selected node; Current + siblings also adds the subtree of
+its nearest ancestral split (including self), excluding remote cousins/unrelated roots. Before selection everything is visible. Search always finds global
+inventory and reveals hidden results; All restores all nodes at their original coordinates. Filters never change drafts,
+submit parents or storage. There is no permanent node list or extra refresh/fit/zoom/pin/close toolbar.
+Full inventory/session snapshots poll every two seconds while Live is on, Graph is mounted, connected and visible
+(including read-only viewers). Busy ticks are skipped. Live off stops the timer, rejects in-flight background snapshots
+and freezes sidebar summaries too; reconnect/keyboard refresh cannot bypass pause. Live on catches up immediately.
+Own branch responses still merge while paused. Hidden/disconnected pages pause reads; visibility return and successful
+explicit Reconnect catch up only when Live is on. Graph reconnect suppresses Chat-owned list/history reads too;
+returning to Chat reloads its stale saved history before Send without losing its draft or resetting continuation.
+There is no automatic reconnect or write replay. Snapshot updates
+preserve message positions, viewport, filter, selection, search and persistent inspector. Sidebar names/counts reuse graph
+summaries without reloading Chat's transcript/draft/continuation. Snapshots are non-atomic; later polls reconcile changes.
+The bottom **Reply from** composer sends an unnamed branch from the exact selected stored message using the shared
+configured agent. It runs the full model/tool loop on persisted ancestry, creates no session and moves no pointers.
+Session/missing-node selection clears the parent. Drafts/pending work are independent of Chat; edits and new selection
+cannot retarget an in-flight request. Failures may leave saved objects/tool effects: inspect the DAG and explicitly allow
+a new submission before repeating uncertain work. There is no automatic retry. See the linked graph guide for API/safety details.
+See [Conversation DAG inspector](../docs/CONVERSATION_GRAPH.md) for navigation, polling/lifecycle, layout details and
+best-effort branch persistence limitations. Persisted prompt/tool/reply artifacts can appear during a pending branch; automatic
+reads never retry a branch or clear its explicit recovery gate.
 
 ## Shared Markdown and code blocks
 
@@ -259,7 +288,10 @@ The first Send issues one `turn.submit` with an explicit New target, only after 
 The response supplies the session ID; later turns use Existing with that ID and its known head.
 **New conversation** prepares a local draft only; expand **Name (optional)** to choose the name used on first submit.
 No empty remote session or separate create request is sent. Choose an existing session, including a REPL session, in the sidebar to
-resume it in Chat from any view. On narrow screens, **Menu** expands navigation and conversations. Agent changes
+resume it in Chat, except on **Conversation graph**: there it focuses/highlights the published session path and opens
+its inspector without changing Chat state or route. Graph selection is shared with canvas/search session selection and
+starts unselected on each mount. New conversation and Unsent draft still open Chat. On narrow screens, **Menu**
+expands navigation and conversations; selecting a graph session closes it. Agent changes
 and resumes reset the next provider continuation without clearing history or drafts.
 
 The transcript uses authoritative persisted snapshots and the inspector's message/tool cards and downloads.

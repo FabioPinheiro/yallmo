@@ -4,7 +4,7 @@ import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.tool.sdlc.SdlcService
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
+import fmgp.yallmo.orchestration.{BranchAcceptance, OrchestratorLive, RuntimeInstances, SessionId}
 import fmgp.yallmo.model.llm.ProviderContinuation
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -122,6 +122,77 @@ object ServerApplication {
       }
 
     }
+
+    /** A configured, application-owned managed loop with immutable ancestry and no session publication at all. */
+    def submitBranch(
+        author: AgentId,
+        parent: MessageId,
+        agentId: AgentId,
+        prompt: String
+    ): IO[JsonRpc.Error, BranchOutcome] =
+      owned {
+        for {
+          binding <- checked(runtime.resolve(agentId))
+          _ <- ZIO.fail(JsonRpc.Error.InvalidParams).when(prompt.trim.isEmpty)
+          _ <- checked(runtime.registerUser(author))
+          result <- assembly
+            .submitBranch(author, parent, prompt, binding)
+            .tapError(failure => ZIO.logErrorCause("Branch execution failed", Cause.fail(failure.error)))
+            .foldZIO(
+              failure =>
+                if failure.acceptance == BranchAcceptance.NotAccepted then
+                  failure.error match {
+                    case _: YallmoError.InvalidMessage =>
+                      ZIO.fail(JsonRpc.Error(ErrorCode.Rejected, "Invalid or incomplete branch ancestry"))
+                    case error => checked(ZIO.fail(error))
+                  }
+                else
+                  ZIO.succeed(
+                    BranchOutcome.Failed(
+                      parent,
+                      if failure.acceptance == BranchAcceptance.Accepted then PromptAcceptance.Accepted
+                      else PromptAcceptance.Unknown,
+                      failure.promptId,
+                      failure.head,
+                      failure.newMessages.map(MessageSnapshot.from),
+                      ApplicationError(
+                        "execution_failed",
+                        "Branch execution failed; inspect saved messages before continuing"
+                      )
+                    )
+                  )
+              ,
+              turn =>
+                ZIO.succeed(
+                  BranchOutcome.Succeeded(
+                    parent,
+                    turn.promptId,
+                    turn.head,
+                    turn.result,
+                    turn.newMessages.map(MessageSnapshot.from)
+                  )
+                )
+            )
+        } yield result
+      } { cause =>
+        cause.failureOption match {
+          case Some(error) if cause.defects.isEmpty && !cause.isInterrupted => ZIO.fail(error)
+          case _                                                            =>
+            ZIO.succeed(
+              BranchOutcome.Failed(
+                parent,
+                PromptAcceptance.Unknown,
+                None,
+                None,
+                Chunk.empty,
+                ApplicationError(
+                  "execution_unknown",
+                  "Branch outcome unknown; refresh and inspect messages; do not automatically retry"
+                )
+              )
+            )
+        }
+      }
 
     /** Single-message configured invocation, never a model/tool loop. The application owns work and the caller owns
       * only its wait. No session, continuation policy or session diagnostic capture is created. Accepted input survives

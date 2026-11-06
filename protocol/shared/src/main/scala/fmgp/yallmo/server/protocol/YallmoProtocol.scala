@@ -294,6 +294,41 @@ object YallmoProtocol {
       ).contains(code)
   }
 
+  object BranchesSubmit {
+    val method: String = "branches.submit"
+    @jsonNoExtraFields
+    final case class Task(prompt: String) derives JsonCodec
+    @jsonNoExtraFields
+    final case class Params(parentId: MessageId, agentId: AgentId, task: Task, actingAgentId: AgentId) derives JsonCodec
+    type Result = BranchOutcome
+    def isKnownRejection(code: Int): Boolean = TurnSubmit.isKnownRejection(code)
+  }
+
+  /** Sessionless terminal outcome. head is confirmed stored; unknown failures may have additional saved artifacts. No
+    * session identifier or opaque provider continuation is a wire field.
+    */
+  @jsonDiscriminator("status")
+  sealed trait BranchOutcome derives JsonCodec
+  object BranchOutcome {
+    @jsonHint("succeeded")
+    final case class Succeeded(
+        parentId: MessageId,
+        promptId: MessageId,
+        head: MessageId,
+        result: AgentResult,
+        newMessages: Chunk[MessageSnapshot]
+    ) extends BranchOutcome
+    @jsonHint("failed")
+    final case class Failed(
+        parentId: MessageId,
+        acceptance: PromptAcceptance,
+        promptId: Option[MessageId],
+        head: Option[MessageId],
+        newMessages: Chunk[MessageSnapshot],
+        error: ApplicationError
+    ) extends BranchOutcome
+  }
+
   /** Authoritative prompt persistence, not run admission. Unknown is required when acceptance cannot be established. */
   enum PromptAcceptance derives JsonCodec {
     @jsonHint("notAccepted") case NotAccepted

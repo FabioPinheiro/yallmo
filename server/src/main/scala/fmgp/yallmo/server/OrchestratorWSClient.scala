@@ -59,6 +59,9 @@ final class OrchestratorWSClient private (
       TurnSubmit.Params(target, agentId, task, actingAgentId, expectedHead, resetContinuation)
     )
 
+  override def submitBranch(params: BranchesSubmit.Params): IO[Error, BranchOutcome] =
+    request(BranchesSubmit.method, params)
+
   /** Select an owned actor per invocation, independently of the recipient. */
   def invokeAgent(params: AgentsInvoke.Params): IO[Error, fmgp.yallmo.model.Message] =
     request(AgentsInvoke.method, params)
@@ -122,7 +125,8 @@ final class OrchestratorWSClient private (
                 value <- promise.await
               } yield value
             value <-
-              if method == TurnSubmit.method || method == ProvidersLoginComplete.method then wait
+              if method == TurnSubmit.method || method == BranchesSubmit.method || method == ProvidersLoginComplete.method
+              then wait
               else wait.timeoutFail(Error.RequestTimedOut)(timeout)
             decoded <- ZIO.fromEither(value.as[A]).mapError(_ => Error.InvalidResponse)
           } yield decoded

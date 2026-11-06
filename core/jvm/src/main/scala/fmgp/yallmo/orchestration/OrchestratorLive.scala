@@ -44,189 +44,305 @@ final class OrchestratorLive[-R] private[orchestration] (
         _ <- addSessionAgent(id, userId)
         session <- append(id, userId, Chunk(MessagePayload.User(task.prompt)))
       } yield session).mapError(SessionSubmitFailure(_, None))
-      submitted <- ZIO.scoped {
-        for {
-          active <- Ref.make(accepted.messages)
-          closed <- Ref.make(false)
-          gate <- Semaphore.make(1)
-          // This journal NEVER changes prefixes, even when active context is replaced.
-          journal <- Ref.make(accepted.messages)
-          audit <- Ref.make(Chunk.empty[Message])
-          storedCount <- Ref.make(accepted.messages.size)
-          published <- Ref.make(accepted)
-          attemptedPublication <- Ref.make(accepted.messages)
-          queue <- Queue.unbounded[Option[UIO[Unit]]]
-          persistObjects =
-            for {
-              all <- journal.get
-              count <- storedCount.get
-              _ <- ZIO.foreachDiscard(all.drop(count))(message => persistMessage(message) *> storedCount.update(_ + 1))
-            } yield ()
-          publish = (next: Chunk[Message]) => {
-            val target = next.lastOption.map(_.id)
-            for {
-              pending <- attemptedPublication.get
-              _ <- storage.loadSession(id).exit.flatMap {
-                case Exit.Success(saved) if saved.messages == pending => published.set(saved)
-                case _                                                => ZIO.unit
-              }
-              previous <- published.get
-              expected = previous.messages.lastOption.map(_.id)
-              _ <- attemptedPublication.set(next)
-              _ <- (ZIO.foreachDiscard(next.map(_.agentId).distinct)(addSessionAgent(id, _)) *>
-                storage
-                  .compareAndSetSessionHead(id, expected, target)
-                  .flatMap(saved =>
-                    published.set(saved) *> ZIO
-                      .logDebug(s"Session pointer published session=${id.value} old=$expected new=$target")
-                  )).catchAllCause { _ =>
-                // A ref may have succeeded before its acknowledgement failed. Recognize ONLY the exact target;
-                // never adopt a competing head as the next expected parent.
-                ZIO.logError(s"Session pointer publication failed session=${id.value} old=$expected new=$target") *>
-                  storage.loadSession(id).exit.flatMap {
-                    case Exit.Success(saved) if saved.messages == next => published.set(saved)
-                    case _                                             => ZIO.unit
-                  }
-              }
-            } yield ()
+      submitted <- managedSubmit(accepted.messages, Some(accepted), task, execution)
+        .mapError(failure => SessionSubmitFailure(failure.error, failure.session))
+    } yield SessionTurn(
+      submitted.session.getOrElse(accepted),
+      submitted.result,
+      Chunk(MessagePayload.User(task.prompt)) ++ submitted.appended.map(_.payload)
+    )
+
+  override def submitBranch[R1](
+      parentId: MessageId,
+      authorId: AgentId,
+      task: AgentTask,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, BranchSubmitFailure, BranchTurn] =
+    for {
+      source <- (for {
+        _ <- ZIO.fail(YallmoError.InvalidMessage("Prompt must not be blank")).when(task.prompt.trim.isEmpty)
+        _ <- getAgent(execution.agentId)
+        _ <- instances.validateAuthor(authorId)
+        inventory <- storage.listMessages.mapError(YallmoError.StorageFailed.apply)
+        history <- StoreageUtils.ancestry(inventory.map(message => message.id -> message).toMap, Some(parentId))
+        _ <- validateToolExchanges(history)
+      } yield history).mapError(error => BranchSubmitFailure(error, BranchAcceptance.NotAccepted))
+      timestamp <- Clock.instant
+      prompt = Message(MessageData(authorId, Some(parentId), timestamp, MessagePayload.User(task.prompt)))
+      _ <- persistMessage(prompt).mapError(error =>
+        BranchSubmitFailure(error, BranchAcceptance.Unknown, Some(prompt.id))
+      )
+      result <- managedSubmit(source :+ prompt, None, task, execution).foldZIO(
+        failure => verifyBranch(source, prompt, failure.messages, failure.appended, Left(failure.error)),
+        turn => verifyBranch(source, prompt, turn.messages, turn.appended, Right(turn.result))
+      )
+    } yield result
+
+  private def verifyBranch(
+      source: Chunk[Message],
+      prompt: Message,
+      active: Chunk[Message],
+      audit: Chunk[Message],
+      outcome: Either[YallmoError, AgentResult]
+  ): IO[BranchSubmitFailure, BranchTurn] = {
+    val knownFailure = (error: YallmoError) =>
+      BranchSubmitFailure(error, BranchAcceptance.Accepted, Some(prompt.id), Some(prompt.id), Chunk(prompt))
+    for {
+      inventory <- storage.listMessages.mapError(error => knownFailure(YallmoError.StorageFailed(error)))
+      objects = inventory.map(message => message.id -> message).toMap
+      sourceIds = source.map(_.id).toSet
+      candidates = (Chunk(prompt) ++ audit ++ active.filterNot(message => sourceIds(message.id))).distinctBy(_.id)
+      saved = candidates.filter(message => objects.get(message.id).contains(message))
+      head = active
+        .takeWhile(message => objects.get(message.id).contains(message))
+        .lastOption
+        .map(_.id)
+        .getOrElse(prompt.id)
+      result <- outcome match {
+        case Left(error) =>
+          ZIO.fail(BranchSubmitFailure(error, BranchAcceptance.Accepted, Some(prompt.id), Some(head), saved))
+        case Right(_) if saved.size != candidates.size =>
+          ZIO.fail(
+            BranchSubmitFailure(
+              YallmoError.InvalidMessage("Branch transcript was not fully persisted"),
+              BranchAcceptance.Accepted,
+              Some(prompt.id),
+              Some(head),
+              saved
+            )
+          )
+        case Right(result) => ZIO.succeed(BranchTurn(prompt.parentId.get, prompt.id, head, result, saved))
+      }
+    } yield result
+  }
+
+  private final case class ManagedTurn(
+      session: Option[Session],
+      result: AgentResult,
+      messages: Chunk[Message],
+      appended: Chunk[Message]
+  )
+  private final case class ManagedFailure(
+      error: YallmoError,
+      session: Option[Session],
+      messages: Chunk[Message],
+      appended: Chunk[Message]
+  )
+
+  private def managedSubmit[R1](
+      initial: Chunk[Message],
+      publication: Option[Session],
+      task: AgentTask,
+      execution: AgentExecution[R1]
+  ): ZIO[R1, ManagedFailure, ManagedTurn] = {
+    val label = publication.fold("Unnamed branch")(session => s"Session ${session.id.value}")
+    ZIO.scoped {
+      for {
+        active <- Ref.make(initial)
+        closed <- Ref.make(false)
+        gate <- Semaphore.make(1)
+        // This journal NEVER changes prefixes, even when active context is replaced.
+        journal <- Ref.make(initial)
+        audit <- Ref.make(Chunk.empty[Message])
+        storedCount <- Ref.make(initial.size)
+        published <- Ref.make(publication)
+        attemptedPublication <- Ref.make(initial)
+        queue <- Queue.unbounded[Option[UIO[Unit]]]
+        persistObjects =
+          for {
+            all <- journal.get
+            count <- storedCount.get
+            _ <- ZIO.foreachDiscard(all.drop(count))(message => persistMessage(message) *> storedCount.update(_ + 1))
+          } yield ()
+        publish = (next: Chunk[Message]) =>
+          publication match {
+            case None           => ZIO.unit
+            case Some(accepted) =>
+              val id = accepted.id
+              val target = next.lastOption.map(_.id)
+              for {
+                pending <- attemptedPublication.get
+                _ <- storage.loadSession(id).exit.flatMap {
+                  case Exit.Success(saved) if saved.messages == pending => published.set(Some(saved))
+                  case _                                                => ZIO.unit
+                }
+                previous <- published.get.map(_.getOrElse(accepted))
+                expected = previous.messages.lastOption.map(_.id)
+                _ <- attemptedPublication.set(next)
+                _ <- (ZIO.foreachDiscard(next.map(_.agentId).distinct)(addSessionAgent(id, _)) *>
+                  storage
+                    .compareAndSetSessionHead(id, expected, target)
+                    .flatMap(saved =>
+                      published.set(Some(saved)) *> ZIO
+                        .logDebug(s"Session pointer published session=${id.value} old=$expected new=$target")
+                    )).catchAllCause { _ =>
+                  // A ref may have succeeded before its acknowledgement failed. Recognize ONLY the exact target;
+                  // never adopt a competing head as the next expected parent.
+                  ZIO.logError(s"Session pointer publication failed session=${id.value} old=$expected new=$target") *>
+                    storage.loadSession(id).exit.flatMap {
+                      case Exit.Success(saved) if saved.messages == next => published.set(Some(saved))
+                      case _                                             => ZIO.unit
+                    }
+                }
+              } yield ()
           }
-          checkpoint = (next: Chunk[Message]) =>
-            (persistObjects *> publish(next)).catchAllCause(cause =>
-              ZIO.logErrorCause(s"Session ${id.value} checkpoint persistence failed", cause)
-            )
-          writer <- queue.take
-            .flatMap {
-              case Some(work) => work.as(true)
-              case None       => ZIO.succeed(false)
-            }
-            .repeatWhile(identity)
-            .forkScoped
-          history = new ManagedHistory {
-            override def messages: UIO[Chunk[Message]] = active.get
-            override def initialMessages: UIO[Chunk[Message]] = ZIO.succeed(accepted.messages)
-            override private[orchestration] def snapshot: UIO[Chunk[Message]] = active.get
-            private def ensureOpen: IO[YallmoError, Unit] = closed.get.flatMap(value =>
-              ZIO.fail(YallmoError.InvalidAgentDecision("Managed history submission is closed")).when(value).unit
-            )
-            private def allocate(payloads: Chunk[MessagePayload], parent: Option[MessageId]): UIO[Chunk[Message]] =
-              ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (batch, payload) =>
-                Clock.instant.map(timestamp =>
-                  batch :+ Message(
-                    MessageData(execution.agentId, batch.lastOption.map(_.id).orElse(parent), timestamp, payload)
-                  )
+        checkpoint = (next: Chunk[Message]) =>
+          (persistObjects *> publish(next)).catchAllCause(cause =>
+            ZIO.logErrorCause(s"$label checkpoint persistence failed", cause)
+          )
+        writer <- queue.take
+          .flatMap {
+            case Some(work) => work.as(true)
+            case None       => ZIO.succeed(false)
+          }
+          .repeatWhile(identity)
+          .forkScoped
+        history = new ManagedHistory {
+          override def messages: UIO[Chunk[Message]] = active.get
+          override def initialMessages: UIO[Chunk[Message]] = ZIO.succeed(initial)
+          override private[orchestration] def snapshot: UIO[Chunk[Message]] = active.get
+          private def ensureOpen: IO[YallmoError, Unit] = closed.get.flatMap(value =>
+            ZIO.fail(YallmoError.InvalidAgentDecision("Managed history submission is closed")).when(value).unit
+          )
+          private def allocate(payloads: Chunk[MessagePayload], parent: Option[MessageId]): UIO[Chunk[Message]] =
+            ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (batch, payload) =>
+              Clock.instant.map(timestamp =>
+                batch :+ Message(
+                  MessageData(execution.agentId, batch.lastOption.map(_.id).orElse(parent), timestamp, payload)
                 )
-              }
-            private def appendLocked(payloads: Chunk[MessagePayload]): IO[YallmoError, Option[MessageId]] = for {
+              )
+            }
+          private def appendLocked(payloads: Chunk[MessagePayload]): IO[YallmoError, Option[MessageId]] = for {
+            _ <- ensureOpen
+            current <- active.get
+            batch <- allocate(payloads, current.lastOption.map(_.id))
+            next = current ++ batch
+            _ <- journal.update(_ ++ batch)
+            _ <- audit.update(_ ++ batch)
+            _ <- active.set(next)
+            _ <- queue.offer(Some(checkpoint(next)))
+          } yield next.lastOption.map(_.id)
+          override private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit] =
+            gate.withPermit(appendLocked(payloads).unit.uninterruptible)
+          override private[orchestration] def appendAt(
+              payloads: Chunk[MessagePayload],
+              expectedParent: Option[MessageId]
+          ): IO[YallmoError, Option[MessageId]] = gate.withPermit {
+            (for {
               _ <- ensureOpen
               current <- active.get
-              batch <- allocate(payloads, current.lastOption.map(_.id))
-              next = current ++ batch
-              _ <- journal.update(_ ++ batch)
-              _ <- audit.update(_ ++ batch)
-              _ <- active.set(next)
-              _ <- queue.offer(Some(checkpoint(next)))
-            } yield next.lastOption.map(_.id)
-            override private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit] =
-              gate.withPermit(appendLocked(payloads).unit.uninterruptible)
-            override private[orchestration] def appendAt(
-                payloads: Chunk[MessagePayload],
-                expectedParent: Option[MessageId]
-            ): IO[YallmoError, Option[MessageId]] = gate.withPermit {
-              (for {
-                _ <- ensureOpen
-                current <- active.get
-                head <-
-                  if current.lastOption.map(_.id) == expectedParent then appendLocked(payloads)
-                  else
-                    for {
-                      // Preserve actual stale execution under the parent it used; never attach it to a new context.
-                      batch <- allocate(payloads, expectedParent)
-                      _ <- journal.update(_ ++ batch)
-                      _ <- audit.update(_ ++ batch)
-                      _ <- queue.offer(Some(checkpoint(current)))
-                      _ <- ZIO.fail(
-                        YallmoError.InvalidAgentDecision(
-                          "History changed during work; stale execution retained, continuation stopped"
-                        )
-                      )
-                    } yield current.lastOption.map(_.id)
-              } yield head).uninterruptible
-            }
-            override def rebase(
-                base: MessageId,
-                head: MessageId,
-                onto: Option[MessageId]
-            ): IO[YallmoError, Chunk[Message]] =
-              gate.withPermit(rebaseLocked(base, head, onto))
-
-            private def rebaseLocked(
-                base: MessageId,
-                head: MessageId,
-                onto: Option[MessageId]
-            ): IO[YallmoError, Chunk[Message]] =
-              for {
-                _ <- ensureOpen
-                current <- active.get
-                _ <- ZIO
-                  .fail(YallmoError.InvalidMessage("Managed rebase must end at the current local head"))
-                  .unless(current.lastOption.exists(_.id == head) && current.exists(_.id == base))
-                barrier <- Promise.make[YallmoError, Unit]
-                _ <- queue.offer(Some(persistObjects.exit.flatMap(barrier.done).unit))
-                _ <- barrier.await
-                inventory <- storage.listMessages
-                objects = inventory.map(m => m.id -> m).toMap
-                source <- StoreageUtils.ancestry(objects, Some(head))
-                destination <- StoreageUtils.ancestry(objects, onto)
-                _ <- ZIO.foreachDiscard(source ++ destination)(m => instances.validateAuthor(m.agentId))
-                originals = source.drop(source.indexWhere(_.id == base) + 1)
-                changed = destination ++ originals != current
-                // Each side of the cut must stand alone; never repair or re-pair an exchange across a cut.
-                _ <- ZIO.when(changed) {
+              head <-
+                if current.lastOption.map(_.id) == expectedParent then appendLocked(payloads)
+                else
                   for {
-                    _ <- validateToolExchanges(destination)
-                    _ <- validateToolExchanges(originals)
-                    _ <- validateOriginalToolPairs(source, originals)
-                  } yield ()
-                }
-                retainedDestination = if changed then destination.filterNot(isReasoning) else destination
-                retainedSource = if changed then originals.filterNot(isReasoning) else originals
-                next = if changed then replayMessages(retainedDestination ++ retainedSource) else current
-                rewritten = next.drop(retainedDestination.size)
-                _ <- validateToolExchanges(next).when(changed)
-                _ <- ZIO.foreachDiscard(next)(persistMessage)
-                removed = if changed then (destination ++ originals).filter(isReasoning).map(_.id) else Chunk.empty
-                mappings = (retainedDestination ++ retainedSource).map(_.id).zip(next.map(_.id))
-                // Short interruption-safe activation/enqueue; all object I/O above remains interruptible.
-                _ <- (active.set(next) *>
-                  queue.offer(Some(publish(next))) *>
-                  ZIO.logInfo(
-                    s"Managed rebase session=${id.value} base=$base head=$head onto=$onto old=${current.lastOption.map(_.id)} new=${next.lastOption.map(_.id)} copies=$mappings removedReasoning=$removed"
-                  )).uninterruptible
-              } yield rewritten
+                    // Preserve actual stale execution under the parent it used; never attach it to a new context.
+                    batch <- allocate(payloads, expectedParent)
+                    _ <- journal.update(_ ++ batch)
+                    _ <- audit.update(_ ++ batch)
+                    _ <- queue.offer(Some(checkpoint(current)))
+                    _ <- ZIO.fail(
+                      YallmoError.InvalidAgentDecision(
+                        "History changed during work; stale execution retained, continuation stopped"
+                      )
+                    )
+                  } yield current.lastOption.map(_.id)
+            } yield head).uninterruptible
           }
-          // Close under the same local gate: a retained capability cannot enqueue into a dead writer.
-          finish = gate.withPermit(
-            closed.set(true) *> active.get.flatMap(next => queue.offer(Some(checkpoint(next))))
-          ) *>
-            queue.offer(None) *> writer.join *> journal.get.zip(storedCount.get).flatMap { case (all, count) =>
-              ZIO
-                .logWarning(s"Session ${id.value} submission has ${all.size - count} generated message(s) not stored")
-                .when(count < all.size)
-                .unit
+          override def rebase(
+              base: MessageId,
+              head: MessageId,
+              onto: Option[MessageId]
+          ): IO[YallmoError, Chunk[Message]] =
+            gate.withPermit(rebaseLocked(base, head, onto))
+
+          private def rebaseLocked(
+              base: MessageId,
+              head: MessageId,
+              onto: Option[MessageId]
+          ): IO[YallmoError, Chunk[Message]] =
+            for {
+              _ <- ensureOpen
+              current <- active.get
+              _ <- ZIO
+                .fail(YallmoError.InvalidMessage("Managed rebase must end at the current local head"))
+                .unless(current.lastOption.exists(_.id == head) && current.exists(_.id == base))
+              barrier <- Promise.make[YallmoError, Unit]
+              _ <- queue.offer(Some(persistObjects.exit.flatMap(barrier.done).unit))
+              _ <- barrier.await
+              inventory <- storage.listMessages
+              objects = inventory.map(m => m.id -> m).toMap
+              source <- StoreageUtils.ancestry(objects, Some(head))
+              destination <- StoreageUtils.ancestry(objects, onto)
+              _ <- ZIO.foreachDiscard(source ++ destination)(m => instances.validateAuthor(m.agentId))
+              originals = source.drop(source.indexWhere(_.id == base) + 1)
+              changed = destination ++ originals != current
+              // Each side of the cut must stand alone; never repair or re-pair an exchange across a cut.
+              _ <- ZIO.when(changed) {
+                for {
+                  _ <- validateToolExchanges(destination)
+                  _ <- validateToolExchanges(originals)
+                  _ <- validateOriginalToolPairs(source, originals)
+                } yield ()
+              }
+              retainedDestination = if changed then destination.filterNot(isReasoning) else destination
+              retainedSource = if changed then originals.filterNot(isReasoning) else originals
+              next = if changed then replayMessages(retainedDestination ++ retainedSource) else current
+              rewritten = next.drop(retainedDestination.size)
+              _ <- validateToolExchanges(next).when(changed)
+              _ <- ZIO.foreachDiscard(next)(persistMessage)
+              removed = if changed then (destination ++ originals).filter(isReasoning).map(_.id) else Chunk.empty
+              mappings = (retainedDestination ++ retainedSource).map(_.id).zip(next.map(_.id))
+              // Short interruption-safe activation/enqueue; all object I/O above remains interruptible.
+              _ <- (active.set(next) *>
+                queue.offer(Some(publish(next))) *>
+                ZIO.logInfo(
+                  s"Managed rebase target=$label base=$base head=$head onto=$onto old=${current.lastOption.map(_.id)} new=${next.lastOption.map(_.id)} copies=$mappings removedReasoning=$removed"
+                )).uninterruptible
+            } yield rewritten
+        }
+        // Close under the same local gate: a retained capability cannot enqueue into a dead writer.
+        finish = gate.withPermit(
+          closed.set(true) *> active.get.flatMap(next => queue.offer(Some(checkpoint(next))))
+        ) *>
+          queue.offer(None) *> writer.join *> journal.get.zip(storedCount.get).flatMap { case (all, count) =>
+            ZIO
+              .logWarning(s"$label submission has ${all.size - count} generated message(s) not stored")
+              .when(count < all.size)
+              .unit
+          }
+        turn <- (for {
+          turn <- execution.run(task, history)
+          _ <- ZIO
+            .fail(YallmoError.InvalidAgentDecision("Agent execution must preserve its agent ID"))
+            .unless(turn.result.agentId == execution.agentId)
+        } yield turn)
+          .ensuring(finish)
+          .catchAllCause { cause =>
+            val typed = cause.failureOption.filter(_ => cause.defects.isEmpty && !cause.isInterrupted)
+            val error = typed.orElse(
+              Option.when(publication.isEmpty)(
+                YallmoError.InvalidAgentDecision("Branch execution interrupted or failed unexpectedly")
+              )
+            )
+            error match {
+              case Some(value) =>
+                (ZIO.logErrorCause("Branch execution failed unexpectedly", cause).when(typed.isEmpty) *>
+                  (for {
+                    saved <- published.get
+                    messages <- active.get
+                    appended <- audit.get
+                    failed <- ZIO.fail(ManagedFailure(value, saved, messages, appended))
+                  } yield failed))
+              case None => ZIO.refailCause(cause.stripFailures)
             }
-          turn <- (for {
-            turn <- execution.run(task, history)
-            _ <- ZIO
-              .fail(YallmoError.InvalidAgentDecision("Agent execution must preserve its agent ID"))
-              .unless(turn.result.agentId == execution.agentId)
-          } yield turn)
-            .ensuring(finish)
-            .catchAll(error => published.get.flatMap(saved => ZIO.fail(SessionSubmitFailure(error, Some(saved)))))
-          saved <- published.get
-          response <- audit.get.map(_.map(_.payload))
-        } yield SessionTurn(saved, turn.result, Chunk(MessagePayload.User(task.prompt)) ++ response)
-      }
-    } yield submitted
+          }
+        saved <- published.get
+        response <- audit.get
+        messages <- active.get
+      } yield ManagedTurn(saved, turn.result, messages, response)
+
+    }
+  }
 
   private def persistMessage(message: Message): IO[YallmoError, Message] =
     instances.validateAuthor(message.agentId) *>

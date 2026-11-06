@@ -37,9 +37,13 @@ import org.scalajs.dom
   */
 private[web] object ChatView {
 
-  /** Conversation actions and session list; `openChat` switches to Chat and closes mobile navigation after selection.
-    */
-  def sidebar(model: ChatModel, openChat: () => Unit): HtmlElement = {
+  /** New/draft actions explicitly open Chat; the application decides where existing-session clicks navigate. */
+  def sidebar(
+      model: ChatModel,
+      openChat: () => Unit,
+      selectedSession: Signal[Option[String]],
+      selectSession: String => Unit
+  ): HtmlElement = {
     val state = model.state.signal
     val name = Var("")
     div(
@@ -85,12 +89,12 @@ private[web] object ChatView {
           li(
             button(
               typ := "button",
-              cls <-- state.map(s => if s.active == id then "session selected" else "session"),
+              cls <-- selectedSession.map(selected => if selected.contains(id) then "session selected" else "session"),
 
-              aria.current <-- state.map(s => if s.active == id then "true" else "false"),
+              aria.current <-- selectedSession.map(selected => if selected.contains(id) then "true" else "false"),
               span(cls := "session-name", id),
               span(cls := "muted", child.text <-- summary.map(s => s"${s.messageCount} messages")),
-              onClick --> (_ => { model.resume(id); openChat() })
+              onClick --> (_ => selectSession(id))
             )
           )
         }
@@ -212,7 +216,11 @@ private[web] object ChatView {
       })
     }
     sectionTag(
-      cls := "chat-main",
+      cls := "conversation-layout chat-main",
+      onMountCallback { _ =>
+        val s = model.state.now()
+        if s.active.nonEmpty && s.current.reloadRequired && !s.current.loading && s.pending.isEmpty then model.reload()
+      },
       onUnmountCallback(_ => voice.cancel(false)),
       state.map(_.active).distinct.changes --> (_ => voice.cancel(false)),
       model.voiceInsertions.events --> { insertion =>
@@ -225,7 +233,7 @@ private[web] object ChatView {
         }
       },
       div(
-        cls := "chat-heading",
+        cls := "conversation-header chat-heading",
         h2(
           child.text <-- state.map(s => if s.active.isEmpty then "New conversation" else s"Conversation: ${s.active}")
         ),

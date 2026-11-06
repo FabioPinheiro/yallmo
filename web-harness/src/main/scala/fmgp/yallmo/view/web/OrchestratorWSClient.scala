@@ -92,6 +92,7 @@ final class OrchestratorWSClient private[web] (
       .fromTry(Try(SessionId.from(id).fold(reason => throw new IllegalArgumentException(reason), identity)))
       .flatMap(id => request(SessionsGet.method, SessionsGet.Params(id)))
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
+  def submitBranch(params: BranchesSubmit.Params): Future[BranchOutcome] = request(BranchesSubmit.method, params)
   def invokeAgent(params: AgentsInvoke.Params): Future[Message] = request(AgentsInvoke.method, params)
   def uploadBlob(params: BlobsUpload.Params): Future[BlobsUpload.Result] = request(BlobsUpload.method, params)
   def providers(): Future[ProvidersList.Result] = request(ProvidersList.method, Empty())
@@ -191,7 +192,7 @@ final class OrchestratorWSClient private[web] (
       val result = Promise[Json]()
       // Execution is terminal-response only and may legitimately outlast a read deadline.
       val timer = Option.when(
-        method != TurnSubmit.method && method != AgentsInvoke.method && method != ProvidersLoginComplete.method
+        method != TurnSubmit.method && method != BranchesSubmit.method && method != AgentsInvoke.method && method != ProvidersLoginComplete.method
       )(setTimeout(timeoutMillis) {
         pending.remove(id).foreach(_.result.tryFailure(new RuntimeException("Request timed out")))
       })

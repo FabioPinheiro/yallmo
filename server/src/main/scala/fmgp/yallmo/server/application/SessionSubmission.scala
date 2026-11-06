@@ -132,6 +132,16 @@ object SessionSubmission {
   ): AgentExecution[R] =
     runner.execution(withCurrentContinuations(agent, continuationStart), context)
 
+  /** A branch starts a fresh provider continuation scope. Retain initial stored objects, but exclude their opaque
+    * continuation payloads from provider requests; reasoning generated during this execution remains usable.
+    */
+  private[application] def branchExecution[R](
+      runner: AgentRunner[R],
+      agent: AgentInstance[R],
+      context: StaticContext[R]
+  ): AgentExecution[R] =
+    runner.execution(withCurrentContinuations(agent, Int.MaxValue), context)
+
   /** Filter only provider request history; keep the runner's append-only transcript and capability policy intact. */
   private def withCurrentContinuations[R](
       selected: AgentInstance[R],

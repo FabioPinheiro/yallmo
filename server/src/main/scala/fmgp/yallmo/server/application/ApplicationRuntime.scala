@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, YallmoError}
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, YallmoError}
 import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ConfigFile, ConfiguredAgentSettings, ProviderId}
@@ -322,6 +322,25 @@ object ApplicationRuntime {
       orchestrator.invoke(
         input,
         runner(selected).invocation(selection.bind[R](id => orchestrator.readBlob(id)), context(selected))
+      )
+    }
+
+    def submitBranch(
+        author: AgentId,
+        parent: MessageId,
+        prompt: String,
+        selection: ConfiguredAgentBinding
+    ): ZIO[R, BranchSubmitFailure, BranchTurn] = {
+      val selected = Some(selection)
+      orchestrator.submitBranch(
+        parent,
+        author,
+        AgentTask(prompt),
+        SessionSubmission.branchExecution(
+          runner(selected),
+          selection.bind[R](id => orchestrator.readBlob(id)),
+          context(selected)
+        )
       )
     }
 

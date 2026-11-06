@@ -2,7 +2,7 @@ package fmgp.yallmo.view.web
 
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.ControlAction
-import fmgp.yallmo.model.{AgentId, BlobId, MessageId, UserId}
+import fmgp.yallmo.model.{AgentId, BlobId, UserId}
 import fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot
 import org.scalajs.dom
 import scala.concurrent.Future
@@ -44,6 +44,13 @@ object App {
     val chat = new ChatModel(client, notifications.publish)
     val selectedAgent = chat.state.signal.map(_.current.agent).distinct
     val scalamode = new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent)
+    val branch = new GraphBranchModel(
+      client.submitBranch,
+      () => chat.state.now().current.agent,
+      () => chat.state.now().pending.nonEmpty || chat.state.now().voiceBusy || scalamode.state.now().pending,
+      () => client.connectionVersion
+    )
+    val branchBusy = branch.state.signal.map(_.pending.nonEmpty).distinct
     val voice = new VoiceModel(
       chat,
       VoiceRecorder.browser,
@@ -54,16 +61,20 @@ object App {
     val humanName = Var("fabio")
     val connection = Var("Connecting…")
     val connecting = Var(false)
+    val connected = Var(false)
     val sidebarOpen = Var(false)
+    val route = Var(ViewRoute.parse(dom.window.location.hash))
     val refresh = new EventBus[Unit]
     val refreshes = refresh.events.startWith(())
     var claimedUser = OrchestratorWSClient.claimedUser("fabio")
     var intentionalClose = false
     var mounted = false
     def close(): Unit = {
+      connected.set(false)
       voice.disable()
       providers.disable()
       scalamode.disable()
+      branch.disable()
       intentionalClose = true
       client.close()
       intentionalClose = false
@@ -73,7 +84,9 @@ object App {
       if requestedUser.nonEmpty && !connecting
           .now() && chat.state.now().pending.isEmpty && !chat.state
           .now()
-          .voiceBusy && !scalamode.state.now().pending && !providers.state.now().busy
+          .voiceBusy && !scalamode.state.now().pending && branch.state.now().pending.isEmpty && !providers.state
+          .now()
+          .busy
       then {
         connecting.set(true)
         connection.set("Connecting…")
@@ -85,32 +98,49 @@ object App {
         client.connect(claimedUser).onComplete {
           case scala.util.Success(info) if mounted =>
             connecting.set(false)
-            chat.configure(info)
+            val graphOwnsSnapshots = route.now() == ViewRoute.Graph
+            chat.configure(info, refreshSessions = !graphOwnsSnapshots)
             scalamode.configure(info)
+            branch.configure(info)
             voice.configure(info)
             providers.configure(info)
-            chat.reload()
+            if !graphOwnsSnapshots then chat.reload()
             refresh.emit(())
+            connected.set(true)
             connection.set(if OrchestratorWSClient.canChat(info) then
               s"Trusted operator · ${UserId.value(info.identity.id)}"
             else "Read only")
           case scala.util.Failure(error) if mounted =>
+            connected.set(false)
             connecting.set(false)
             voice.disable()
             chat.disable()
             providers.disable()
             scalamode.disable()
+            branch.disable()
             connection.set(s"Disconnected: ${error.getMessage}")
             notifications.publish(UiNotice(s"Connection failed: ${error.getMessage}", "error"))
           case _ => ()
         }
       }
     }
-    val route = Var(ViewRoute.parse(dom.window.location.hash))
     def openChat(): Unit = {
       route.set(ViewRoute.Chat)
       dom.window.location.hash = ViewRoute.Chat.href
       sidebarOpen.set(false)
+    }
+    val graphSession = Var(Option.empty[String])
+    val graphNavigation = new EventBus[String]
+    val sessionNavigation = new SidebarSessionNavigation(
+      () => route.now(),
+      chat.resume,
+      () => openChat(),
+      id => { graphSession.set(Some(id)); graphNavigation.emit(id) },
+      () => sidebarOpen.set(false)
+    )
+    val sidebarSession = route.signal.combineWith(chat.state.signal.map(_.active), graphSession.signal).map {
+      case (ViewRoute.Graph, _, selected) => selected
+      case (_, active, _)                 => Option.when(active.nonEmpty)(active)
     }
     def unavailable(): Unit =
       notifications.publish(UiNotice("This control is not available right now.", "warn"))
@@ -135,7 +165,12 @@ object App {
       } ++ List(
         WebCommand(
           ControlAction.Edit,
-          () => if route.now() == ViewRoute.Scalamode then focus("#scalamode-code") else focusChat("#chat-composer")
+          () =>
+            route.now() match {
+              case ViewRoute.Scalamode => focus("#scalamode-code")
+              case ViewRoute.Graph     => focus("#graph-composer")
+              case _                   => focusChat("#chat-composer")
+            }
         ),
         WebCommand(
           ControlAction.Agents,
@@ -173,15 +208,18 @@ object App {
     )
     div(
       cls := "app",
+      branchBusy --> (busy => { chat.setBranchBusy(busy); scalamode.setBranchBusy(busy) }),
       voice.state.signal
         .map(s => s.phase == VoicePhase.Preparing || s.phase == VoicePhase.Recording || s.phase == VoicePhase.Stopping)
         .distinct --> speech.setCaptureActive,
       disconnected.events --> { error =>
         if mounted && !intentionalClose then {
+          connected.set(false)
           voice.disable()
           chat.disable()
           providers.disable()
           scalamode.disable()
+          branch.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
           if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
         }
@@ -228,7 +266,7 @@ object App {
               )
             }
           ),
-          ChatView.sidebar(chat, () => openChat())
+          ChatView.sidebar(chat, () => openChat(), sidebarSession, sessionNavigation.select)
         )
       ),
       div(
@@ -244,17 +282,23 @@ object App {
             onInput.mapToValue --> humanName.writer
           ),
           span(cls := "connection-status", role := "status", child.text <-- connection.signal),
-          ChatView.agentSelect(chat, scalamode.state.signal.map(_.pending)),
+          ChatView.agentSelect(chat, scalamode.state.signal.map(_.pending).combineWith(branchBusy).map(_ || _)),
           button(
             typ := "button",
             "Reconnect",
             idAttr := "reconnect",
             disabled <-- humanName.signal
-              .combineWith(connecting.signal, chat.state.signal, scalamode.state.signal, providers.state.signal)
-              .map { case (name, busy, state, scalaState, providerState) =>
+              .combineWith(
+                connecting.signal,
+                chat.state.signal,
+                scalamode.state.signal,
+                providers.state.signal,
+                branchBusy
+              )
+              .map { case (name, busy, state, scalaState, providerState, branchPending) =>
                 OrchestratorWSClient
                   .claimedUser(name)
-                  .isEmpty || busy || state.pending.nonEmpty || state.voiceBusy || scalaState.pending || providerState.busy
+                  .isEmpty || busy || state.pending.nonEmpty || state.voiceBusy || scalaState.pending || providerState.busy || branchPending
               },
             title <-- humanName.signal.map(name =>
               if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
@@ -280,15 +324,21 @@ object App {
                   messageList(messages, client, speech)
                 )
               case ViewRoute.Graph =>
-                listPage("Conversation graph", "No messages.", () => client.messages(), refreshes) { messages =>
-                  div(
-                    p(
-                      cls := "muted",
-                      "Expand a node to inspect its message. Shared history appears once. Up to 32 levels are shown."
-                    ),
-                    child <-- messages.map(messages => conversationTree(messages, client, speech))
-                  )
-                }
+                ConversationGraphView(
+                  client,
+                  speech,
+                  refreshes,
+                  graphNavigation.events,
+                  graphSession.set,
+                  branch,
+                  selectedAgent,
+                  connected.signal,
+                  chat.updateSummaries,
+                  chat.state.signal
+                    .map(s => s.pending.nonEmpty || s.voiceBusy)
+                    .combineWith(scalamode.state.signal.map(_.pending))
+                    .map(_ || _)
+                )
               case ViewRoute.Agents =>
                 listPage(
                   "Agents",
@@ -374,7 +424,7 @@ object App {
       children <-- messages.split(_.id) { (_, initial, message) => messageCard(initial, message, client, speech) }
     )
 
-  private def messageCard(
+  private[web] def messageCard(
       initial: MessageSnapshot,
       message: Signal[MessageSnapshot],
       client: OrchestratorWSClient,
@@ -485,33 +535,4 @@ object App {
         )
     }
 
-  /** Messages have one parent, so a small HTML/CSS forest is enough; no graph layout library. */
-  private def conversationTree(
-      messages: List[MessageSnapshot],
-      client: OrchestratorWSClient,
-      speech: MessageSpeech
-  ): HtmlElement = {
-    val ids = messages.map(_.id).toSet
-    val children = messages.groupBy(_.parentId)
-    def branch(message: MessageSnapshot, depth: Int): HtmlElement =
-      li(
-        detailsTag(
-          cls := "graph-node",
-          summaryTag(
-            span(cls := "role", message.role),
-            span(s" ${message.agentId} · Message details"),
-            code(MessageId.value(message.id)),
-            small(s"Parent: ${message.parentId.getOrElse("(root)")}")
-          ),
-          messageCard(message, Val(message), client, speech)
-        ),
-        if depth >= 32 then
-          if children.contains(Some(message.id)) then
-            p(cls := "muted", "Depth limit; see All messages for the remaining messages.")
-          else emptyNode
-        else ul(children.getOrElse(Some(message.id), Nil).map(child => branch(child, depth + 1)))
-      )
-    val roots = messages.filter(message => message.parentId.forall(parent => !ids.contains(parent)))
-    div(cls := "graph-scroll", ul(cls := "graph-tree", roots.map(message => branch(message, 1))))
-  }
 }

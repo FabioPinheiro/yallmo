@@ -1,7 +1,15 @@
 package fmgp.yallmo.server
 
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, UserId, YallmoError}
-import fmgp.yallmo.orchestration.{BlobUploader, OrchestratorLive}
+import fmgp.yallmo.orchestration.{
+  BlobUploader,
+  EventSession,
+  EventUpdate,
+  OrchestrationEvents,
+  OrchestratorLive,
+  Session,
+  SessionSummary
+}
 import fmgp.yallmo.server.application.ServerApplication
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -40,7 +48,9 @@ private[server] final class OrchestratorRpc(
     for {
       state <- Ref.Synchronized.make[ConnectionState](ConnectionState.Uninitialized)
       uploads <- Ref.make(Map.empty[BlobId, BlobUploader])
-    } yield new Connection(UUID.randomUUID(), state, uploads)
+      active <- Ref.make(Option.empty[ActiveEvents])
+      changed <- Queue.sliding[Unit](1)
+    } yield new Connection(UUID.randomUUID(), state, uploads, active, changed)
 
   def disconnect(connection: Connection): UIO[Unit] =
     connection.state.modifyZIO { _ =>
@@ -54,7 +64,8 @@ private[server] final class OrchestratorRpc(
           connection.uploads
             .getAndSet(Map.empty)
             .flatMap(uploads => ZIO.foreachDiscard(uploads.values)(_.abort.ignore)) *>
-            ZIO.foreachDiscard(configured)(_.providers.disconnect(connection.id))
+            ZIO.foreachDiscard(configured)(_.providers.disconnect(connection.id)) *>
+            stopEvents(connection, None)
         )
     }.uninterruptible
   private val methods = List(
@@ -64,7 +75,9 @@ private[server] final class OrchestratorRpc(
     MessagesList.method,
     AgentsList.method,
     BlobsList.method,
-    BlobsRead.method
+    BlobsRead.method,
+    EventsSubscribe.method,
+    EventsUnsubscribe.method
   )
 
   def handle(input: String, connection: Connection): UIO[Option[String]] =
@@ -161,7 +174,7 @@ private[server] final class OrchestratorRpc(
                     ProvidersLoginCancel.method
                   )
                 else methods,
-                Nil,
+                List(EventsUpdate.method),
                 MaxBlobChunkBytes,
                 configured.map(value => Chunk.fromIterable(value.runtime.agentSummaries.map(_.id)))
               )
@@ -185,6 +198,12 @@ private[server] final class OrchestratorRpc(
           .fail(JsonRpc.Error(ErrorCode.Unauthorized, "Initialize required"))
           .unless(state.isInstanceOf[ConnectionState.Initialized])
         result <- method match {
+          case EventsSubscribe.method =>
+            decode[EventsSubscribe.Params](params).flatMap(subscribeEvents(_, connection))
+          case EventsUnsubscribe.method =>
+            decode[EventsUnsubscribe.Params](params).flatMap(request =>
+              stopEvents(connection, Some(request.subscriptionId)) *> encode(Empty())
+            )
           case SessionsList.method =>
             decode[Empty](params) *> domain(master.listSessions).flatMap(values => encode(values.sortBy(_.id.value)))
           case SessionsGet.method =>
@@ -287,6 +306,98 @@ private[server] final class OrchestratorRpc(
           case _ => ZIO.fail(JsonRpc.Error.MethodNotFound)
         }
       } yield result
+
+  private def subscribeEvents(request: EventsSubscribe.Params, connection: Connection): IO[JsonRpc.Error, Json] =
+    ZIO.uninterruptibleMask { restore =>
+      for {
+        _ <- ZIO
+          .fail(JsonRpc.Error.InvalidParams)
+          .unless(
+            request.nonce.nonEmpty && request.nonce.length <= 128 && request.nonce.forall(c => c >= '!' && c <= '~')
+          )
+        subscription <- connection.state.modifyZIO { current =>
+          for {
+            _ <- ZIO
+              .fail(JsonRpc.Error(ErrorCode.Unauthorized, "Connection closed"))
+              .unless(current.isInstanceOf[ConnectionState.Initialized])
+            subscription <- master.events.subscribe.mapError(_ =>
+              JsonRpc.Error(ErrorCode.Busy, "Event capacity exceeded; retry subscription")
+            )
+            previous <- connection.active.getAndSet(Some(ActiveEvents(subscription, request.nonce)))
+            _ <- ZIO.foreachDiscard(previous)(_.subscription.close)
+            _ <- connection.changed.offer(())
+          } yield (subscription, current)
+        }
+        result <- restore {
+          for {
+            snapshot <- domain(master.events.snapshot(for {
+              messages <- master.listMessages
+              summaries <- master.listSessions
+              sessions <- ZIO.foreach(summaries)(summary => master.loadSession(summary.id).either.map(summary -> _))
+            } yield (messages, sessions)))
+            ((messages, sessions), revision) = snapshot
+            _ <- subscription.check.mapError(_ =>
+              JsonRpc.Error(ErrorCode.Busy, "Event subscription invalidated; resubscribe")
+            )
+            pending <- subscription.takePending
+            result <- encode(
+              EventsSubscribe.Result(
+                subscription.id,
+                master.events.streamId,
+                request.nonce,
+                subscription.startSequence,
+                messages.map(MessageSnapshot.from),
+                sessions.map { (summary, outcome) => eventSessionSnapshot(summary, outcome, revision) },
+                pending.map(p => EventPending(p.operationId, p.messages.map(MessageSnapshot.from)))
+              )
+            )
+            _ <- ZIO
+              .fail(JsonRpc.Error(ErrorCode.Rejected, "Event snapshot too large"))
+              .when(RpcWire.size(JsonRpc.Success(Json.Str(""), result).toJson) > RpcWire.MaxMessageBytes)
+          } yield result
+        }.onExit {
+          case Exit.Success(_) => ZIO.unit
+          case _               => stopEvents(connection, Some(subscription.id))
+        }
+      } yield result
+    }
+
+  private def stopEvents(connection: Connection, id: Option[String]): UIO[Unit] =
+    connection.active
+      .modify { current =>
+        if id.forall(value => current.exists(_.subscription.id == value)) then (current, None)
+        else (None, current)
+      }
+      .flatMap(previous => ZIO.foreachDiscard(previous)(_.subscription.close)) *> connection.changed.offer(()).unit
+
+  /** A single connection-owned sender waits here, independently of bounded RPC request workers. */
+  def nextNotification(connection: Connection): IO[String, String] =
+    connection.active.get.flatMap {
+      case None         => connection.changed.take *> nextNotification(connection)
+      case Some(active) =>
+        active.subscription.take
+          .map { event =>
+            val change: EventChange = event.change match {
+              case EventUpdate.Pending(id, messages) => EventChange.Pending(id, messages.map(MessageSnapshot.from))
+              case EventUpdate.Confirmed(id, messages, sessions) =>
+                EventChange.Confirmed(id, messages.map(MessageSnapshot.from), sessions)
+              case EventUpdate.Uncertain(id) => EventChange.Uncertain(id)
+            }
+            JsonRpc
+              .Notification(
+                EventsUpdate.method,
+                EventsUpdate.Params(
+                  active.subscription.id,
+                  master.events.streamId,
+                  active.nonce,
+                  event.sequence,
+                  change
+                )
+              )
+              .toJson
+          }
+          .catchSome { case "Subscription closed" => nextNotification(connection) }
+    }
 
   private def permitted(human: Option[UserId]): Boolean =
     configured.nonEmpty && human.nonEmpty
@@ -423,15 +534,36 @@ private[server] final class OrchestratorRpc(
 }
 
 private[server] object OrchestratorRpc {
+  private[server] def eventSessionSnapshot(
+      summary: SessionSummary,
+      outcome: Either[YallmoError, Session],
+      revision: Long
+  ): EventSession = outcome match {
+    case Right(session) => EventSession.from(session, revision)
+    case Left(_)        =>
+      EventSession(
+        summary.id,
+        summary.agentIds,
+        summary.messageCount,
+        None,
+        revision,
+        Some("Session history unavailable")
+      )
+  }
+
   enum ConnectionState {
     case Uninitialized
     case Initialized(userId: Option[UserId])
     case Closed
   }
 
+  private final case class ActiveEvents(subscription: OrchestrationEvents.Subscription, nonce: String)
+
   final class Connection private[OrchestratorRpc] (
       val id: UUID,
       private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState],
-      private[server] val uploads: Ref[Map[BlobId, BlobUploader]]
+      private[server] val uploads: Ref[Map[BlobId, BlobUploader]],
+      private[OrchestratorRpc] val active: Ref[Option[ActiveEvents]],
+      private[OrchestratorRpc] val changed: Queue[Unit]
   )
 }

@@ -13,14 +13,16 @@ test("headless Cytoscape patches preserve selection, pan, zoom and positions, an
   const cy = cytoscape({ headless: true });
   try {
     const model = new ConversationGraphModel();
-    patchGraph(cy, model.reconcile([message("a"), message("b", "a")], [{ id: "main", head: "a" }]));
+    const baseline = [message("a"), message("b", "a")];
+    patchGraph(cy, model.replaceInventory(baseline, [{ id: "main", head: "a" }]));
     const a = cy.getElementById(m("a"));
     a.select();
     const before = { ...a.position() };
     cy.pan({ x: 17, y: 34 });
     cy.zoom(1.4);
     const pan = { ...cy.pan() }, zoom = cy.zoom();
-    patchGraph(cy, model.reconcile([message("c", "a")], [{ id: "main", head: "b" }]));
+    const updated = [...baseline, message("c", "a")];
+    patchGraph(cy, model.replaceInventory(updated, [{ id: "main", head: "b" }]));
     assert.equal(cy.getElementById(m("a")), a);
     assert(a.selected());
     assert.deepEqual(a.position(), before);
@@ -30,10 +32,10 @@ test("headless Cytoscape patches preserve selection, pan, zoom and positions, an
     let mutations = 0;
     const changed = () => { mutations++; };
     cy.on("add remove data position", changed);
-    patchGraph(cy, model.reconcile([], [{ id: "main", head: "b" }]));
-    assert.equal(mutations, 0, "identical refresh must not mutate renderer elements");
+    patchGraph(cy, model.replaceInventory(updated, [{ id: "main", head: "b" }]));
+    assert.equal(mutations, 0, "identical pushed inventory must not mutate renderer elements");
     cy.off("add remove data position", changed);
-    patchGraph(cy, model.reconcile([], []));
+    patchGraph(cy, model.replaceInventory(updated, []));
     assert(cy.getElementById("session:main").empty());
     assert.equal(cy.nodes().length, 3);
   } finally { cy.destroy(); }
@@ -54,7 +56,7 @@ test("Cytoscape replaces missing placeholder in place without dropping incident 
   } finally { cy.destroy(); }
 });
 
-test("session navigation queues only the latest pre-snapshot request and focuses repeated selections", () => {
+test("session navigation queues only the latest prebootstrap request and focuses repeated selections", () => {
   const available = new Set(), focused = [], selected = [];
   const navigation = new GraphSessionNavigation(id => available.has(id), id => focused.push(id), id => selected.push(id));
   navigation.request("old");
@@ -69,7 +71,7 @@ test("session navigation queues only the latest pre-snapshot request and focuses
   assert.equal(navigation.pending, null);
   navigation.reconcile();
   navigation.reconcile();
-  assert.deepEqual(focused, ["latest"], "manual snapshots must not re-focus the selected session");
+  assert.deepEqual(focused, ["latest"], "background reconciliation must not re-focus the selected session");
   navigation.request("latest");
   assert.deepEqual(focused, ["latest", "latest"], "same-ID clicks are actions, not distinct state changes");
   assert.deepEqual(selected, ["old", "latest"]);
@@ -108,7 +110,7 @@ test("canvas/search selection cancels queued sidebar requests and reports shared
   assert.equal(navigation.pending, null);
 });
 
-test("one safe inspector replaces its body, preserves ordinary refresh, and unmounts on outside/Escape/destroy", () => {
+test("one safe inspector replaces its body, preserves identical upserts, and unmounts on outside/Escape/destroy", () => {
   const dom = new JSDOM("<div id='layer'></div><button id='outside'>Outside</button>");
   const document = dom.window.document, layer = document.getElementById("layer");
   let mounts = 0, disposed = 0, interactions = 0, returned = 0;
@@ -397,4 +399,23 @@ test("hover inspector is passive, node-to-card union/focus survive leave, clicke
   assert.equal(focused, 1, "only explicit Escape returns focus; hover invokes no navigation callback");
   assert.equal(disposed, 5);
   dom.window.close();
+});
+
+test("optimistic removal patches renderer without removing confirmed branch, changing selection or viewport", () => {
+  const cy = cytoscape({ headless: true });
+  try {
+    const model = new ConversationGraphModel();
+    patchGraph(cy, model.reconcile([message("stored"), message("branch", "stored"), message("ghost", "stored")], []));
+    const branch = cy.getElementById(m("branch"));
+    const position = { ...branch.position() };
+    branch.select(); cy.pan({ x: 33, y: 44 }); cy.zoom(1.3);
+    const pan = { ...cy.pan() }, zoom = cy.zoom();
+    patchGraph(cy, model.replaceInventory([message("stored"), message("branch", "stored")], []));
+    assert(cy.getElementById(m("ghost")).empty());
+    assert(cy.getElementById("parent:ghost").empty());
+    assert.equal(cy.getElementById(m("branch")), branch);
+    assert(branch.selected());
+    assert.deepEqual(branch.position(), position);
+    assert.deepEqual(cy.pan(), pan); assert.equal(cy.zoom(), zoom);
+  } finally { cy.destroy(); }
 });

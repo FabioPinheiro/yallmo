@@ -376,7 +376,8 @@ final class OrchestratorRebaseSuite extends FunSuite {
       instances <- RuntimeInstances.fromAgents[Any](Chunk.empty)
       _ <- instances.registerUser(human)
       _ <- instances.registerUser(assistant)
-    } yield new OrchestratorLive(storage, instances)
+      orchestrator <- OrchestratorLive.make(storage, instances)
+    } yield orchestrator
 
   private def seed(storage: Storage, session: Boolean = false): IO[YallmoError, Orchestrator[Any]] =
     for {

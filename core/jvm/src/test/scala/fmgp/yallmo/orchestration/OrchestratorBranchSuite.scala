@@ -208,7 +208,8 @@ final class OrchestratorBranchSuite extends FunSuite {
       }
     }))
     _ <- registry.registerUser(human)
-  } yield new OrchestratorLive(storage, registry)
+    orchestrator <- OrchestratorLive.make(storage, registry)
+  } yield orchestrator
 
   private def withStorage(backend: String)(test: (Storage, IO[YallmoError, Storage]) => IO[Any, Unit]): Unit = {
     val root = Files.createTempDirectory("yallmo-branch-")

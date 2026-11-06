@@ -2,7 +2,7 @@ package fmgp.yallmo.server
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances}
+import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId, SessionSummary}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
@@ -85,10 +85,20 @@ final class OrchestratorRpcSuite extends FunSuite {
       )
       assertEquals(
         result.methods.toSet,
-        Set("initialize", "sessions.list", "sessions.get", "messages.list", "agents.list", "blobs.list", "blobs.read")
+        Set(
+          "initialize",
+          "sessions.list",
+          "sessions.get",
+          "messages.list",
+          "agents.list",
+          "blobs.list",
+          "blobs.read",
+          "events.subscribe",
+          "events.unsubscribe"
+        )
       )
-      assertEquals(result.methods.size, 7)
-      assertEquals(result.notifications, Nil)
+      assertEquals(result.methods.size, 9)
+      assertEquals(result.notifications, List(EventsUpdate.method))
       assertEquals(error(changed).code, ErrorCode.Conflict)
       assertEquals(error(removed).code, ErrorCode.Conflict)
       assertEquals(ids.toSet, Set(executable, alice, UserId.websiteAgent(UserId("alice"))))
@@ -123,6 +133,76 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(after, Chunk(executable))
       assertEquals(registered, Chunk(executable))
     })
+  }
+
+  test("graph reads require initialization; unsubscribe is scoped, idempotent and releases registry capacity") {
+    run(for {
+      live <- master
+      rpc = new OrchestratorRpc(live)
+      connection <- rpc.openConnection
+      unauthorized <- rpc
+        .handle(
+          JsonRpc.Request(Json.Str("s"), EventsSubscribe.method, EventsSubscribe.Params("nonce")).toJson,
+          connection
+        )
+        .map(_.get)
+      _ <- init(rpc, connection, None)
+      bad <- rpc
+        .handle(
+          """{"jsonrpc":"2.0","id":"bad","method":"events.subscribe","params":{"nonce":"n","all":true}}""",
+          connection
+        )
+        .map(_.get)
+      _ <- ZIO.foreachDiscard(1 to 140) { index =>
+        for {
+          reply <- rpc
+            .handle(
+              JsonRpc.Request(Json.Str("s"), EventsSubscribe.method, EventsSubscribe.Params(s"nonce-$index")).toJson,
+              connection
+            )
+            .map(_.get)
+          result = success[EventsSubscribe.Result](reply)
+          _ <- rpc.handle(
+            JsonRpc
+              .Request(Json.Str("u"), EventsUnsubscribe.method, EventsUnsubscribe.Params(result.subscriptionId))
+              .toJson,
+            connection
+          )
+          _ <- rpc.handle(
+            JsonRpc
+              .Request(Json.Str("u2"), EventsUnsubscribe.method, EventsUnsubscribe.Params(result.subscriptionId))
+              .toJson,
+            connection
+          )
+        } yield ()
+      }
+      _ <- rpc.disconnect(connection)
+      closed <- rpc
+        .handle(
+          JsonRpc.Request(Json.Str("s"), EventsSubscribe.method, EventsSubscribe.Params("closed")).toJson,
+          connection
+        )
+        .map(_.get)
+    } yield {
+      assertEquals(error(unauthorized).code, ErrorCode.Unauthorized)
+      assertEquals(error(bad), JsonRpc.Error.InvalidParams)
+      assertEquals(error(closed).code, ErrorCode.Unauthorized)
+    })
+  }
+
+  test("eventSessionSnapshot retains unreadable inventory metadata with an unknown head and sanitized error") {
+    val summary = SessionSummary(SessionId.unsafe("broken"), 7L, Chunk(alice))
+    val snapshot = OrchestratorRpc.eventSessionSnapshot(
+      summary,
+      Left(YallmoError.InvalidConfig("PRIVATE /server/path credential")),
+      42L
+    )
+    assertEquals(snapshot.id, summary.id)
+    assertEquals(snapshot.agentIds, summary.agentIds)
+    assertEquals(snapshot.messageCount, 7L)
+    assertEquals(snapshot.revision, 42L)
+    assertEquals(snapshot.head, None)
+    assertEquals(snapshot.error, Some("Session history unavailable"))
   }
 
   private def init(

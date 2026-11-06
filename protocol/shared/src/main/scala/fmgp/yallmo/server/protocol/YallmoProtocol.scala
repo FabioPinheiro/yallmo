@@ -1,9 +1,18 @@
 package fmgp.yallmo.server.protocol
 
 import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, MessagePayload, UserId}
+import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, UserId}
 import fmgp.yallmo.model.llm.JsonSchema
-import fmgp.yallmo.orchestration.{AgentResult, AgentTask, AgentToolDefinition, Session, SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.{
+  AgentResult,
+  AgentTask,
+  AgentToolDefinition,
+  EventMessage,
+  EventSession,
+  Session,
+  SessionId,
+  SessionSummary
+}
 import java.time.Instant
 import zio.Chunk
 import zio.json.*
@@ -39,21 +48,18 @@ object YallmoProtocol {
   ) derives JsonCodec
 
   object MessageSnapshot {
-    def from(message: Message): MessageSnapshot =
-      MessageSnapshot(
-        message.id,
-        message.agentId,
-        message.parentId,
-        message.timestamp,
-        message.payload.role,
-        message.payload.contentStr,
-        message.payload.blobIds,
-        message.payload match {
-          case MessagePayload.ToolCall(call)     => Some(call.name)
-          case MessagePayload.ToolOutput(output) => Some(output.name)
-          case _                                 => None
-        }
-      )
+    def from(message: EventMessage): MessageSnapshot = MessageSnapshot(
+      message.id,
+      message.agentId,
+      message.parentId,
+      message.timestamp,
+      message.role,
+      message.content,
+      message.blobIds,
+      message.toolName
+    )
+
+    def from(message: Message): MessageSnapshot = from(EventMessage.from(message))
   }
 
   /** Session metadata is reused, but messages are public snapshots rather than raw persisted provider payloads. */
@@ -63,6 +69,57 @@ object YallmoProtocol {
   object SessionSnapshot {
     def from(session: Session): SessionSnapshot =
       SessionSnapshot(session.id, session.agentIds, session.messages.map(MessageSnapshot.from))
+  }
+
+  given JsonCodec[EventSession] = DeriveJsonCodec.gen[EventSession]
+
+  final case class EventPending(operationId: String, messages: Chunk[MessageSnapshot]) derives JsonCodec
+
+  /** Pending is an overlay, never proof of persistence. Uncertain invalidates the feed and requires a new baseline. */
+  @jsonDiscriminator("kind")
+  sealed trait EventChange derives JsonCodec
+  object EventChange {
+    @jsonHint("pending")
+    final case class Pending(operationId: String, messages: Chunk[MessageSnapshot]) extends EventChange
+    @jsonHint("confirmed")
+    final case class Confirmed(operationId: String, messages: Chunk[MessageSnapshot], sessions: Chunk[EventSession])
+        extends EventChange
+    @jsonHint("uncertain")
+    final case class Uncertain(operationId: String) extends EventChange
+  }
+
+  object EventsSubscribe {
+    val method: String = "events.subscribe"
+    @jsonNoExtraFields
+    final case class Params(nonce: String) derives JsonCodec
+    final case class Result(
+        subscriptionId: String,
+        streamId: String,
+        nonce: String,
+        startSequence: Long,
+        messages: Chunk[MessageSnapshot],
+        sessions: Chunk[EventSession],
+        pending: Chunk[EventPending]
+    ) derives JsonCodec
+  }
+
+  object EventsUnsubscribe {
+    val method: String = "events.unsubscribe"
+    @jsonNoExtraFields
+    final case class Params(subscriptionId: String) derives JsonCodec
+    type Result = Empty
+  }
+
+  object EventsUpdate {
+    val method: String = "events.update"
+    @jsonNoExtraFields
+    final case class Params(
+        subscriptionId: String,
+        streamId: String,
+        nonce: String,
+        sequence: Long,
+        change: EventChange
+    ) derives JsonCodec
   }
 
   final case class Empty() derives JsonCodec

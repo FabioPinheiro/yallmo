@@ -366,10 +366,20 @@ final class ServerApplicationSuite extends FunSuite {
       } yield {
         assertEquals(
           result.methods.toSet,
-          Set("initialize", "sessions.list", "sessions.get", "messages.list", "agents.list", "blobs.list", "blobs.read")
+          Set(
+            "initialize",
+            "sessions.list",
+            "sessions.get",
+            "messages.list",
+            "agents.list",
+            "blobs.list",
+            "blobs.read",
+            "events.subscribe",
+            "events.unsubscribe"
+          )
         )
-        assertEquals(result.methods.size, 7)
-        assertEquals(result.notifications, Nil)
+        assertEquals(result.methods.size, 9)
+        assertEquals(result.notifications, List(EventsUpdate.method))
         assertEquals(result.identity.role, Role.Viewer)
         failures.foreach(reply =>
           assertEquals(reply.get.fromJson[JsonRpc.Failure].toOption.get.error, JsonRpc.Error.MethodNotFound)

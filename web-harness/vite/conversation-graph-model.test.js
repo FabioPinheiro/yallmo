@@ -35,7 +35,7 @@ test("long clock gaps are compressed and invalid timestamps remain inspectable",
   assert(Number.isFinite(point(model, "bad").y));
 });
 
-test("late arrivals and reordered refresh preserve every old position", () => {
+test("late arrivals and reordered message upserts preserve every old position", () => {
   const model = new ConversationGraphModel();
   const original = [message("a"), message("b", "a", 10), message("c", "b", 20)];
   model.reconcile(original, [{ id: "main", head: "c" }]);
@@ -267,4 +267,20 @@ test("session focus follows live heads, missing ancestry and cycles remain filte
   model.reconcile([message("cycle", "cycle")], []);
   assert.deepEqual(model.visible("siblings", m("cycle")), new Set([m("cycle")]));
   assert(model.edges.get("parent:cycle").anomaly);
+});
+
+test("explicit inventory replacement removes optimistic ghosts but preserves surviving geometry and branches", () => {
+  const model = new ConversationGraphModel();
+  const stored = { id: "stored", role: "user", timestamp: "2026-01-01T00:00:00Z" };
+  const branch = { ...stored, id: "branch", parentId: "stored" };
+  const ghost = { ...stored, id: "ghost", parentId: "stored" };
+  model.reconcile([stored, branch, ghost], []);
+  const position = { ...model.positions.get("message:branch") };
+  const graph = model.replaceInventory([stored, branch], []);
+  assert(!model.messages.has("ghost"));
+  assert(!graph.nodes.has("message:ghost"));
+  assert(!model.positions.has("message:ghost"));
+  assert(!model.routes.has("parent:ghost"));
+  assert.deepEqual(model.positions.get("message:branch"), position);
+  assert(model.messages.has("branch"));
 });

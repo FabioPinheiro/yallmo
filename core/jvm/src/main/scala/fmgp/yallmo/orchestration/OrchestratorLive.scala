@@ -2,14 +2,15 @@ package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
-import fmgp.yallmo.orchestration.storage.{StorageFS, StorageInMemory, StoreageUtils}
+import fmgp.yallmo.orchestration.storage.{StorageFS, StorageEvents, StorageInMemory, StoreageUtils}
 import java.nio.file.Path
 import zio.*
 
 /** Default [[Orchestrator]] implementation backed by an internal [[Storage]]. */
 final class OrchestratorLive[-R] private[orchestration] (
     val storage: Storage,
-    val instances: RuntimeInstances[R]
+    val instances: RuntimeInstances[R],
+    val events: OrchestrationEvents
 ) extends Orchestrator[R] {
 
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
@@ -566,13 +567,19 @@ final class OrchestratorLive[-R] private[orchestration] (
 
 object OrchestratorLive {
 
+  private[orchestration] def make[R](storage: Storage, instances: RuntimeInstances[R]): UIO[OrchestratorLive[R]] =
+    OrchestrationEvents.make.map(updates =>
+      new OrchestratorLive(new StorageEvents(storage, updates), instances, updates)
+    )
+
   /** Creates an orchestrator using a shared registry and ephemeral, process-local storage. */
   def inMemory[R](
       instances: RuntimeInstances[R]
   ): UIO[OrchestratorLive[R]] =
     for {
       storage <- StorageInMemory.make
-    } yield new OrchestratorLive(storage, instances)
+      orchestrator <- make(storage, instances)
+    } yield orchestrator
 
   /** Opens filesystem storage using a shared registry. */
   def filesystem[R](
@@ -581,6 +588,7 @@ object OrchestratorLive {
   ): IO[YallmoError, OrchestratorLive[R]] =
     for {
       storage <- StorageFS.open(root)
-    } yield new OrchestratorLive(storage, instances)
+      orchestrator <- make(storage, instances)
+    } yield orchestrator
 
 }

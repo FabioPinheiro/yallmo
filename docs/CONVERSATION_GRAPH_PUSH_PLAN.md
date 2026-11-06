@@ -1,6 +1,7 @@
 # Handoff plan: push-based Conversation graph updates
 
-**Status: planning only; not implemented by this document.**
+**Status: implemented and independently reviewed; automated checks and push-specific synthetic desktop/mobile browser
+acceptance passed. See the implementation receipt below. The original acceptance contract is retained for reference.**
 
 ## 1. Goal and operator decisions
 
@@ -69,7 +70,7 @@ Important traps:
 
 ## 4. Small architecture
 
-The following diagrams describe the **planned push implementation**, not the current polling behavior. Solid arrows are calls/data delivery; no arrow implies a durable transaction.
+The following diagrams describe the push implementation direction. Solid arrows are calls/data delivery; no arrow implies a durable transaction.
 
 ### Components and ownership
 
@@ -104,7 +105,7 @@ flowchart TB
         RPC -->|"Subscription lifetime"| Fanout
     end
     Client -->|"RPC requests on existing WebSocket"| Socket
-    Socket -->|"Responses and graph.event notifications"| Client
+    Socket -->|"Responses and events.update notifications"| Client
 ```
 
 The branch-response arrow is intentionally separate: pausing Live must not suppress the result of an explicit Send.
@@ -154,7 +155,7 @@ sequenceDiagram
         D->>S: Persist the same mutation
     and Live handler
         D->>L: Enqueue public pending observation
-        L-->>B: graph.event, not proof of persistence
+        L-->>B: events.update, not proof of persistence
     end
     S-->>D: Success, failure, or uncertain acknowledgement
     D->>L: Confirmation or reconciliation signal
@@ -192,9 +193,9 @@ The exact event DTO names are implementation choices; these semantics are not op
 
 Suggested additive protocol surface:
 
-- `graph.subscribe` — starts a connection-owned subscription and returns initial state plus subscription/stream metadata.
-- `graph.unsubscribe` — idempotently closes that subscription, not the shared socket.
-- `graph.event` — JSON-RPC notification, no request ID, carrying typed message/session/outcome events.
+- `events.subscribe` — starts a connection-owned subscription and returns initial state plus subscription/stream metadata.
+- `events.unsubscribe` — idempotently closes that subscription, not the shared socket.
+- `events.update` — JSON-RPC notification, no request ID, carrying typed message/session/outcome events.
 - A resnapshot path, either an explicitly named read or re-subscribing. Reuse existing snapshot projections where practical.
 
 A process-local subscription ID/counter and a **bounded initialization buffer** are enough initially. No persistent cursor store or historical replay service is requested. Server restart changes stream identity; reconnect/resume obtains a new snapshot.
@@ -346,3 +347,138 @@ Final implementation handoff must list: changed paths, actual event/ordering/acc
 ## Copyable task for the next agent
 
 > Implement `docs/CONVERSATION_GRAPH_PUSH_PLAN.md` against the current dirty working tree. Preserve the existing graph/composer/session semantics and unrelated edits. Storage and live delivery must be parallel subscribers/handlers through one concise ZIO helper with the requested inline ordering comment; do not replace that decision with storage-first delivery. Make pending/confirmed state, session CAS outcomes, bootstrap races and slow-client recovery correct without a durable event journal or generic framework. Replace polling with subscription-driven incremental graph/sidebar updates. Add deterministic concurrency, protocol, lifecycle and browser tests; review and fix findings before declaring completion. Do not commit, run external providers, or change unrelated files without authorization.
+
+
+## Implementation receipt
+
+### Delivered behavior and ordering
+
+- `StorageEvents.dispatch` is the single parallel-delivery policy, with the requested inline `zipPar`/`zip` comment.
+  Immutable identity is allocated/validated before dispatch. Pending enqueue and the original storage effect start in
+  parallel; enqueue finishes before the operation's terminal event. Storage's typed result/error is preserved.
+- `events.update` has `pending`, `confirmed`, and `uncertain` public changes. Pending is not persistence or an authoring
+  parent. Canonical session outcomes carry revisions; CAS intent is never a published head. Lost acknowledgements
+  receive bounded read-only reconciliation (2 seconds); cancellation emits uncertainty without a recovery wait.
+- Session mutations and their snapshot reads share a short ordering boundary; immutable puts stay independent so
+  existing competing appends, parent-before-child writes and managed writer drains remain valid.
+- Subscription registration precedes baseline reads. Bootstrap includes retained pre-registration pending observations,
+  echoes a client nonce, and establishes stream/subscription identity and starting sequence. Early events are buffered,
+  then replayed in order with ID deduplication and session revision checks. Earlier pointer events cannot regress a
+  newer baseline; no atomic end-watermark assumption discards immutable events.
+- Graph has no polling timer or recurring inventory reads. Live/visibility/route/disconnect transitions retire callbacks
+  before unsubscribe. Explicit reconnect obtains a new baseline only when eligible. Uncertainty/gap/overflow permits
+  one automatic read-only resubscription per refresh/resume, then stops on repeated failure. Authoring is never replayed.
+  Subscribe timeout closes the socket to release otherwise unknown remote subscription ownership.
+- Optimistic observations are a separate overlay and are explicitly removed from renderer/inspector inventory on
+  reconciliation, without deleting confirmed branches. Own branch results merge while paused and before bootstrap;
+  head adoption is consumed once. Sidebar navigation clears the composer parent even before its session is loaded.
+  Chat stale-history reload and inventory-only sidebar updates remain intact.
+
+### Bounds and ownership
+
+Each master has at most **128 subscribers** and retained pending state of **128 operations / 2 MiB**. Each browser
+subscription queue is **128 events / 2 MiB**, conservatively counting public UTF-8/JSON fields including tool names.
+Browser early events and optimistic operations are separately bounded at **128 / 2 MiB**. Overflow is explicit, not
+silent dropping. Storage is neither evicted nor dropped by the browser policy. Pending-registry saturation rejects new
+subscriptions until untracked operations settle, without rejecting storage writes.
+
+One scoped sender per connection shares frame serialization without occupying an RPC request worker. Overflow, an
+oversized notification (existing **1 MiB** wire limit), or a **5-second** send deadline closes only that socket with a
+sanitized **1013** reason; reconnect remains explicit. Cleanup covers unsubscribe, failed bootstrap, disconnect and scope exit.
+
+### Validation evidence
+
+All checks below passed against the resulting working tree; no final checks are blocked:
+
+```sh
+# 336 tests, including 13 deterministic graph dispatch/subscription tests
+sbt 'core/testOnly *OrchestratorLiveSuite *OrchestratorListingSuite *OrchestratorAppendSuite *OrchestrationEventsSuite *OrchestratorSubmitSuite *OrchestratorBranchSuite *OrchestratorRebaseSuite *ManagedHistorySubmitSuite'
+# 96 tests
+sbt 'server/testOnly *ServerSubmissionSuite *SessionSubmissionSuite *OrchestratorRpcSuite *OrchestratorWSClientTransportSuite *OrchestratorWebSocketSuite'
+# 32 tests on each platform
+sbt 'protocol/testOnly *YallmoProtocolSuite'
+sbt 'protocolJS/testOnly *YallmoProtocolSuite'
+# 151 tests
+sbt 'webHarness/testOnly *'
+# 87 tests
+npm --prefix web-harness/vite test
+sbt 'webHarness/fastLinkJS'
+sbt 'webHarness/fullLinkJS'
+npm --prefix web-harness/vite run build
+git diff --check
+```
+
+Explicit-path Scala formatting passed. The production build retains its known large-chunk warning. Independent backend
+review found and verified fixes for global-lock deadlock, cancellation and tool-name byte accounting. Independent frontend
+review found and verified fixes for subscribe-timeout cleanup and prebaseline sidebar parent clearing; no findings remain.
+
+The push-adapted temporary fixture `/tmp/yallmo-events-browser.cjs` passed against the rebuilt production bundle on desktop
+and mobile. It verifies early notification-before-response, uncertainty/optimistic ghost removal, no periodic inventory
+reads, canonical head movement, stable coordinates/pan/zoom, branch filters/search, sidebar navigation, passive/persistent
+inspectors, paused late callbacks/reconnect/sidebar, own terminal results and draft/selection preservation, and deferred Chat
+history reload. It is supplemental synthetic evidence, not a portable repository test; focused regressions live in the
+changed Scala and JavaScript suites. The hover fixture waits for programmatic viewport movement to settle before moving
+the pointer. Historical polling browser results are not counted as push evidence.
+
+### Remaining limits
+
+- No durable replay cursor/event log, cross-process filesystem watching, transactional durability or exactly-once tools.
+- A corrupt filesystem inventory can fail bootstrap before per-session unknown-head handling; the last visible graph is kept.
+- Snapshot/event payloads remain subject to the existing 1 MiB wire limit, without pagination. Queue bounds measure server
+  egress, not browser rendering speed. Large real inventories and broader visual/accessibility review remain release concerns.
+- **No real provider calls, commits or staging occurred.** Implementation started from a clean checkout and changed only
+  the paths below; unrelated source/configuration files were not modified.
+
+### Changed paths
+
+```text
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestrationEvents.scala
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/storage/StorageEvents.scala
+core/jvm/src/test/scala/fmgp/yallmo/orchestration/OrchestrationEventsSuite.scala
+core/jvm/src/test/scala/fmgp/yallmo/orchestration/ManagedHistorySubmitSuite.scala
+core/jvm/src/test/scala/fmgp/yallmo/orchestration/OrchestratorBranchSuite.scala
+core/jvm/src/test/scala/fmgp/yallmo/orchestration/OrchestratorRebaseSuite.scala
+docs/CONVERSATION_GRAPH.md
+docs/CONVERSATION_GRAPH_PUSH_PLAN.md
+model/shared/src/main/scala/fmgp/yallmo/orchestration/EventUpdate.scala
+protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala
+protocol/shared/src/test/scala/fmgp/yallmo/server/jsonrpc/YallmoProtocolSuite.scala
+server/PROTOCOL.md
+server/README.md
+server/src/main/scala/fmgp/yallmo/server/OrchestratorRpc.scala
+server/src/main/scala/fmgp/yallmo/server/OrchestratorWSClient.scala
+server/src/main/scala/fmgp/yallmo/server/OrchestratorWSServer.scala
+server/src/test/scala/fmgp/yallmo/server/OrchestratorRpcSuite.scala
+server/src/test/scala/fmgp/yallmo/server/OrchestratorWebSocketSuite.scala
+server/src/test/scala/fmgp/yallmo/server/application/ServerApplicationSuite.scala
+server/src/test/scala/fmgp/yallmo/server/application/ServerSubmissionSuite.scala
+web-harness/README.md
+web-harness/src/main/scala/fmgp/yallmo/view/web/ConversationGraphModel.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/ConversationGraphView.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/GraphBranchModel.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/OrchestratorWSClient.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/ConversationGraphModelSuite.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/GraphBranchModelSuite.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/OrchestratorWSClientSuite.scala
+web-harness/vite/conversation-graph-model.js
+web-harness/vite/conversation-graph-model.test.js
+web-harness/vite/conversation-graph.js
+web-harness/vite/conversation-graph.test.js
+```
+
+
+### Event namespace naming follow-up
+
+The shared API is now `events.subscribe`, `events.unsubscribe`, and `events.update`, represented by
+`EventsSubscribe`, `EventsUnsubscribe`, and `EventsUpdate`. Domain payloads are `EventMessage`, `EventSession`,
+`EventUpdate`, and `SequencedEventUpdate`; the per-master registry is `OrchestrationEvents` and its storage handler
+is `StorageEvents`. Both clients use `subscribeEvents`; the JVM client also exposes `unsubscribeEvents` and
+`nextEventUpdate`. Shared pending/change/subscription/inbox types use event names, while the renderer retains its
+`ConversationGraph*` and graph-node names.
+
+This is a naming-only change with no legacy RPC aliases, session-scoped subscription support, or Chat subscriptions.
+All checks listed above were rerun successfully with the renamed API (336 core, 96 server, 151 web Scala, 87 JavaScript,
+and 32 protocol tests per platform), plus fast/full linking, production build and desktop/mobile synthetic acceptance.
+Explicit-path formatting and whitespace checks passed. Pre-existing staged work was preserved; the naming changes
+were left unstaged. No real provider calls or commits were made.

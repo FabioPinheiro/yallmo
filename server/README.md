@@ -335,6 +335,14 @@ interface. `connect` completes initialization before returning; `close` is avail
 
 ## Protocol and clients
 
+Initialized clients can opt into `events.subscribe` / `events.unsubscribe` and receive redacted `events.update`
+notifications on the same `/rpc` socket. Storage and pending live delivery run in parallel; terminal confirmation or
+uncertainty is explicit, and only canonical ordered outcomes move session pointers. Register-before-snapshot bootstrap
+includes bounded in-flight observations. Each connection has one scoped sender and a 128-event / 2-MiB buffer; overflow
+or a 5-second send stall closes that socket with 1013 for snapshot recovery. Storage and other subscribers are not
+subject to browser eviction. There is no durable replay or external-process filesystem watching. See the protocol's
+subscription section for nonce, revision, bootstrap and failure semantics.
+
 [PROTOCOL.md](PROTOCOL.md) specifies exact JSON-RPC method names, params/results, errors and notifications. Wire DTOs
 use derived zio-json codecs. Domain IDs, session summaries, tasks/results and tool definitions reuse the existing
 model types. Only message/session snapshots exclude private provider continuations.

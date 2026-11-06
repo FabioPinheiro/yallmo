@@ -2,7 +2,16 @@ package fmgp.yallmo.server.jsonrpc
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{JsonSchema, ProviderContinuation, ProviderId}
-import fmgp.yallmo.orchestration.{AgentResult, AgentTask, AgentToolDefinition, Session, SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.{
+  AgentResult,
+  AgentTask,
+  AgentToolDefinition,
+  EventMessage,
+  EventSession,
+  Session,
+  SessionId,
+  SessionSummary
+}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.given
 import java.time.Instant
@@ -17,6 +26,39 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+  test("event subscription codecs preserve nonce, pending versus confirmed, revisions and strict params") {
+    val session = EventSession(sessionId, Chunk(agentId), 1L, Some(head), 42L)
+    val message = Message(MessageData(agentId, None, Instant.EPOCH, MessagePayload.User("hello")))
+    val snapshot = MessageSnapshot.from(message)
+    assertEquals(MessageSnapshot.from(EventMessage.from(message)), snapshot)
+    val pending = EventPending("op", Chunk(snapshot))
+    val baseline =
+      EventsSubscribe.Result("subscription", "stream", "nonce", 40L, Chunk(snapshot), Chunk(session), Chunk(pending))
+    assertEquals(baseline.toJson.fromJson[EventsSubscribe.Result], Right(baseline))
+    assertWire(EventsSubscribe.Params("nonce"), """{"nonce":"nonce"}""")
+    assertWire(EventsUnsubscribe.Params("subscription"), """{"subscriptionId":"subscription"}""")
+    assert("""{"nonce":"n","history":[]}""".fromJson[EventsSubscribe.Params].isLeft)
+    assert("""{"subscriptionId":"s","all":true}""".fromJson[EventsUnsubscribe.Params].isLeft)
+    val changes = List[EventChange](
+      EventChange.Pending("op", Chunk(snapshot)),
+      EventChange.Confirmed("op", Chunk(snapshot), Chunk(session)),
+      EventChange.Uncertain("op")
+    )
+    changes.zipWithIndex.foreach { (change, index) =>
+      val params = EventsUpdate.Params("subscription", "stream", "nonce", 41L + index, change)
+      val notification = JsonRpc.Notification(EventsUpdate.method, params)
+      assertEquals(notification.toJson.fromJson[JsonRpc.Notification[EventsUpdate.Params]], Right(notification))
+      assert(notification.toJson.contains("\"kind\""))
+      assert(!notification.toJson.contains("\"id\":\"subscription\""))
+    }
+    assert("""{"kind":"stored","operationId":"op"}""".fromJson[EventChange].isLeft)
+    assertEquals(EventsSubscribe.method, "events.subscribe")
+    assertEquals(EventsUnsubscribe.method, "events.unsubscribe")
+    assertEquals(EventsUpdate.method, "events.update")
+    val unreadable = session.copy(head = None, error = Some("Session history unavailable"))
+    assertEquals(unreadable.toJson.fromJson[EventSession], Right(unreadable))
+  }
+
   test("branches.submit is strict, sessionless and round-trips distinct terminal outcomes") {
     val params = BranchesSubmit.Params(head, agentId, BranchesSubmit.Task("hello"), agentId)
     assertEquals(params.toJson.fromJson[BranchesSubmit.Params], Right(params))

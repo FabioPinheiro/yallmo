@@ -357,6 +357,116 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
+  test("event notification before response is routed without consuming interleaved RPC IDs; retired nonce is ignored") {
+    val h = new Harness()
+    val observed = mutable.ArrayBuffer.empty[EventsUpdate.Params]
+    for {
+      _ <- h.initialize()
+      feed = h.client.subscribeEvents(value => { observed += value; () })
+      request <- h.awaitRequest(EventsSubscribe.method)
+      nonce = request.params.toJson.fromJson[EventsSubscribe.Params].toOption.get.nonce
+      agents = h.client.agents()
+      agentRequest <- h.awaitRequest(AgentsList.method)
+      event = EventsUpdate.Params("sub", "stream", nonce, 1, EventChange.Pending("op", Chunk.empty))
+      _ = h.sockets.last.events.message(JsonRpc.Notification(EventsUpdate.method, event).toJson)
+      _ = assertEquals(observed.toList, List(event))
+      _ = h.reply(agentRequest, Json.Arr())
+      _ <- agents
+      _ = h.reply(request, EventsSubscribe.Result("sub", "stream", nonce, 0, Chunk.empty, Chunk.empty, Chunk.empty))
+      _ <- feed.result
+      _ = feed.cancel()
+      unsubscribe <- h.awaitRequest(EventsUnsubscribe.method)
+      _ = h.reply(unsubscribe, Empty())
+      _ = h.sockets.last.events.message(JsonRpc.Notification(EventsUpdate.method, event.copy(sequence = 2)).toJson)
+    } yield {
+      assertEquals(observed.size, 1)
+      assert(!h.sockets.last.closed)
+      h.client.close()
+    }
+  }
+
+  test("cancel during bootstrap unsubscribes the late result without publishing notifications") {
+    val h = new Harness()
+    for {
+      _ <- h.initialize()
+      feed = h.client.subscribeEvents(_ => fail("cancelled listener called"))
+      request <- h.awaitRequest(EventsSubscribe.method)
+      nonce = request.params.toJson.fromJson[EventsSubscribe.Params].toOption.get.nonce
+      _ = feed.cancel()
+      _ = h.sockets.last.events.message(
+        JsonRpc
+          .Notification(
+            EventsUpdate.method,
+            EventsUpdate.Params("sub", "stream", nonce, 1, EventChange.Uncertain("op"))
+          )
+          .toJson
+      )
+      _ = h.reply(request, EventsSubscribe.Result("sub", "stream", nonce, 0, Chunk.empty, Chunk.empty, Chunk.empty))
+      _ <- feed.result
+      unsubscribe <- h.awaitRequest(EventsUnsubscribe.method)
+    } yield {
+      assertEquals(unsubscribe.params.toJson.fromJson[EventsUnsubscribe.Params].toOption.get.subscriptionId, "sub")
+      h.client.close()
+    }
+  }
+
+  for cancelledBeforeTimeout <- List(false, true) do
+    test(
+      s"subscribe timeout closes the socket and ignores late success without replay: cancelled=$cancelledBeforeTimeout"
+    ) {
+      val h = new Harness(timeout = 30)
+      for {
+        _ <- h.initialize()
+        feed = h.client.subscribeEvents(_ => fail("retired listener called"))
+        request <- h.awaitRequest(EventsSubscribe.method)
+        nonce = decode[EventsSubscribe.Params](request.params.toJson).nonce
+        oldSocket = h.sockets.last
+        _ = if cancelledBeforeTimeout then feed.cancel()
+        error <- feed.result.failed
+        _ = assert(oldSocket.closed)
+        _ = feed.cancel()
+        _ = oldSocket.events.message(
+          JsonRpc
+            .Success(
+              request.id,
+              EventsSubscribe.Result("late", "stream", nonce, 0, Chunk.empty, Chunk.empty, Chunk.empty)
+            )
+            .toJson
+        )
+        _ = oldSocket.events.message(
+          JsonRpc
+            .Notification(
+              EventsUpdate.method,
+              EventsUpdate.Params("late", "stream", nonce, 1, EventChange.Uncertain("late"))
+            )
+            .toJson
+        )
+      } yield {
+        assertEquals(error.getMessage, "Request timed out")
+        assertEquals(h.sockets.size, 1)
+        assertEquals(h.sent.count(_.method == EventsSubscribe.method), 1)
+        assertEquals(h.sent.count(_.method == EventsUnsubscribe.method), 0)
+        h.client.close()
+      }
+    }
+
+  for (
+    document <- List(
+      """{"jsonrpc":"2.0","method":"unknown","params":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","params":{},"id":"1"}""",
+      """{"jsonrpc":"2.0","method":"events.update","params":{},"result":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","params":{"nonce":"events-999","sequence":1,"subscriptionId":"s","streamId":"s","change":{"kind":"uncertain","operationId":"op"}}}""",
+      """{"jsonrpc":"2.0","method":"events.update","method":"events.update","params":{}}"""
+    )
+  ) test(s"strict notification demux rejects $document") {
+    val h = new Harness()
+    h.initialize().map { _ =>
+      h.sockets.last.events.message(document)
+      assert(h.sockets.last.closed)
+      h.client.close()
+    }
+  }
+
   private def decode[A: JsonDecoder](text: String): A = text.fromJson[A].fold(fail(_), identity)
 }
 
@@ -371,6 +481,7 @@ private[web] object OrchestratorWSClientSuite {
   final class Harness(timeout: Int = 1000, maxBytes: Long = 1024, chunkSize: Int = MaxBlobChunkBytes) {
     val sockets = mutable.ArrayBuffer.empty[FakeSocket]
     val sent = mutable.ArrayBuffer.empty[JsonRpc.Request[Json.Obj]]
+    private val awaited = mutable.Map.empty[(String, Int), Promise[JsonRpc.Request[Json.Obj]]]
     var onRequest: JsonRpc.Request[Json.Obj] => Unit = _ => ()
     val client = new OrchestratorWSClient(
       "ws://test/rpc",
@@ -380,6 +491,8 @@ private[web] object OrchestratorWSClientSuite {
           text => {
             val request = decode[JsonRpc.Request[Json.Obj]](text)
             sent += request
+            val occurrence = sent.count(_.method == request.method) - 1
+            awaited.remove((request.method, occurrence)).foreach(_.trySuccess(request))
             onRequest(request)
           }
         )
@@ -414,16 +527,11 @@ private[web] object OrchestratorWSClientSuite {
     def reply[A: JsonCodec](request: JsonRpc.Request[Json.Obj], result: A): Unit =
       sockets.last.events.message(JsonRpc.Success(request.id, result).toJson)
 
-    def awaitRequest(method: String, skip: Int = 0): Future[JsonRpc.Request[Json.Obj]] = {
-      val result = Promise[JsonRpc.Request[Json.Obj]]()
-      def poll(remaining: Int): Unit = sent.filter(_.method == method).drop(skip).headOption match {
-        case Some(request)         => result.trySuccess(request); ()
-        case None if remaining > 0 => setTimeout(2)(poll(remaining - 1)); ()
-        case _                     => result.tryFailure(new AssertionError(s"No request for $method")); ()
+    def awaitRequest(method: String, skip: Int = 0): Future[JsonRpc.Request[Json.Obj]] =
+      sent.filter(_.method == method).drop(skip).headOption match {
+        case Some(request) => Future.successful(request)
+        case None          => awaited.getOrElseUpdate((method, skip), Promise[JsonRpc.Request[Json.Obj]]()).future
       }
-      poll(250)
-      result.future
-    }
   }
 
   private def decode[A: JsonDecoder](text: String): A =

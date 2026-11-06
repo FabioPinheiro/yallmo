@@ -74,6 +74,19 @@ final class GraphBranchModelSuite extends FunSuite {
     }
   }
 
+  test("explicit terminal adoption is consumed once across snapshot updates and renderer remount") {
+    val h = new Harness
+    h.send()
+    h.requests.head._2.success(h.success)
+    tick().map { _ =>
+      assertEquals(h.model.consumeAdoptedHead(), Some(h.success.head))
+      assertEquals(h.model.consumeAdoptedHead(), None)
+      h.model.draft("another draft")
+      assertEquals(h.model.consumeAdoptedHead(), None)
+      assertEquals(h.model.state.now().messages.size, 2)
+    }
+  }
+
   test("selection changes and route unmount do not reparent pending work or adopt its later head") {
     val h = new Harness
     h.send()
@@ -88,6 +101,43 @@ final class GraphBranchModelSuite extends FunSuite {
       assertEquals(h.model.state.now().messages.size, 2)
     }
   }
+
+  for live <- List(true, false) do
+    test(s"prebaseline sidebar navigation clears a retained parent and prevents terminal adoption: live=$live") {
+      val h = new Harness
+      h.send()
+      h.requests.head._2.success(h.success)
+      tick().flatMap { _ =>
+        h.model.consumeAdoptedHead()
+        val baseline = Promise[EventsSubscribe.Result]()
+        val graph = new ConversationGraphModel(_ => EventSubscription(baseline.future, () => ()), () => 0L)
+        graph.enable()
+        graph.refresh()
+        if !live then graph.setLive(false)
+        h.send()
+        val navigated = mutable.ArrayBuffer.empty[String]
+        ConversationGraphView.navigateSession(
+          h.model,
+          "not-loaded",
+          id => {
+            assertEquals(h.model.state.now().parent, None)
+            navigated += id
+            ()
+          }
+        )
+        assertEquals(navigated.toList, List("not-loaded"))
+        assert(graph.state.now().snapshot.isEmpty)
+        assert(h.model.state.now().messages.nonEmpty)
+        h.requests.last._2.success(h.success)
+        tick().map { _ =>
+          assertEquals(h.model.state.now().parent, None)
+          assertEquals(h.model.state.now().adoptedHead, None)
+          assertEquals(h.model.consumeAdoptedHead(), None)
+          assertEquals(h.requests.size, 2)
+          graph.disable()
+        }
+      }
+    }
 
   test("accepted failure merges partial IDs, never overwrites a revised/emptied draft, and requires explicit review") {
     val h = new Harness

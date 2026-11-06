@@ -19,9 +19,9 @@ Client and server share one current contract. There is no application protocol v
 backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"`.
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
-Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`.
+Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
 Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
-`providers.login.cancel`. Notifications are empty.
+`providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
 A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
 
 Operator requires a configured backend and a nonempty initialized claimed `userId`, irrespective of Origin or peer
@@ -78,6 +78,64 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
   bounds across fragments, one-message callback backpressure and scoped bounded executor resources. Server-side
   pinned ZIO HTTP framing restrictions remain documented in [README](README.md#security-and-transport-limits).
 
+## Orchestration event subscriptions
+
+Initialized Viewers and Operators may subscribe using the same trusted-host policy as inventory reads. This grants
+no authoring rights. A connection owns at most one subscription; subscribing replaces its previous one. Unsubscribing
+an obsolete/unknown ID is harmless and never closes a newer subscription or the shared socket. Legacy/unsubscribed
+clients receive no event notifications. The JVM client exposes `subscribeEvents(nonce)`, `nextEventUpdate`, and
+`unsubscribeEvents(subscriptionId)`; it never reconnects or replays authoring requests.
+
+`EventsSubscribe.Result` contains `{subscriptionId, streamId, nonce, startSequence, messages, sessions, pending}`:
+
+- `messages`: canonical public `MessageSnapshot` inventory, without opaque provider continuations.
+- `sessions`: `EventSession = {id, agentIds, messageCount, head?, revision, error?}`. After a successful inventory
+  listing, an individual subsequent history-read failure retains summary fields and a sanitized `error`; its absent
+  head is **unknown**, not a confirmed empty pointer. Inventory-listing failures still fail bootstrap: filesystem
+  listing itself traverses histories, so a missing referenced message can prevent that initial listing.
+- `pending`: `[{operationId, messages: [MessageSnapshot]}]` for retained in-flight observations at registration.
+
+Notifications have exactly the JSON-RPC notification envelope, with no request ID/result/error:
+
+```json
+{"jsonrpc":"2.0","method":"events.update","params":{"subscriptionId":"s","streamId":"process-stream","nonce":"client-nonce","sequence":1,"change":{"kind":"pending","operationId":"op","messages":[]}}}
+```
+
+`change.kind` is `pending` (`operationId`, public `messages`), `confirmed` (`operationId`, public `messages`, canonical
+`sessions`), or `uncertain` (`operationId`). Pending is an optimistic observation, **not persistence**. Maintain it
+separately from confirmed inventory; confirmation promotes it, and uncertainty invalidates the feed and requires a
+new subscription/baseline. Never infer rollback, delete stored branches, or replay authoring operations. Failed storage
+acknowledgements preserve the original operation error; bounded read-only recovery may still confirm exactly observed
+stored messages/canonical session state. Cancellation emits uncertainty without waiting for recovery reads.
+
+Storage and live enqueue run in parallel through one storage decoration covering immutable puts, batches, session
+creation/forks, participants and CAS. Pending enqueue completes before its terminal event, even if storage finishes
+first. Session intents never publish pointers. A short ordered session-mutation boundary assigns monotonically increasing
+process-local revisions to canonical outcomes, including A → B → A and recovered acknowledgements. Immutable object
+writers remain independent and preserve their existing parent-before-child/drain behavior.
+
+The subscriber registers **before** baseline reads. Notifications may precede the subscribe response: register a local
+nonce handler before sending, buffer them, and apply matching events from `startSequence + 1` in order after the baseline.
+Snapshot session revisions dominate earlier buffered pointer events; do not discard all buffered events through an end
+watermark. Independent immutable writes may still be absent from the snapshot: retained pending observations plus their
+buffered terminal events cover that race. Deduplicate immutable message IDs; ignore stale subscription generations and
+mutable revisions. Sequence gaps, overflow, uncertainty, or a new stream identity require a fresh baseline, not replay.
+
+Per-master bounds: **128** subscriptions; retained pending observations **128 events / 2 MiB**. If pending retention
+capacity is exceeded, new subscriptions fail Busy until untracked in-flight writes settle; storage is never dropped or
+rejected by this policy. Per-subscription buffers allow **128 events / 2 MiB**, conservatively counting all public message
+fields (including tool names and JSON escaping), with explicit overflow failure rather than sliding/dropping loss.
+One scoped sender per connection shares serialized frame writes, independently of the 8 request workers. Overflow,
+oversized notifications (also subject to the **1 MiB** frame limit), or a **5-second** send deadline close only that socket
+with **1013** and a sanitized reconnect/resubscribe reason. Unsubscribe, failed bootstrap, disconnect and socket scope
+shutdown release registry entries and sender waiters. These bounds measure server egress, not browser rendering speed.
+
+The wire methods are `events.subscribe`, `events.unsubscribe`, and `events.update`; the previous graph-prefixed
+method names have no compatibility aliases. This namespace rename does not add session filtering or Chat subscriptions.
+
+The stream is ephemeral and application/master-local: no durable cursor, historical replay, cross-process filesystem
+watch, or persistence-format migration. Direct external-process writes are outside this in-process dispatcher.
+
 ## Enabled requests and results
 
 | Method | `params` | `result` |
@@ -86,6 +144,8 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 | `sessions.list` | `{}` | `[SessionSummary]` |
 | `sessions.get` | `{sessionId: SessionId}` | `SessionSnapshot` |
 | `messages.list` | `{}` | `[MessageSnapshot]` |
+| `events.subscribe` | `{nonce: String}` (unique printable ASCII, 1–128 characters) | `EventsSubscribe.Result` (below) |
+| `events.unsubscribe` | `{subscriptionId: String}` | `{}` (idempotent, connection-owned) |
 | `agents.list` | `{}` | `[AgentId]` |
 | `agents.invoke` | `{agentId: AgentId, input: Message, actingAgentId: AgentId}`; no session controls | `Message` (recipient's response payload) |
 | `blobs.list` | `{}` | `[BlobId]` |

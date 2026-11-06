@@ -173,9 +173,9 @@ export function createConversationGraph(host, inspect, selected = () => {}, live
   resize.observe(viewport);
   const theme = new window.MutationObserver(() => cy.style(graphStyle(window, host)));
   theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
-  const update = (messages, sessions) => {
+  const update = (messages, sessions, replace = false) => {
     if (destroyed) return;
-    const snapshot = model.reconcile(messages, sessions);
+    const snapshot = replace ? model.replaceInventory(messages, sessions) : model.reconcile(messages, sessions);
     patchGraph(cy, snapshot);
     applyVisibility();
     if (sessionNavigation.selected !== null) highlight(sessionNavigation.selected, false);
@@ -193,7 +193,7 @@ export function createConversationGraph(host, inspect, selected = () => {}, live
     sessionNavigation.reconcile();
   };
   return {
-    update,
+    update: (messages, sessions) => update(messages, sessions, true),
     appendMessages(messages, head) {
       update(messages, [...model.sessions.values()]);
       const id = messageKey(head);

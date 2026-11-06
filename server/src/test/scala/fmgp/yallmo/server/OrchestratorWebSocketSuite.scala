@@ -40,6 +40,190 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       master <- OrchestratorLive.inMemory(registry)
     } yield master
 
+  test("viewer subscriptions multiplex pending and canonical updates with replies; legacy clients receive none") {
+    run(ZIO.scoped {
+      for {
+        master <- live
+        _ <- master.createSession(sessionId, Chunk(author))
+        port <- new OrchestratorWSServer(master).start(0)
+        first <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        second <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        legacy <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        baseline <- first.subscribeEvents("first")
+        other <- second.subscribeEvents("second")
+        saved <- master.append(sessionId, author, Chunk(MessagePayload.User("pushed")))
+        reads <- first.listSessions.zipPar(second.listAgentIds).zipPar(legacy.listMessages)
+        events <- first.nextEventUpdate.zip(first.nextEventUpdate)
+        others <- second.nextEventUpdate.zip(second.nextEventUpdate)
+        waiting <- first.nextEventUpdate.either.fork
+        _ <- first.unsubscribeEvents(baseline.subscriptionId)
+        stopped <- waiting.join
+        replacement <- first.subscribeEvents("replacement")
+        _ <- first.unsubscribeEvents(baseline.subscriptionId) // Stale unsubscribe cannot close the replacement.
+        _ <- master.append(sessionId, author, Chunk(MessagePayload.User("still pushed")))
+        next <- first.nextEventUpdate.zip(first.nextEventUpdate)
+        _ <- first.unsubscribeEvents(replacement.subscriptionId)
+        _ <- second.unsubscribeEvents(other.subscriptionId)
+        _ <- master.append(sessionId, author, Chunk(MessagePayload.User("unsubscribed")))
+        inventory <- first.listMessages
+      } yield {
+        assertEquals(stopped, Left(OrchestratorClient.Error.Disconnected))
+        assertEquals(baseline.messages, Chunk.empty)
+        assertEquals(baseline.sessions.head.head, None)
+        assertEquals(events._1.subscriptionId, baseline.subscriptionId)
+        assertEquals(others._1.subscriptionId, other.subscriptionId)
+        assertEquals(events._1.change, others._1.change)
+        assertEquals(events._2.sequence, events._1.sequence + 1)
+        assert(events._1.change.isInstanceOf[EventChange.Pending])
+        val confirmed = events._2.change.asInstanceOf[EventChange.Confirmed]
+        assertEquals(confirmed.messages.map(_.id), saved.messages.map(_.id))
+        assertEquals(confirmed.sessions.head.head, saved.messages.lastOption.map(_.id))
+        assert(confirmed.sessions.head.revision > baseline.sessions.head.revision)
+        assertEquals(reads._3.map(_.content), Chunk("pushed"))
+        assertEquals(next._1.subscriptionId, replacement.subscriptionId)
+        assertEquals(inventory.map(_.content), Chunk("pushed", "still pushed", "unsubscribed"))
+      }
+    })
+  }
+
+  test("JVM graph demultiplexing accepts notification before subscribe response and interleaved request IDs") {
+    run(ZIO.scoped {
+      for {
+        port <- peer { (channel, request) =>
+          if request.method == EventsSubscribe.method then
+            for {
+              _ <- channel.send(
+                ChannelEvent.Read(
+                  WebSocketFrame.Text(
+                    JsonRpc
+                      .Notification(
+                        EventsUpdate.method,
+                        EventsUpdate.Params("sub", "stream", "early", 1L, EventChange.Pending("op", Chunk.empty))
+                      )
+                      .toJson
+                  )
+                )
+              )
+              _ <- reply(
+                channel,
+                request.id,
+                EventsSubscribe
+                  .Result("sub", "stream", "early", 0L, Chunk.empty, Chunk.empty, Chunk.empty)
+                  .toJsonAST
+                  .fold(fail(_), identity)
+              )
+            } yield ()
+          else reply(channel, request.id, Json.Arr())
+        }
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        baseline <- client.subscribeEvents("early")
+        listed <- client.listSessions
+        early <- client.nextEventUpdate
+      } yield {
+        assertEquals(baseline.startSequence, 0L)
+        assertEquals(early.sequence, 1L)
+        assertEquals(early.nonce, "early")
+        assertEquals(listed, Chunk.empty)
+      }
+    })
+  }
+
+  for fault <- List("gap", "stream", "subscription") do
+    test(s"JVM event feed rejects wrong $fault without weakening response validation") {
+      run(ZIO.scoped {
+        for {
+          port <- peer { (channel, request) =>
+            for {
+              _ <- reply(
+                channel,
+                request.id,
+                EventsSubscribe
+                  .Result("sub", "stream", "checked", 0L, Chunk.empty, Chunk.empty, Chunk.empty)
+                  .toJsonAST
+                  .fold(fail(_), identity)
+              )
+              _ <- channel.send(
+                ChannelEvent.Read(
+                  WebSocketFrame.Text(
+                    JsonRpc
+                      .Notification(
+                        EventsUpdate.method,
+                        EventsUpdate.Params(
+                          if fault == "subscription" then "wrong" else "sub",
+                          if fault == "stream" then "wrong" else "stream",
+                          "checked",
+                          if fault == "gap" then 2L else 1L,
+                          EventChange.Uncertain("op")
+                        )
+                      )
+                      .toJson
+                  )
+                )
+              )
+            } yield ()
+          }
+          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          _ <- client.subscribeEvents("checked")
+          result <- client.nextEventUpdate.either
+        } yield assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
+      })
+    }
+
+  test("JVM bounds notification-before-response buffering and fails explicitly on overflow") {
+    run(ZIO.scoped {
+      for {
+        port <- peer { (channel, _) =>
+          ZIO.foreachDiscard(1 to 129) { sequence =>
+            channel.send(
+              ChannelEvent.Read(
+                WebSocketFrame.Text(
+                  JsonRpc
+                    .Notification(
+                      EventsUpdate.method,
+                      EventsUpdate.Params(
+                        "sub",
+                        "stream",
+                        "overflow",
+                        sequence.toLong,
+                        EventChange.Pending(s"op-$sequence", Chunk.empty)
+                      )
+                    )
+                    .toJson
+                )
+              )
+            )
+          }
+        }
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        result <- client.subscribeEvents("overflow").either
+      } yield assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
+    })
+  }
+
+  for invalid <- List(
+      """{"jsonrpc":"2.0","method":"unknown.event","params":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","id":"bad","params":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","result":[],"params":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","params":{},"params":{}}""",
+      """{"jsonrpc":"2.0","method":"events.update","params":{"subscriptionId":"s","streamId":"s","nonce":"n","sequence":1,"sequence":2,"change":{"kind":"uncertain","operationId":"o"}}}""",
+      JsonRpc
+        .Notification(
+          EventsUpdate.method,
+          EventsUpdate.Params("unsolicited", "stream", "nonce", 1L, EventChange.Uncertain("op"))
+        )
+        .toJson
+    )
+  do
+    test(s"JVM rejects malformed or unsolicited event notification: ${invalid.take(90)}") {
+      run(ZIO.scoped {
+        for {
+          port <- peer { (channel, _) => channel.send(ChannelEvent.Read(WebSocketFrame.Text(invalid))) }
+          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          failure <- client.listSessions.either
+        } yield assertEquals(failure, Left(OrchestratorClient.Error.InvalidResponse))
+      })
+    }
+
   test("WS client reads the supplied live master, including appends after connection") {
     run(ZIO.scoped {
       for {
@@ -58,7 +242,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         concurrent <- ZIO.foreachPar(1 to 20)(_ => client.loadSession(sessionId)).withParallelism(4)
       } yield {
         assertEquals(info.identity.role, Role.Viewer)
-        assertEquals(info.notifications, Nil)
+        assertEquals(info.notifications, List(EventsUpdate.method))
         assert(!info.methods.contains(TurnSubmit.method))
         assertEquals(sessions.map(_.id), Chunk(sessionId))
         assertEquals(before.messages, Chunk.empty)

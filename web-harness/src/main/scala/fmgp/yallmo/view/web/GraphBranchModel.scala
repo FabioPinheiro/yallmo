@@ -39,6 +39,15 @@ private[web] final class GraphBranchModel(
   private var epoch = 0L
   private var selectionRevision = 0L
   private var draftRevision = 0L
+  private var adoptionRevision = 0L
+  private var consumedAdoptionRevision = 0L
+
+  /** Renderer adoption is an explicit terminal-result action, never a side effect of resnapshot/remount. */
+  def consumeAdoptedHead(): Option[MessageId] = {
+    val result = Option.when(adoptionRevision != consumedAdoptionRevision)(state.now().adoptedHead).flatten
+    consumedAdoptionRevision = adoptionRevision
+    result
+  }
 
   def configure(info: Initialize.Result): Unit = {
     if state.now().pending.nonEmpty then disable()
@@ -116,6 +125,7 @@ private[web] final class GraphBranchModel(
                       ) &&
                       value.newMessages.exists(_.id == value.head) =>
                   val adopt = selectionRevision == pending.selectionRevision
+                  if adopt then adoptionRevision += 1
                   state.update(current =>
                     current.copy(
                       pending = None,

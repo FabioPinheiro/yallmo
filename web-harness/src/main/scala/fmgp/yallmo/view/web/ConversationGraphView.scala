@@ -8,13 +8,12 @@ import org.scalajs.dom
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.scalajs.js
 import scala.scalajs.js.annotation.JSGlobal
-import scala.scalajs.js.timers.{SetIntervalHandle, clearInterval, setInterval}
 import scala.util.control.NonFatal
 
 /** The JS bridge owns its empty host; each inspector body has a separate, explicitly unmounted Laminar root. */
 private[web] object ConversationGraphView {
   @js.native
-  private trait GraphMessage extends js.Object {
+  private trait MessageNode extends js.Object {
     val id: String = js.native
     val parentId: String | Null = js.native
     val timestamp: String = js.native
@@ -32,9 +31,9 @@ private[web] object ConversationGraphView {
 
   @js.native
   private trait GraphHandle extends js.Object {
-    def update(messages: js.Array[GraphMessage], sessions: js.Array[SessionNode]): Unit = js.native
+    def update(messages: js.Array[MessageNode], sessions: js.Array[SessionNode]): Unit = js.native
     def navigateSession(id: String): Unit = js.native
-    def appendMessages(messages: js.Array[GraphMessage], head: js.UndefOr[String]): Unit = js.native
+    def appendMessages(messages: js.Array[MessageNode], head: js.UndefOr[String]): Unit = js.native
     def destroy(): Unit = js.native
   }
 
@@ -48,6 +47,12 @@ private[web] object ConversationGraphView {
         liveChanged: js.Function1[Boolean, Unit],
         messageSelected: js.Function1[js.UndefOr[String], Unit]
     ): GraphHandle = js.native
+  }
+
+  /** Session navigation is an explicit selection even when its pointer is not available until bootstrap. */
+  def navigateSession(branch: GraphBranchModel, id: String, navigate: String => Unit): Unit = {
+    branch.select(None)
+    navigate(id)
   }
 
   def apply(
@@ -64,11 +69,8 @@ private[web] object ConversationGraphView {
   ): HtmlElement = {
     var ready = false
     var visible = !dom.document.hidden
-    var interval = Option.empty[SetIntervalHandle]
     val model = new ConversationGraphModel(
-      () => client.messages(),
-      () => client.sessions(),
-      client.session,
+      client.subscribeEvents,
       () => client.connectionVersion,
       () => ready,
       () => visible,
@@ -76,7 +78,7 @@ private[web] object ConversationGraphView {
     )
     val visibilityChanged: js.Function1[dom.Event, Unit] = _ => {
       visible = !dom.document.hidden
-      model.poll()
+      model.eligibilityChanged()
     }
     var graph = Option.empty[GraphHandle]
     var artifacts = Map.empty[String, MessageSnapshot]
@@ -89,13 +91,14 @@ private[web] object ConversationGraphView {
         host.textContent = s"Message unavailable: $id"
         () => ()
     }
-    def mergeBranches(): Unit = if model.state.now().snapshot.nonEmpty then {
+    def mergeBranches(): Unit = {
       val state = branch.state.now()
       artifacts ++= state.messages.map(message => MessageId.value(message.id) -> message)
+      val adopt = if graph.nonEmpty then branch.consumeAdoptedHead() else None
       graph.foreach(
         _.appendMessages(
           js.Array(state.messages.map(messageNode)*),
-          state.adoptedHead.fold[js.UndefOr[String]](js.undefined)(MessageId.value)
+          adopt.fold[js.UndefOr[String]](js.undefined)(MessageId.value)
         )
       )
     }
@@ -109,44 +112,40 @@ private[web] object ConversationGraphView {
               context.thisNode.ref,
               (id, body) => inspect(id, body),
               id => selected(id.toOption),
-              live => {
-                interval.foreach(clearInterval)
-                interval = None
-                model.setLive(live)
-                if live then interval = Some(setInterval(2000)(model.poll()))
-              },
-              id => branch.select(id.toOption.flatMap(value => MessageId.from(value).toOption))
+              live => model.setLive(live),
+              id =>
+                branch.select(id.toOption.flatMap(value => MessageId.from(value).toOption).filter { messageId =>
+                  model.isConfirmed(messageId) || branch.state.now().messages.exists(_.id == messageId)
+                })
             )
           )
           bridgeError.set(None)
           visible = !dom.document.hidden
           dom.document.addEventListener("visibilitychange", visibilityChanged)
-          interval = Some(setInterval(2000)(model.poll()))
-          model.poll()
+          mergeBranches()
+          model.eligibilityChanged()
         } catch {
           case NonFatal(error) => bridgeError.set(Some(s"Graph could not start: ${error.getMessage}"))
         }
       },
       onUnmountCallback { _ =>
         model.disable()
-        interval.foreach(clearInterval)
-        interval = None
         dom.document.removeEventListener("visibilitychange", visibilityChanged)
         graph.foreach(_.destroy())
         graph = None
         selected(None)
         branch.select(None)
       },
-      // A successful explicit reconnect may supersede a snapshot from the old connection; timer ticks never do.
-      connected.distinct --> { value => ready = value; if value then model.refresh() },
+      // Eligibility owns the subscription; reconnect never replays authoring requests.
+      connected.distinct --> { value => ready = value; model.eligibilityChanged() },
       branch.state.signal.map(_.messages).distinct --> (_ => mergeBranches()),
       branch.state.signal.map(_.reviewRequired).distinct.changes.filter(identity) --> (_ => model.refresh()),
-      navigation --> (id => graph.foreach(_.navigateSession(id))),
+      navigation --> (id => navigateSession(branch, id, session => graph.foreach(_.navigateSession(session)))),
       refreshes.changes --> (_ => model.refresh()),
       model.state.signal.map(_.snapshot).distinct --> { snapshot =>
         snapshot.foreach { value =>
           val messages = (value.messages ++ branch.state.now().messages).distinctBy(_.id)
-          artifacts ++= messages.map(message => MessageId.value(message.id) -> message)
+          artifacts = messages.map(message => MessageId.value(message.id) -> message).toMap
           graph.foreach(
             _.update(
               js.Array(messages.map(messageNode)*),
@@ -166,7 +165,7 @@ private[web] object ConversationGraphView {
     )
   }
 
-  private def messageNode(message: MessageSnapshot): GraphMessage =
+  private def messageNode(message: MessageSnapshot): MessageNode =
     js.Dynamic
       .literal(
         id = MessageId.value(message.id),
@@ -176,9 +175,9 @@ private[web] object ConversationGraphView {
         content = message.content,
         author = AgentId.value(message.agentId)
       )
-      .asInstanceOf[GraphMessage]
+      .asInstanceOf[MessageNode]
 
-  private def sessionNode(session: GraphSession): SessionNode =
+  private def sessionNode(session: GraphSessionNode): SessionNode =
     js.Dynamic
       .literal(
         id = session.id,

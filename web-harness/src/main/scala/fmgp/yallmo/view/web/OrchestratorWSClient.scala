@@ -40,6 +40,8 @@ final class OrchestratorWSClient private[web] (
   private var generation = 0L
   private var nextId = 0L
   private var chunkBytes = MaxBlobChunkBytes
+  private var eventCounter = 0L
+  private val eventListeners = mutable.Map.empty[String, EventsUpdate.Params => Unit]
   private var openingTimer = Option.empty[SetTimeoutHandle]
 
   /** Completes after initialization. Calling this again while connected reuses the same connection. */
@@ -104,6 +106,35 @@ final class OrchestratorWSClient private[web] (
     request(ProvidersLoginCancel.method, params)
   private[web] def connectionVersion: Long = generation
   private[web] def blobChunkBytes: Int = chunkBytes
+
+  /** Install before sending: server events may precede the bootstrap response. */
+  private[web] def subscribeEvents(listener: EventsUpdate.Params => Unit): EventSubscription = {
+    eventCounter += 1
+    val nonce = s"events-$eventCounter"
+    val connection = generation
+    eventListeners(nonce) = listener
+    var cancelled = false
+    var subscriptionId = Option.empty[String]
+    def unsubscribe(id: String): Unit = if connection == generation then {
+      val _ = request[EventsUnsubscribe.Params, Empty](EventsUnsubscribe.method, EventsUnsubscribe.Params(id))
+    }
+    val result =
+      request[EventsSubscribe.Params, EventsSubscribe.Result](EventsSubscribe.method, EventsSubscribe.Params(nonce))
+        .map { value =>
+          if value.nonce != nonce then throw new RuntimeException("Invalid event subscription nonce")
+          subscriptionId = Some(value.subscriptionId)
+          if cancelled then unsubscribe(value.subscriptionId)
+          value
+        }
+    EventSubscription(
+      result,
+      () => {
+        cancelled = true
+        eventListeners -= nonce
+        subscriptionId.foreach(unsubscribe)
+      }
+    )
+  }
 
   def diagnostic(id: SessionId): Future[DiagnosticsRequest.Result] =
     request(DiagnosticsRequest.method, DiagnosticsRequest.Params(id))
@@ -194,7 +225,15 @@ final class OrchestratorWSClient private[web] (
       val timer = Option.when(
         method != TurnSubmit.method && method != BranchesSubmit.method && method != AgentsInvoke.method && method != ProvidersLoginComplete.method
       )(setTimeout(timeoutMillis) {
-        pending.remove(id).foreach(_.result.tryFailure(new RuntimeException("Request timed out")))
+        pending.get(id).foreach { entry =>
+          val error = new RuntimeException("Request timed out")
+          // A late subscribe result has an unknown remote ID; close so server scope cleanup cannot be lost.
+          if method == EventsSubscribe.method then terminate(error)
+          else {
+            pending -= id
+            entry.result.tryFailure(error)
+          }
+        }
       })
       pending(id) = Pending(result, timer)
       try connection.send(JsonRpc.Request(Json.Str(id), method, params).toJson)
@@ -212,24 +251,54 @@ final class OrchestratorWSClient private[web] (
         case Json.Obj(values) if values.size == values.toMap.size => Right(values.toMap)
         case _                                                    => Left("Invalid server response")
       }
-      _ <- Either.cond(
-        fields.get("jsonrpc").contains(Json.Str(JsonRpc.Version)) && !fields.contains("method"),
-        (),
-        "Invalid server response"
-      )
-      id <- fields.get("id").collect { case Json.Str(value) => value }.toRight("Invalid response ID")
-      outcome <- (fields.get("result"), fields.get("error")) match {
-        case (Some(value), None) => Right(Right(value))
-        case (None, Some(error)) => error.as[JsonRpc.Error].map(value => Left(new RpcException(value)))
-        case _                   => Left("Invalid result/error response")
-      }
-    } yield (id, outcome)
+      _ <- Either.cond(fields.get("jsonrpc").contains(Json.Str(JsonRpc.Version)), (), "Invalid server response")
+    } yield fields
     decoded match {
-      case Left(error)          => terminate(new RuntimeException(error))
-      case Right((id, outcome)) =>
-        pending.remove(id).foreach { entry =>
-          entry.timer.foreach(clearTimeout)
-          entry.result.tryComplete(outcome.toTry)
+      case Left(error)                                => terminate(new RuntimeException(error))
+      case Right(fields) if fields.contains("method") =>
+        val notification = for {
+          _ <- Either.cond(
+            fields.keySet == Set("jsonrpc", "method", "params") && fields
+              .get("method")
+              .contains(Json.Str(EventsUpdate.method)),
+            (),
+            "Invalid server notification"
+          )
+          params <- fields("params").as[EventsUpdate.Params]
+          _ <- Either.cond(
+            params.subscriptionId.nonEmpty && params.streamId.nonEmpty && params.sequence > 0,
+            (),
+            "Invalid event event"
+          )
+          index <- params.nonce.stripPrefix("events-").toLongOption.toRight("Unknown event nonce")
+          _ <- Either.cond(
+            params.nonce == s"events-$index" && index > 0 && index <= eventCounter,
+            (),
+            "Unknown event nonce"
+          )
+        } yield params
+        notification match {
+          case Left(error) => terminate(new RuntimeException(error))
+          // Issued, retired nonces are safe to ignore without an ever-growing retired set.
+          case Right(params) => eventListeners.get(params.nonce).foreach(_(params))
+        }
+      case Right(fields) =>
+        val response = for {
+          _ <- Either.cond(!fields.contains("params"), (), "Invalid server response")
+          id <- fields.get("id").collect { case Json.Str(value) => value }.toRight("Invalid response ID")
+          outcome <- (fields.get("result"), fields.get("error")) match {
+            case (Some(value), None) => Right(Right(value))
+            case (None, Some(error)) => error.as[JsonRpc.Error].map(value => Left(new RpcException(value)))
+            case _                   => Left("Invalid result/error response")
+          }
+        } yield (id, outcome)
+        response match {
+          case Left(error)          => terminate(new RuntimeException(error))
+          case Right((id, outcome)) =>
+            pending.remove(id).foreach { entry =>
+              entry.timer.foreach(clearTimeout)
+              entry.result.tryComplete(outcome.toTry)
+            }
         }
     }
   }
@@ -246,10 +315,13 @@ final class OrchestratorWSClient private[web] (
       entry.result.tryFailure(error)
     }
     pending.clear()
+    eventListeners.clear()
     previous.foreach(_.close())
     onDisconnect(error)
   }
 }
+
+private[web] final case class EventSubscription(result: Future[EventsSubscribe.Result], cancel: () => Unit)
 
 object OrchestratorWSClient {
   final class RpcException(val error: JsonRpc.Error) extends RuntimeException(error.message)

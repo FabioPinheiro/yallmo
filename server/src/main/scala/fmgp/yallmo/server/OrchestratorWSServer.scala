@@ -62,6 +62,24 @@ final class OrchestratorWSServer(
                 workers <- Ref.make(0)
                 workerScope <- ZIO.service[Scope]
                 send = (frame: WebSocketFrame) => writes.withPermit(channel.send(ChannelEvent.Read(frame)))
+                // One scoped sender, not a long-lived request worker. A stalled socket cannot hold a mutation open.
+                _ <- (rpc
+                  .nextNotification(connection)
+                  .flatMap { output =>
+                    if RpcWire.size(output) > RpcWire.MaxMessageBytes then
+                      ZIO.fail("Event event too large; reconnect and resubscribe")
+                    else
+                      send(WebSocketFrame.Text(output))
+                        .mapError(_ => "Event transport failed; reconnect")
+                        .timeoutFail("Event sender stalled; reconnect and resubscribe")(
+                          OrchestratorWSServer.EventSendTimeout
+                        )
+                  })
+                  .forever
+                  .catchAll { reason =>
+                    send(WebSocketFrame.Close(1013, Some(reason))).timeout(1.second).ignore *> channel.shutdown
+                  }
+                  .forkScoped
                 _ <- channel
                   .receiveAll {
                     case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
@@ -138,4 +156,5 @@ final class OrchestratorWSServer(
 
 object OrchestratorWSServer {
   private[server] val MaxConnectionWorkers = 8
+  private[server] val EventSendTimeout = 5.seconds
 }

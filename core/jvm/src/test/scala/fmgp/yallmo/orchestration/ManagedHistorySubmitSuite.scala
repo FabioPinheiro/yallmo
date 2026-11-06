@@ -2474,7 +2474,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
     for {
       instances <- RuntimeInstances.fromAgents(Chunk(participant))
       _ <- instances.registerUser(userId)
-      orchestrator = new OrchestratorLive(storage, instances)
+      orchestrator <- OrchestratorLive.make(storage, instances)
       _ <- orchestrator.createSession(sessionId, Chunk(userId))
     } yield orchestrator
   }

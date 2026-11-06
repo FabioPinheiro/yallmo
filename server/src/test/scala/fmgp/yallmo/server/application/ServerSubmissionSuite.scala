@@ -99,7 +99,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.methods.size, 7)
+        assertEquals(info.methods.size, 9)
         assertEquals(decode[JsonRpc.Failure](rejected.get).error, JsonRpc.Error.MethodNotFound)
         assertEquals(decode[JsonRpc.Failure](diagnostic.get).error, JsonRpc.Error.MethodNotFound)
         assert(sessions.forall(_.isEmpty))
@@ -144,7 +144,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.get.methods.size, 16)
+        assertEquals(info.get.methods.size, 18)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -490,7 +490,7 @@ final class ServerSubmissionSuite extends FunSuite {
         }
       } yield results.foreach { case (info, code) =>
         assertEquals(info.identity.role, Role.Viewer)
-        assertEquals(info.methods.size, 7)
+        assertEquals(info.methods.size, 9)
         assertEquals(code, ErrorCode.Forbidden)
       }
     })
@@ -543,7 +543,7 @@ final class ServerSubmissionSuite extends FunSuite {
             ProvidersLoginCancel.method
           )
         )
-        assertEquals(info.notifications, Nil)
+        assertEquals(info.notifications, List(EventsUpdate.method))
         assertEquals(decode[JsonRpc.Failure](changed.get).error.code, ErrorCode.Conflict)
         assertEquals(decode[JsonRpc.Failure](forbidden.get).error, JsonRpc.Error.MethodNotFound)
       }

@@ -43,6 +43,15 @@ export class ConversationGraphModel {
     this.routes = new Map();
   }
 
+  replaceInventory(messages, sessions) {
+    const retained = new Set(messages.map(message => message.id));
+    for (const id of this.messages.keys()) if (!retained.has(id)) this.messages.delete(id);
+    const snapshot = this.reconcile(messages, sessions);
+    for (const id of this.positions.keys()) if (!snapshot.nodes.has(id)) this.positions.delete(id);
+    for (const id of this.routes.keys()) if (!snapshot.edges.has(id)) this.routes.delete(id);
+    return snapshot;
+  }
+
   reconcile(messages, sessions) {
     for (const message of messages) this.messages.set(message.id, message);
     this.sessions = new Map(sessions.map(session => {

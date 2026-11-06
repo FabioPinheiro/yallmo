@@ -1,11 +1,11 @@
 # Conversation DAG inspector
 
-## Live graph: polling snapshots
+## Live graph: pushed updates
 
-1. `ConversationGraphModel.scala` fetches the global message inventory and session summaries, then reads
-   `sessionsGet` in batches of **four**. The protocol has no summary head field: a session snapshot is oldest-first,
-   so its last message is its published head. Session names are their stable `SessionId` strings. Empty histories
-   remain visible; failed session reads are explicitly unknown/stale, never interpreted as empty histories.
+1. `ConversationGraphModel.scala` subscribes to `events.update` over the existing initialized `/rpc` WebSocket.
+   `events.subscribe` supplies public messages, canonical session metadata/heads/revisions and in-flight observations.
+   Session names are stable `SessionId` strings. Empty histories remain visible; failed session reads are explicitly
+   unknown/stale, never interpreted as empty histories. No recurring message/session inventory reads or timer remain.
 2. `conversation-graph-model.js` reconciles immutable artifacts by message ID and mutable pointers by session ID.
    All inventory branches are retained, including originals, disconnected roots and messages outside any session.
    Shared heads/ancestors are single message nodes. Referenced but absent parents/heads become ID-bearing placeholders.
@@ -23,7 +23,7 @@
    it allocates a fresh outer node column and keeps a dotted fallback edge. Nodes remain distinct and old messages
    never move; edge crossings, and edge/node overlap in pathological dense/fixed layouts, are possible. This is not
    a general obstacle router or globally minimal-width layout. The simple scans can be cubic on dense inventories;
-   automatic snapshots with no new messages reuse all allocated positions/routes.
+   updates with no new messages reuse all allocated positions/routes.
 4. `conversation-graph.js` incrementally adds/patches/removes Cytoscape elements without resetting pan, zoom,
    selection or the inspector. Session pointers use dashed directed session → head edges; message edges are parent → child.
    Session nodes occupy compact collision-checked slots below their heads, including shared heads; empty sessions
@@ -52,15 +52,15 @@
    descendants. With no split, the focused ancestry and descendant subtree are shown. Session focus uses its latest published head; an empty/missing session remains navigable.
    Session markers with visible heads remain visible (including shared heads), plus the focused empty session.
    Edges require both endpoints visible. Hidden inventory remains mounted and reserves its global positions. All
-   restores it exactly, and the chosen mode survives polls until unmount. Outside clicks/inspector dismissal retain
+   restores it exactly, and the chosen mode survives pushed updates until unmount. Outside clicks/inspector dismissal retain
    focus. Filters/hover do not change composer parent/draft/pending work, fetch scope, or storage. An explicitly
    adopted branch response updates focus once; ordinary snapshots never re-adopt it or override a later selection.
-6. Snapshot loading/failure keeps the previous graph. Messages accumulate for the mounted graph; successful
-   session listings replace the session set, and unreadable sessions retain a marked last-known pointer if available.
-   Snapshots are not atomic across inventory/session requests: a session read can observe a newer publication, and its
-   returned messages are merged into the inventory. The next poll reconciles concurrent changes. Epoch and connection
-   guards reject stale replies and stop scheduling old batches. Unmount cancels the polling interval, removes the document
-   visibility listener and destroys Cytoscape, observers, card roots and global pointer/key listeners. Positions and the inspector are not persisted across route unmount or page reload.
+6. Bootstrap loading/failure keeps the previous graph. Confirmed immutable branches accumulate; pending observations
+   live in a separate bounded overlay. Uncertainty removes only that overlay and obtains a fresh baseline, never deleting
+   confirmed branches. Explicit renderer inventory replacement removes ghosts and stale inspector artifacts while retaining
+   surviving node coordinates/routes. Session baselines replace the aggregate; deltas upsert only newer revisions,
+   including A → B → A. Unmount unsubscribes, invalidates callbacks and removes the visibility listener, Cytoscape,
+   observers, card roots and global pointer/key listeners. Positions/inspector do not persist across route unmount/reload.
 
 Pan/zoom use the canvas gestures; initial load fits automatically. Search and sidebar session navigation are explicit
 navigation actions; Branches and Live are local view controls. Explicit search centering/session fitting recovers the
@@ -83,8 +83,8 @@ Graph reuses Chat’s full-height conversation layout and composer styles. Its c
 the flexible middle area, and the composer stays at the bottom. Resizing the composer resizes the canvas rather than
 pushing the input below the page. Chat’s transcript remains independently scrollable.
 
-The bottom composer says **Reply from** the selected message (hover for its exact ID). Only stored message nodes/search
-results can select a parent; selecting a session, missing node, empty canvas or leaving Graph clears it. Choose a configured
+The bottom composer says **Reply from** the selected message (hover for its exact ID). Only confirmed stored message nodes/search
+results can select a parent (pending observations remain inspectable); selecting a session, missing node, empty canvas or leaving Graph clears it. Choose a configured
 agent in the shared toolbar, type text and use Send or plain Enter (Shift+Enter inserts a newline; IME does not send).
 This saves a new user child of that **exact** parent and runs the configured model/tool loop on its complete ancestry.
 It creates no named or temporary session and never changes participants or published pointers, even when branching from
@@ -95,8 +95,8 @@ Draft, captured parent/agent and pending work live at application root, separate
 editing the next draft cannot change an in-flight submission. Send/reconnect/agent changes and competing Chat/Scalamode
 submissions are blocked while pending. Leaving the route does not cancel backend work. Returned public message IDs merge
 immediately into the existing DAG without fitting/resetting its viewport or moving old messages. Success adopts the new
-head as the next parent only if selection has not changed. Ordinary polling never adopts a previously returned head or
-changes the parent/draft/pending state; persisted prompt/tool/reply messages can appear before the terminal response.
+head as the next parent only if selection has not changed. Ordinary pushed updates never adopt a previously returned head or
+change the parent/draft/pending state; persisted prompt/tool/reply messages can appear before the terminal response.
 
 Failures can leave accepted prompts, tool effects and partial saved branches. Partial IDs are merged when known; failure
 also requests a read-only refresh while Graph is mounted. Uncertain outcomes require inspection and an explicit “I reviewed
@@ -135,35 +135,33 @@ tool execution. Partial/original/rebase artifacts remain inspectable. No arbitra
 
 ## Automatic updates and connection lifecycle
 
-The planned migration is documented in [Push-update handoff plan](CONVERSATION_GRAPH_PUSH_PLAN.md), including component,
-parallel-delivery, subscription-lifecycle and backpressure diagrams. It is a plan, not implemented push support.
+The architecture and acceptance contract are documented in [Push-update plan](CONVERSATION_GRAPH_PUSH_PLAN.md).
 
-**Live means polling, not server push.** While Graph is mounted, initialized/connected and the document is visible, a
-lifecycle-owned interval (while **Live** is checked, the default) requests a complete snapshot roughly every **2 seconds**: the entire global message inventory,
-session summaries and every published session pointer (still at most four session reads in flight). This also works for
-read-only viewers and discovers other clients' branches, in-flight persisted prompt/tool/reply messages and new sessions.
-Successful snapshots update sidebar names/counts using the same summaries, without additional per-session polling,
-reloading Chat's active transcript or changing its draft/continuation state.
+**Live uses server push**, including for read-only viewers. Mounted, visible, connected Graph with Live enabled registers
+its notification callback before sending `events.subscribe`. Notifications arriving before the result are bounded to
+**128 events / 2 MiB UTF-8 JSON**. The result establishes subscription/stream identity and the starting sequence;
+matching buffered events apply from `startSequence + 1`, with ID deduplication and session revision checks. Snapshot
+session revisions dominate older buffered pointers; no false atomic end watermark discards concurrent message events.
 
-Busy timer ticks are skipped, never queued and never invalidate a slow snapshot. Turning Live off removes its timer,
-invalidates in-flight snapshot replies and freezes graph/sidebar background data, including through reconnect or keyboard
-refresh. Turning it on immediately catches up, then resumes the interval. Explicit branch terminal responses still merge
-while paused. Toggling itself preserves focus/filter/viewport/parent/draft/inspector; it never reconnects or replays writes.
-A successful explicit Reconnect while Live is on may supersede an old snapshot safely; epoch/connection guards reject stale responses.
-While Graph owns snapshots, reconnect does not issue Chat's session-list/history reads (even for a retained active Chat).
-Saved Chat histories are marked reload-required without changing drafts or continuation; returning to Chat reloads its
-stale active history before allowing Send, and avoids duplicating an already-started sidebar resume read. Hidden documents and
-disconnected clients issue no automatic reads or subsequent snapshot batches. Already sent reads cannot be cancelled;
-they may settle, but stale/interrupted snapshots cannot replace the last visible graph. Visibility return refreshes promptly
-(unless a snapshot is still busy); explicit Reconnect refreshes after successful initialization. There is no automatic socket
-reconnect and no replay of writes. Leaving Graph removes its timer/listener and rejects late responses. Failed reads keep
-the last visible graph and error until a successful snapshot, and the next eligible poll retries only reads. Polling never clears
-the branch review gate or resends an execution.
+Storage and live delivery run in parallel on the backend. Pending observations are not proof of persistence and cannot
+select a composer parent until confirmed. Confirmation promotes public messages and canonical session outcomes. Pending
+operations are bounded to **128 / 2 MiB** in the browser too; there is no retained operation journal. Uncertainty,
+sequence gaps, stream changes or overflow invalidate the feed and allow **one** automatic read-only resubscription per
+explicit refresh/resume. Repeated failure stops with an error and retains confirmed data; explicit Refresh can retry reads.
+The server independently bounds egress and closes a slow/oversized socket with 1013; reconnect remains explicit.
 
-Snapshots remain non-atomic and best-effort, not an ordered event feed, transaction or durable execution acknowledgement.
-Large inventories/slow reads can take longer than the polling period; no extra snapshots accumulate. Existing messages keep
-fixed positions, pan/zoom, selection, inspector, search input and composer draft through ordinary updates; mutable session
-nodes/inspectors follow their latest published head. No backend event journals, cursors or notification pipeline are used.
+Live off, hidden document, disconnect and route exit invalidate callbacks before unsubscribe, freezing graph/sidebar
+background changes. Late bootstrap responses are unsubscribed, not applied. Resume obtains a new baseline. Live toggles
+never reconnect or replay authoring requests. Own terminal branch results still merge while paused or before bootstrap,
+including after remount; explicit head adoption is consumed once, never repeated by a background snapshot.
+
+Graph reconnect continues suppressing Chat-owned list/history reads, including while paused. Retained saved Chat histories
+are marked stale without losing drafts/continuation; returning to Chat reloads before Send. Sidebar metadata updates are
+inventory-only and do not reload transcripts. Pushed updates preserve viewport, filter/search, inspector and composer state.
+
+No authoring operation/tool execution is replayed, and events never clear an unknown-outcome review gate. These are
+process-local observations and best-effort persistence, not a transaction, durable cursor or crash-durability guarantee.
+Direct external-process filesystem writes are not watched; a fresh baseline is needed to discover them.
 
 ## Validation
 
@@ -171,8 +169,8 @@ nodes/inspectors follow their latest published head. No backend event journals, 
   reorder/append/placeholder stability, nearest-fork visibility, headless renderer identity and jsdom hover/inspector lifecycle.
   A deterministic seed-1 stress test covers 200 dense 40-message layouts (including the formerly nonterminating second
   fixture), bounded routing fallbacks, node nonoverlap and fixed old coordinates; this is not a universal edge-clearance proof.
-- `sbt 'webHarness/testOnly *GraphBranchModelSuite *ConversationGraphModelSuite *SidebarSessionNavigationSuite *ViewWebSuite'`: snapshot head ordering, bounded fetches,
-  partial failures, parent/draft capture, stale replies, busy poll coalescing, Live-off in-flight rejection and resume,
+- `sbt 'webHarness/testOnly *GraphBranchModelSuite *ConversationGraphModelSuite *SidebarSessionNavigationSuite *ViewWebSuite'`: notification-before-response, bounded bootstrap/UTF-8 overflow,
+  session revisions, optimistic reconciliation, parent/draft capture, stale replies, Live-off in-flight rejection and resume,
   hidden/disconnected pause, reconnect/unmount,
   inventory-only sidebar updates and empty snapshots.
 - `sbt 'core/testOnly *OrchestratorBranchSuite *OrchestratorSubmitSuite *ManagedHistory*Suite *OrchestratorRebase*Suite'`: memory/FS/reopen, no session calls, strict ancestry, tool loops and persistence failures.
@@ -180,7 +178,18 @@ nodes/inspectors follow their latest published head. No backend event journals, 
 - `sbt 'webHarness/fastLinkJS'` for development; `sbt 'webHarness/fullLinkJS'` then `npm run build` in the Vite directory
   for the production alias. These are separate commands when using the local thin sbt client.
 
-Mocked production-browser checks cover desktop pointer hover/card transition/click persistence, mobile touch, branch modes,
+Historical pre-push mocked production-browser checks covered desktop pointer hover/card transition/click persistence, mobile touch, branch modes,
 global search/sidebar navigation, moved session heads, immutable coordinates, Live pause during a read/reconnect, sidebar
 freeze, resume, and direct branch adoption while paused. No external model/provider is used. Large real inventories and
 visual/accessibility review remain release gates; synthetic tests do not prove universal routing quality.
+
+Push migration validation: 87 JavaScript tests and 151 web Scala tests passed, plus fast/full Scala.js linking and the
+Vite production build (existing large-chunk warning). Push-specific synthetic desktop/mobile production-browser checks
+also passed: notification-before-response, optimistic ghost reconciliation, no recurring inventory reads, stable coordinates,
+filters/search/sidebar/head movement, passive/persistent inspectors, paused late events/reconnect/sidebar, explicit branch
+adoption and independent drafts, and deferred Chat history reload. The temporary browser fixture was adapted to the push
+protocol; historical polling results are not counted as push evidence. No real provider calls were made.
+
+A corrupt filesystem inventory may still prevent bootstrap before individual session reads can report unknown heads.
+Snapshots remain subject to the existing 1 MiB wire limit; there is no pagination fallback. See the implementation receipt
+in [the push plan](CONVERSATION_GRAPH_PUSH_PLAN.md) for changed paths, exact automated checks and remaining limitations.

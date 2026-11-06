@@ -53,21 +53,23 @@ Current shows focused ancestry and every descendant of the selected node; Curren
 its nearest ancestral split (including self), excluding remote cousins/unrelated roots. Before selection everything is visible. Search always finds global
 inventory and reveals hidden results; All restores all nodes at their original coordinates. Filters never change drafts,
 submit parents or storage. There is no permanent node list or extra refresh/fit/zoom/pin/close toolbar.
-Full inventory/session snapshots poll every two seconds while Live is on, Graph is mounted, connected and visible
-(including read-only viewers). Busy ticks are skipped. Live off stops the timer, rejects in-flight background snapshots
-and freezes sidebar summaries too; reconnect/keyboard refresh cannot bypass pause. Live on catches up immediately.
-Own branch responses still merge while paused. Hidden/disconnected pages pause reads; visibility return and successful
-explicit Reconnect catch up only when Live is on. Graph reconnect suppresses Chat-owned list/history reads too;
-returning to Chat reloads its stale saved history before Send without losing its draft or resetting continuation.
-There is no automatic reconnect or write replay. Snapshot updates
-preserve message positions, viewport, filter, selection, search and persistent inspector. Sidebar names/counts reuse graph
-summaries without reloading Chat's transcript/draft/continuation. Snapshots are non-atomic; later polls reconcile changes.
+Graph uses `events.subscribe` / `events.update` on the shared WebSocket while Live is on, mounted, connected and visible,
+including read-only viewers. There is no polling timer or recurring inventory read. Callback registration precedes subscribe;
+early events and pending observations are bounded to 128 events/operations and 2 MiB UTF-8 JSON each. Canonical session
+revisions prevent stale pointers; deltas preserve other sessions. Pending messages are inspectable, not proof of persistence
+or selectable composer parents. Uncertainty/gaps/overflow trigger at most one read-only resubscription, never authoring replay;
+optimistic ghosts are removed explicitly without discarding confirmed branches or surviving geometry.
+Live off invalidates callbacks/unsubscribes and freezes sidebar summaries too; reconnect/keyboard refresh cannot bypass pause.
+Live on/visibility return catches up with a fresh baseline. Own branch responses merge while paused or before bootstrap.
+Graph reconnect suppresses Chat-owned list/history reads; returning to Chat reloads stale saved history before Send without
+losing its draft or resetting continuation. Reconnect remains explicit. Pushed updates preserve viewport, filter, selection,
+search and persistent inspector; sidebar upserts never reload Chat transcripts. External-process filesystem writes are not watched.
 The bottom **Reply from** composer sends an unnamed branch from the exact selected stored message using the shared
 configured agent. It runs the full model/tool loop on persisted ancestry, creates no session and moves no pointers.
 Session/missing-node selection clears the parent. Drafts/pending work are independent of Chat; edits and new selection
 cannot retarget an in-flight request. Failures may leave saved objects/tool effects: inspect the DAG and explicitly allow
 a new submission before repeating uncertain work. There is no automatic retry. See the linked graph guide for API/safety details.
-See [Conversation DAG inspector](../docs/CONVERSATION_GRAPH.md) for navigation, polling/lifecycle, layout details and
+See [Conversation DAG inspector](../docs/CONVERSATION_GRAPH.md) for navigation, push/lifecycle, layout details and
 best-effort branch persistence limitations. Persisted prompt/tool/reply artifacts can appear during a pending branch; automatic
 reads never retry a branch or clear its explicit recovery gate.
 

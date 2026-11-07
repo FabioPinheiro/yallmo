@@ -159,6 +159,26 @@ Graph reconnect continues suppressing Chat-owned list/history reads, including w
 are marked stale without losing drafts/continuation; returning to Chat reloads before Send. Sidebar metadata updates are
 inventory-only and do not reload transcripts. Pushed updates preserve viewport, filter/search, inspector and composer state.
 
+### Chat session scope
+
+The same App-owned socket has one baseline subscription policy: mounted Graph uses `All`, while mounted Chat uses
+`Session(id)` even for read-only viewers. Chat retires callbacks before route/session/visibility/connection changes;
+late bootstrap cancellation unsubscribes only its own remote ID. Returning to Chat obtains a new scoped baseline before
+Send; retained drafts and continuation preferences survive. No Chat history/list read bypasses paused Graph, including
+terminal replies from turns submitted before leaving Chat. Session summary upserts preserve the aggregate sidebar inventory.
+
+Chat allocates a safe local ID before an unnamed first Send and subscribes read-only to that missing session. It submits
+`New(Some(id))` only after bootstrap; neither local preparation nor subscription fabricates persisted sessions. The captured
+submission is bookkeeping, not a message bubble. Real orchestration observations carry IDs/timestamps and render as pending
+until canonical ancestry confirms them. Origin context routes provisional observations, never claims ownership or successful
+CAS. Revisioned heads support shared ancestry and A → B → A/rebases; object-only confirmations cannot insert a sessionless
+branch into Chat history. Prompt/tool/reply checkpoints arrive during execution, not through recurring history reads.
+
+Terminal replies clear busy/error bookkeeping and restore the captured draft only if the next draft is empty. They cannot
+replace newer pushed history or redirect an unrelated active conversation. Unknown/failure review gates survive new events
+and reconnect; explicit reload/review is required. Provisional observations are removed on failure/uncertainty, without
+deleting confirmed history. Chat uses the same 128-event/operation and 2 MiB early/pending bounds and one read-only recovery.
+
 No authoring operation/tool execution is replayed, and events never clear an unknown-outcome review gate. These are
 process-local observations and best-effort persistence, not a transaction, durable cursor or crash-durability guarantee.
 Direct external-process filesystem writes are not watched; a fresh baseline is needed to discover them.
@@ -193,3 +213,100 @@ protocol; historical polling results are not counted as push evidence. No real p
 A corrupt filesystem inventory may still prevent bootstrap before individual session reads can report unknown heads.
 Snapshots remain subject to the existing 1 MiB wire limit; there is no pagination fallback. See the implementation receipt
 in [the push plan](CONVERSATION_GRAPH_PUSH_PLAN.md) for changed paths, exact automated checks and remaining limitations.
+
+### Chat session-push implementation receipt
+
+- Frontend: `ChatSessionFeed.scala` owns bounded scoped bootstrap, provisional observations and revisioned ancestry;
+  `ChatModel.scala` owns captured submissions/drafts and explicit recovery. Chat and Graph reuse the App-owned socket.
+- Removed the fabricated user preview and terminal-snapshot transcript replacement. No recurring Chat history reads,
+  automatic reconnect, authoring replay, provider calls or durable journal were added.
+- Deterministic repository regressions: `ChatModelSuite` (17) and `ChatSessionFeedSuite` (9), using controlled callbacks
+  and event-driven fake-socket request waiters. Existing voice, Graph and transport regressions remain passing.
+- Validation: `sbt 'webHarness/compile'`; module `webHarness/scalafmtOnly` with the nine explicit absolute changed Scala
+  paths after compilation; separate `sbt 'webHarness/testOnly *'` (163 tests), `sbt 'webHarness/fastLinkJS'` and `sbt 'webHarness/fullLinkJS'` invocations;
+  `npm --prefix web-harness/vite test` (87 tests); `npm --prefix web-harness/vite run build` (passes; chunk-size warning).
+- Synthetic Chromium desktop/mobile smoke verified all four intermediate message stages while terminal execution was
+  blocked, real pending/confirmed IDs, no local bubble, stale-terminal dedupe, draft preservation and route scope handoff.
+  No external provider was contacted. Real provider latency/token streaming and filesystem watching are not claimed.
+
+Review fixes: named New collisions preserve unsent New intent/drafts and require explicit Resume. Successful terminal
+heads are convergence bookkeeping only: a missing head gates Send until canonical ancestry contains it or a single
+post-terminal scoped baseline reconciles the current (possibly rebased) head. Detached conversations defer this baseline
+until eligible; unrelated conversations are not gated. Object-only confirmations retain real observations as **Pending
+publication**, not canonical messages. Canonical pointer outcomes prune off-chain overlays; uncertainty/failure removes
+provisional ghosts. Terminal success with remaining provisional cards also obtains one fresh baseline, including failed
+CAS publication that left the canonical head unchanged; Send stays gated if this recovery fails. Existing 128-operation /
+2 MiB limits and bounded read-only recovery remain in force.
+
+
+#### Final session-scope validation and review
+
+Independent review findings (named-New collisions, terminal-before-event convergence, object-save-before-publication
+visibility and unchanged-head failed-publication cleanup) were fixed and re-reviewed. No remaining findings were reported.
+The parent reran the focused checks against the final working tree:
+
+```sh
+# 343 core tests, including 20 orchestration event tests
+sbt 'core/testOnly *OrchestratorLiveSuite *OrchestratorListingSuite *OrchestratorAppendSuite *OrchestrationEventsSuite *OrchestratorSubmitSuite *OrchestratorBranchSuite *OrchestratorRebaseSuite *ManagedHistorySubmitSuite'
+# 108 server/submission/transport/logging tests
+sbt 'server/testOnly *ServerSubmissionSuite *SessionSubmissionSuite *OrchestratorRpcSuite *OrchestratorWSClientTransportSuite *OrchestratorWebSocketSuite *OrchestratorServerLoggingSuite'
+# 33 protocol tests on each platform
+sbt 'protocol/testOnly *YallmoProtocolSuite'
+sbt 'protocolJS/testOnly *YallmoProtocolSuite'
+# 163 web Scala tests, 87 JavaScript tests
+sbt 'webHarness/testOnly *'
+npm --prefix web-harness/vite test
+sbt 'webHarness/fastLinkJS'
+sbt 'webHarness/fullLinkJS'
+npm --prefix web-harness/vite run build
+git diff --check
+```
+
+The final production bundle passed synthetic desktop/mobile checks in both the scoped Chat fixture and the adapted
+Graph fixture. Chat checks split pending observation, object-storage confirmation and later canonical publication into
+separate notifications, verifying cards do not disappear between them and all four message stages precede the terminal
+reply. Route scope handoff, draft retention and no recurring history reads passed. Graph navigation, stable geometry,
+hover/touch inspectors, late retired callbacks, Live-off/reconnect/sidebar freeze and own paused branch responses passed.
+Fixtures: `/tmp/yallmo-chat-scoped-final-browser.cjs` and `/tmp/yallmo-session-events-graph-browser.cjs`; these are supplemental
+synthetic evidence, not portable repository tests. The deterministic regressions are in the changed repository suites.
+
+Broader checks are **not all green**: an earlier broad core run passed 814 tests with 17 skips; the broad server run
+reported 191 passes, 1 skip and 6 failures outside the scoped event changes. Four failures are SDLC fixtures omitting the
+required task `title` (`ApplicationToolsSuite`, `ApplicationRuntimeSuite`); two are packaged-host fixtures requesting
+missing `/assets/test.js` (`OrchestratorWebHostSuite`). Those source/fixture files were not changed by this task. The
+focused final 108-test server command above passed. No broad-server success is claimed.
+
+Remaining limits: session-scoped canonical confirmations currently include full public ancestry, subject to existing
+1 MiB wire / 128-event, 2 MiB queue bounds and the 5-second slow-socket deadline. This is not token streaming, a durable
+journal, cross-process filesystem watching or transactional/exactly-once execution. The production large-chunk warning
+remains. No real provider calls, commits or staging occurred.
+
+#### Session-scope changed paths
+
+```text
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestrationEvents.scala
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala
+core/jvm/src/main/scala/fmgp/yallmo/orchestration/storage/StorageEvents.scala
+core/jvm/src/test/scala/fmgp/yallmo/orchestration/OrchestrationEventsSuite.scala
+docs/CONVERSATION_GRAPH.md
+model/shared/src/main/scala/fmgp/yallmo/orchestration/EventUpdate.scala
+protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala
+protocol/shared/src/test/scala/fmgp/yallmo/server/jsonrpc/YallmoProtocolSuite.scala
+server/PROTOCOL.md
+server/README.md
+server/src/main/scala/fmgp/yallmo/server/OrchestratorRpc.scala
+server/src/main/scala/fmgp/yallmo/server/OrchestratorWSClient.scala
+server/src/test/scala/fmgp/yallmo/server/OrchestratorRpcSuite.scala
+server/src/test/scala/fmgp/yallmo/server/OrchestratorServerLoggingSuite.scala
+server/src/test/scala/fmgp/yallmo/server/OrchestratorWebSocketSuite.scala
+web-harness/README.md
+web-harness/src/main/scala/fmgp/yallmo/view/web/App.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/ChatModel.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/ChatSessionFeed.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/ChatView.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/ConversationGraphView.scala
+web-harness/src/main/scala/fmgp/yallmo/view/web/OrchestratorWSClient.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/ChatModelSuite.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/ChatSessionFeedSuite.scala
+web-harness/src/test/scala/fmgp/yallmo/view/web/OrchestratorWSClientSuite.scala
+```

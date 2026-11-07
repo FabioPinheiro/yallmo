@@ -75,7 +75,7 @@ reads never retry a branch or clear its explicit recovery gate.
 
 ## Shared Markdown and code blocks
 
-SDLC descriptions/steps and all message cards (Chat, pending prompts, All messages and Graph) share the
+SDLC descriptions/steps and all server message cards (Chat, All messages and Graph) share the
 sanitized Markdown renderer. Fenced `scala` blocks use highlight.js with only the Scala grammar bundled, in the shared
 dark palette. Language tags are case-insensitive; unknown/unlabeled languages and Scala blocks over 50,000 characters
 remain readable plain code. Inline code stays inline. Fenced `mermaid` blocks retain diagram rendering and source access
@@ -216,7 +216,7 @@ without creating a chat session. Leaving the page does not cancel execution.
 
 ## Read messages aloud
 
-Each message card (including tool messages and pending chat input) has a small **Read** button. It reads the full
+Each message card (including tool messages and server-observed pending messages) has a small **Read** button. It reads the full
 message content verbatim, including Markdown/code and collapsed text, using the browser's default voice. It does not
 read card metadata or download attachments. Click **Stop** to cancel; reading another message replaces playback.
 Leaving the card's view, page exit and application unmount stop playback. Nothing is read automatically.
@@ -286,8 +286,9 @@ A blocked send attempt shows a small temporary notification (also logged to the 
 agent, a warning appears beside the disabled Send button. Failures also notify, while important recovery instructions
 remain in the conversation. Notifications expire after five seconds and never retry requests.
 
-The first Send issues one `turn.submit` with an explicit New target, only after an agent is selected.
-The response supplies the session ID; later turns use Existing with that ID and its known head.
+Chat allocates an ID locally (or uses the optional name) and establishes a read-only session-scoped
+`events.subscribe` before Send is enabled. A missing-session subscription waits without creating anything.
+The first Send issues one `turn.submit` with `New(Some(id))`; later turns use Existing and the newest canonical head.
 **New conversation** prepares a local draft only; expand **Name (optional)** to choose the name used on first submit.
 No empty remote session or separate create request is sent. Choose an existing session, including a REPL session, in the sidebar to
 resume it in Chat, except on **Conversation graph**: there it focuses/highlights the published session path and opens
@@ -296,19 +297,30 @@ starts unselected on each mount. New conversation and Unsent draft still open Ch
 expands navigation and conversations; selecting a graph session closes it. Agent changes
 and resumes reset the next provider continuation without clearing history or drafts.
 
-The transcript uses authoritative persisted snapshots and the inspector's message/tool cards and downloads.
-Send immediately adds a temporary user card labeled **Pending — not yet confirmed saved**, including the first submit for a new conversation. It captures the submitted text and connected identity, follows its conversation across
-tabs, and is replaced by the returned snapshot on completion, never persisted by the browser. Sending clears the
-composer immediately and leaves it editable for your next draft; Send stays blocked while waiting, with the waiting
-status beside it. Completion never erases that next draft. On failure or disconnect, the temporary card clears and
-recovery instructions remain; the submitted text is restored only if the composer is still empty. There is no streaming,
-progress or execution cancellation for chat turns, and no automatic retry. Dictation uses the independent upload/invoke path above.
+The transcript contains only real server-issued message IDs and timestamps. Send itself creates no bubble:
+it captures the author, agent, parent and draft once, clears the composer, and leaves the next draft editable.
+Server observations appear immediately as **Pending publication**; canonical confirmations promote them
+by ID. Object-only storage confirmations keep those observations visible as provisional publication until canonical
+session ancestry confirms them; pointer outcomes prune conflicting branches, and uncertainty clears the bounded overlay.
+A named New draft that finds an existing session remains New, displays a collision and requires explicit Resume; its draft is retained.
+Prompt, tool calls, tool outputs and assistant replies can appear while execution is still blocked, before the
+terminal RPC response. This is message-checkpoint push, not token streaming or an execution cancellation API.
+Canonical head ancestry and revisions determine history, including shared ancestry and rebases. Provenance routes
+provisional observations but does not establish exclusive ownership or a successful session-head update. Stored
+sessionless branches never become canonical Chat history merely because their objects were confirmed.
+Terminal responses resolve busy/error/draft bookkeeping without replacing newer event-driven history.
+A successful response whose head has not reached canonical history, or which leaves provisional publication cards, gates
+the next Send and obtains one fresh scoped baseline when that conversation is eligible. This also removes unpublished
+observations after a failed CAS that retained the old head, and reconciles competing/rebased heads without waiting forever
+for a displaced terminal head. Failed/unknown outcomes clear provisional cards and retain confirmed history; submitted text
+is restored only if the next draft is empty.
+There is no automatic authoring retry. Dictation uses the independent upload/invoke path above.
 Turn submission has no read deadline; ordinary reads and diagnostics remain bounded. A pending turn and
 per-conversation drafts live at application root and survive tab/session navigation, but not page reloads.
 New messages, including pending cards, follow the scroll position only when near the bottom.
 
-Failures preserve your next draft (or restore the submitted text if empty). Existing conversations require history
-reload before manual resend. A rejected first submission retains a local draft without inventing a remote session.
+Failures preserve your next draft (or restore the submitted text if empty). Failed or unknown outcomes require explicit history
+reload and review before manual resend. A rejected first submission retains a local draft without inventing a remote session.
 Unknown first-submit results, including InternalError, block another send: inspect the session list and explicitly resume
 the saved conversation before manually resending. A disconnected turn **may still be running**: reconnect, inspect history, and avoid
 sending a duplicate prompt. Reconnect never replays requests. The client also exposes `diagnostics.request` through
@@ -316,8 +328,10 @@ the shared protocol DTOs; a diagnostics UI is intentionally deferred.
 
 Validation: `sbt ';webHarness/testOnly *;webHarness/compile;webHarness/fastLinkJS'`; production: `sbt 'webHarness/fullLinkJS'` then
 `npm --prefix web-harness/vite run build`. Browser-adapter tests use the existing fake WebSocket seam; chat transition tests
-cover single-submit New/Existing targets, local-only New drafts, lost-first-reply recovery, configured agents, stored heads, draft retention, continuation reset, stale responses,
-failed outcomes and uncertain transport. Manual smoke check: verify the default identity, edit a name and Reconnect, send to a configured agent, switch views
+use a controlled execution context and event-driven fake-socket requests (no test polling). They cover subscription-before-Send,
+real pending/confirmed IDs, intermediate execution checkpoints, canonical revisions/rebases, sessionless branch exclusions,
+terminal/push deduplication, draft retention, scoped cancellation, route/sidebar freeze and explicit unknown-outcome recovery.
+`ChatSessionFeedSuite` covers bounded bootstrap/pending buffers, stream gaps/identity, ancestry failures and one read-only recovery. Manual smoke check: verify the default identity, edit a name and Reconnect, send to a configured agent, switch views
 while waiting, resume a REPL session, change agents, and verify narrow-screen sidebar and scroll behavior.
 
 Upload staging is storage-owned: the wire still uses the caller-created BlobId for Begin/Append/Complete/Abort.

@@ -4,6 +4,7 @@ import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.{KeyInput, KeyboardControls}
 import fmgp.yallmo.model.AgentId
 import org.scalajs.dom
+import scala.scalajs.js
 
 /** Laminar chat components placed in the application shell by [[App]].
   *
@@ -18,7 +19,7 @@ import org.scalajs.dom
   * | New conversation        |--------------------------------------------------|
   * | Name (optional)         | Scrollable history                               |
   * | Unsent draft (if any)   |   Persisted message/tool cards                   |
-  * | Conversations    Reload |   Pending user card (not yet confirmed saved)    |
+  * | Conversations    Reload |   Server observations (pending publication)    |
   * |                         |                                                  |
   * | Scrollable session list |--------------------------------------------------|
   * |                         | Recovery notice (only when needed)               |
@@ -31,9 +32,9 @@ import org.scalajs.dom
   * below the toolbar; they are separate from inline recovery guidance.
   *
   * All components observe the same application-root [[ChatModel]]. Sending clears the composer but leaves it editable
-  * for the next draft; the captured pending card is replaced by authoritative server messages on completion. History
-  * follows new content only while near the bottom. Mount-local state controls scrolling and optional-name input, not
-  * connection, draft or pending-turn ownership.
+  * for the next draft; only real server observations enter the transcript, before turn completion. History follows new
+  * content only while near the bottom. Mount-local state controls scrolling and optional-name input, not connection,
+  * draft or pending-turn ownership.
   */
 private[web] object ChatView {
 
@@ -198,9 +199,11 @@ private[web] object ChatView {
     val state = model.state.signal
     val current = state.map(_.current)
     val follow = Var(true)
-    val history = state.map(s => (s.current.snapshot.toList.flatMap(_.messages.toList), s.currentPending)).distinct
-    val messages = history.map(_._1).distinct
-    val pending = history.map(_._2).distinct
+    val history =
+      current.map(c => (c.snapshot.toList.flatMap(_.messages.toList) ++ c.serverPending).distinctBy(_.id)).distinct
+    val pendingIds = current.map(_.serverPending.map(_.id).toSet).distinct
+    val visibility: js.Function1[dom.Event, Unit] = _ =>
+      model.visibilityChanged(dom.document.visibilityState != "hidden")
     var composer = Option.empty[dom.HTMLTextAreaElement]
     var cursor = Option.empty[(String, Long, Int, Int)]
     def remember(element: dom.HTMLTextAreaElement): Unit = {
@@ -218,10 +221,14 @@ private[web] object ChatView {
     sectionTag(
       cls := "conversation-layout chat-main",
       onMountCallback { _ =>
-        val s = model.state.now()
-        if s.active.nonEmpty && s.current.reloadRequired && !s.current.loading && s.pending.isEmpty then model.reload()
+        dom.document.addEventListener("visibilitychange", visibility)
+        model.enter(dom.document.visibilityState != "hidden")
       },
-      onUnmountCallback(_ => voice.cancel(false)),
+      onUnmountCallback { _ =>
+        model.leave()
+        dom.document.removeEventListener("visibilitychange", visibility)
+        voice.cancel(false)
+      },
       state.map(_.active).distinct.changes --> (_ => voice.cancel(false)),
       model.voiceInsertions.events --> { insertion =>
         composer.foreach { element =>
@@ -241,14 +248,14 @@ private[web] object ChatView {
           typ := "button",
           "Reload history",
           idAttr := "reload-history",
-          disabled <-- state.map(s => s.active.isEmpty || s.currentPending.nonEmpty),
+          disabled <-- state.map(_.currentPending.nonEmpty),
           onClick --> (_ => model.reload())
         )
       ),
       div(
         cls := "chat-history",
         role := "log",
-        aria.label := "Conversation messages, including pending input",
+        aria.label := "Server-observed conversation messages",
         onScroll --> { event =>
           val element = event.target.asInstanceOf[dom.HTMLElement]
           follow.set(element.scrollHeight - element.scrollTop - element.clientHeight < 100)
@@ -266,32 +273,15 @@ private[web] object ChatView {
         p(cls := "muted", hidden <-- current.map(!_.loading), role := "status", "Loading history…"),
         p(
           cls := "muted",
-          hidden <-- history.map { case (messages, pending) => messages.nonEmpty || pending.nonEmpty },
-          "No persisted messages to display."
+          hidden <-- history.map(_.nonEmpty),
+          "No server-observed messages to display."
         ),
-        App.messageList(messages, client, speech),
-        child <-- pending.map {
-          case Some(message) =>
-            val collapsed = Var(MessageText.isLong(message.prompt))
-            div(
-              cls := "messages",
-              articleTag(
-                cls := "message message-user",
-                div(
-                  cls := "message-meta",
-                  MessageBodyView.toggle(
-                    collapsed,
-                    span(cls := "role", "user"),
-                    strong(AgentId.value(message.author))
-                  ),
-                  span(role := "status", "Pending — not yet confirmed saved"),
-                  speech.buttonFor(Val(message.prompt))
-                ),
-                div(hidden <-- collapsed.signal, MessageBodyView(message.prompt))
-              )
-            )
-          case None => emptyNode
-        }
+        div(
+          cls := "messages",
+          children <-- history.split(_.id) { (id, initial, message) =>
+            App.messageCard(initial, message, client, speech, pendingIds.map(_.contains(id)))
+          }
+        )
       ),
       div(
         cls := "composer",

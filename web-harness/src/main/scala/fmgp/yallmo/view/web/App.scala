@@ -98,13 +98,12 @@ object App {
         client.connect(claimedUser).onComplete {
           case scala.util.Success(info) if mounted =>
             connecting.set(false)
-            val graphOwnsSnapshots = route.now() == ViewRoute.Graph
-            chat.configure(info, refreshSessions = !graphOwnsSnapshots)
+            val graphOwnsInventory = route.now() == ViewRoute.Graph
+            chat.configure(info, refreshSessions = !graphOwnsInventory)
             scalamode.configure(info)
             branch.configure(info)
             voice.configure(info)
             providers.configure(info)
-            if !graphOwnsSnapshots then chat.reload()
             refresh.emit(())
             connected.set(true)
             connection.set(if OrchestratorWSClient.canChat(info) then
@@ -428,7 +427,8 @@ object App {
       initial: MessageSnapshot,
       message: Signal[MessageSnapshot],
       client: OrchestratorWSClient,
-      speech: MessageSpeech
+      speech: MessageSpeech,
+      pending: Signal[Boolean] = Val(false)
   ): HtmlElement = {
     val collapsed = Var(MessageText.startsCollapsed(initial.role, initial.content))
     articleTag(
@@ -460,6 +460,7 @@ object App {
             code(child.text <-- message.map(value => s"Parent: ${value.parentId.getOrElse("(root)")}"))
           )
         ),
+        span(role := "status", hidden <-- pending.map(!_), "Pending publication"),
         speech.buttonFor(message.map(_.content))
       ),
       div(

@@ -8,6 +8,8 @@ import fmgp.yallmo.orchestration.{
   AgentTask,
   AgentToolDefinition,
   EventMessage,
+  EventOrigin,
+  EventScope,
   EventSession,
   Session,
   SessionId,
@@ -73,7 +75,39 @@ object YallmoProtocol {
 
   given JsonCodec[EventSession] = DeriveJsonCodec.gen[EventSession]
 
-  final case class EventPending(operationId: String, messages: Chunk[MessageSnapshot]) derives JsonCodec
+  given JsonCodec[EventOrigin] = DeriveJsonCodec.gen[EventOrigin]
+
+  sealed trait SubscriptionScope {
+    def domain: EventScope
+  }
+  object SubscriptionScope {
+    final case class All() extends SubscriptionScope {
+      def domain: EventScope = EventScope.All
+    }
+    final case class Session(sessionId: SessionId) extends SubscriptionScope {
+      def domain: EventScope = EventScope.Session(sessionId)
+    }
+
+    @jsonNoExtraFields
+    private final case class Wire(kind: String, sessionId: Option[SessionId] = None) derives JsonCodec
+    given JsonCodec[SubscriptionScope] = summon[JsonCodec[Wire]].transformOrFail(
+      {
+        case Wire("all", None)         => Right(All())
+        case Wire("session", Some(id)) => Right(Session(id))
+        case _                         => Left("Expected all or session subscription scope")
+      },
+      {
+        case All()       => Wire("all")
+        case Session(id) => Wire("session", Some(id))
+      }
+    )
+  }
+
+  final case class EventPending(
+      operationId: String,
+      messages: Chunk[MessageSnapshot],
+      origin: Option[EventOrigin] = None
+  ) derives JsonCodec
 
   /** Pending is an overlay, never proof of persistence. Uncertain invalidates the feed and requires a new baseline. */
   @jsonDiscriminator("kind")
@@ -91,7 +125,7 @@ object YallmoProtocol {
   object EventsSubscribe {
     val method: String = "events.subscribe"
     @jsonNoExtraFields
-    final case class Params(nonce: String) derives JsonCodec
+    final case class Params(nonce: String, scope: SubscriptionScope = SubscriptionScope.All()) derives JsonCodec
     final case class Result(
         subscriptionId: String,
         streamId: String,
@@ -99,7 +133,8 @@ object YallmoProtocol {
         startSequence: Long,
         messages: Chunk[MessageSnapshot],
         sessions: Chunk[EventSession],
-        pending: Chunk[EventPending]
+        pending: Chunk[EventPending],
+        scope: SubscriptionScope = SubscriptionScope.All()
     ) derives JsonCodec
   }
 
@@ -118,7 +153,8 @@ object YallmoProtocol {
         streamId: String,
         nonce: String,
         sequence: Long,
-        change: EventChange
+        change: EventChange,
+        origin: Option[EventOrigin] = None
     ) derives JsonCodec
   }
 

@@ -342,6 +342,11 @@ includes bounded in-flight observations. Each connection has one scoped sender a
 or a 5-second send stall closes that socket with 1013 for snapshot recovery. Storage and other subscribers are not
 subject to browser eviction. There is no durable replay or external-process filesystem watching. See the protocol's
 subscription section for nonce, revision, bootstrap and failure semantics.
+Scope is additive: omit `scope` for the global graph, or pass
+`{"kind":"session","sessionId":"chat-<uuid>"}` for canonical ancestry plus session/turn-attributed live observations.
+A missing session can be subscribed before `TurnSubmit.Target.New(Some(id))` without creating it. Canonical updates
+include ancestry; origin metadata never implies message ownership or successful head publication. Sequence is contiguous
+per subscription, independent of canonical session revisions. See `PROTOCOL.md` for reconciliation and pre-Send Chat.
 
 [PROTOCOL.md](PROTOCOL.md) specifies exact JSON-RPC method names, params/results, errors and notifications. Wire DTOs
 use derived zio-json codecs. Domain IDs, session summaries, tasks/results and tool definitions reuse the existing

@@ -83,17 +83,30 @@ results/IDs are retained. The handler validates envelopes/params beyond what der
 Initialized Viewers and Operators may subscribe using the same trusted-host policy as inventory reads. This grants
 no authoring rights. A connection owns at most one subscription; subscribing replaces its previous one. Unsubscribing
 an obsolete/unknown ID is harmless and never closes a newer subscription or the shared socket. Legacy/unsubscribed
-clients receive no event notifications. The JVM client exposes `subscribeEvents(nonce)`, `nextEventUpdate`, and
+clients receive no event notifications. The JVM client exposes `subscribeEvents(nonce, scope = SubscriptionScope.All())`, `nextEventUpdate`, and
 `unsubscribeEvents(subscriptionId)`; it never reconnects or replays authoring requests.
 
-`EventsSubscribe.Result` contains `{subscriptionId, streamId, nonce, startSequence, messages, sessions, pending}`:
+`events.subscribe` accepts `{nonce, scope?}`. Omitted scope is `{"kind":"all"}` (the existing graph/legacy
+behavior); `{"kind":"session","sessionId":"known-id"}` selects a session. Scope products are strict: unknown
+fields/kinds, invalid IDs, an ID on `all`, or a missing ID on `session` are InvalidParams. This is selection under the
+existing trusted-host read authorization, not a new security/ownership boundary.
+
+`EventsSubscribe.Result` contains `{subscriptionId, streamId, nonce, startSequence, messages, sessions, pending, scope}`;
+`scope` echoes the accepted selection:
 
 - `messages`: canonical public `MessageSnapshot` inventory, without opaque provider continuations.
 - `sessions`: `EventSession = {id, agentIds, messageCount, head?, revision, error?}`. After a successful inventory
   listing, an individual subsequent history-read failure retains summary fields and a sanitized `error`; its absent
   head is **unknown**, not a confirmed empty pointer. Inventory-listing failures still fail bootstrap: filesystem
   listing itself traverses histories, so a missing referenced message can prevent that initial listing.
-- `pending`: `[{operationId, messages: [MessageSnapshot]}]` for retained in-flight observations at registration.
+- `pending`: `[{operationId, messages: [MessageSnapshot], origin?}]` for retained in-flight observations at registration.
+- In session scope, `messages` is **only the complete canonical head ancestry**, ordered parent before child, and
+  `sessions` contains only that session's revisioned metadata. Shared/forked ancestry is included even when originally
+  observed elsewhere. No standalone branches are included merely because they descend from one of these objects.
+- A not-yet-created session is a valid read-only waiting subscription: `messages`, `sessions`, and `pending` may all be
+  empty. Subscribe does not create storage state or imply turn acceptance. Other read failures (including corrupt or
+  missing stored ancestors) fail bootstrap with sanitized errors and tear down the subscription, rather than inventing
+  an empty canonical head. Unrelated corrupt sessions do not participate in a session-scoped read.
 
 Notifications have exactly the JSON-RPC notification envelope, with no request ID/result/error:
 
@@ -102,9 +115,22 @@ Notifications have exactly the JSON-RPC notification envelope, with no request I
 ```
 
 `change.kind` is `pending` (`operationId`, public `messages`), `confirmed` (`operationId`, public `messages`, canonical
-`sessions`), or `uncertain` (`operationId`). Pending is an optimistic observation, **not persistence**. Maintain it
-separately from confirmed inventory; confirmation promotes it, and uncertainty invalidates the feed and requires a
-new subscription/baseline. Never infer rollback, delete stored branches, or replay authoring operations. Failed storage
+`sessions`), or `uncertain` (`operationId`). Notification params additionally carry optional
+`origin: {sessionId, turnId?}`. The same origin appears on bootstrap pending observations. It describes the execution
+that produced the observation, **not ownership of Message or proof of canonical membership**. Session submissions
+allocate a server-generated opaque turn ID before the prompt write; the prompt and inherited managed-writer fibers
+retain it. Ordinary session mutations carry session-only origin. Independent branch submissions/invocations clear
+inherited origin, including when called from inside another turn; concurrent contexts do not share provenance.
+
+Pending is an optimistic observation of pending persistence/publication, **not persistence or successful CAS**. Maintain it
+separately from confirmed inventory; confirmation promotes it to stored-object inventory, **not automatically to the
+canonical transcript**. In session scope, every confirmed session-metadata update supplies the full canonical ancestry
+in `messages` alongside the revisioned head. Walk `parentId` from that head; never use origin, timestamps, or message
+arrival order to decide membership. Pointer-only CAS, participant changes, forks, rebases and A → B → A therefore need
+no per-event inventory polling, even when the client has never seen a new head's ancestors. A stored side-branch
+confirmation can have `sessions: []`; a failed CAS may report the competing canonical ancestry instead. Reconcile the
+explicit pending overlay separately rather than rendering a stale generated branch as canonical. Uncertainty invalidates
+the feed and requires a new subscription/baseline. Never infer rollback, delete stored branches, or replay authoring operations. Failed storage
 acknowledgements preserve the original operation error; bounded read-only recovery may still confirm exactly observed
 stored messages/canonical session state. Cancellation emits uncertainty without waiting for recovery reads.
 
@@ -119,19 +145,39 @@ nonce handler before sending, buffer them, and apply matching events from `start
 Snapshot session revisions dominate earlier buffered pointer events; do not discard all buffered events through an end
 watermark. Independent immutable writes may still be absent from the snapshot: retained pending observations plus their
 buffered terminal events cover that race. Deduplicate immutable message IDs; ignore stale subscription generations and
-mutable revisions. Sequence gaps, overflow, uncertainty, or a new stream identity require a fresh baseline, not replay.
+mutable revisions. Notification `sequence` is contiguous **per subscription**, starting at `startSequence + 1`;
+filtered-out unrelated observations consume no sequence numbers. `EventSession.revision` is a separate process-local
+canonical revision, shared across subscriptions, and may exceed or differ from notification sequence in session scope.
+Never compare these two counters. Sequence gaps, overflow, uncertainty, or a new stream identity require a fresh
+baseline, not replay.
 
 Per-master bounds: **128** subscriptions; retained pending observations **128 events / 2 MiB**. If pending retention
 capacity is exceeded, new subscriptions fail Busy until untracked in-flight writes settle; storage is never dropped or
 rejected by this policy. Per-subscription buffers allow **128 events / 2 MiB**, conservatively counting all public message
-fields (including tool names and JSON escaping), with explicit overflow failure rather than sliding/dropping loss.
+fields (including origin metadata, scoped ancestry, tool names and JSON escaping), with explicit overflow failure
+rather than sliding/dropping loss.
+Full scoped ancestry is intentionally bounded by these same limits (not chunked): a large baseline is rejected,
+and an over-limit canonical update invalidates the socket for explicit recovery; storage still completes. No hidden
+per-event inventory fetch or unbounded ancestry cache is used.
 One scoped sender per connection shares serialized frame writes, independently of the 8 request workers. Overflow,
 oversized notifications (also subject to the **1 MiB** frame limit), or a **5-second** send deadline close only that socket
 with **1013** and a sanitized reconnect/resubscribe reason. Unsubscribe, failed bootstrap, disconnect and socket scope
 shutdown release registry entries and sender waiters. These bounds measure server egress, not browser rendering speed.
 
 The wire methods are `events.subscribe`, `events.unsubscribe`, and `events.update`; the previous graph-prefixed
-method names have no compatibility aliases. This namespace rename does not add session filtering or Chat subscriptions.
+method names have no compatibility aliases. Global scope remains the default; session scope is additive.
+
+### New Chat before Send
+
+Choose an opaque safe `SessionId` in the client (for example `chat-<uuid>`), preserving an explicit user-selected name
+when supplied. Register the local nonce handler and subscribe with `SubscriptionScope.Session(id)` **before** sending
+`TurnSubmit.Target.New(Some(id))`. The empty waiting baseline does not execute anything. Real server-issued prompt,
+agent tool call (`role: "tool_call"`), tool output (`"tool_result"`), and assistant observations carry their actual IDs
+and timestamps as storage/live handlers run; they do not wait for the terminal `turn.submit` response. The prompt is
+persisted/published before agent execution starts, and managed checkpoints advance canonical heads during execution.
+The terminal response still owns completion/errors and unknown acceptance, not transcript discovery. A name collision
+or failed submit is not successful creation; do not retry/replay authoring automatically. Reconnect/resubscribe remains
+explicit. No durable replay cursor or event journal is introduced.
 
 The stream is ephemeral and application/master-local: no durable cursor, historical replay, cross-process filesystem
 watch, or persistence-format migration. Direct external-process writes are outside this in-process dispatcher.
@@ -144,7 +190,7 @@ watch, or persistence-format migration. Direct external-process writes are outsi
 | `sessions.list` | `{}` | `[SessionSummary]` |
 | `sessions.get` | `{sessionId: SessionId}` | `SessionSnapshot` |
 | `messages.list` | `{}` | `[MessageSnapshot]` |
-| `events.subscribe` | `{nonce: String}` (unique printable ASCII, 1–128 characters) | `EventsSubscribe.Result` (below) |
+| `events.subscribe` | `{nonce: String, scope?: SubscriptionScope}` (nonce: unique printable ASCII, 1–128 characters) | `EventsSubscribe.Result` (below) |
 | `events.unsubscribe` | `{subscriptionId: String}` | `{}` (idempotent, connection-owned) |
 | `agents.list` | `{}` | `[AgentId]` |
 | `agents.invoke` | `{agentId: AgentId, input: Message, actingAgentId: AgentId}`; no session controls | `Message` (recipient's response payload) |

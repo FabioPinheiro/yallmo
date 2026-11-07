@@ -26,6 +26,25 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+  test("event scopes are strict, default to all and carry observation provenance without message ownership") {
+    val id = SessionId.unsafe("waiting")
+    val params = EventsSubscribe.Params("nonce", SubscriptionScope.Session(id))
+    assertWire(params, """{"nonce":"nonce","scope":{"kind":"session","sessionId":"waiting"}}""")
+    assertEquals("""{"nonce":"old"}""".fromJson[EventsSubscribe.Params], Right(EventsSubscribe.Params("old")))
+    List(
+      """{"kind":"all","sessionId":"waiting"}""",
+      """{"kind":"session"}""",
+      """{"kind":"session","sessionId":"../private"}""",
+      """{"kind":"session","sessionId":"waiting","extra":true}""",
+      """{"kind":"other"}"""
+    ).foreach(value => assert(value.fromJson[SubscriptionScope].isLeft))
+    val origin = fmgp.yallmo.orchestration.EventOrigin(id, Some("turn"))
+    val update = EventsUpdate.Params("s", "stream", "nonce", 1L, EventChange.Uncertain("op"), Some(origin))
+    assertEquals(update.toJson.fromJson[EventsUpdate.Params], Right(update))
+    val pending = EventPending("op", Chunk.empty, Some(origin))
+    assertEquals(pending.toJson.fromJson[EventPending], Right(pending))
+  }
+
   test("event subscription codecs preserve nonce, pending versus confirmed, revisions and strict params") {
     val session = EventSession(sessionId, Chunk(agentId), 1L, Some(head), 42L)
     val message = Message(MessageData(agentId, None, Instant.EPOCH, MessagePayload.User("hello")))
@@ -35,7 +54,7 @@ final class YallmoProtocolSuite extends FunSuite {
     val baseline =
       EventsSubscribe.Result("subscription", "stream", "nonce", 40L, Chunk(snapshot), Chunk(session), Chunk(pending))
     assertEquals(baseline.toJson.fromJson[EventsSubscribe.Result], Right(baseline))
-    assertWire(EventsSubscribe.Params("nonce"), """{"nonce":"nonce"}""")
+    assertWire(EventsSubscribe.Params("nonce"), """{"nonce":"nonce","scope":{"kind":"all"}}""")
     assertWire(EventsUnsubscribe.Params("subscription"), """{"subscriptionId":"subscription"}""")
     assert("""{"nonce":"n","history":[]}""".fromJson[EventsSubscribe.Params].isLeft)
     assert("""{"subscriptionId":"s","all":true}""".fromJson[EventsUnsubscribe.Params].isLeft)

@@ -26,7 +26,7 @@ private[web] final class ConversationGraphModel(
     visible: () => Boolean = () => true,
     updateSummaries: List[SessionSummary] => Unit = _ => ()
 )(using ExecutionContext) {
-  import ConversationGraphModel.*
+  import EventSubscription.{MaxBufferedBytes, MaxBufferedEvents}
   val state = Var(GraphLoadState())
   private var enabled = false
   private var live = true
@@ -101,9 +101,9 @@ private[web] final class ConversationGraphModel(
               case EventChange.Pending(id, messages) =>
                 val observations = messages.toList.filterNot(m => confirmed.contains(m.id))
                 if observations.nonEmpty then pending += id -> observations else pending -= id
-                if pending.size > MaxEarlyEvents || pending.iterator.map { case (operationId, artifacts) =>
+                if pending.size > MaxBufferedEvents || pending.iterator.map { case (operationId, artifacts) =>
                     EventPending(operationId, Chunk.fromIterable(artifacts)).toJson.getBytes(UTF_8).length.toLong
-                  }.sum > MaxEarlyBytes
+                  }.sum > MaxBufferedBytes
                 then invalid("Graph pending buffer overflow. Refresh to recover.")
                 else publish()
               case EventChange.Confirmed(id, messages, changes) =>
@@ -126,7 +126,7 @@ private[web] final class ConversationGraphModel(
           case Some(_) => applyEvent(event)
           case None    =>
             earlyBytes += event.toJson.getBytes(UTF_8).length.toLong
-            if early.size >= MaxEarlyEvents || earlyBytes > MaxEarlyBytes then
+            if early.size >= MaxBufferedEvents || earlyBytes > MaxBufferedBytes then
               invalid("Graph bootstrap buffer overflow. Refresh to recover.")
             else early :+= event
         }
@@ -134,7 +134,7 @@ private[web] final class ConversationGraphModel(
     if valid then subscription = Some(handle) else handle.cancel()
     handle.result.onComplete {
       case Success(initial)
-          if valid && (initial.subscriptionId.isEmpty || initial.streamId.isEmpty || initial.startSequence < 0 || initial.pending.size > MaxEarlyEvents) =>
+          if valid && (initial.subscriptionId.isEmpty || initial.streamId.isEmpty || initial.startSequence < 0 || initial.pending.size > MaxBufferedEvents) =>
         invalid("Invalid graph baseline. Refresh to recover.")
       case Success(initial) if valid =>
         baseline = Some(initial)
@@ -153,9 +153,4 @@ private[web] final class ConversationGraphModel(
       case _ => ()
     }
   }
-}
-
-private[web] object ConversationGraphModel {
-  val MaxEarlyEvents = 128
-  val MaxEarlyBytes = 2L * 1024 * 1024
 }

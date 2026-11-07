@@ -9,7 +9,7 @@ import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
 import scala.collection.mutable
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.scalajs.js.timers.setTimeout
 import zio.json.*
@@ -478,7 +478,9 @@ private[web] object OrchestratorWSClientSuite {
     def close(): Unit = { closed = true; events.closed() }
   }
 
-  final class Harness(timeout: Int = 1000, maxBytes: Long = 1024, chunkSize: Int = MaxBlobChunkBytes) {
+  final class Harness(timeout: Int = 1000, maxBytes: Long = 1024, chunkSize: Int = MaxBlobChunkBytes)(using
+      context: ExecutionContext
+  ) {
     val sockets = mutable.ArrayBuffer.empty[FakeSocket]
     val sent = mutable.ArrayBuffer.empty[JsonRpc.Request[Json.Obj]]
     private val awaited = mutable.Map.empty[(String, Int), Promise[JsonRpc.Request[Json.Obj]]]
@@ -501,7 +503,7 @@ private[web] object OrchestratorWSClientSuite {
       },
       timeout,
       maxBytes
-    )
+    )(using context)
 
     def initialize(
         userId: Option[UserId] = None,

@@ -38,20 +38,25 @@ final class OrchestratorLive[-R] private[orchestration] (
       task: AgentTask,
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, SessionTurn] =
-    for {
-      // Await prompt persistence before execution; Storage owns interruption safety for its critical writes.
-      accepted <- (for {
-        _ <- getAgent(execution.agentId)
-        _ <- addSessionAgent(id, userId)
-        session <- append(id, userId, Chunk(MessagePayload.User(task.prompt)))
-      } yield session).mapError(SessionSubmitFailure(_, None))
-      submitted <- managedSubmit(accepted.messages, Some(accepted), task, execution)
-        .mapError(failure => SessionSubmitFailure(failure.error, failure.session))
-    } yield SessionTurn(
-      submitted.session.getOrElse(accepted),
-      submitted.result,
-      Chunk(MessagePayload.User(task.prompt)) ++ submitted.appended.map(_.payload)
-    )
+    ZIO.suspendSucceed {
+      val origin = EventOrigin(id, Some(java.util.UUID.randomUUID().toString))
+      events.executionOrigin.locally(Some(origin))(
+        for {
+          // Await prompt persistence before execution; Storage owns interruption safety for its critical writes.
+          accepted <- (for {
+            _ <- getAgent(execution.agentId)
+            _ <- addSessionAgent(id, userId)
+            session <- append(id, userId, Chunk(MessagePayload.User(task.prompt)))
+          } yield session).mapError(SessionSubmitFailure(_, None))
+          submitted <- managedSubmit(accepted.messages, Some(accepted), task, execution)
+            .mapError(failure => SessionSubmitFailure(failure.error, failure.session))
+        } yield SessionTurn(
+          submitted.session.getOrElse(accepted),
+          submitted.result,
+          Chunk(MessagePayload.User(task.prompt)) ++ submitted.appended.map(_.payload)
+        )
+      )
+    }
 
   override def submitBranch[R1](
       parentId: MessageId,
@@ -59,7 +64,7 @@ final class OrchestratorLive[-R] private[orchestration] (
       task: AgentTask,
       execution: AgentExecution[R1]
   ): ZIO[R1, BranchSubmitFailure, BranchTurn] =
-    for {
+    events.executionOrigin.locally(None)(for {
       source <- (for {
         _ <- ZIO.fail(YallmoError.InvalidMessage("Prompt must not be blank")).when(task.prompt.trim.isEmpty)
         _ <- getAgent(execution.agentId)
@@ -77,7 +82,7 @@ final class OrchestratorLive[-R] private[orchestration] (
         failure => verifyBranch(source, prompt, failure.messages, failure.appended, Left(failure.error)),
         turn => verifyBranch(source, prompt, turn.messages, turn.appended, Right(turn.result))
       )
-    } yield result
+    } yield result)
 
   private def verifyBranch(
       source: Chunk[Message],
@@ -456,7 +461,7 @@ final class OrchestratorLive[-R] private[orchestration] (
     } yield rewritten
 
   override def invoke[R1](input: Message, execution: AgentInvocation[R1]): ZIO[R1, YallmoError, Message] =
-    for {
+    events.executionOrigin.locally(None)(for {
       _ <- ZIO
         .fail(YallmoError.InvalidMessage("Message id does not match data"))
         .unless(input.id == MessageId.from(input.data))
@@ -475,7 +480,7 @@ final class OrchestratorLive[-R] private[orchestration] (
           )
         )
       )
-    } yield response
+    } yield response)
 
   override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
     validateAuthors(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)

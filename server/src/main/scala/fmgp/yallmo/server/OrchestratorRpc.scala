@@ -320,9 +320,9 @@ private[server] final class OrchestratorRpc(
             _ <- ZIO
               .fail(JsonRpc.Error(ErrorCode.Unauthorized, "Connection closed"))
               .unless(current.isInstanceOf[ConnectionState.Initialized])
-            subscription <- master.events.subscribe.mapError(_ =>
-              JsonRpc.Error(ErrorCode.Busy, "Event capacity exceeded; retry subscription")
-            )
+            subscription <- master.events
+              .subscribe(request.scope.domain)
+              .mapError(_ => JsonRpc.Error(ErrorCode.Busy, "Event capacity exceeded; retry subscription"))
             previous <- connection.active.getAndSet(Some(ActiveEvents(subscription, request.nonce)))
             _ <- ZIO.foreachDiscard(previous)(_.subscription.close)
             _ <- connection.changed.offer(())
@@ -330,16 +330,31 @@ private[server] final class OrchestratorRpc(
         }
         result <- restore {
           for {
-            snapshot <- domain(master.events.snapshot(for {
-              messages <- master.listMessages
-              summaries <- master.listSessions
-              sessions <- ZIO.foreach(summaries)(summary => master.loadSession(summary.id).either.map(summary -> _))
-            } yield (messages, sessions)))
+            snapshot <- domain(master.events.snapshot(request.scope match {
+              case _: SubscriptionScope.All =>
+                for {
+                  messages <- master.listMessages
+                  summaries <- master.listSessions
+                  sessions <- ZIO.foreach(summaries)(summary => master.loadSession(summary.id).either.map(summary -> _))
+                } yield (messages, sessions)
+              case SubscriptionScope.Session(id) =>
+                master
+                  .loadSession(id)
+                  .map { session =>
+                    (
+                      session.messages,
+                      Chunk((SessionSummary(id, session.messages.size, session.agentIds), Right(session)))
+                    )
+                  }
+                  .catchSome { case YallmoError.StorageFailed(_: YallmoError.SessionNotFound) =>
+                    ZIO.succeed((Chunk.empty, Chunk.empty))
+                  }
+            }))
             ((messages, sessions), revision) = snapshot
             _ <- subscription.check.mapError(_ =>
               JsonRpc.Error(ErrorCode.Busy, "Event subscription invalidated; resubscribe")
             )
-            pending <- subscription.takePending
+            pending <- subscription.takePendingObservations
             result <- encode(
               EventsSubscribe.Result(
                 subscription.id,
@@ -348,7 +363,10 @@ private[server] final class OrchestratorRpc(
                 subscription.startSequence,
                 messages.map(MessageSnapshot.from),
                 sessions.map { (summary, outcome) => eventSessionSnapshot(summary, outcome, revision) },
-                pending.map(p => EventPending(p.operationId, p.messages.map(MessageSnapshot.from)))
+                pending.map(p =>
+                  EventPending(p.change.operationId, p.change.messages.map(MessageSnapshot.from), p.origin)
+                ),
+                request.scope
               )
             )
             _ <- ZIO
@@ -391,7 +409,8 @@ private[server] final class OrchestratorRpc(
                   master.events.streamId,
                   active.nonce,
                   event.sequence,
-                  change
+                  change,
+                  event.origin
                 )
               )
               .toJson

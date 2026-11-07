@@ -86,6 +86,32 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
+  test("JVM scoped client waits before creation and ignores unrelated stream traffic without sequence gaps") {
+    run(ZIO.scoped {
+      for {
+        master <- live
+        port <- new OrchestratorWSServer(master).start(0)
+        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        scope = SubscriptionScope.Session(sessionId)
+        baseline <- client.subscribeEvents("scoped", scope)
+        _ <- master.createSession(SessionId.unsafe("other"), Chunk(author))
+        _ <- master.append(SessionId.unsafe("other"), author, Chunk(MessagePayload.User("unrelated")))
+        _ <- master.createSession(sessionId, Chunk(author))
+        _ <- master.append(sessionId, author, Chunk(MessagePayload.User("scoped")))
+        events <- ZIO.collectAll(List.fill(4)(client.nextEventUpdate))
+        _ <- client.unsubscribeEvents(baseline.subscriptionId)
+      } yield {
+        assertEquals(baseline.scope, scope)
+        assert(baseline.sessions.isEmpty && baseline.messages.isEmpty)
+        assertEquals(events.map(_.sequence), (baseline.startSequence + 1 to baseline.startSequence + 4).toList)
+        assert(events.forall(_.origin.exists(_.sessionId == sessionId)))
+        val finalChange = events.last.change.asInstanceOf[EventChange.Confirmed]
+        assertEquals(finalChange.messages.map(_.content), Chunk("scoped"))
+        assertEquals(finalChange.sessions.map(_.id), Chunk(sessionId))
+      }
+    })
+  }
+
   test("JVM graph demultiplexing accepts notification before subscribe response and interleaved request IDs") {
     run(ZIO.scoped {
       for {

@@ -146,7 +146,7 @@ final class OrchestrationEventsSuite extends FunSuite {
       _ <- subscriber.close
     } yield {
       assertEquals(List(results._1, results._2).count(_.isRight), 1)
-      val confirmed = events.collect { case SequencedEventUpdate(_, EventUpdate.Confirmed(_, _, sessions)) =>
+      val confirmed = events.collect { case SequencedEventUpdate(_, EventUpdate.Confirmed(_, _, sessions), _) =>
         sessions.head
       }
       assertEquals(confirmed.size, 3)
@@ -154,7 +154,9 @@ final class OrchestrationEventsSuite extends FunSuite {
       assertEquals(confirmed(0).head, confirmed(1).head) // Conflict reports only the winner's canonical state.
       assertEquals(confirmed.last.head, Some(child.id))
       assert(
-        events.collect { case SequencedEventUpdate(_, EventUpdate.Pending(_, messages)) => messages }.forall(_.isEmpty)
+        events
+          .collect { case SequencedEventUpdate(_, EventUpdate.Pending(_, messages), _) => messages }
+          .forall(_.isEmpty)
       )
     })
   }
@@ -334,6 +336,294 @@ final class OrchestrationEventsSuite extends FunSuite {
       assert(failure.isFailure)
       assertEquals(clean, Right(()))
       assertNotEquals(updates.streamId, other.streamId)
+    })
+  }
+
+  test("session scope follows shared ancestry, CAS conflicts, A to B to A and participant changes without false gaps") {
+    val shared = SessionId.unsafe("shared")
+    val unrelated = SessionId.unsafe("unrelated")
+    run(for {
+      base <- StorageInMemory.make
+      _ <- base.createSession(id, Chunk(author))
+      _ <- base.putMessagesAndUpdateSession(id, None, Chunk(root, child))
+      updates <- OrchestrationEvents.make
+      scoped <- updates.subscribe(EventScope.Session(shared))
+      storage = new StorageEvents(base, updates)
+      _ <- storage.createSession(unrelated, Chunk(author))
+      _ <- storage.putMessage(Message(root.data.copy(payload = MessagePayload.User("standalone"))))
+      _ <- storage.fork(id, shared)
+      _ <- storage.addSessionAgent(id, AgentId("not-shared"))
+      _ <- storage.compareAndSetSessionHead(shared, Some(child.id), Some(root.id))
+      conflict <- storage.compareAndSetSessionHead(shared, Some(child.id), None).either
+      _ <- storage.compareAndSetSessionHead(shared, Some(root.id), Some(child.id))
+      _ <- storage.addSessionAgent(shared, AgentId("participant"))
+      events <- ZIO.collectAll(List.fill(10)(scoped.take))
+      _ <- scoped.close
+    } yield {
+      assert(conflict.isLeft)
+      assertEquals(events.map(_.sequence), (scoped.startSequence + 1 to scoped.startSequence + 10).toList)
+      val canonical = events.collect {
+        case event if event.change.isInstanceOf[EventUpdate.Confirmed] =>
+          event.change.asInstanceOf[EventUpdate.Confirmed]
+      }
+      assertEquals(
+        canonical.map(_.messages.map(_.id)),
+        List(
+          Chunk(root.id, child.id),
+          Chunk(root.id),
+          Chunk(root.id),
+          Chunk(root.id, child.id),
+          Chunk(root.id, child.id)
+        )
+      )
+      assert(canonical.forall(_.sessions.map(_.id) == Chunk(shared)))
+      assert(canonical.map(_.sessions.head.revision).sliding(2).forall(pair => pair.head < pair.last))
+      assert(canonical.last.sessions.head.agentIds.contains(AgentId("participant")))
+      assert(events.forall(_.origin.exists(_.sessionId == shared)))
+      assert(canonical.last.sessions.head.revision > events.last.sequence)
+    })
+  }
+
+  test("scoped pre-registration pending captures only its concurrent execution context and reconciles uncertainty") {
+    val other = SessionId.unsafe("other-context")
+    run(for {
+      base <- StorageInMemory.make
+      updates <- OrchestrationEvents.make
+      entered <- Queue.unbounded[Unit]
+      release <- Promise.make[Nothing, Unit]
+      storage = new StorageEvents(
+        new StorageProbe(base) {
+          override def putMessage(message: Message) = entered.offer(()) *> release.await *> ZIO.fail(problem)
+        },
+        updates
+      )
+      first <- updates.executionOrigin
+        .locally(Some(EventOrigin(id, Some("turn-one"))))(storage.putMessage(root))
+        .either
+        .fork
+      second <- updates.executionOrigin
+        .locally(Some(EventOrigin(other, Some("turn-two"))))(storage.putMessage(root))
+        .either
+        .fork
+      _ <- entered.take *> entered.take
+      scoped <- updates.subscribe(EventScope.Session(id))
+      bootstrap <- scoped.takePendingObservations
+      context <- updates.executionOrigin.get
+      _ <- release.succeed(())
+      _ <- first.join *> second.join
+      event <- scoped.take
+      terminal <- event.change match {
+        case _: EventUpdate.Pending => scoped.take
+        case _                      => ZIO.succeed(event)
+      }
+      _ <- scoped.close
+      fresh <- updates.subscribe(EventScope.Session(id))
+      empty <- fresh.takePendingObservations
+      _ <- fresh.close
+    } yield {
+      assertEquals(context, None)
+      assertEquals(bootstrap.map(_.origin), Chunk(Some(EventOrigin(id, Some("turn-one")))))
+      assertEquals(bootstrap.head.change.messages, Chunk(EventMessage.from(root)))
+      assertEquals(terminal.change, EventUpdate.Uncertain(bootstrap.head.change.operationId))
+      assertEquals(terminal.origin, bootstrap.head.origin)
+      assert(empty.isEmpty)
+    })
+  }
+
+  test(
+    "managed writer fibers stream real prompt, call, output and reply before terminal completion with isolated origins"
+  ) {
+    val other = SessionId.unsafe("second-turn")
+    val key = ToolKey.unsafe("event-probe")
+    def throughReply(subscription: OrchestrationEvents.Subscription): IO[String, List[SequencedEventUpdate]] = {
+      def loop(events: List[SequencedEventUpdate]): IO[String, List[SequencedEventUpdate]] = subscription.take.flatMap {
+        next =>
+          val all = events :+ next
+          next.change match {
+            case EventUpdate.Confirmed(_, messages, sessions)
+                if messages.exists(_.role == "assistant") && sessions.exists(_.messageCount == 4L) =>
+              ZIO.succeed(all)
+            case _ => loop(all)
+          }
+      }
+      loop(Nil)
+    }
+    run(for {
+      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        val id = author
+        def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) =
+          ZIO.dieMessage("No provider calls in event tests")
+      }))
+      live <- OrchestratorLive.inMemory(registry)
+      firstSub <- live.events.subscribe(EventScope.Session(id))
+      secondSub <- live.events.subscribe(EventScope.Session(other))
+      _ <- live.createSession(id, Chunk(author)) *> live.createSession(other, Chunk(author))
+      execution = new AgentExecution[Any] {
+        val agentId = author
+        private[orchestration] def run(task: AgentTask, history: ManagedHistory) = for {
+          initial <- history.messages
+          origin <- live.events.executionOrigin.get
+          saved <- live.loadSession(origin.get.sessionId)
+          _ <- ZIO.succeed(assertEquals(saved.messages, initial))
+          _ <- live.invoke(
+            Message(MessageData(author, None, Instant.EPOCH, MessagePayload.User("independent-" + task.prompt))),
+            new AgentInvocation[Any] {
+              val agentId = author
+              private[orchestration] def invoke(input: MessagePayload) =
+                ZIO.succeed(MessagePayload.Assistant(input.contentStr))
+            }
+          )
+          _ <- history.append(
+            Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(task.prompt), key, "{}")))
+          )
+          _ <- history.append(
+            Chunk(
+              MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe(task.prompt), key, task.prompt))
+            )
+          )
+          _ <- history.append(Chunk(MessagePayload.Assistant(task.prompt)))
+          result <- ZIO.never
+        } yield result
+      }
+      first <- live.submit(id, author, AgentTask("first"), execution).fork
+      second <- live.submit(other, author, AgentTask("second"), execution).fork
+      observations <- throughReply(firstSub).zipPar(throughReply(secondSub))
+      firstTerminal <- first.poll
+      secondTerminal <- second.poll
+      _ <- first.interrupt *> second.interrupt
+      _ <- firstSub.close *> secondSub.close
+    } yield {
+      assertEquals(firstTerminal, None)
+      assertEquals(secondTerminal, None)
+      List((id, "first", observations._1), (other, "second", observations._2)).foreach { (session, text, events) =>
+        val pending = events.collect {
+          case event if event.change.isInstanceOf[EventUpdate.Pending] =>
+            event.change.asInstanceOf[EventUpdate.Pending].messages
+        }.flatten
+        assertEquals(pending.map(_.role), List("user", "tool_call", "tool_result", "assistant"))
+        assertEquals(pending.filter(m => Set("user", "assistant")(m.role)).map(_.content), List(text, text))
+        assert(pending.forall(m => !m.content.startsWith("independent-")))
+        assertEquals(pending.map(_.id).distinct.size, 4)
+        assert(events.forall(_.origin.exists(_.sessionId == session)))
+        assertEquals(events.map(_.sequence), (events.head.sequence to events.last.sequence).toList)
+        assertEquals(events.flatMap(_.origin.flatMap(_.turnId)).distinct.size, 1)
+      }
+      assertNotEquals(observations._1.last.origin.get.turnId, observations._2.last.origin.get.turnId)
+    })
+  }
+
+  test("origin metadata participates in retained-pending and subscriber byte limits") {
+    run(for {
+      updates <- OrchestrationEvents.make
+      scoped <- updates.subscribe(EventScope.Session(id))
+      origin = Some(EventOrigin(id, Some("x" * 400000)))
+      operation <- updates.begin(Chunk(root), origin)
+      rejected <- updates.subscribe(EventScope.Session(id)).either
+      _ <- updates.pending(operation, origin)
+      overflow <- scoped.check.either
+      _ <- updates.complete(operation, false, Chunk.empty, origin)
+      _ <- scoped.close
+      fresh <- updates.subscribe(EventScope.Session(id))
+      pending <- fresh.takePendingObservations
+      _ <- fresh.close
+    } yield {
+      assert(rejected.isLeft)
+      assert(overflow.isLeft)
+      assert(pending.isEmpty)
+    })
+  }
+
+  test("a diverged managed turn confirms stored side branches without claiming they are canonical") {
+    run(for {
+      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        val id = author
+        def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) = ZIO.dieMessage("No providers")
+      }))
+      live <- OrchestratorLive.inMemory(registry)
+      _ <- live.createSession(id, Chunk(author))
+      scoped <- live.events.subscribe(EventScope.Session(id))
+      execution = new AgentExecution[Any] {
+        val agentId = author
+        private[orchestration] def run(task: AgentTask, history: ManagedHistory) =
+          live.append(id, author, Chunk(MessagePayload.User("competitor"))) *>
+            history.append(Chunk(MessagePayload.Assistant("side-branch"))) *> ZIO.never
+      }
+      turn <- live.submit(id, author, AgentTask("prompt"), execution).fork
+      observed <- {
+        def loop(events: List[SequencedEventUpdate], sideBranchSeen: Boolean): IO[String, List[SequencedEventUpdate]] =
+          scoped.take.flatMap { event =>
+            val all = events :+ event
+            event.change match {
+              case EventUpdate.Confirmed(_, messages, sessions) =>
+                if sideBranchSeen && sessions.nonEmpty then ZIO.succeed(all)
+                else loop(all, sideBranchSeen || (messages.exists(_.content == "side-branch") && sessions.isEmpty))
+              case _ => loop(all, sideBranchSeen)
+            }
+          }
+        loop(Nil, false)
+      }
+      canonical <- live.loadSession(id)
+      _ <- turn.interrupt *> scoped.close
+    } yield {
+      val objectConfirmation = observed.collectFirst {
+        case SequencedEventUpdate(_, confirmation: EventUpdate.Confirmed, _)
+            if confirmation.messages.exists(_.content == "side-branch") =>
+          confirmation
+      }.get
+      assert(objectConfirmation.sessions.isEmpty)
+      val pointer = observed.last.change.asInstanceOf[EventUpdate.Confirmed]
+      assertEquals(pointer.sessions.head.head, canonical.messages.lastOption.map(_.id))
+      assertEquals(pointer.messages.map(_.id), canonical.messages.map(_.id))
+      assertEquals(pointer.messages.map(_.content), Chunk("prompt", "competitor"))
+      assert(!pointer.messages.exists(_.content == "side-branch"))
+    })
+  }
+
+  test("scoped rebase publication carries previously unseen copied ancestors and missing targets never become heads") {
+    run(for {
+      base <- StorageInMemory.make
+      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        val id = author
+        def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) = ZIO.dieMessage("No providers")
+      }))
+      live <- OrchestratorLive.make(base, registry)
+      _ <- live.createSession(id, Chunk(author))
+      _ <- live.storage.putMessagesAndUpdateSession(id, None, Chunk(root, child))
+      scoped <- live.events.subscribe(EventScope.Session(id))
+      copies <- live.rebase(root.id, child.id, None)
+      _ <- live.storage.compareAndSetSessionHead(id, Some(child.id), Some(copies.last.id))
+      missing <- live.storage
+        .compareAndSetSessionHead(id, Some(copies.last.id), Some(MessageId.sha256("absent")))
+        .either
+      events <- ZIO.collectAll(List.fill(4)(scoped.take))
+      _ <- scoped.close
+    } yield {
+      assert(missing.isLeft)
+      val confirmed = events.collect { case SequencedEventUpdate(_, change: EventUpdate.Confirmed, _) => change }
+      assertEquals(copies.size, 1)
+      assertEquals(copies.head.parentId, None)
+      assertNotEquals(copies.head.id, child.id)
+      assertEquals(confirmed.map(_.messages.map(_.id)), List(copies.map(_.id), copies.map(_.id)))
+      assert(confirmed.forall(_.sessions.head.head.contains(copies.last.id)))
+      assertEquals(events.map(_.sequence), (scoped.startSequence + 1 to scoped.startSequence + 4).toList)
+    })
+  }
+
+  test("scoped canonical ancestry is included in queue byte accounting without rejecting reliable publication") {
+    run(for {
+      base <- StorageInMemory.make
+      _ <- base.createSession(id, Chunk(author))
+      huge = Message(root.data.copy(payload = MessagePayload.User("x" * 400000)))
+      _ <- base.putMessage(huge)
+      updates <- OrchestrationEvents.make
+      scoped <- updates.subscribe(EventScope.Session(id))
+      storage = new StorageEvents(base, updates)
+      saved <- storage.compareAndSetSessionHead(id, None, Some(huge.id))
+      overflow <- scoped.check.either
+      _ <- scoped.close
+    } yield {
+      assertEquals(saved.messages, Chunk(huge))
+      assert(overflow.isLeft)
     })
   }
 

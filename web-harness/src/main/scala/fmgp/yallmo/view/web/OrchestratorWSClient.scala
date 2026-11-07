@@ -108,7 +108,10 @@ final class OrchestratorWSClient private[web] (
   private[web] def blobChunkBytes: Int = chunkBytes
 
   /** Install before sending: server events may precede the bootstrap response. */
-  private[web] def subscribeEvents(listener: EventsUpdate.Params => Unit): EventSubscription = {
+  private[web] def subscribeEvents(
+      listener: EventsUpdate.Params => Unit,
+      scope: SubscriptionScope = SubscriptionScope.All()
+  ): EventSubscription = {
     eventCounter += 1
     val nonce = s"events-$eventCounter"
     val connection = generation
@@ -119,9 +122,16 @@ final class OrchestratorWSClient private[web] (
       val _ = request[EventsUnsubscribe.Params, Empty](EventsUnsubscribe.method, EventsUnsubscribe.Params(id))
     }
     val result =
-      request[EventsSubscribe.Params, EventsSubscribe.Result](EventsSubscribe.method, EventsSubscribe.Params(nonce))
+      request[EventsSubscribe.Params, EventsSubscribe.Result](
+        EventsSubscribe.method,
+        EventsSubscribe.Params(nonce, scope)
+      )
         .map { value =>
-          if value.nonce != nonce then throw new RuntimeException("Invalid event subscription nonce")
+          if value.nonce != nonce || value.scope != scope then {
+            val error = new RuntimeException("Invalid event subscription identity or scope")
+            terminate(error)
+            throw error
+          }
           subscriptionId = Some(value.subscriptionId)
           if cancelled then unsubscribe(value.subscriptionId)
           value
@@ -322,6 +332,12 @@ final class OrchestratorWSClient private[web] (
 }
 
 private[web] final case class EventSubscription(result: Future[EventsSubscribe.Result], cancel: () => Unit)
+
+private[web] object EventSubscription {
+  // Browser-side bounds for buffered bootstrap events and provisional publication operations.
+  val MaxBufferedEvents = 128
+  val MaxBufferedBytes = 2L * 1024 * 1024
+}
 
 object OrchestratorWSClient {
   final class RpcException(val error: JsonRpc.Error) extends RuntimeException(error.message)

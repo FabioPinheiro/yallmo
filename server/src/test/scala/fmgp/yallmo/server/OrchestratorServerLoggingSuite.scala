@@ -192,6 +192,30 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
             .toJson,
           connection
         )
+        waiting <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("waiting"),
+              EventsSubscribe.method,
+              EventsSubscribe.Params("waiting", SubscriptionScope.Session(SessionId.unsafe("not-created")))
+            )
+            .toJson,
+          connection
+        )
+        scoped <- rpc.handle(
+          JsonRpc
+            .Request(
+              Json.Str("broken-feed"),
+              EventsSubscribe.method,
+              EventsSubscribe.Params("broken", SubscriptionScope.Session(session))
+            )
+            .toJson,
+          connection
+        )
+        // Failed bootstrap replaced and closed the waiting feed; no slot is leaked by either generation.
+        capacity <- ZIO.collectAll(List.fill(128)(master.events.subscribe))
+        _ <- ZIO.foreachDiscard(capacity)(_.close)
+        noCreation <- ZIO.attemptBlocking(!Files.exists(root.resolve("refs/sessions/not-created")))
         notFound <- rpc.handle(
           JsonRpc
             .Request(
@@ -203,14 +227,16 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
           connection
         )
       } yield {
-        List(listed.get, loaded.get).foreach { reply =>
+        List(listed.get, loaded.get, scoped.get).foreach { reply =>
           assertEquals(reply.fromJson[JsonRpc.Failure].toOption.get.error, JsonRpc.Error.InternalError)
           assert(!reply.contains(MessageId.value(missing)))
           assert(!reply.contains("PRIVATE_TRANSCRIPT"))
         }
         assertEquals(notFound.get.fromJson[JsonRpc.Failure].toOption.get.error.code, ErrorCode.NotFound)
+        val baseline = waiting.get.fromJson[JsonRpc.Success[EventsSubscribe.Result]].toOption.get.result
+        assert(baseline.messages.isEmpty && baseline.sessions.isEmpty && noCreation)
         val errors = logs.asScala.filter(_.contains("level=ERROR")).toVector
-        assertEquals(errors.size, 2)
+        assertEquals(errors.size, 3)
         assert(errors.forall(_.contains("session refers to missing message")))
         assert(errors.forall(_.contains(MessageId.value(missing))))
         assert(errors.exists(_.contains("rpcMethod=sessions.list")))

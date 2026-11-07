@@ -4,6 +4,15 @@ import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageId, MessagePayload, T
 import java.time.Instant
 import zio.Chunk
 
+/** Subscription selection follows canonical ancestry, not exclusive ownership of immutable messages. */
+enum EventScope {
+  case All
+  case Session(sessionId: SessionId)
+}
+
+/** Observation provenance only. A persisted object is not necessarily on this session's canonical head. */
+final case class EventOrigin(sessionId: SessionId, turnId: Option[String] = None)
+
 /** Process-local canonical pointer version, not a persistence format or durable replay cursor. */
 final case class EventSession(
     id: SessionId,
@@ -61,4 +70,4 @@ enum EventUpdate {
   case Uncertain(operationId: String)
 }
 
-final case class SequencedEventUpdate(sequence: Long, change: EventUpdate)
+final case class SequencedEventUpdate(sequence: Long, change: EventUpdate, origin: Option[EventOrigin] = None)

@@ -12,10 +12,12 @@ private[orchestration] final class StorageEvents(base: Storage, updates: Orchest
   ): IO[YallmoError, A] =
     ZIO.uninterruptibleMask { restore =>
       for {
-        observation <- updates.begin(messages)
+        context <- updates.executionOrigin.get
+        origin = sessionId.fold(context)(id => Some(context.filter(_.sessionId == id).getOrElse(EventOrigin(id))))
+        observation <- updates.begin(messages, origin)
         // Intentionally parallel: pending live delivery is not persistence. Replace zipPar with zip to sequence
         // these handlers; keep the Exit/terminal reconciliation, including failures and interruption.
-        delivery <- restore(storage.exit.zipPar(updates.pending(observation))).exit
+        delivery <- restore(storage.exit.zipPar(updates.pending(observation, origin))).exit
         exit: Exit[YallmoError, A] = delivery match {
           case Exit.Success(value) => value
           case Exit.Failure(cause) => Exit.failCause(cause)
@@ -36,7 +38,8 @@ private[orchestration] final class StorageEvents(base: Storage, updates: Orchest
         _ <- updates.complete(
           observation,
           canonical.exists(_._1),
-          canonical.fold(Chunk.empty[Session])(_._2)
+          canonical.fold(Chunk.empty[Session])(_._2),
+          origin
         )
         result <- exit
       } yield result

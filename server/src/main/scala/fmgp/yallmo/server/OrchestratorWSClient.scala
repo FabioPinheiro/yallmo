@@ -85,7 +85,10 @@ final class OrchestratorWSClient private (
     request(BlobsRead.method, BlobsRead.Params(id, offset, maxBytes))
 
   /** Registers local demultiplexing before sending, so notification-before-response is safe. One feed per socket. */
-  def subscribeEvents(nonce: String): IO[Error, EventsSubscribe.Result] =
+  def subscribeEvents(
+      nonce: String,
+      scope: SubscriptionScope = SubscriptionScope.All()
+  ): IO[Error, EventsSubscribe.Result] =
     ZIO.uninterruptibleMask { restore =>
       for {
         inbox <- EventInbox.make(nonce)
@@ -100,12 +103,12 @@ final class OrchestratorWSClient private (
         result <- restore(for {
           result <- request[EventsSubscribe.Params, EventsSubscribe.Result](
             EventsSubscribe.method,
-            EventsSubscribe.Params(nonce)
+            EventsSubscribe.Params(nonce, scope)
           )
           _ <- ZIO
             .fail(Error.InvalidResponse)
             .unless(
-              result.nonce == nonce && result.subscriptionId.nonEmpty && result.streamId.nonEmpty && result.startSequence >= 0
+              result.scope == scope && result.nonce == nonce && result.subscriptionId.nonEmpty && result.streamId.nonEmpty && result.startSequence >= 0
             )
           _ <- inbox.baseline.set(Some(result))
           _ <- inbox.lastSequence.set(result.startSequence)

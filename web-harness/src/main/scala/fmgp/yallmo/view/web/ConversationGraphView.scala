@@ -4,6 +4,7 @@ import com.raquo.laminar.api.L.*
 import fmgp.yallmo.model.{AgentId, MessageId}
 import fmgp.yallmo.orchestration.SessionSummary
 import fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot
+import fmgp.yallmo.server.protocol.YallmoProtocol.SubscriptionScope
 import org.scalajs.dom
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.scalajs.js
@@ -70,7 +71,7 @@ private[web] object ConversationGraphView {
     var ready = false
     var visible = !dom.document.hidden
     val model = new ConversationGraphModel(
-      client.subscribeEvents,
+      callback => client.subscribeEvents(callback, SubscriptionScope.All()),
       () => client.connectionVersion,
       () => ready,
       () => visible,

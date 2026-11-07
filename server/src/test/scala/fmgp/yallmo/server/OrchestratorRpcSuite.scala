@@ -190,6 +190,65 @@ final class OrchestratorRpcSuite extends FunSuite {
     })
   }
 
+  test("session subscriptions can wait before creation and bootstrap only shared canonical ancestry") {
+    val waiting = SessionId.unsafe("waiting")
+    val unrelated = SessionId.unsafe("unrelated")
+    val forked = SessionId.unsafe("forked")
+    run(for {
+      live <- master
+      rpc = new OrchestratorRpc(live)
+      connection <- rpc.openConnection
+      _ <- init(rpc, connection, None)
+      reply <- rpc.handle(
+        JsonRpc
+          .Request(
+            Json.Str("subscribe"),
+            EventsSubscribe.method,
+            EventsSubscribe.Params("waiting-nonce", SubscriptionScope.Session(waiting))
+          )
+          .toJson,
+        connection
+      )
+      baseline = success[EventsSubscribe.Result](reply.get)
+      before <- live.listSessions
+      _ <- live.createSession(unrelated, Chunk(executable))
+      _ <- live.append(unrelated, executable, Chunk(MessagePayload.User("not-this-session")))
+      _ <- live.createSession(waiting, Chunk(executable))
+      first <- rpc.nextNotification(connection)
+      second <- rpc.nextNotification(connection)
+      accepted <- live.append(waiting, executable, Chunk(MessagePayload.User("canonical")))
+      _ <- live.fork(waiting, forked)
+      _ <- live.append(waiting, executable, Chunk(MessagePayload.Assistant("not-in-fork")))
+      forkReply <- rpc.handle(
+        JsonRpc
+          .Request(
+            Json.Str("fork-subscribe"),
+            EventsSubscribe.method,
+            EventsSubscribe.Params("fork-nonce", SubscriptionScope.Session(forked))
+          )
+          .toJson,
+        connection
+      )
+      forkBaseline = success[EventsSubscribe.Result](forkReply.get)
+      _ <- rpc.disconnect(connection)
+      all <- live.events.subscribe
+      pending <- all.takePending
+      _ <- all.close
+    } yield {
+      assertEquals(baseline.scope, SubscriptionScope.Session(waiting))
+      assert(baseline.messages.isEmpty && baseline.sessions.isEmpty && baseline.pending.isEmpty)
+      assert(before.isEmpty) // Subscribe is read-only, not premature acceptance or session creation.
+      val initial =
+        List(first, second).map(_.fromJson[JsonRpc.Notification[EventsUpdate.Params]].fold(fail(_), _.params))
+      assertEquals(initial.map(_.sequence), List(baseline.startSequence + 1, baseline.startSequence + 2))
+      assert(initial.forall(_.origin.exists(_.sessionId == waiting)))
+      assertEquals(forkBaseline.messages, accepted.messages.map(MessageSnapshot.from))
+      assertEquals(forkBaseline.sessions.map(_.id), Chunk(forked))
+      assertEquals(forkBaseline.sessions.head.head, accepted.messages.lastOption.map(_.id))
+      assert(pending.isEmpty)
+    })
+  }
+
   test("eventSessionSnapshot retains unreadable inventory metadata with an unknown head and sanitized error") {
     val summary = SessionSummary(SessionId.unsafe("broken"), 7L, Chunk(alice))
     val snapshot = OrchestratorRpc.eventSessionSnapshot(

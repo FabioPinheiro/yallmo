@@ -18,6 +18,17 @@ ThisBuild / libraryDependencySchemes ++= Seq(
 )
 // JVM flags must not leak into Scala.js projects or test runners.
 lazy val jvmSettings = Seq(
+  // JVM-only security overrides also apply to tests; these do not add dependencies to Scala.js projects.
+  // Revisit/remove these when Google Auth and Netty request patched versions themselves; never suppress the scan.
+  dependencyOverrides ++= Seq(
+    // Google Auth requests 33.4.0-jre: CVE-2026-102554 is fixed from 33.7.2; use the current 33.x JRE release.
+    "com.google.guava" % "guava" % "33.8.0-jre",
+    // ZIO HTTP/Netty requests 1.84: CVE-2026-8763 and CVE-2026-13506 are fixed from 1.85.
+    // Override the entire provider/PKIX/utility family together to avoid mixed-version crypto classes.
+    "org.bouncycastle" % "bcprov-jdk18on" % "1.86",
+    "org.bouncycastle" % "bcpkix-jdk18on" % "1.86",
+    "org.bouncycastle" % "bcutil-jdk18on" % "1.86",
+  ),
   Compile / run / javaOptions ++= Seq(
     "--enable-native-access=ALL-UNNAMED",
     "--sun-misc-unsafe-memory-access=allow",

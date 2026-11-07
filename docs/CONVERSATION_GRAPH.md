@@ -135,8 +135,6 @@ tool execution. Partial/original/rebase artifacts remain inspectable. No arbitra
 
 ## Automatic updates and connection lifecycle
 
-The architecture and acceptance contract are documented in [Push-update plan](CONVERSATION_GRAPH_PUSH_PLAN.md).
-
 **Live uses server push**, including for read-only viewers. Mounted, visible, connected Graph with Live enabled registers
 its notification callback before sending `events.subscribe`. Notifications arriving before the result are bounded to
 **128 events / 2 MiB UTF-8 JSON**. The result establishes subscription/stream identity and the starting sequence;
@@ -212,7 +210,7 @@ protocol; historical polling results are not counted as push evidence. No real p
 
 A corrupt filesystem inventory may still prevent bootstrap before individual session reads can report unknown heads.
 Snapshots remain subject to the existing 1 MiB wire limit; there is no pagination fallback. See the implementation receipt
-in [the push plan](CONVERSATION_GRAPH_PUSH_PLAN.md) for changed paths, exact automated checks and remaining limitations.
+in [the push plan](../lixo/completed/CONVERSATION_GRAPH_PUSH_PLAN.md) for changed paths, exact automated checks and remaining limitations.
 
 ### Chat session-push implementation receipt
 

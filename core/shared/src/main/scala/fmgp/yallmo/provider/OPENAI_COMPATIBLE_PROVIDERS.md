@@ -12,8 +12,7 @@ Audio is `MessagePayload.AudioAttachment(blobId, format, description)`. Adapters
 (or the prompt-audio API's reader), reject missing/empty/over-1-MiB content, and base64-encode bytes only for HTTP.
 Direct callers must supply a reader; `Orchestrator.turn` and REPL runner bindings supply Storage's reader automatically.
 Request diagnostics contain references/format, not the exact audio wire body. Blob ingestion is buffered, not provider
-audio streaming. See [Attachments and blob storage](../../../../../../../../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
-
+audio streaming.
 The `openai` package remains separate: `OpenAiCodexClient` uses the ChatGPT/Codex Responses API and subscription OAuth,
 while `OpenAiTtsService` uses the official OpenAI Platform TTS API.
 

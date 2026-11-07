@@ -1,19 +1,16 @@
 # Plans and delivery status
 
-Plans stay active while implementation, an in-scope defect, or an acceptance gate needs work.
-Completed implementation/execution records live in [`completed/`](../completed/README.md).
-Archiving a delivery does **not** certify manual acceptance or connected-client feature parity.
+Unfinished proposals stay here. Implemented plan and execution records are retired to
+[`lixo/completed/`](../lixo/completed/README.md), including records with pending acceptance or known defects.
+Remaining managed-history, blob-storage and SDLC work is tracked in [TODO.md](../TODO.md).
+Retiring a plan does **not** close its defects or certify manual acceptance, security or connected-client parity.
 Current behavior belongs in the user and architecture guides, not historical task boards.
-
-This review compared plan status with source and test coverage. Test counts in archived records are historical;
-no Scala, browser, hardware or external-provider test suite was rerun for this documentation-only review.
+`lixo/` is ignored by Git; its records are local reference material, not a versioned archive.
 
 ## Active plans and proposals
 
 | Plan | Disposition |
 | --- | --- |
-| [Managed history and message rebase](orchestration/MANAGED_HISTORY_AND_REBASE_PLAN.md) | Implementation and review through step 7 complete (narrowed step 5). Model/core validation passes without exclusions. Manual/live acceptance and qualified full-server/REPL failure disposition remain pending; plan stays active. |
-| [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) | Implemented, **not ready to archive**: the documented failed-message-append bug remains in `core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala`. Move message append before producer finalization and add a permanent regression before closing the plan. |
 | [Debug by message ID](transcriber/DEBUG_BY_MESSAGE_ID_PLAN.md) | Future work. `/debug message <hash>` is not implemented; connected `/debug request` is a different delivered feature. |
 | [Research sub-agent and web search](../core/src/main/scala/fmgp/yallmo/tool/WEB_SEARCH_PLAN.md) | Proposed; the research child and search service/tool are not implemented. |
 | [Research-child MCP support](../core/src/main/scala/fmgp/yallmo/tool/mcp/MCP_TOOL_SUPPORT_PLAN.md) | Proposed; MCP transport/adapter and research-child integration are not implemented. |
@@ -25,7 +22,8 @@ no Scala, browser, hardware or external-provider test suite was rerun for this d
 
 ## Implementation and research references kept in place
 
-- [User identity model](future-plan/UserId-future_identity_model.md): implemented with explicit owned actors; authentication remains separate.
+User identity is implemented with explicit owned actors; see the [wire contract](../server/PROTOCOL.md#connection-and-capabilities).
+Authentication remains separate.
 
 These are still useful reference documents, not active execution boards:
 
@@ -38,7 +36,7 @@ These are still useful reference documents, not active execution boards:
 ### Connected REPL integration
 
 The client-only startup cutover and `/debug request` transport are delivered; see the
-[archived plan and handoff](../completed/README.md#client-only-repl).
+[archived plan and handoff](../lixo/completed/README.md#client-only-repl).
 The [REPL guide](REPL.md) and [server guide](../server/README.md) own the current runtime/security contract.
 
 - [ ] Integrate remote `/tools`, richer agent information, terminal provider creation/editing, voice/TTS, human interactions and remaining diagnostics (`/debug print|export`). Preserve the existing implementations/tests until parity is decided; do not restore a local startup fallback.
@@ -56,15 +54,20 @@ supersede the later voice failures above.
 - [ ] Verify cancellation, consecutive recordings, chat-agent switching, disabled voice and draft/cursor preservation without auto-submission.
 - [ ] Complete the [browser manual acceptance checklist](../browser-STT-TTS/README.md#manual-acceptance-not-performed-by-node-tests): CSP/worklet loading, permissions/device changes, background/re-enable behavior, disconnection and optional SSH forwarding where used.
 
-The old inline/redacted-audio design is superseded by [blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+The old inline/redacted-audio design is superseded by [blob storage](../lixo/completed/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
 Recordings are retained as blobs; message hashes have no audio exception. Multi-step session/audio/transcript
-retention is not transactional, and the separate blob append defect above remains open.
+retention is not transactional, and the blob append defect tracked in [TODO.md](../TODO.md#follow-ups-from-retired-plans) remains open.
 
-## Archived in this review
+## Retired records
 
+- Conversation graph push-update plan.
+- User identity plan.
+- Initial SDLC design/delivery plan; deferred extensions remain in `TODO.md`.
+- Managed history/rebase plan and acceptance procedure; acceptance remains pending.
+- Attachments/blob-storage plan; the failed-message-append defect remains open.
 - Browser STT/TTS design and execution plans.
 - Transcriber-as-agent design and execution plans.
 - Client-only REPL startup plan and continuation handoff, including delivered request diagnostics.
 
-See the [archive index](../completed/README.md) for delivery evidence and links. Historical checklists/logs are
+See the [archive index](../lixo/completed/README.md) for delivery evidence and links. Historical checklists/logs are
 preserved; source names, security assumptions, dependency versions and `/tmp` artifact paths there may be stale.

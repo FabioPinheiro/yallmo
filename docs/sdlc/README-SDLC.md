@@ -2,7 +2,7 @@
 
 Implementation: `core/shared/src/main/scala/fmgp/yallmo/tool/sdlc/`.
 Models, storage and handlers use the same `fmgp.yallmo.tool.sdlc` package;
-simplified models live in `.llm`. The design rationale is in [plan.md](plan.md).
+simplified models live in `.llm`.
 
 ## Availability
 

@@ -29,8 +29,22 @@ Yallmo is now a personal laboratory for learning how to manage context and knowl
 - Research
   - What is a Durable Agent harness
     - [Pi.dev Durable](https://earendil.com/posts/pi-durable/)
+  - UTCP vs MCP - what are the pros and cons?
+  - UCP
 
 The project aims to keep the important boundaries small and explicit: transcripts, providers, capabilities, approval, orchestration, and storage. It is exploratory software; APIs and experiments may change.
+
+## Personal reflection - What I'm learning
+
+Scala may be a better fit for LLM-assisted development than I initially expected. Some time ago, I thought Scala would be too complicated for this kind of workflow. Given how common Python is in AI tooling and publicly available code, I expected it to be the natural choice: models would probably be more fluent in it. That may still be true, depending on the model and the task. But part of this project is figuring out what that fluency means in practice—not just generating code, but maintaining a working codebase as it grows and changes.
+
+Working with Scala has made me appreciate how much the compiler helps in that process. It gives both me and the agent concrete feedback about changes, catches many mistakes before runtime, and helps keep refactoring manageable. That does not guarantee correct behavior, but it is a useful feedback loop when an agent is making changes across a project.
+
+The reason Scala feels like a better fit to me is maintainability. I may not be impartial, because maintainability matters a lot to me as a developer, and LLMs are still getting better. But I want a codebase I can understand and an architecture I have reviewed and approved. Letting an agent write more of the code should not mean giving up on thinking about it or taking responsibility for the result.
+
+There is also a more personal question here. I loved writing code myself, and letting an agent write so much of it makes me question what I loved about it. Was it writing the code, understanding it, or building things and figuring out how they work? Maybe it was all of those. I'm still working out what I want to keep doing myself and what I'm happy to delegate.
+
+I'm still exploring the trade-offs, but this experience has made me less certain that the language a model seems most fluent in is necessarily the best language for maintaining a project together. A model's fluency in Scala can improve, even if getting there takes effort and investment. I don't want to choose a language only for what models can do today; I also want to consider what will help me understand and maintain the project over time.
 
 ## Documentation
 
@@ -43,7 +57,7 @@ The project aims to keep the important boundaries small and explicit: transcript
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
 - [Capabilities architecture](docs/Capabilities_Architecture.md) — configuration inheritance, restrictions, enforcement flow, and REPL voice policy.
 - [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)
-- [Attachments and blob storage](docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
+- [Attachments and blob storage](lixo/completed/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
 - [Orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
 - [Shared SDLC planning tools](plan-tool/README.md) — agent tools, task/intent journals and the HTTP-backed web inspector.
 - [Local RAG demo](RAG.md)
@@ -87,53 +101,3 @@ This is a build graph, not a deployment diagram: the connected REPL and website 
 server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
 `scalacode-api` has no application-module dependencies; restricted snippets compile against it and Scala/ZIO, not the whole host classpath.
 `browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.
-
-## WIP & TODO & IDEAS
-
-- [Future UserId identity model](docs/future-plan/UserId-future_identity_model.md) — one user connection with multiple acting AgentIds.
-- [Add metadata to Blob and Preview](docs/future-plan/Blob-metadata-and-media-preview.md)
-
-### WIP
-
-Remaining work:
-- 
-- Add remote /tools and richer agent information.
-- Migrate remaining provider creation/editing, voice execution, human interactions and diagnostics. Provider listing/login is available in the web harness and connected REPL.
-- Perform a real-provider, separate-process smoke test.
-- Retire local compatibility code only after deciding feature parity.
-- Authentication, cancellation/status APIs and richer run-management machinery.
-
-The REPL connects to `ws://127.0.0.1:8080/rpc` by default; `--server` overrides it. Startup is client-only, with no
-local fallback. Existing audio/voice, debug and other local feature implementations/tests are retained pending integration.
-
-### TODO other
-
-- Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
-- TerminalVoiceModeStatus.remoteConnection Remove!
-- Rename package fmgp.yallmo.view.web to package fmgp.yallmo.webharness
-- Review ServerApplication graceful-shutdown See https://zio.dev/reference/core/zioapp#graceful-shutdown-timeout
-
-### TODO - Agent Comands
-
-Each agent should bring their own comments to the REPL.
-
-### TODO - Newest Inference Engines
-
-Docker Model Runner is no longer sufficient for the experiments I want to run. I want direct access to the latest **vLLM** and **llama.cpp** engines and APIs, without waiting for Docker Model Runner to expose their capabilities.
-
-- **Incremental input and output:** stream text and audio chunks into supported backends and process them while more input is arriving; receive text and audio chunks incrementally. Streaming output alone is not enough. Actual support depends on the engine, model, and endpoint.
-- **Realtime voice experiments:** try [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) through [vLLM's Realtime API](https://docs.vllm.ai/en/latest/serving/online_serving/speech_to_text/#realtime-api) for incremental speech-to-text. Conversation and speech synthesis remain separate capabilities, composed as needed.
-- **System One models:** experiment with constrained decision models alongside conversational models, keeping their contracts separate. Run **Laya in a custom Docker container** and integrate it through the [System One / Jev boundary](docs/system_one/System_One_Overview.md), rather than treating it as a chat-completion model.
-
-### IDEA - /btw
-
-Add a command that entres a conversation mode. Where its not allowed to use most of the tool. Specially, is not allowed to modify anything.
-It can still have submode to search the files in the FS and search the Internet
-When exiting this mode a summary will be written back into the context of the other.
-
-The idea is to have a conversation, discuss ideas and understanding the options.
-
-### IDEA - agents can share tools/functions with other agents
-
-We have use capture-checking to make sure those tools don't space the resquet
-

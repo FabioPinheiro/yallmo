@@ -101,7 +101,7 @@ The output still contains any literal credentials from the source: do not log, s
 
 - Audio payloads contain a `BlobId`, not bytes. `Orchestrator.turn` and REPL native bindings supply the blob reader;
   direct audio adapter calls must supply it themselves. Voice persists audio before inference, independently of active chat.
-  This schema does not decode/migrate old `AudioInput` records. See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+  This schema does not decode/migrate old `AudioInput` records.
 
 For current capability configuration and enforcement, see [Capabilities architecture](Capabilities_Architecture.md).
 

@@ -51,7 +51,6 @@ Test page access from the host with `curl -i http://127.0.0.1:5180/`. A URL frag
   Stored recordings survive inference failure, interruption after ingestion, and draft discard; there is no automatic
   blob cleanup or recording-deletion command. Protect the storage directory and backups. Provider debug captures are
   reference-based diagnostics, not exact audio wire requests. Transcripts/descriptions can also be sensitive.
-  See [Attachments and blob storage](../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for schema and storage limits.
   Active chat context/head/continuation and ordinary resume are unchanged.
   Every voice request is one fresh turn containing only current audio and configured instructions; no tools, RAG, skills,
   extensions, previous exchange or follow-up execution. Persistence failure leaves the draft unchanged and is reported.

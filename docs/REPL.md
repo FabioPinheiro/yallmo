@@ -443,7 +443,6 @@ Nonempty inline audio is rejected for manual recovery rather than silently disca
 already exist; keep the original as a backup. Alternatively, start with an empty storage directory.
 Recordings are retained even if transcription fails or the draft is discarded; there is no automatic blob cleanup or
 recording-deletion command. Treat the entire storage directory and its backups as sensitive, not just `objects.jsonl`.
-See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for duplicate-ID behavior,
 partial filesystem reads/writes, buffering limits, and the single-writer storage contract.
 Assistant transcripts remain in their separate sessions independently of draft discard; transcripts and descriptions
 may contain sensitive text. The editable transcript is untrusted user input and is never automatically submitted to chat.

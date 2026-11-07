@@ -124,9 +124,6 @@ Exactly one Storage service owns each filesystem root. Callers must serialize me
 whole root, not just within a session; StorageFS has no internal writer lock. This matters before introducing parallel
 sessions/workers. Durable session persistence belongs to Orchestrator, not to the runner's in-memory loop.
 
-See [Attachments and blob storage](../../../../../../../docs/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for the
-full contract, compatibility changes, validation, and the open message-append failure-path finding.
-
 ## REPL voice is a separate application flow
 
 The REPL-local `Transcriber` invokes an ordinary configured audio agent, independent of chat selection. It stores audio

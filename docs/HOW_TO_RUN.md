@@ -94,7 +94,6 @@ See the [REPL guide](REPL.md) for commands, server storage and unavailable featu
 
 For server-owned filesystem stores, protect raw recordings and backups. The current audio schema does not decode/migrate
 old inline/redacted audio records. Filesystem message/session writes require one owner and serialization across the root.
-See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) for the full contract.
 
 ## ChatGPT subscription profiles
 

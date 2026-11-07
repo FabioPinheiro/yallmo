@@ -185,8 +185,7 @@ session-pointer changes remain independent. The helper explicitly reads fresh ca
 RunContext for the delegate's `nextManaged` with the same capability; advisory prompts/answers never become messages.
 Nothing registers this workflow automatically. See the [usage snippet and host policy](system_one/MANAGED_HISTORY_DECISIONS.md).
 The research-note example is not a retry workflow; recording fake providers demonstrate the request actually refreshed,
-not live service acceptance. Step 7 integration is approved; independent review and
-[manual/live acceptance](orchestration/MANAGED_HISTORY_ACCEPTANCE.md) remain separate pending gates.
+not live service acceptance.
 
 ## Inspecting originals and active context
 
@@ -208,7 +207,7 @@ not live service acceptance. Step 7 integration is approved; independent review 
   No public arbitrary-head publication/recovery UI or new session policy is provided. Do not treat a pointer conflict
   as automatic branch recovery or promise that later submissions will resume that local rewrite.
 
-See [integration evidence and pending acceptance](orchestration/MANAGED_HISTORY_ACCEPTANCE.md).
+See [integration evidence and pending acceptance](../lixo/completed/orchestration/MANAGED_HISTORY_ACCEPTANCE.md).
 
 ## Ownership and lifetime
 

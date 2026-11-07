@@ -88,8 +88,7 @@ different-head rejection, positive exact restoration and competing publication o
 The existing failed-tool retry demonstration remains independent. These are fake
 provider acceptance checks, **not live-provider acceptance**. Step 7 automated
 integration is implemented; independent review and live/manual acceptance remain
-separate gates. See [acceptance and opt-in live procedure](../orchestration/MANAGED_HISTORY_ACCEPTANCE.md).
-
+separate gates.
 ## Typed question encoding
 
 `SORequest.toJson`, `SOSchema.encodeRequest` and typed `SOMProvider.evaluate` share

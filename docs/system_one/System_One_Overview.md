@@ -42,8 +42,7 @@ transport seam: it sends the encoded request and decodes the successful `SystemO
 Keep/Rebase decision with an agent-selected managed-history candidate and a fresh
 request for the existing conversational agent. It is not automatic cleanup or model
 authorization. The usage example, conservative host policy and generic typed wire contract are documented there.
-Independent review and an explicitly opted-in synthetic-data live run are separate from automated fixtures; see the
-[pending acceptance procedure](../orchestration/MANAGED_HISTORY_ACCEPTANCE.md).
+Independent review and an explicitly opted-in synthetic-data live run are separate from automated fixtures
 
 ## Runtime configuration
 

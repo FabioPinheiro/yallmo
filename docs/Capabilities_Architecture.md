@@ -209,7 +209,7 @@ Omitted settings can pass the effective-empty check when the inherited catalogs 
 Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, `ToolChoice.None`, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
 `Orchestrator.turn` supplies `AgentTurnRequest.readBlob`; inference failure leaves that audio intact. A valid assistant
 transcript is then appended before text is offered to the editable draft. Recordings survive draft discard when using
-filesystem storage. See [Attachments and blob storage](orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md).
+filesystem storage.
 
 The generic audio marker/lookup does not prove the selected remote model accepts audio. Shared audio agents are not globally forced into these single-turn/no-tools restrictions: those are properties of the REPL voice invocation.
 

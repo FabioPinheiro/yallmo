@@ -7,8 +7,8 @@ COPY auth.json models.json preferences.json start.sh /opt/pi-sbx/
 RUN jq -e '. == {"sbx-openai":{"type":"api_key","key":"oai-oat01-proxy-managed"}}' /opt/pi-sbx/auth.json >/dev/null \
     && chmod 644 /opt/pi-sbx/auth.json /opt/pi-sbx/models.json /opt/pi-sbx/preferences.json \
     && chmod 755 /opt/pi-sbx/start.sh \
-    && mkdir -p /home/agent/.pi/sbx \
-    && chown agent:agent /home/agent/.pi /home/agent/.pi/sbx
+    && mkdir -p /home/agent/.pi/sbx /home/agent/workspace \
+    && chown agent:agent /home/agent/.pi /home/agent/.pi/sbx /home/agent/workspace
 USER agent
 ENV PI_CODING_AGENT_DIR=/home/agent/.pi/sbx \
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt

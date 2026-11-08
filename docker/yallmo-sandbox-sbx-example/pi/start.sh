@@ -42,4 +42,6 @@ rm -rf "$temporary"
 trap - EXIT
 # "api_key" is Pi's opaque-bearer storage format here, NOT a paid OpenAI API key or an OAuth refresh token.
 # The custom provider uses Responses directly, avoiding the built-in ChatGPT provider's JWT decoding.
+# sbx may otherwise choose the host project path as the initial cwd, even with an explicit mount target.
+cd -- /home/agent/workspace
 exec pi --provider sbx-openai --model "$model" "$@"

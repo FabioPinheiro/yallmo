@@ -16,8 +16,13 @@ kits:
       image: docker.io/fmgp/yallmo:dev
       model: ${{ env.args.model }}
 
-# Relative to this file, not your terminal directory. Keep secrets out of this shared directory.
-workspace: ./workspace
+# Use an explicit destination instead of the primary `workspace` mount, which mirrors the Mac path.
+# This is the ONLY shared host directory; never mount the host home or Pi auth/config directory.
+# Relative source paths use this file's directory. Keep secrets out of this shared directory.
+additionalWorkspaces:
+  - path: ./workspace
+    target: /home/agent/workspace
+    readOnly: false
 
 # Public placeholders ONLY. These are not copied from the host's OAuth login/environment.
 # Docker's host proxy replaces the access sentinel on ChatGPT requests and owns token refresh.

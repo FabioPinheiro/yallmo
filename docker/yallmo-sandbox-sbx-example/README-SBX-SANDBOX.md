@@ -78,7 +78,7 @@ yallmo server --storage ./storage --config ./yallmo.yaml --log-level info
 From this example folder on your Mac, run it in your existing Sandbox (use your actual name):
 
 ```bash
-sbx env exec --name yallmo-pi-gpt6 . -- bash server.sh
+sbx env exec --name yallmo-pi-gpt6 . -- bash /home/agent/workspace/server.sh
 ```
 
 The helper changes into its workspace directory first. Storage therefore lives in the shared host
@@ -135,16 +135,25 @@ yallmo-sandbox-sbx-example/
     └── storage/         # Persistent server data; runtime contents are Git-ignored
 ```
 
-All relative paths use the environment file's directory. You can copy this **whole folder**, including
-`pi/`, elsewhere. Pi state stays inside the VM and survives stops but not deletion; no Pi home is shared.
+The only host mount is `./workspace` → **`/home/agent/workspace`**, read-write. The primary `workspace`
+entry is intentionally omitted: otherwise `sbx` would mirror the Mac's absolute path as another mount.
+The host directory is not moved, and neither your home directory nor your Pi configuration is shared.
+Pi's launcher explicitly changes into `/home/agent/workspace`, independently of `sbx`'s initial cwd.
+For separately executed commands, set `--workdir` or use an absolute in-Sandbox path as shown below.
+
+All relative source paths use the environment file's directory. You can copy this **whole folder**, including
+`pi/`, elsewhere without changing the in-Sandbox mount point. Pi state stays inside the VM and survives stops
+but not deletion; no Pi home is shared. Existing Sandboxes keep their old mount layout: create a new one with
+`sbx env run --name yallmo-home .` to apply this change. Use the same name for subsequent `sbx env exec`
+commands. If port 8080 is already bound, release the old mapping or change the host port before creation.
 Do not put `.env` or other secrets in `workspace/`: build ignore rules do not protect workspace mounts.
 The ignored legacy `pi-agent/` directory is not mounted and no existing credential files are deleted.
 
 From another Mac terminal in this example folder:
 
 ```bash
-sbx env exec . -- python hello.py
-sbx exec -it yallmo-pi-oauth bash
+sbx env exec --workdir /home/agent/workspace . -- python hello.py
+sbx exec -it --workdir /home/agent/workspace yallmo-pi-oauth bash
 sbx stop yallmo-pi-oauth
 ```
 

@@ -81,7 +81,7 @@ class SandboxPlaceholderTests(unittest.TestCase):
             self.assertFalse((root / "storage").exists())
 
     def test_documentation_keeps_live_validation_and_no_host_auth_mount_explicit(self):
-        readme = (EXAMPLE / "README.md").read_text()
+        readme = (EXAMPLE / "README-SBX-SANDBOX.md").read_text()
         self.assertIn("No host auth file or real token is mounted", readme)
         self.assertIn("not verified in this coding-agent container", readme)
         self.assertNotIn('PI_CODING_AGENT_DIR="$PWD/pi-agent" pi', readme)
@@ -91,10 +91,12 @@ class SandboxPlaceholderTests(unittest.TestCase):
 class SandboxDeclarationTests(unittest.TestCase):
     def test_environment_mounts_only_workspace_and_inherits_the_pi_kit_launcher(self):
         config = yaml.safe_load((EXAMPLE / "sbxenv.yaml").read_text())
-        for key in ("additionalWorkspaces", "mounts", "secrets", "lifecycle", "entrypoint", "cmd"):
+        for key in ("workspace", "mounts", "secrets", "lifecycle", "entrypoint", "cmd"):
             self.assertNotIn(key, config)
         self.assertEqual(config["agent"], "pi")
-        self.assertEqual(config["workspace"], "./workspace")
+        self.assertEqual(config["additionalWorkspaces"], [
+            {"path": "./workspace", "target": "/home/agent/workspace", "readOnly": False}
+        ])
         self.assertEqual(config["kits"][0]["source"], "./pi")
         self.assertTrue((EXAMPLE / "workspace/hello.py").is_file())
 

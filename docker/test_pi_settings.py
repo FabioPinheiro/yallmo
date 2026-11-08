@@ -78,20 +78,24 @@ class PiLauncherTests(unittest.TestCase):
             for name in ("auth.json", "models.json", "preferences.json"):
                 shutil.copyfile(KIT / name, source / name)
             profile = root / "profile"
+            workspace = root / "workspace"
+            workspace.mkdir()
             script = root / "start.sh"
             # Redirect only filesystem constants in a test copy; production has no host-path override.
             script.write_text((KIT / "start.sh").read_text().replace("/opt/pi-sbx", str(source))
-                              .replace("/home/agent/.pi/sbx", str(profile)))
+                              .replace("/home/agent/.pi/sbx", str(profile))
+                              .replace("/home/agent/workspace", str(workspace)))
             binaries = root / "bin"
             binaries.mkdir()
             pi = binaries / "pi"
-            pi.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            pi.write_text('#!/bin/sh\nprintf "%s\\n" "$PWD" "$@"\n')
             pi.chmod(0o755)
             env = {"PATH": str(binaries) + os.pathsep + os.environ.get("PATH", os.defpath),
                    "HOME": str(root), "SBX_CRED_OPENAI_MODE": "oauth", "YALLMO_PI_MODEL": ""}
-            first = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
+            first = subprocess.run(["bash", str(script)], cwd=root, env=env, text=True, capture_output=True)
             self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertIn("gpt-6.1-sol", first.stdout)
+            self.assertEqual(first.stdout.splitlines(), [str(workspace), "--provider", "sbx-openai",
+                                                        "--model", "gpt-6.1-sol"])
             preferences = json.loads((profile / "settings.json").read_text())
             self.assertEqual(preferences["defaultThinkingLevel"], "high")
             self.assertEqual(preferences["theme"], "dark")
@@ -107,6 +111,7 @@ class PiLauncherTests(unittest.TestCase):
             env["YALLMO_PI_MODEL"] = "gpt-6-sol"
             second = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
             self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(second.stdout.splitlines()[0], str(workspace))
             preferences = json.loads((profile / "settings.json").read_text())
             self.assertEqual(preferences["theme"], "light")
             self.assertEqual(preferences["defaultProvider"], "sbx-openai")

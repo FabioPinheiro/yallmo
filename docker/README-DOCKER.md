@@ -86,7 +86,7 @@ Development adds current Node/npm, Pi, sbt and Scala CLI. Both images include Py
 externally managed. There is no SSH server. Prefer Sandbox's built-in SSH integration later.
 
 For a **Compose-like environment file with a persistent workspace**, see
-[`yallmo-sandbox-sbx-example/`](yallmo-sandbox-sbx-example/README.md). Its local Pi kit declares host-managed OpenAI OAuth and seeds
+[`yallmo-sandbox-sbx-example/`](yallmo-sandbox-sbx-example/README-SBX-SANDBOX.md). Its local Pi kit declares host-managed OpenAI OAuth and seeds
 only a public proxy sentinel in the Sandbox's `auth.json`. A custom Responses provider avoids Pi's built-in JWT path.
 **Never copy/mount a real host `auth.json`. Live proxy/ChatGPT validation is still pending; offline SDK tests pass.**
 No rebuild of `fmgp/yallmo:dev` is required for this config: `sbx` builds its small local wrapper kit automatically.

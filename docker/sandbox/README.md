@@ -12,6 +12,6 @@ The kit requests no provider credentials. Installing Pi here does not authentica
 `USER agent` selects the image's non-root UID 1000; `fmgp` is the Docker Hub owner, not a container user.
 
 For a Compose-like Sandbox definition with a persistent workspace, see
-**[`../yallmo-sandbox-sbx-example/`](../yallmo-sandbox-sbx-example/README.md)**. It uses `sbx env` and its own local Pi kit, not this shell kit.
+**[`../yallmo-sandbox-sbx-example/`](../yallmo-sandbox-sbx-example/README-SBX-SANDBOX.md)**. It uses `sbx env` and its own local Pi kit, not this shell kit.
 That example seeds only a public proxy sentinel in its Sandbox auth.json; real tokens remain host-managed.
 Its Pi SDK wire tests pass; live Docker host-proxy validation is pending. Never copy/mount a real host auth.json.

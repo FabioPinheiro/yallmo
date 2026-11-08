@@ -1,0 +1,2 @@
+# Local Python validation output only; deployment files remain tracked.
+__pycache__/

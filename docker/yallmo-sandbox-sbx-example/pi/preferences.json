@@ -1,0 +1,11 @@
+{
+  "defaultModel": "gpt-6.1-sol",
+  "defaultThinkingLevel": "high",
+  "theme": "dark",
+  "hideThinkingBlock": false,
+  "packages": [
+    "npm:pi-subagents",
+    "npm:pi-opensrc",
+    "npm:pi-ssh-remote"
+  ]
+}

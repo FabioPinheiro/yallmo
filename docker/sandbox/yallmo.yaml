@@ -1,0 +1,31 @@
+# syntax=docker/sandbox-kit:3
+# Experimental shell workload only. No credentials are requested or injected.
+# ChatGPT subscription proxy auth is BLOCKED: Pi and Yallmo require JWT account metadata.
+schemaVersion: "3"
+kind: workload
+displayName: Yallmo development shell
+dockerfile: ./yallmo.dockerfile
+args:
+  image:
+    # Publish your development image first; the Sandbox daemon cannot use host-local Docker images.
+    default: docker.io/fmgp/yallmo:dev
+    buildArg: YALLMO_IMAGE
+capabilities:
+  - type: com.docker.sandbox/sbx@1
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        # Development downloads only; provider/auth hosts deliberately absent until an adapter is tested.
+        # Tighten this list for your workspace. GitHub access permits reading arbitrary public repositories.
+        allow:
+          - github.com:443
+          - api.github.com:443
+          - raw.githubusercontent.com:443
+          - release-assets.githubusercontent.com:443
+          - repo.maven.apache.org:443
+          - repo1.maven.org:443
+          - repo.scala-sbt.org:443
+          - repo.scala-lang.org:443
+          - registry.npmjs.org:443
+          - pypi.org:443
+          - files.pythonhosted.org:443

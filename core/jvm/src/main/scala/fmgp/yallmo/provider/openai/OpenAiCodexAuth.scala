@@ -34,7 +34,15 @@ object OpenAiCodexAuth {
   /** Uses only the supplied HTTP client; no credential store is constructed or consulted. */
   def oauthFlow(client: Client): OAuthFlow = new OAuthFlowLive(client)
 
-  /** Obtains current credentials, refreshing expired tokens before returning them. */
+  /** Public Docker Sandbox placeholders, never actual OAuth credentials. Both must match to select proxy mode. */
+  val ProxyAccessToken = "oai-oat01-proxy-managed"
+  val ProxyRefreshToken = "oai-ort01-proxy-managed"
+
+  /** The host proxy owns refresh/account metadata in this mode; a lone marker is not sufficient. */
+  def isProxyManaged(credentials: OAuthCredentialsConfig): Boolean =
+    credentials.accessToken == ProxyAccessToken && credentials.refreshToken == ProxyRefreshToken
+
+  /** Obtains current credentials. Ordinary OAuth refreshes locally; exact Sandbox placeholders never do. */
   trait CredentialAccess {
     def validCredentials: Task[OAuthCredentialsConfig]
   }
@@ -87,7 +95,10 @@ object OpenAiCodexAuth {
       credentials <- load
       now <- Clock.currentTime(TimeUnit.MILLISECONDS)
       refreshed <-
-        if credentials.expiresAtMillis > now + RefreshSkew.toMillis then ZIO.succeed(credentials)
+        if isProxyManaged(credentials) then ZIO.succeed(credentials)
+        else if credentials.accessToken == ProxyAccessToken || credentials.refreshToken == ProxyRefreshToken then
+          ZIO.fail(YallmoError.AuthenticationFailure("Invalid Sandbox proxy credential placeholders"))
+        else if credentials.expiresAtMillis > now + RefreshSkew.toMillis then ZIO.succeed(credentials)
         else
           formRequest(
             client,

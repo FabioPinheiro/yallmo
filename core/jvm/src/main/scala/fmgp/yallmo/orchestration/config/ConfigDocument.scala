@@ -19,7 +19,8 @@ import scala.util.Try
 /** A validated file snapshot, including unknown fields and the original YAML comments/styles.
   *
   * Never log this document: both the tree and rendered text may contain credentials. Updating a YAML document retains
-  * comments on surviving nodes, key order and scalar styles; whitespace/indentation may be normalized.
+  * comments on surviving nodes, key order and scalar styles; whitespace/indentation may be normalized. `json` retains
+  * environment references for persistence; only the typed `config` contains their resolved values.
   */
 final class ConfigDocument private (
     val json: Json.Obj,
@@ -46,9 +47,11 @@ object ConfigDocument {
 
   /** YAML uses JSON-compatible scalars (true/false, null, finite JSON numbers, strings). Aliases, merge keys, custom
     * tags, duplicate/non-string keys and multiple documents are rejected, rather than silently changing their meaning.
-    * The resulting tree goes through the same Config decoder and reference validation as JSON.
+    * String values resolve explicit `${NAME}` references before typed decoding, using the server process environment by
+    * default. Missing names fail without exposing values; `$${NAME}` is literal. Keys and the raw tree are unchanged.
+    * The environment argument permits deterministic tests without mutating the process environment.
     */
-  def parse(path: Path, text: String): Either[YallmoError, ConfigDocument] =
+  def parse(path: Path, text: String, environment: Map[String, String] = sys.env): Either[YallmoError, ConfigDocument] =
     for {
       tree <- safely {
         if isYaml(path) then yamlTree(text)
@@ -58,7 +61,8 @@ object ConfigDocument {
         case value: Json.Obj if uniqueKeys(value) => Right(value)
         case _                                    => Left(error)
       }
-      config <- obj.toJson.fromJson[Config].left.map(_ => error)
+      resolved <- ConfigEnvironment.resolve(obj, environment)
+      config <- resolved.toJson.fromJson[Config].left.map(_ => error)
       _ <- ConfigFile.validate(config)
     } yield new ConfigDocument(obj, config, text, isYaml(path))
 

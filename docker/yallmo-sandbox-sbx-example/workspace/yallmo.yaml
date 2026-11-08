@@ -1,0 +1,42 @@
+# Sanitized snapshot of the selected project-root yallmo.yaml agents. NO saved credentials or expiry copied.
+# Public sentinel values come from sbxenv.yaml, not from the host token store.
+# expiresAtMillis=0 is intentional: the exact sentinel pair never refreshes locally; Docker owns real refresh.
+agents:
+  Transcriber:
+    agentType: OAIAgent
+    providerIds:
+    - docker-mr
+    capabilities:
+      tools: []
+      retrievers: []
+      skills: []
+      extensions: []
+    config:
+      model: ai/gemma4:E4B
+      systemPrompt: Transcribe the supplied audio exactly. Preserve the spoken language. Do not translate, summarize,
+        answer, or call tools. Return only the transcript.
+  Gemma:
+    agentType: OAIAgent
+    providerIds:
+    - docker-mr
+    config:
+      model: ai/gemma4:E4B
+      systemPrompt: You are Gemma, a concise assistant.
+  sol:
+    agentType: ChatGPTAgent
+    providerIds:
+    - chatgpt-1
+    config:
+      model: gpt-6.1-sol
+      systemPrompt: You are Sol, a concise assistant.
+      thinkingLevel: high
+providers:
+  docker-mr:
+    providerType: OAI
+    endpoint: http://host.docker.internal:12434/engines/v1
+  chatgpt-1:
+    providerType: ChatGPT
+    credentials:
+      accessToken: ${YALLMO_SBX_OPENAI_ACCESS_TOKEN}
+      refreshToken: ${YALLMO_SBX_OPENAI_REFRESH_TOKEN}
+      expiresAtMillis: 0

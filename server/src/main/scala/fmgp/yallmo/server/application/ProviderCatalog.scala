@@ -17,7 +17,8 @@ import scala.util.Try
   * Every operation reads the explicit file afresh. Writes are serialized within this service, not across factories or
   * processes: another writer racing between read and atomic replacement can still lose an update. Callers must
   * coordinate external writers. Existing files must be regular, non-symlink files in a trusted directory. Missing files
-  * are not initialized here; startup owns initialization. No environment, network or authentication is used.
+  * are not initialized here; startup owns initialization. Reads resolve explicit configuration environment references;
+  * writes retain untouched references rather than persisting their values. No network or authentication is used.
   */
 final class ProviderCatalog private (path: Path, lock: Semaphore) {
   import ProviderCatalog.*

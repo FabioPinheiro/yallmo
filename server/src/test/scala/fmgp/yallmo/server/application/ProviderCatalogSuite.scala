@@ -132,6 +132,37 @@ futureRoot: preserved # root note
     }
   }
 
+  test("catalog edits resolve environment references for reads but never persist their values") {
+    withFile { (jsonPath, _) =>
+      val path = jsonPath.resolveSibling("environment.yaml")
+      val yaml = """# Environment-backed profile
+providers:
+  account:
+    providerType: ChatGPT
+    credentials:
+      accessToken: "${PATH}"
+      refreshToken: "${HOME}"
+      expiresAtMillis: 123
+"""
+      Files.writeString(path, yaml, UTF_8)
+      val catalog = run(ProviderCatalog.make(path))
+      assertEquals(run(catalog.list).map(_.credentials), Vector(CredentialStatus.Configured))
+      run(catalog.add("new-account", Creation.ChatGPT))
+      run(catalog.updateChatGptCredentials(id("new-account"), OAuthCredentialsConfig("new-access", "new-refresh", 456)))
+      val saved = Files.readString(path, UTF_8)
+      assert(saved.contains("${PATH}"))
+      assert(saved.contains("${HOME}"))
+      assert(saved.contains("# Environment-backed profile"))
+      assert(!saved.contains(sys.env("PATH")))
+      assert(!saved.contains(sys.env("HOME")))
+      val parsed = ConfigDocument.parse(path, saved).toOption.get
+      assertEquals(
+        parsed.config.providers(id("account")),
+        ProviderConfig.ChatGPT(Some(OAuthCredentialsConfig(sys.env("PATH"), sys.env("HOME"), 123)))
+      )
+    }
+  }
+
   test("malformed YAML catalog cannot be updated and errors do not reveal values") {
     withFile { (jsonPath, _) =>
       val path = jsonPath.resolveSibling("synthetic.yml")

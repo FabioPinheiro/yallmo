@@ -207,7 +207,10 @@ final class RuntimeInstances[-R] private (
         )
       provider <- definition match {
         case ProviderConfig.OAI(endpoint) =>
-          ZIO.fromEither(OAIConfig.fromEndpoint(endpoint)).map(config => OAILlmProvider(client, config))
+          for {
+            config <- ZIO.fromEither(OAIConfig.fromEndpoint(endpoint))
+            outgoing <- ZIO.fromEither(fmgp.yallmo.provider.SandboxProviderHttpClient.configure(client, endpoint))
+          } yield OAILlmProvider(outgoing, config)
         case ProviderConfig.ChatGPT(credentials, endpoint) =>
           for {
             _ <- ZIO

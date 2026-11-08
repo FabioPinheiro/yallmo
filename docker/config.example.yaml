@@ -1,0 +1,19 @@
+# Secret-free starting point for NORMAL Docker, not proxy-managed Sandbox authentication.
+# Copy into the named /config volume, edit the model, then log in through the website's Providers panel.
+# Login writes actual OAuth credentials into /config/yallmo.yaml: protect this volume and its backups.
+agents:
+  assistant:
+    agentType: ChatGPTAgent
+    providerIds: [chatgpt]
+    filesystem:
+      root: /workspace
+    capabilities:
+      # Tools execute as UID 1000 inside the container. Do not mount sensitive host directories.
+      # scalamode is intentionally omitted until its offline compiler cache is provisioned/tested.
+      tools: [readFile, listFiles, bash]
+    config:
+      # Example only: choose a Codex model available to your ChatGPT subscription.
+      model: gpt-6.1-sol
+providers:
+  chatgpt:
+    providerType: ChatGPT

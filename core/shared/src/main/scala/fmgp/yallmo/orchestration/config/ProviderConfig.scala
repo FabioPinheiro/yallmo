@@ -25,7 +25,8 @@ object ProviderId {
 @jsonDiscriminator("providerType")
 sealed trait ProviderConfig derives JsonCodec
 
-/** Literal OAuth credentials stored in private configuration; no environment lookup is performed.
+/** Resolved OAuth credential values. This data model performs no environment lookup; the JVM file reader resolves
+  * explicit environment references before decoding it. Serializing this value includes credentials, not references.
   *
   * @param expiresAtMillis
   *   expiry as Unix milliseconds; expired values do not imply a usable authenticated profile

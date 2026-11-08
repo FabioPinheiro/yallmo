@@ -1,0 +1,88 @@
+name: Docker images
+
+on:
+  pull_request:
+    paths: ['docker/**', 'build.sbt', 'project/**', '**/src/**', 'web-harness/vite/**', 'browser-STT-TTS/**', '.github/workflows/docker.yml']
+  push:
+    branches: [main]
+    paths: ['docker/**', 'build.sbt', 'project/**', '**/src/**', 'web-harness/vite/**', 'browser-STT-TTS/**', '.github/workflows/docker.yml']
+  schedule:
+    - cron: '23 5 * * *' # Daily rebuilds pick up base, apt and tool security updates.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new security rebuild must not cancel another build midway through a manifest publication.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: ${{ matrix.target }} / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      # Explicit native combinations avoid emulation masking native-library failures.
+      matrix:
+        include:
+          - { target: runtime, arch: amd64, runner: ubuntu-latest }
+          - { target: development, arch: amd64, runner: ubuntu-latest }
+          - { target: runtime, arch: arm64, runner: ubuntu-24.04-arm }
+          - { target: development, arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      IMAGE: yallmo:${{ matrix.target }}
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != '' }}
+    steps:
+      # Actions follow maintained major tags; container bases and installed tools follow latest stable.
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Fast tests
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet --target "$RUNNER_TEMP/docker-test-deps" docker pyyaml
+          PYTHONPATH="$RUNNER_TEMP/docker-test-deps" python3 -m unittest discover -s docker -p 'test_*.py' -v
+          bash -n docker/entrypoint.sh docker/smoke.sh docker/publish.sh docker/yallmo-sandbox-sbx-example/pi/start.sh
+      - name: Build fresh native image
+        run: docker buildx build --pull --no-cache --load --file docker/Dockerfile --target '${{ matrix.target }}' --tag "$IMAGE" .
+      - name: Native image smoke tests
+        run: bash docker/smoke.sh "$IMAGE" '${{ matrix.target }}'
+      - name: Scan the final image, including installed application dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/yallmo-scan"
+          docker save --output "$RUNNER_TEMP/yallmo-scan/image.tar" "$IMAGE"
+          # A high/critical finding blocks publication; we do not silently ignore unfixed vulnerabilities.
+          # Expose only this archive directory, not the runner's other temporary files or Docker socket.
+          docker run --rm --mount "type=bind,src=$RUNNER_TEMP/yallmo-scan,dst=/scan,readonly" \
+            aquasec/trivy:latest image --input /scan/image.tar --exit-code 1 --severity HIGH,CRITICAL
+      - name: Docker Hub login (opt-in; never on a pull request)
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push exactly the native image that passed smoke tests and scanning
+        if: env.PUBLISH == 'true'
+        run: |
+          ref='${{ vars.DOCKERHUB_USERNAME }}/yallmo:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.arch }}'
+          docker tag "$IMAGE" "$ref"
+          docker push "$ref"
+
+  publish:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish multi-architecture tags only after every native test/scan passes
+        run: |
+          repo='${{ vars.DOCKERHUB_USERNAME }}/yallmo'
+          build='build-${{ github.run_id }}-${{ github.run_attempt }}'
+          docker buildx imagetools create --tag "$repo:latest" "$repo:$build-runtime-amd64" "$repo:$build-runtime-arm64"
+          docker buildx imagetools create --tag "$repo:dev" "$repo:$build-development-amd64" "$repo:$build-development-arm64"

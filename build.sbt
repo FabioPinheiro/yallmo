@@ -39,6 +39,9 @@ lazy val jvmSettings = Seq(
   ),
 )
 
+/** Stage packaged JVM applications and their complete runtime classpath; no sbt is needed to launch the image. */
+lazy val dockerStage = taskKey[File]("Stage server and REPL runtime JARs in target/docker/lib")
+
 lazy val root = project
   .in(file("."))
   .aggregate(
@@ -63,6 +66,26 @@ lazy val root = project
   .settings(
     name := "yallmo",
     publish / skip := true,
+    dockerStage / aggregate := false,
+    dockerStage := Def.taskDyn {
+      // Bundle first: otherwise the server JAR can be packaged before the generated website exists.
+      val _ = (server / bundle).value
+      Def.task {
+        Def.uncached {
+          val converter = fileConverter.value
+          val jars =
+            (repl / Runtime / fullClasspathAsJars).value.map(entry => converter.toPath(entry.data).toFile).distinct
+          val output = (LocalRootProject / baseDirectory).value / "target/docker"
+          IO.delete(output)
+          IO.createDirectory(output / "lib")
+          jars.zipWithIndex.foreach { case (jar, index) =>
+            // Prefixes avoid filename collisions between independently packaged modules/dependencies.
+            IO.copyFile(jar, output / "lib" / f"$index%04d-${jar.getName}")
+          }
+          output
+        }
+      }
+    }.value,
   )
 
 // /** Isolated capture-checking experiment; production modules must not depend on this nightly-compiled project yet. */
@@ -162,7 +185,9 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
       "dev.zio" %% "zio-http" % "3.11.6",
       "org.yaml" % "snakeyaml" % "2.4",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
-      "com.google.genai" % "google-genai" % "1.53.0",
+      // 1.53.0 pulled Jackson 2.17.2 with the reported DoS/deserialization CVEs; 1.80.0 uses fixed 2.18.11.
+      // Stay on the compatible 1.x SDK, retaining its aligned Jackson modules instead of forcing individual JARs.
+      "com.google.genai" % "google-genai" % "1.80.0",
     ),
     Compile / run / fork := true,
     Test / fork := true,

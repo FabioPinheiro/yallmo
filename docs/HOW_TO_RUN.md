@@ -44,7 +44,9 @@ and never overwrites another process's file; the filesystem must support hard li
 not rewritten. Configure agents/providers and restart the server before selecting an agent in the client.
 
 The repository-root `yallmo.json`, `yallmo.yaml` and `yallmo.yml` are gitignored. Keep other config paths private and excluded from version control too.
-The file may contain OAuth secrets: do not print or share it. Credential values are literal; `${NAME}` references are not resolved.
+The file may contain OAuth secrets: do not print or share it. String values may reference the server process environment
+with `${NAME}`; missing variables fail loading. `$${NAME}` is literal. Loading and unrelated catalog edits retain the
+references on disk, not their values. See [environment-reference rules](CONFIG_AGENT_PROVIDER.md#environment-references).
 
 `--user-name <id>` is required by the client and sent as claimed human ID `user-<id>`, not authentication.
 The server alone owns tools, providers and durable storage. Provider listing/login is available in the web harness

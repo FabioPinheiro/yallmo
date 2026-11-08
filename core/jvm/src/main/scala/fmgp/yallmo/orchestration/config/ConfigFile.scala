@@ -10,8 +10,9 @@ import java.nio.file.attribute.PosixFilePermissions
 
 /** Reads a single private JSON or YAML configuration file, initializing an empty catalog when it is missing.
   *
-  * No environment references are resolved and no runtime instances are constructed. Error messages never include file
-  * contents, decoder diagnostics or credentials. Existing files are never rewritten by loading.
+  * Explicit `${NAME}` references in string values resolve from the server process environment; no runtime instances are
+  * constructed. Error messages never include file contents, decoder diagnostics or environment values. Existing files
+  * are never rewritten by loading.
   */
 object ConfigFile {
 

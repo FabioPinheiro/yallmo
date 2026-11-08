@@ -2,6 +2,7 @@ package fmgp.yallmo.provider.openai
 
 import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
+import fmgp.yallmo.provider.SandboxProviderHttpClient
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.*
 import fmgp.yallmo.model.llm.*
@@ -55,8 +56,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
         ZIO.fromEither(options.validate.left.map(YallmoError.InvalidConfig.apply)) *>
           ZIO.fromEither(validateModel(model).left.map(YallmoError.InvalidConfig.apply)) *>
           auth.validCredentials.flatMap { credentials =>
-            ZIO
-              .fromEither(accountId(credentials.accessToken).left.map(YallmoError.AuthenticationFailure.apply))
+            requestAccountId(credentials)
               .flatMap { accountId =>
                 toolLoop(
                   credentials.accessToken,
@@ -80,7 +80,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
   @deprecated("Use Agent with NativeFunctionAgent so AgentRunner owns tool execution.", "0.2.0")
   private def toolLoop[R](
       accessToken: String,
-      accountId: String,
+      accountId: Option[String],
       history: ujson.Arr,
       tools: Chunk[LlmTool[R]],
       options: ProviderGenerateOptions,
@@ -116,7 +116,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
 
   private def call[R](
       accessToken: String,
-      accountId: String,
+      accountId: Option[String],
       history: ujson.Arr,
       tools: Chunk[LlmTool[R]],
       options: ProviderGenerateOptions,
@@ -130,19 +130,23 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
   private[openai] def complete(body: ujson.Obj): IO[YallmoError, OpenAiCodexResponse] =
     (for {
       credentials <- auth.validCredentials
-      account <- ZIO.fromEither(accountId(credentials.accessToken).left.map(YallmoError.AuthenticationFailure.apply))
+      account <- requestAccountId(credentials)
       response <- completeAuthenticated(credentials.accessToken, account, body)
     } yield response).mapError(YallmoError.fromThrowable)
 
+  /** Only the exact public sentinel pair bypasses JWT decoding; ordinary credentials retain account validation. */
+  private def requestAccountId(credentials: OAuthCredentialsConfig): IO[YallmoError, Option[String]] =
+    if OpenAiCodexAuth.isProxyManaged(credentials) then ZIO.none
+    else ZIO.fromEither(accountId(credentials.accessToken).left.map(YallmoError.AuthenticationFailure.apply)).asSome
+
   private def completeAuthenticated(
       accessToken: String,
-      accountId: String,
+      accountId: Option[String],
       body: ujson.Obj
   ): Task[OpenAiCodexResponse] = {
     val request = Request
       .post(CodexResponsesUrl, Body.fromString(ujson.write(body)))
       .addHeader("Authorization", s"Bearer $accessToken")
-      .addHeader("chatgpt-account-id", accountId)
       .addHeader("OpenAI-Beta", "responses=experimental")
       .addHeader("originator", "yallmo")
       .addHeader("User-Agent", "Yallmo")
@@ -150,7 +154,7 @@ final class OpenAiCodexClient private[openai] (client: Client, auth: OpenAiCodex
       .addHeader("Accept", "text/event-stream")
 
     Client
-      .batched(request)
+      .batched(accountId.fold(request)(value => request.addHeader("chatgpt-account-id", value)))
       .provideEnvironment(ZEnvironment(client))
       .flatMap { response =>
         response.body.asString.flatMap { body =>
@@ -174,11 +178,12 @@ object OpenAiCodexClient {
     * environment at construction. Credentials are checked/refreshed only when inference is requested; refreshed values
     * remain in memory.
     */
-  def make(credentials: Option[OAuthCredentialsConfig]): ZIO[Client, Nothing, OpenAiCodexClient] =
+  def make(credentials: Option[OAuthCredentialsConfig]): ZIO[Client, YallmoError, OpenAiCodexClient] =
     for {
       client <- ZIO.service[Client]
+      outgoing <- ZIO.fromEither(SandboxProviderHttpClient.configure(client, CodexResponsesUrl))
       access <- OpenAiCodexAuth.inMemory(credentials)
-    } yield new OpenAiCodexClient(client, access)
+    } yield new OpenAiCodexClient(outgoing, access)
 
   private[openai] def requestBody[R](
       history: ujson.Arr,

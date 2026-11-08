@@ -271,6 +271,99 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
     assertEquals(result.swap.toOption.map(_.getMessage), Some("OpenAI Codex authentication request timed out"))
   }
 
+  test("Sandbox sentinel credentials never refresh or decode JWTs for native-agent and provider inference") {
+    List(true, false).foreach { useAgent =>
+      run {
+        for {
+          requests <- Ref.make(0)
+          client = fakeClient(request =>
+            ZIO
+              .attempt {
+                assertEquals(request.url.toString, OpenAiCodexClient.CodexResponsesUrl)
+                assertEquals(request.headers.get("Authorization"), Some(s"Bearer ${OpenAiCodexAuth.ProxyAccessToken}"))
+                assertEquals(request.headers.get("chatgpt-account-id"), None)
+                Response.text(
+                  """data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Proxy reply"}]}]}}""" + "\n\n"
+                )
+              }
+              .tap(_ => requests.update(_ + 1))
+          )
+          provider <- OpenAiCodexClient
+            .make(
+              Some(OAuthCredentialsConfig(OpenAiCodexAuth.ProxyAccessToken, OpenAiCodexAuth.ProxyRefreshToken, 0))
+            )
+            .provideEnvironment(ZEnvironment(client))
+          _ <-
+            if useAgent then
+              new ChatGPTAgent(AgentId("proxy-agent"), provider)
+                .turn(
+                  AgentTurnRequest(
+                    "gpt-6.1-sol",
+                    Chunk(MessagePayload.User("Hello"), MessagePayload.Instructions("Be concise"))
+                  )
+                )
+                .map(turn => assertEquals(turn.output, Chunk(MessagePayload.Assistant("Proxy reply"))))
+            else
+              provider
+                .inferenceWithText("Hello", ProviderGenerateOptions(), Some("gpt-6.1-sol"))
+                .map(text => assertEquals(text, "Proxy reply"))
+          count <- requests.get
+        } yield assertEquals(count, 1) // one inference request, no OAuth token request
+      }
+    }
+  }
+
+  test("incomplete Sandbox sentinel pairs fail without refreshing or sending an HTTP request") {
+    List(
+      OAuthCredentialsConfig(OpenAiCodexAuth.ProxyAccessToken, "wrong-placeholder", 0),
+      OAuthCredentialsConfig("wrong-placeholder", OpenAiCodexAuth.ProxyRefreshToken, 0),
+      OAuthCredentialsConfig("not-a-jwt", "ordinary-refresh", Long.MaxValue)
+    ).foreach { credentials =>
+      val client = fakeClient(_ => ZIO.dieMessage("Unexpected HTTP request"))
+      val result = run {
+        for {
+          provider <- OpenAiCodexClient.make(Some(credentials)).provideEnvironment(ZEnvironment(client))
+          result <- provider.inferenceWithText("Hello", ProviderGenerateOptions(), Some("model")).either
+        } yield result
+      }
+      assert(result.isLeft)
+    }
+  }
+
+  test("Sandbox provider transport explicitly uses the forward proxy and PEM CA without affecting loopback RPC") {
+    val client = fakeClient(_ => ZIO.dieMessage("Unexpected HTTP request"))
+    val environment = Map(
+      "YALLMO_SBX_HTTP_PROXY" -> "true",
+      "HTTP_PROXY" -> "http://127.0.0.1:3128",
+      "HTTPS_PROXY" -> "http://127.0.0.1:3129",
+      "SSL_CERT_FILE" -> "/tmp/sandbox-ca.pem"
+    )
+    def configured(endpoint: String) =
+      fmgp.yallmo.provider.SandboxProviderHttpClient.configure(client, endpoint, environment).toOption.get
+    val https = configured(OpenAiCodexClient.CodexResponsesUrl)
+    assertEquals(https.proxy.map(_.url.port), Some(Some(3129)))
+    assertEquals(https.sslConfig, Some(ClientSSLConfig.FromCertFile("/tmp/sandbox-ca.pem")))
+    val localModel = configured("http://host.docker.internal:12434/engines/v1")
+    assertEquals(localModel.proxy.map(_.url.port), Some(Some(3128)))
+    assertEquals(localModel.sslConfig, client.sslConfig)
+    assertEquals(configured("http://127.0.0.1:8080/v1").proxy, client.proxy)
+    assertEquals(configured("http://localhost:8080/v1").proxy, client.proxy)
+  }
+
+  test("Sandbox provider transport is opt-in and invalid proxy configuration fails without leaking URL credentials") {
+    val client = fakeClient(_ => ZIO.dieMessage("Unexpected HTTP request"))
+    val configure = fmgp.yallmo.provider.SandboxProviderHttpClient.configure
+    assertEquals(configure(client, OpenAiCodexClient.CodexResponsesUrl, Map.empty), Right(client))
+    List(
+      Map("YALLMO_SBX_HTTP_PROXY" -> "true"),
+      Map("YALLMO_SBX_HTTP_PROXY" -> "true", "HTTPS_PROXY" -> "http://user:synthetic-private@proxy.invalid:3128")
+    ).foreach { environment =>
+      val result = configure(client, OpenAiCodexClient.CodexResponsesUrl, environment)
+      assert(result.isLeft)
+      assert(!result.left.toOption.get.getMessage.contains("synthetic-private"))
+    }
+  }
+
   private val inferenceCredentials = {
     val payload = java.util.Base64.getUrlEncoder
       .withoutPadding()

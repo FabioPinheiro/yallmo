@@ -57,6 +57,41 @@ format, unknown fields, comments on surviving YAML nodes, key order and scalar s
 Whitespace/indentation may be normalized on updates; byte-for-byte formatting preservation is not promised. The
 existing private atomic-write policy and per-catalog locking still apply; external writers must coordinate.
 
+### Environment references
+
+JSON and YAML string **values** may contain `${NAME}`, using names matching `[A-Za-z_][A-Za-z0-9_]*`.
+The server resolves only explicitly referenced variables from its own process environment, before typed decoding:
+
+```yaml
+providers:
+  local:
+    providerType: OAI
+    endpoint: "${YALLMO_PROVIDER_ENDPOINT}"
+agents:
+  assistant:
+    agentType: OAIAgent
+    providerIds: [local]
+    config:
+      model: "${YALLMO_MODEL}"
+      systemPrompt: "Work in ${WORKSPACE_LABEL}."
+```
+
+- References work in nested strings, lists, multiline prompts and credential strings such as `accessToken`.
+- Missing variables fail loading with the variable **name**, never its value or surrounding configuration.
+- `$${NAME}` produces literal `${NAME}`; `$NAME` is unchanged. There is no shell evaluation, default-value syntax,
+  recursive expansion, or substitution of mapping keys. An explicitly empty environment value stays an empty string.
+- Substitution inserts string data, then the existing typed decoder runs. Numeric text is accepted for
+  `browserAudioPort` and `expiresAtMillis`; invalid types/ranges still fail with sanitized errors.
+- Loading never rewrites the file. Migration and unrelated provider edits preserve raw references and YAML comments;
+  they do not serialize resolved environment values. Explicit login still replaces the selected profile's credentials.
+- References are resolved at startup/catalog reads, not continuously in an already-created runtime snapshot.
+
+For Docker Sandbox, reference the exact variable your **kit supplies**. A host-side `sbx secret set` does not by itself
+export arbitrary OAuth variables into the workload. Do not expose real OAuth tokens inside the sandbox to make this
+example work. Environment substitution does **not** solve ChatGPT JWT-account parsing or establish proxy-managed
+authentication; that integration remains separate. Resolved `Config` values still contain credentials: never log or
+serialize them as a substitute for raw-document edits.
+
 ### Explicit JSON → YAML migration
 
 Stop other config writers, then run this offline command from the repository root:
@@ -81,7 +116,7 @@ The output still contains any literal credentials from the source: do not log, s
 - `RuntimeInstances.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.
 - `RuntimeInstances.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
 - `OrchestratorLive` delegates resolution to the registry. Its only factories are `inMemory(instances)` and `filesystem(root, instances)`; callers must construct `RuntimeInstances` explicitly. Already-created agents go through `RuntimeInstances.fromAgents(agents)` first.
-- Lookups do not contact providers or authenticate. ChatGPT profiles use independent literal credentials; refresh is deferred until inference, shared by agents using the same connection, and retained **only in memory**.
+- Lookups do not contact providers or authenticate. ChatGPT profiles use independent resolved credentials (literal or explicitly environment-referenced); refresh is deferred until inference, shared by agents using the same connection, and retained **only in memory**.
 - A registry uses a fixed configuration snapshot except for explicit `updateChatGptCredentials`: it publishes a fresh
   provider connection and invalidates only that provider's configured dependent agents. Rooted filesystem capabilities
   are retained across rebinding. Existing callers keep the old connection; future lookups share the new generation.
@@ -215,8 +250,8 @@ renders provider menus and runs `ProviderLoginService` in-process against this c
 not change the runtime snapshot; restart after saving. Listing does not contact
 providers or test credentials. Cancellation and failures before save leave credentials untouched.
 
-Credentials are literal private values; no environment substitution or global credential store exists. Keep the
-server file gitignored and owner-readable/writable, never share its contents. Login edits only the selected ChatGPT
+Credentials may be literal private values or explicit `${NAME}` string references; no global credential store exists.
+Keep the server file gitignored and owner-readable/writable, never share its contents. Login edits only the selected ChatGPT
 profile and preserves unrelated/unknown fields. Refreshed rotating tokens remain only in cached connection memory;
 durable refresh write-back and cross-process coordination remain deferred.
 

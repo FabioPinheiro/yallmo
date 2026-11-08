@@ -171,6 +171,29 @@ providers:
     }
   }
 
+  test("explicit migration preserves environment references instead of persisting resolved values") {
+    withDirectory { root =>
+      val source = root.resolve("source.json")
+      val destination = root.resolve("target.yaml")
+      val text = """{"agents":{"assistant":{"agentType":"OAIAgent","config":{"systemPrompt":"${PATH}"}}}}"""
+      Files.writeString(source, text)
+      run(ConfigFile.migrateJsonToYaml(source, destination))
+      val yaml = Files.readString(destination)
+      assert(yaml.contains("${PATH}"))
+      assert(!yaml.contains(sys.env("PATH")))
+      assertEquals(Files.readString(source), text)
+      assertEquals(
+        run(ConfigFile.loadOrInitialize(destination))
+          .agents(AgentId("assistant"))
+          .config
+          .fields
+          .toMap
+          .apply("systemPrompt"),
+        Json.Str(sys.env("PATH"))
+      )
+    }
+  }
+
   test("migration does not initialize a missing source or publish invalid data or wrong extensions") {
     withDirectory { root =>
       val source = root.resolve("missing.json")

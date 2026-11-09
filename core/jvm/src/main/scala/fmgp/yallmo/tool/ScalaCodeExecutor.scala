@@ -56,8 +56,8 @@ trait ScalaCodeExecutor {
 }
 
 object ScalaCodeExecutor {
-  // Pin the verified compiler and use its local cache to avoid a nightly metadata lookup on every call.
-  val ScalaVersion: String = "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY"
+  // Pin the compiler to the main build's release; use its local cache without resolving a floating version.
+  val ScalaVersion: String = "3.10.0" // TODO let's make it configurable
   val live: ULayer[ScalaCodeExecutor] = layer()
 
   /** Executable, compiler version and offline mode are trusted host configuration, never tool arguments. */
@@ -98,8 +98,10 @@ object ScalaCodeExecutor {
         bootstrap: Option[(String, RpcToken)]
     ): Task[ExternalToolResult.ScalaMode] =
       (ZIO
-        .fail(new IllegalArgumentException("Offline mode requires a full nightly version"))
-        .when(offline && !scalaVersion.endsWith("-NIGHTLY")) *>
+        .fail(new IllegalArgumentException("Offline mode requires an exact Scala release or full nightly version"))
+        .when(
+          offline && !scalaVersion.matches("""\d+\.\d+\.\d+(?:-(?:RC\d+|M\d+))?(?:-bin-\d{8}-[0-9a-f]+-NIGHTLY)?""")
+        ) *>
         ZIO.fromEither(ScalaTool.validate(code).left.map(new IllegalArgumentException(_))) *>
         ZIO
           .scoped {
@@ -241,7 +243,12 @@ object ScalaCodeExecutor {
             )
           captured <- output.join
           logs <- diagnostics.join
-          _ <- ZIO.logInfo(s"Scala process finished exitCode=${process.exitValue()} timedOut=${!completed}")
+          status = s"Scala process finished stage=${command.lift(1).getOrElse("unknown")} " +
+            s"exitCode=${process.exitValue()} timedOut=${!completed} " +
+            s"stdoutBytes=${captured._1.getBytes(UTF_8).length} stderrBytes=${logs._1.getBytes(UTF_8).length} " +
+            s"truncated=${captured._2 || logs._2}"
+          // Diagnostics can contain submitted source or runtime secrets; return them to the caller, not host logs.
+          _ <- if process.exitValue() != 0 || !completed then ZIO.logWarning(status) else ZIO.logInfo(status)
         } yield CommandOutput(
           process.exitValue(),
           !completed,
@@ -276,7 +283,10 @@ object ScalaCodeExecutor {
       else if command.exitCode != 0 && !compiled then
         ScalaModeResult.CompilationError(
           if diagnostics.nonEmpty then diagnostics
-          else s"Scala compiler/launch stage failed (exit ${command.exitCode})."
+          else
+            s"Scala compiler/launch stage failed (exit ${command.exitCode}). No stdout/stderr was captured. " +
+              "Check the Scala CLI launcher and, in offline mode, provision the pinned compiler and dependencies " +
+              "in the service user's Scala CLI/Coursier cache."
         )
       else if failed then
         ScalaModeResult.Executed(
@@ -338,7 +348,7 @@ object ScalaCodeExecutor {
       dependencies: Seq[String],
       classpath: String
   ): Seq[String] = Seq(
-    "--quiet",
+    // --quiet also hides dependency-resolution failures (including offline cache misses), not just progress.
     "--scala",
     scalaVersion,
     "--jvm",

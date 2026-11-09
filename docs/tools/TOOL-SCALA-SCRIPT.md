@@ -110,11 +110,11 @@ for {
 The default mode now executes a returned `ZIO[Any, E, A]` and returns its success value (`2\n` above), while ordinary values still work unchanged. The snippet result type is inferred so the trusted runner selects a typed evaluation overload; there are no runtime type tests or casts to recover effects from `Any`. Typed failures, defects and finalizers are handled by ZIOApp. No runtime, environment service lookup or ambient I/O constructors are exposed. Existing restrictions on automatic `CanFail` materialization still apply.
 
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
-- Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.2-RC1-bin-20261021-a98b104-NIGHTLY` compiler with `--offline --jvm system --server=false --quiet`. Quiet mode suppresses CLI housekeeping notices, not compiler diagnostics. The main project's Scala version is unchanged. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
+- Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.0` compiler with `--offline --jvm system --server=false`. Do not add `--quiet`: it also suppresses Scala CLI dependency-resolution errors, so an offline cache miss can otherwise return exit 1 with no diagnostics. This matches the main project's Scala version. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
 - Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. The compiled `scalacode-api` module and host-configured dependencies are supplied, not the application classpath. The separate trusted `Main.scala` extends `ZIOAppDefault`: `run` evaluates the snippet and prints its returned value with `Console.printLine`. `bootstrap` replaces default loggers with a scoped JSON file logger. No handwritten unsafe runtime launch or global stdout redirection is used. Safe mode remains scoped to `Snippet.scala`, not the trusted runner; model-supplied directives are still rejected.
 - No user-supplied dependencies, directives, annotations, Unicode source escapes, backticks or compiler safety overrides. The small validator intentionally also rejects these inside strings/comments; it is not a Scala parser or an API blacklist.
 - Defaults: 45-second process deadline (including compilation), 128 MiB evaluation heap, 64 KiB shared retention budget for the result and logs, 65,536 source characters. Output beyond the cap is drained and discarded, not written to an unbounded log. Timeout/cancellation kills the process tree; temporary source/build files are removed.
-- The tool deadline is shorter than the default two-minute agent budget so a stalled compiler can return diagnostics to the model before the whole turn is cancelled. Start/finish logs report the selected compiler, offline mode and timeout status without logging submitted code.
+- The tool deadline is shorter than the default two-minute agent budget so a stalled compiler can return diagnostics to the model before the whole turn is cancelled. Start/finish logs report the selected compiler, offline mode, phase, exit/timeout status, retained stdout/stderr byte counts and truncation without logging submitted code. Nonzero exits/timeouts are warnings. Captured diagnostics are returned in the tool result, not copied to host logs, because they can contain submitted source or runtime secrets.
 - No persistent REPL or general tool bridge. The compiled API module and host-configured dependencies are on the classpath for every call, but user definitions do not persist.
 
 ### Runtime logging
@@ -145,11 +145,26 @@ new ScalaTool(dependencies = Seq.empty) // Only the mandatory ZIO/ZIO JSON runne
 A supplied sequence replaces the defaults. The trusted runner always adds `dev.zio::zio:2.1.27` and
 `dev.zio::zio-json:1.1.1`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
 
-### Pinned nightly / offline use
+### Pinned Scala release / offline use
 
 The compiler version is hard-coded in `ScalaCodeExecutor.ScalaVersion`, and offline mode is enabled by default. No environment variables are required; `YALLMO_SCALA_VERSION` and `YALLMO_SCALA_OFFLINE` are no longer read. Restart the REPL after rebuilding to pick up this change.
 
-This avoids `3.nightly` resolution, which contacts `repo.scala-lang.org` even when compiler jars are cached and can stall if the repository is unreachable. Missing cached artifacts now fail without waiting for a network download. Provision the pinned compiler in the Scala CLI/Coursier cache before running the tool on a new machine. Updating to a newer nightly is an explicit source change followed by safety tests.
+This avoids `3.nightly` resolution, which contacts `repo.scala-lang.org` even when compiler jars are cached and can stall if the repository is unreachable. Missing cached artifacts now fail without waiting for a network download. Provision the pinned compiler in the Scala CLI/Coursier cache before running the tool on a new machine. Updating the pinned compiler is an explicit source change followed by safety tests. Exact release versions and fully pinned nightlies are accepted by trusted executor configuration; floating versions are rejected in offline mode.
+
+If even `1 + 1` fails immediately, inspect the tool result for `Error downloading org.scala-lang:scala3-compiler_3` and `not found` cache paths. Scala CLI being installed (or `isAvailable` succeeding) does not mean the pinned compiler is cached. The Docker image currently does not provision this cache (see `docker/Dockerfile`). Warm it **as the service user, with the same cache environment** using a trusted source and without `--offline`, for example:
+
+```bash
+warmup=$(mktemp -d)
+printf 'object Warmup { val value = 1 + 1 }\n' > "$warmup/Warmup.scala"
+scala-cli compile "$warmup" \
+  --scala 3.10.0 \
+  --jvm system --server=false \
+  --dependency dev.zio::zio:2.1.27 \
+  --dependency dev.zio::zio-json:1.1.1
+rm -rf "$warmup"
+```
+
+Filesystem mode additionally needs the streams/HTTP dependencies listed below. A cache warmed as root or under a different `COURSIER_CACHE` is not necessarily available to the service. This provisioning step requires repository/network access; tool invocations remain offline.
 
 ### Safety review / inspiration
 
@@ -159,7 +174,7 @@ The default pure mode supplies a **fixed-message output helper and restricted ZI
 
 [Pi codemode](https://pi.dev) is inspiration for code-in/result-out and returning only the computation result to the agent. Its QuickJS sandbox lacks Node/filesystem/network APIs; ordinary Scala/JVM does not have that property. There is no general `tools` bridge: filesystem mode exports only `FsRead`.
 
-**Experimental compiler restrictions, not an OS/JVM sandbox. Do not expose this prototype as a hostile-code execution service.** Compiler defects or future nightly regressions can invalidate the restrictions. Compilation runs with the host user's privileges, can download artifacts and is not given a hard OS memory/CPU/disk quota; the evaluation heap cap is not a whole-process/container quota. Nightly compiler updates require rechecking the restrictions.
+**Experimental compiler restrictions, not an OS/JVM sandbox. Do not expose this prototype as a hostile-code execution service.** Compiler defects or future compiler regressions can invalidate the restrictions. Compilation runs with the host user's privileges, can download artifacts and is not given a hard OS memory/CPU/disk quota; the evaluation heap cap is not a whole-process/container quota. Compiler updates require rechecking the restrictions.
 
 ### Validation
 

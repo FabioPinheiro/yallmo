@@ -82,14 +82,30 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("offline mode rejects a floating nightly before starting the CLI") {
-    val result = run(
-      ZIO
-        .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 1.second, 1024))
-        .either
-        .provide(ScalaCodeExecutor.layer("must-not-start", scalaVersion = "3.nightly", offline = true))
-    )
-    assert(result.left.toOption.exists(_.getMessage.contains("full nightly version")))
+  test("offline mode rejects floating Scala versions before starting the CLI") {
+    for version <- List("3", "3.10", "3.nightly", "3.10.0-SNAPSHOT") do {
+      val result = run(
+        ZIO
+          .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 1.second, 1024))
+          .either
+          .provide(ScalaCodeExecutor.layer("must-not-start", scalaVersion = version, offline = true))
+      )
+      assert(result.left.toOption.exists(_.getMessage.contains("exact Scala release or full nightly version")))
+    }
+  }
+
+  test("offline mode accepts exact releases and fully pinned nightlies") {
+    withFakeCli("printf 5") { executable =>
+      for version <- List("3.10.0", "3.10.1-RC1", "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY") do {
+        val result = run(
+          ZIO
+            .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 10.seconds, 1024))
+            .provide(ScalaCodeExecutor.layer(executable.toString, scalaVersion = version, offline = true))
+        )
+        assertEquals(result.exitCode, 0)
+        assertEquals(result.output, "5")
+      }
+    }
   }
 
   test("compiler classpath contains only the compiled API module") {
@@ -111,6 +127,41 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       assert(dependencyIndex >= 0)
       assertEquals(arguments(dependencyIndex + 1), "dev.zio::zio:2.1.27")
       assertEquals(arguments.contains("--offline"), offline)
+    }
+  }
+
+  test("compile and run do not suppress Scala CLI dependency-resolution diagnostics") {
+    for arguments <- List(ScalaCodeExecutor.compileArguments(), ScalaCodeExecutor.arguments()) do {
+      assert(!arguments.contains("--quiet"))
+      assert(!arguments.contains("-q"))
+    }
+    // Scala CLI quiet mode suppresses its own resolution errors, unlike scalac's source diagnostics.
+    withFakeCli(
+      "exit 99",
+      compileBody = "for arg in \"$@\"; do [ \"$arg\" = --quiet ] && exit 1; done\n" +
+        "printf 'Error downloading org.scala-lang:scala3-compiler_3: pinned compiler not found in cache\\n' >&2\n" +
+        "exit 1"
+    ) { executable =>
+      val result = execute(executable)
+      assertEquals(result.exitCode, 1)
+      assertEquals(
+        result.result,
+        ScalaModeResult.CompilationError(
+          "Error downloading org.scala-lang:scala3-compiler_3: pinned compiler not found in cache"
+        )
+      )
+      assertEquals(result.executionTime, 0L)
+      assertEquals(result.logs, Seq.empty[String])
+    }
+  }
+
+  test("silent compilation failure explains missing output and offline provisioning") {
+    withFakeCli("exit 99", compileBody = "exit 1") { executable =>
+      val result = execute(executable)
+      assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
+      assert(result.output.contains("No stdout/stderr was captured"))
+      assert(result.output.contains("service user's Scala CLI/Coursier cache"))
+      assertEquals(result.exitCode, 1)
     }
   }
 
@@ -706,7 +757,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     |}
     |""".stripMargin
 
-  test("phase 1 nightly executes injected FsRead effects with no ambient environment") {
+  test("phase 1 pinned compiler executes injected FsRead effects with no ambient environment") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run filesystem feasibility")
     val result = evaluateFsSnippet(
       """for {
@@ -726,7 +777,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     )
   }
 
-  test("phase 1 nightly preserves pure expressions and API with the filesystem classpath") {
+  test("phase 1 pinned compiler preserves pure expressions and API with the filesystem classpath") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run filesystem feasibility")
     val result = evaluateFsSnippet(
       "fs.readUtf8(\"hello.txt\").map(_ => { api; tool.api; List(1, 2, 3).map(_ * 2).sum.toString })",
@@ -739,7 +790,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     )
   }
 
-  test("phase 1 nightly rejects authority expansion through the filesystem artifact and trusted main") {
+  test("phase 1 pinned compiler rejects authority expansion through the filesystem artifact and trusted main") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run filesystem feasibility")
     val forbidden = List(
       "open" -> "fmgp.yallmo.fs.FileSystem.open(\"/tmp\")",
@@ -769,7 +820,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("real CLI nightly resolution returns before the surrounding deadline") {
-    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler integration test")
     val result = run(
       new ScalaTool(timeout = 1.second)
         .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
@@ -780,7 +831,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     if typed.result.isInstanceOf[ScalaModeResult.TimedOut] then assert(typed.output.contains("deadline"))
   }
 
-  test("nightly returns E006 compilation diagnostics in the tool output") {
+  test("pinned compiler returns E006 compilation diagnostics in the tool output") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler diagnostics integration test")
     val result = run(
       new ScalaTool(timeout = 120.seconds)
@@ -797,7 +848,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assertEquals(typed.logs, Seq.empty[String])
   }
 
-  test("nightly syntax diagnostics hide the wrapper and point to the submitted EOF") {
+  test("pinned compiler syntax diagnostics hide the wrapper and point to the submitted EOF") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler diagnostics integration test")
     for code <- List("List(1, 2", "val n = 1\nif true then {\nn") do {
       val result = run(
@@ -815,7 +866,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("nightly provides the trusted runtime API on every fresh invocation") {
+  test("pinned compiler provides the trusted runtime API on every fresh invocation") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the runtime API integration test")
     for code <- List("api; tool.api; 42", "api") do {
       val result = run(
@@ -836,7 +887,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("nightly constructs and executes restricted ZIO effects") {
+  test("pinned compiler constructs and executes restricted ZIO effects") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the restricted ZIO integration test")
     for (code, expected) <- List(
         "ZIO.succeed(1 + 1)" -> "2",
@@ -865,7 +916,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assert(failed.output.contains("expected failure"), failed.output)
   }
 
-  test("nightly restricted ZIO callbacks cannot acquire ambient authority") {
+  test("pinned compiler restricted ZIO callbacks cannot acquire ambient authority") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the restricted ZIO integration test")
     for code <- List(
         "ZIO.succeed(java.lang.System.getenv())",
@@ -887,8 +938,8 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
-  test("nightly accepts pure code and rejects ambient JVM authority") {
-    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the nightly integration test")
+  test("pinned compiler accepts pure code and rejects ambient JVM authority") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler integration test")
     def evaluate(code: String, timeout: Duration = 120.seconds): ExternalToolResult.ScalaMode = run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, 16 * 1024))

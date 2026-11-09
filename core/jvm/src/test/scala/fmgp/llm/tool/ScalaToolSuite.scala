@@ -131,13 +131,13 @@ final class ScalaToolSuite extends FunSuite {
   }
 
   test(
-    "command runs isolated Scala source files with the verified nightly offline, no build server, and the safety flags"
+    "command runs isolated Scala source files with Scala 3.10.0 offline, no build server, and the safety flags"
   ) {
     val arguments = ScalaCodeExecutor.arguments()
     assertEquals(arguments.take(3), Seq("scala-cli", "run", "."))
     assertEquals(arguments(arguments.indexOf("--main-class") + 1), "ScalaToolMain")
-    assert(arguments.contains("--quiet"))
-    assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY")
+    assert(!arguments.contains("--quiet"), "Scala CLI must report dependency-resolution failures")
+    assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.0")
     assert(arguments.contains("--power") && arguments.contains("--offline"))
     assertEquals(arguments(arguments.indexOf("--jvm") + 1), "system")
     assert(arguments.contains("--server=false"))
@@ -155,6 +155,8 @@ final class ScalaToolSuite extends FunSuite {
     assert(ScalaTool.definition.description.contains("def api: Unit"))
     assert(ScalaTool.definition.description.contains("tool.api"))
     assert(ScalaTool.definition.description.contains("ZIO.succeed"))
+    assert(ScalaTool.definition.description.contains("Scala 3.10.0"))
+    assert(!ScalaTool.definition.description.contains("nightly"))
     assert(ScalaTool.definition.description.contains("effects are executed"))
     assert(ScalaCodeExecutor.snippet("ZIO.succeed(2)").contains("def result(using zio.Trace) ="))
     assert(!ScalaCodeExecutor.filesystemSnippet("ZIO.succeed(2)").contains("import zio.ZIO"))

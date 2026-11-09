@@ -61,6 +61,12 @@ Their reported dependency CVEs remain a kit concern: moving them out of the publ
 Yallmo image does not patch them. The publication scan covers Yallmo, not the derived kit.
 Live sandbox creation and host-proxy authentication still need host validation.
 
+The kit sets `PI_CLIPBOARD_OSC52=1` so Pi's `/copy` and Ctrl+X send text to the host
+terminal clipboard. This requires an OSC 52-capable terminal (such as Ghostty) with
+clipboard writes allowed; no `wl-clipboard` installation is needed. In an existing
+sandbox, run `export PI_CLIPBOARD_OSC52=1` before launching Pi to apply the workaround
+without recreating the sandbox.
+
 On the host, from the repository root:
 
 ```bash
@@ -74,7 +80,9 @@ sbx env run docker/yallmo-sandbox
 ```
 
 Host mount sources in `sbxenv.yaml` resolve relative to that file, not your shell's
-working directory. The kit declares three separate sandbox destinations:
+working directory. `workspace: ../..` shares the repository root at its host absolute
+path, for example `/Users/fabio/workspace/yallmo`. The kit also declares three fixed
+sandbox destinations:
 
 | Host directory (beside `sbxenv.yaml`) | Sandbox path | Purpose |
 | --- | --- | --- |
@@ -82,9 +90,17 @@ working directory. The kit declares three separate sandbox destinations:
 | `./yallmo-workspace` | `/home/agent/yallmo-workspace` | Yallmo's `server.sh`, `yallmo.yaml`, storage and logs |
 | `./pi` | `/home/agent/.pi` | Sandbox-specific Pi profile |
 
-Each directory is mounted once. There is no primary workspace mount mirroring
-your host's absolute path. The environment file and kit stay outside all mounts.
+Bash/Pi still start in `/home/agent/workspace`; use
+`cd /Users/fabio/workspace/yallmo` to work on the repository (adjust for your host path).
 `YALLMO_WORKSPACE` selects the service directory independently of the coding workspace.
+
+**The repository mount exposes the entire checkout**, including any `.env`, local
+credentials/data, and `docker/yallmo-sandbox/` (the kit and sandbox-specific Pi profile).
+Only enable this workspace for agents you trust with those files. Review changes to
+the environment file and kit before running host-side `sbx env` commands again.
+`writableEnvFiles` remains disabled; because this environment file is nested inside
+the checkout, do not rely on file-level read-only protection as a security boundary.
+For stronger isolation, keep the environment, kit and private data outside the checkout.
 
 If you run from `docker/yallmo-sandbox` instead, use `sbx env plan .` and
 `sbx env run .`.
@@ -94,7 +110,8 @@ The GitHub token stays on the host; `gh` and HTTPS Git use the sandbox proxy.
 Without that binding, `gh` is installed but unauthenticated. Recreate an existing
 sandbox to apply the new credential capability.
 
-Approve the host-managed OAuth request and the coding, Yallmo and private Pi mounts.
+Approve the host-managed OAuth request, repository workspace and fixed coding,
+Yallmo and private Pi mounts.
 Setup copies skills and sanitized model metadata into ignored `pi/agent/`, preserving existing files.
 Review copied content before use. **Never copy your real host `auth.json`, run Pi
 `/login` here, or put secrets in the workspace:** real ChatGPT tokens stay on the host.
@@ -160,7 +177,7 @@ move `server.sh`, `yallmo.yaml`, `storage/`, and any `logs/` or `debug/` into
 or leave a second copy of storage in use. Keep `hello.py` and coding projects in
 `workspace/`.
 
-Recreate the sandbox to apply the split mounts (this removes sandbox-local files;
+Recreate the sandbox to apply workspace/mount changes (this removes sandbox-local files;
 back up anything needed first). From the repository root:
 
 ```bash

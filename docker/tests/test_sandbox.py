@@ -222,6 +222,14 @@ class SandboxToolchainTests(unittest.TestCase):
                         validation.index("RUN metals --version"))
 
 
+class SandboxClipboardTests(unittest.TestCase):
+    def test_pi_clipboard_uses_host_terminal_osc52_in_kit_only(self):
+        base = (ROOT.parent / "Dockerfile").read_text()
+        kit = (ROOT / "kit/kit.dockerfile").read_text()
+        self.assertIn("    PI_CLIPBOARD_OSC52=1 \\\n", kit)
+        self.assertNotIn("PI_CLIPBOARD_OSC52", base)
+
+
 @unittest.skipUnless(yaml, "PyYAML required for sandbox declaration tests")
 class SandboxConfigurationTests(unittest.TestCase):
     def test_kit_provisions_node_and_npm_before_installing_pi(self):
@@ -274,11 +282,13 @@ class SandboxConfigurationTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", hook["env"])
         self.assertNotIn("GITHUB_TOKEN", hook["env"])
 
-    def test_workspace_is_mounted_once_at_a_stable_path_without_sharing_kit_or_pi(self):
+    def test_repository_workspace_and_fixed_kit_mounts_are_declared(self):
         environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
         kit = yaml.safe_load((ROOT / "kit/kit.yaml").read_text())
-        self.assertNotIn("workspace", environment)
+        self.assertEqual(environment["workspace"], "../..")
+        self.assertEqual((ROOT / environment["workspace"]).resolve(), ROOT.parents[1])
         self.assertNotIn("additionalWorkspaces", environment)
+        self.assertFalse(environment.get("sandboxOptions", {}).get("writableEnvFiles", False))
         self.assertEqual(environment["mounts"], {
             "/home/agent/workspace": "./workspace",
             "/home/agent/yallmo-workspace": "./yallmo-workspace",

@@ -53,11 +53,13 @@ RUN export HOME=/root XDG_CACHE_HOME=/root/.cache \
     && rm -rf /var/lib/apt/lists/* /var/cache/coursier/0
 COPY --chmod=755 start.sh /usr/local/bin/yallmo-sandbox-shell
 USER agent
+# Send Pi copies to the host terminal via OSC 52, even when SBX advertises Wayland.
 ENV HOME=/home/agent \
     XDG_CACHE_HOME=/home/agent/.cache \
     YALLMO_AUTOSTART=1 \
     YALLMO_WORKSPACE=/home/agent/yallmo-workspace \
     PI_CODING_AGENT_DIR=/home/agent/.pi/agent \
+    PI_CLIPBOARD_OSC52=1 \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \

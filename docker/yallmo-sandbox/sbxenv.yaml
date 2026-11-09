@@ -1,7 +1,11 @@
-# Keep this file and kit/ outside the shared workspace and private Pi directory.
+# The repository workspace also exposes this environment file, kit/ and local data.
+# Review host-side changes before applying this environment again.
 schemaVersion: "1"
 name: yallmo-sandbox
 agent: kit
+
+# Resolve the checkout root relative to this file; sbx preserves its host path.
+workspace: ../..
 
 kits:
   - source: ./kit
@@ -9,7 +13,7 @@ kits:
       image: docker.io/fmgp/yallmo:latest
 
 # Kit-declared mounts; host sources resolve relative to this file.
-# Share only the named subdirectories, never this directory (which contains kit/).
+# These fixed paths remain separate from the repository's host-path workspace.
 mounts:
   /home/agent/workspace: ./workspace
   /home/agent/yallmo-workspace: ./yallmo-workspace

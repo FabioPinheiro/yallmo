@@ -44,7 +44,7 @@ providers:
     val path = Iterator
       .iterate(Path.of("").toAbsolutePath)(_.getParent)
       .takeWhile(_ != null)
-      .map(_.resolve("docker/yallmo-sandbox-sbx-example/workspace/yallmo.yaml"))
+      .map(_.resolve("docker/yallmo-sandbox/yallmo-workspace/yallmo.yaml"))
       .find(Files.isRegularFile(_))
       .getOrElse(fail("Public Sandbox example config not found from the test working directory"))
     val env = Map(

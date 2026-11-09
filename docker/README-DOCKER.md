@@ -1,196 +1,217 @@
-# Yallmo in Docker — five-minute guide
+# Docker & Sandbox
 
-**First implementation:** packaged server + website, a development image, and an experimental
-Docker Sandbox shell and a Pi OAuth example. Five minutes to read; a clean Scala/frontend image build can take much longer.
-**Pi's sentinel-only OAuth kit is configured and offline-tested; live host-proxy validation is pending.**
-Yallmo's JVM host-only ChatGPT authentication remains unsupported. See the support table below.
+Run commands from the repository root unless noted. Requires Docker Engine/Desktop
+with Buildx; the sandbox also needs Docker Sandboxes (`sbx`).
 
-## Publish — quick reference
-
-From the repository root, with Docker Desktop running:
+## Start Yallmo
 
 ```bash
-brew install trivy              # once: install the vulnerability scanner
-docker login --username fmgp
-bash docker/publish.sh
-```
-
-The script builds, tests and scans both architectures before publishing `fmgp/yallmo:latest` and `:dev`.
-On Apple Silicon, amd64 normally uses slower emulation. No upload starts until every check passes.
-
-**GitHub Actions runs:** on relevant source/Docker changes in pull requests and pushes to `main`, daily at
-**05:23 UTC**, and manually from the Actions tab. Pull requests never publish; publishing requires `main`,
-`DOCKERHUB_PUBLISH=true`, the username variable and token secret described in section 5.
-
-## 1. Build and start
-
-Run from the repository root with Docker Engine/Desktop and Buildx available:
-
-```bash
-docker buildx build --pull --no-cache --load -f docker/Dockerfile --target runtime -t yallmo:latest .
+docker pull fmgp/yallmo:latest
 docker run -d --name yallmo -p 127.0.0.1:8080:8080 \
-  --mount type=volume,src=yallmo-data,dst=/data yallmo:latest
+  --mount type=volume,src=yallmo-data,dst=/data fmgp/yallmo:latest
 ```
 
-Open **http://127.0.0.1:8080**. This starts the website in **viewer-only mode**, without a provider or agent.
-Logs: `docker logs --tail 50 yallmo`. Stop/remove the container: `docker rm -f yallmo`.
-The named data volume survives removal. Never run two servers against the same data volume.
-
-**Security:** the application has no authentication. Anyone reaching it can claim a user and, when
-configured, run tools and manage provider credentials. Keep the port on host loopback; do not expose it
-publicly or assume a user name authenticates a client. Avoid publishing it to an untrusted LAN.
-
-## 2. ChatGPT subscription in ordinary Docker
-
-This is the existing application login flow, **not host-only credential isolation**.
-
-1. Edit the **secret-free** `docker/config.example.yaml` model to one available to your subscription
-   (or edit a private copy outside your mounted workspace).
-2. Seed a private configuration volume as the container's non-root user:
+Open **http://127.0.0.1:8080**. Without a provider configuration, this is viewer-only.
+For chat, see the [provider configuration guide](../docs/CONFIG_AGENT_PROVIDER.md);
+mount a private, writable config and pass `server --storage /data --config /config/yallmo.yaml`.
+Ordinary Docker login stores OAuth tokens in that config; it is not host-only isolation.
+Bind mounts must be accessible to UID **1000**.
 
 ```bash
-docker run --rm -i --mount type=volume,src=yallmo-config,dst=/config \
-  yallmo:latest bash -c 'umask 077; cat > /config/yallmo.yaml' < docker/config.example.yaml
+docker logs --tail 50 -f yallmo       # Follow logs
+docker stop yallmo                   # Stop
+docker start yallmo                  # Start again
+docker rm -f yallmo                  # Remove container; data volume survives
 ```
 
-Run that seed command only for a **new** configuration: repeating it overwrites saved credentials.
-Restart with the configured backend:
+**Keep port 8080 on loopback: Yallmo has no application authentication.** Never run
+two servers against the same storage. To update, pull again, remove the old container,
+and repeat the run command with the same volume.
+
+## Build locally
 
 ```bash
-docker rm -f yallmo
-docker run -d --name yallmo -p 127.0.0.1:8080:8080 \
-  --mount type=volume,src=yallmo-data,dst=/data \
-  --mount type=volume,src=yallmo-config,dst=/config \
-  yallmo:latest server --storage /data --config /config/yallmo.yaml --workspace /workspace
+docker buildx build --pull --load -f docker/Dockerfile --target runtime -t yallmo:local .
+docker run --rm -it yallmo:local bash  # Development shell
+bash docker/tests/smoke.sh yallmo:local
 ```
 
-In the website's **Providers** panel, log into `chatgpt`, then select `assistant` for chat.
-Follow the browser/callback instructions shown by the application; no provider login is done during image build.
-**OAuth tokens are saved in the configuration volume and visible to the container.** Protect it and its
-backups; never attach it to a Sandbox expecting host-only secrets. The full flow still needs container testing.
+To start your local build, use `yallmo:local` in the start command above.
+Add `--platform linux/amd64` or `--platform linux/arm64` to choose an architecture.
+The image includes the server, website, Node/npm, Python, Git, SSH client, sbt,
+Coursier, Scala CLI and its `scala` alias. Metals, Bloop and Pi are sandbox-kit-only;
+no SSH server is installed. The full Scala distribution/offline Maven repository is not bundled.
+Both `scala` and `scala-cli` default to Scala **3.10.0**, matching `build.sbt`;
+project directives and explicit `--scala` options still take precedence.
+Tool launchers keep Coursier and Scala CLI state private to each UID under
+`/var/cache/coursier/UID`, including Scala CLI's cache and config. Explicit
+`COURSIER_*`, `SCALA_CLI_HOME` and `SCALA_CLI_CONFIG` overrides are respected.
+With `docker run --user`, also use a working directory writable by that UID.
+Keep `docker/Dockerfile.dockerignore`: it excludes private runtime data from builds.
 
-The default `/workspace` is an empty container directory. To share files, add an explicit, narrow bind
-mount to `/workspace`; use `readonly` if tools should not modify them. Bind mounts must be accessible to
-UID **1000**. No automatic recursive chown is performed. Python/Bash tools execute with this user's authority.
+## Development sandbox (experimental)
 
-## 3. Development image and Sandbox
+The sandbox adds Bash, Metals, Bloop, Pi, `pi-subagents`, `pi-ssh-remote`, Playwright/MCP,
+`gh`, `vim` and `htop`. It uses the **published** `fmgp/yallmo:latest`, not your local build.
+The kit explicitly provisions Node/npm from the official `node:latest` image and
+refreshes npm before installing Pi and Playwright, so it also supports published
+Yallmo images that do not yet include Node/npm.
+Metals and Bloop use upstream Coursier installations, without forced dependency versions.
+Their reported dependency CVEs remain a kit concern: moving them out of the published
+Yallmo image does not patch them. The publication scan covers Yallmo, not the derived kit.
+Live sandbox creation and host-proxy authentication still need host validation.
 
-```bash
-docker buildx build --pull --no-cache --load -f docker/Dockerfile --target development -t yallmo:dev .
-docker run --rm -it yallmo:dev                    # Bash
-docker run --rm -it yallmo:dev pi                 # Pi; not automatically authenticated
-```
-
-Development adds current Node/npm, Pi, sbt and Scala CLI. Both images include Python 3 (`python` and
-`python3`), pip, venv, Bash, Git and an SSH **client**. Use a venv for pip packages; system Python is
-externally managed. There is no SSH server. Prefer Sandbox's built-in SSH integration later.
-
-For a **Compose-like environment file with a persistent workspace**, see
-[`yallmo-sandbox-sbx-example/`](yallmo-sandbox-sbx-example/README-SBX-SANDBOX.md). Its local Pi kit declares host-managed OpenAI OAuth and seeds
-only a public proxy sentinel in the Sandbox's `auth.json`. A custom Responses provider avoids Pi's built-in JWT path.
-**Never copy/mount a real host `auth.json`. Live proxy/ChatGPT validation is still pending; offline SDK tests pass.**
-No rebuild of `fmgp/yallmo:dev` is required for this config: `sbx` builds its small local wrapper kit automatically.
-
-The experimental v3 kit is in `docker/sandbox/`. It launches **Bash**, requests no credentials, and
-allows development download domains. Publish your `dev` image first (the Sandbox daemon cannot use a
-host-local Docker image). On a supported host with `sbx` installed and virtualization available:
+On the host, from the repository root:
 
 ```bash
+python3 docker/yallmo-sandbox/prepare.py # Optional: --source /path/to/pi/agent
 sbx login
-sbx run --name yallmo-dev ./docker/sandbox \
-  --kit-arg image=docker.io/fmgp/yallmo:dev
+sbx secret set openai --oauth       # Once per host
+sbx secret set github --command 'gh auth token' # Once per host but requires 'gh auth login'
+# sbx secret set github --sandbox yallmo-github # create the token and inserted here
+sbx env plan docker/yallmo-sandbox
+sbx env run docker/yallmo-sandbox
 ```
 
-Run this from a **clean workspace containing no secrets**: Sandbox mounts your current directory
-read-write. Do not mount `.env`, private Yallmo config, or Pi authentication files. The kit has **no provider
-network access or OAuth declaration**; do not log in inside it as a workaround for host-only credentials.
-Java proxy/CA integration remains untested; setting Node/Python PEM certificate variables does not configure
-Java's truststore. Never disable TLS verification.
+Host mount sources in `sbxenv.yaml` resolve relative to that file, not your shell's
+working directory. The kit declares three separate sandbox destinations:
 
-**Configuration environment references:** string values in `yallmo.yaml`/JSON can use `${NAME}`, including
-credential fields. The server reads the exact variable its process receives; `$${NAME}` is literal and missing
-variables fail clearly. References remain references on disk. For Sandbox, the kit must actually supply that variable:
-`sbx secret set` alone does not export arbitrary OAuth variables. This does **not** fix the JWT-parsing blocker or
-justify passing real tokens into the sandbox. See [reference syntax](../docs/CONFIG_AGENT_PROVIDER.md#environment-references).
+| Host directory (beside `sbxenv.yaml`) | Sandbox path | Purpose |
+| --- | --- | --- |
+| `./workspace` | `/home/agent/workspace` | `hello.py` and your coding projects; Bash, Pi and Playwright start here |
+| `./yallmo-workspace` | `/home/agent/yallmo-workspace` | Yallmo's `server.sh`, `yallmo.yaml`, storage and logs |
+| `./pi` | `/home/agent/.pi` | Sandbox-specific Pi profile |
 
-## 4. What is supported?
+Each directory is mounted once. There is no primary workspace mount mirroring
+your host's absolute path. The environment file and kit stay outside all mounts.
+`YALLMO_WORKSPACE` selects the service directory independently of the coding workspace.
 
-“Pending” means not verified, not a claim that the feature is broken.
+If you run from `docker/yallmo-sandbox` instead, use `sbx env plan .` and
+`sbx env run .`.
 
-| Feature | Initial status |
-|---|---|
-| Packaged JVM server + bundled website | Implemented; test staged JARs locally and images in CI |
-| Runtime and development images | Implemented; container execution pending in this agent environment |
-| Linux amd64 and arm64 | Native CI build/smoke/scan gates configured; not yet run |
-| Bash/Python/Git/SSH client | Included; native image smoke tests provided |
-| Pi, Node/npm, sbt, Scala CLI | Development image only; no automatic login |
-| ChatGPT subscription, ordinary Docker | Existing login path documented; tokens reside inside config volume; integration pending |
-| Pi ChatGPT subscription, host-only Sandbox OAuth | Sentinel/custom-provider kit configured; actual Pi SDK text/tool wire tests pass; live host-proxy check pending |
-| Yallmo ChatGPT subscription, host-only Sandbox OAuth | **Not supported yet**: the JVM adapter still parses JWT account metadata |
-| Yallmo REPL / JLine JNI in images | **Not supported until interactive/native tests pass**; launcher included |
-| Non-interactive/dumb-terminal REPL | **Not supported** by the application |
-| Local ONNX RAG | **Not supported initially**; dependency remains packaged, no model bundled |
-| `scalamode` | **Not supported initially**; requires prewarming its project-pinned offline compiler cache |
-| Sandbox development shell | Experimental scaffold; v3 build/runtime validation pending |
-| SSH server | Not installed; future opt-in feature |
+Uncomment the GitHub commands if needed; approve its credential request too.
+The GitHub token stays on the host; `gh` and HTTPS Git use the sandbox proxy.
+Without that binding, `gh` is installed but unauthenticated. Recreate an existing
+sandbox to apply the new credential capability.
 
-ONNX is used only by the local RAG embedding implementation/demo, not ordinary provider calls.
-Application/compiler versions are declared in `build.sbt`; security dependency updates and forced overrides have
-inline rationale there. OAuth validation is not weakened.
+Approve the host-managed OAuth request and the coding, Yallmo and private Pi mounts.
+Setup copies skills and sanitized model metadata into ignored `pi/agent/`, preserving existing files.
+Review copied content before use. **Never copy your real host `auth.json`, run Pi
+`/login` here, or put secrets in the workspace:** real ChatGPT tokens stay on the host.
 
-## 5. Security updates, tests and Docker Hub
-
-The rolling base is `eclipse-temurin:latest`, currently Ubuntu-based. It is **not** a Docker Hardened Image.
-The build updates apt packages and installs current stable developer tools. npm is refreshed separately with
-`npm@latest`: even `node:latest` can bundle an npm release with vulnerable dependencies. A future upstream JDK/OS change
-may break compatibility: tests must pass before publication. Ubuntu packages can contain backported security
-fixes even when their version looks older than upstream.
-
-The sbt/Scala CLI installer uses public GitHub release pages, not the rate-limited REST API, and verifies the
-published SHA-256 for each asset. No GitHub token is needed. Missing/changed release-page checksum metadata stops
-the build rather than silently installing an unchecked binary.
-
-`.github/workflows/docker.yml` rebuilds daily and on relevant changes, tests on **native amd64/arm64**,
-and blocks publication on high/critical Trivy findings, including unfixed ones. Old containers do not update
-themselves: pull the new image and recreate them. Update the host/Docker/Sandbox separately.
-
-### Local publishing notes
-
-Use `bash docker/publish.sh` (see the quick reference above). It builds the current working tree and reuses a dedicated
-builder; scan archives are removed, while local images and `build-*` platform tags remain for diagnostics. Tag updates
-are sequential, not atomic. An optional argument selects another Docker Hub repository. Login is separate; never pass
-a token as a script argument.
-
-### Automated GitHub publishing (optional)
-
-Before enabling Docker Hub publication, create the `yallmo` repository and configure GitHub:
-
-- Repository variable `DOCKERHUB_USERNAME`: `fmgp`.
-- Repository secret `DOCKERHUB_TOKEN`: a Docker Hub PAT with **Read & Write**, not Delete.
-- Repository variable `DOCKERHUB_PUBLISH`: `true` when ready. Leave unset for build/test/scan only.
-
-**Never paste tokens into chat or commit them.** CI publishes `fmgp/yallmo:latest` and `:dev` as
-multi-architecture tags only after all native tests and scans pass. Temporary `build-*` tags retain the exact
-tested images; manage their retention in Docker Hub. Existing dependency vulnerabilities may block publication.
-For local publication, use `docker/publish.sh` rather than manually pushing an untested single-architecture tag.
-
-Local checks:
+Bash opens normally; **Yallmo starts in the background, Pi stays manual**:
 
 ```bash
-# Optional SDK enables harmless build-context sentinel tests; no Docker daemon is needed for these.
-python3 -m pip install --target /tmp/yallmo-docker-tests docker
-export PYTHONPATH=/tmp/yallmo-docker-tests
-python3 -m unittest discover -s docker -p 'test_*.py' -v
-sbt --server -no-server 'dockerStage' # creates target/docker/lib; run npm ci in web-harness/vite first
-python3 -m unittest discover -s docker -p 'test_*.py' -v # also exercises the staged JVM server
-bash docker/smoke.sh yallmo:latest
-bash docker/smoke.sh yallmo:dev development
+pi
+# Alternative Pi provider; requires Docker Model Runner's host TCP API and model:
+pi --provider docker-mr --model ai/gemma4:E4B
+
+yallmo-service status               # Process state, local HTTP readiness and log paths
+yallmo-service stop                 # Graceful stop; leaves Bash/Pi running
+yallmo-service start                # Start again; waits for the local website
+yallmo-service restart
+yallmo-service logs                 # Last 100 lines of combined stdout/stderr
+yallmo-service logs --follow        # Live output; Ctrl-C stops following, NOT Yallmo
+yallmo-service logs --supervisor    # Manager diagnostics
 ```
 
-Implementation lives under **`docker/`**: Dockerfile, source-only build-context rules, launch/tool installers,
-configuration example, tests, smoke checks and the Sandbox kit. `build.sbt` contains the small distribution task;
-GitHub requires the scheduled workflow under `.github/workflows/`. The build context must be the repository root.
-The context excludes runtime/config/cache files; do not put secrets into source/resource directories.
+Open **http://127.0.0.1:8080**; stop any ordinary Docker container using that port first.
+Startup waits up to 30 seconds for the local website, not upstream model providers.
+Failures leave Bash available: inspect `status` and `logs`. Crashes are not automatically
+retried. Reconnecting Bash does not start another server or undo a manual stop.
+For foreground debugging, stop the managed service first, then run
+`bash /home/agent/yallmo-workspace/server.sh` inside the sandbox.
+Port conflicts fail normally; there is no extra storage lock or killing of port owners.
 
-**Current environment limitation:** Docker/Buildx/sbx clients are installed, but there is no Docker daemon/socket
-or `/dev/kvm` exposed here. Full image builds and local Sandbox authentication cannot be claimed as tested.
+If service logs report `exec: java: not found` but `java --version` works in Bash,
+the lifecycle environment is missing Temurin's Java directory. The shared `server.sh`
+restores `JAVA_HOME` (default `/opt/java/openjdk`) and prepends its `bin` to `PATH`
+inside the managed child; forwarding `PATH` alone is not sufficient. With the current
+host-mounted script, run `yallmo-service start` again—no sandbox rebuild is needed.
+Shell exports alone do not update an already-running manager's environment.
+
+**Logs live on the host too:** `docker/yallmo-sandbox/yallmo-workspace/logs/yallmo.log`
+contains stdout and stderr (10 MB rotation, three backups). `supervisor.log` contains
+manager events (5 MB, two backups). They survive restarts; treat logs as private.
+Service control sockets and PID files stay inside the sandbox, outside the shared directories.
+
+The kit keeps the sandbox/service running after you exit Bash. To pause the whole
+sandbox, run `sbx stop yallmo-sandbox` on the host. To disable boot autostart, set
+`YALLMO_AUTOSTART: "0"` in `sbxenv.yaml` before creating/recreating the sandbox;
+`yallmo-service start` still works manually. To inspect from another host terminal:
+
+From the repository root:
+
+```bash
+sbx env exec docker/yallmo-sandbox -- yallmo-service status
+sbx env exec docker/yallmo-sandbox -- yallmo-service logs --follow
+```
+
+`docker/yallmo-sandbox/pi/`, `workspace/` and `yallmo-workspace/` persist on the host
+and are writable by sandbox processes. Back them up; the original host Pi profile
+is not mounted or synced.
+
+### Upgrade an existing sandbox
+
+Kit/image/mount changes require a fresh sandbox. Stop the old sandbox before moving
+its service data. If your old checkout still has service files under `workspace/`,
+move `server.sh`, `yallmo.yaml`, `storage/`, and any `logs/` or `debug/` into
+`yallmo-workspace/`, preserving their contents. Do not overwrite an existing destination
+or leave a second copy of storage in use. Keep `hello.py` and coding projects in
+`workspace/`.
+
+Recreate the sandbox to apply the split mounts (this removes sandbox-local files;
+back up anything needed first). From the repository root:
+
+```bash
+sbx env rm docker/yallmo-sandbox
+sbx env plan docker/yallmo-sandbox
+sbx env run docker/yallmo-sandbox
+```
+
+The host-mounted `workspace/`, `yallmo-workspace/` and `pi/` directories remain on the host.
+
+## Publish to Docker Hub
+
+Requires Docker/Buildx, curl and Trivy. On macOS, install Trivy with
+`brew install trivy`. No additional registry CLI is needed. From the repository root:
+
+```bash
+docker login --username YOUR_DOCKERHUB_USER
+bash docker/publish.sh                          # Both architectures → fmgp/yallmo
+bash docker/publish.sh --arch x86_64             # amd64 only
+bash docker/publish.sh --arch aarch64            # arm64 only
+```
+
+The script builds, smoke-tests and scans every selected image before uploading.
+High/critical Trivy findings block publication. Selected images are pushed to
+`staging-amd64` / `staging-arm64`, replacing those tags rather than accumulating
+per-run upload tags. Each successful run creates one `build-ID` tag combining
+the images selected for that run. If only one architecture is selected, the
+build tag contains only that image; an older opposite-architecture staging image
+is never included.
+**Only a successful two-architecture run updates multi-architecture `latest`.**
+Single-architecture runs leave it unchanged. Emulated builds can be slow.
+
+Both local publishing and GitHub Actions reload the scanned archives before
+`docker push`. Final tags are assembled from immutable digests returned by those
+pushes, not by resolving the mutable staging tags again. A failed run can leave
+staging partially updated; use `latest` or a successful `build-ID` tag for deployment.
+The old `latest-amd64` / `latest-arm64` aliases are no longer updated.
+
+Build IDs currently differ by publisher:
+
+- Local: `build-YYYYMMDDHHMMSS-PID-RANDOM` (UTC build-start timestamp, process ID,
+  and Bash random number).
+- GitHub Actions: `build-RUN_ID-ATTEMPT` (GitHub workflow run ID and rerun attempt,
+  not a timestamp).
+
+`build-*` identifies an automated build, not a semantic release version.
+
+For GitHub Actions, select **Docker images → Run workflow**. It also runs weekly,
+Sunday at **05:23 UTC**, for both architectures. Publishing requires `main` and:
+
+- Variables: `DOCKERHUB_USERNAME`, `DOCKERHUB_PUBLISH=true`.
+- Secret: `DOCKERHUB_TOKEN` (Docker Hub PAT with Read & Write).
+
+Otherwise, the workflow only builds, tests and scans. Never commit tokens.

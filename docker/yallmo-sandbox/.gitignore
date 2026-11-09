@@ -1,0 +1,14 @@
+/pi/
+!/pi/agent/skills/*
+
+/workspace/*
+!/workspace/hello.py
+/yallmo-workspace/*
+!/yallmo-workspace/server.sh
+!/yallmo-workspace/yallmo.yaml
+!/yallmo-workspace/storage/
+/yallmo-workspace/storage/*
+!/yallmo-workspace/storage/.gitkeep
+/sbxenv.local.yaml
+/__pycache__/
+/kit/__pycache__/

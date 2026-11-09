@@ -1,88 +1,143 @@
 name: Docker images
 
 on:
-  pull_request:
-    paths: ['docker/**', 'build.sbt', 'project/**', '**/src/**', 'web-harness/vite/**', 'browser-STT-TTS/**', '.github/workflows/docker.yml']
-  push:
-    branches: [main]
-    paths: ['docker/**', 'build.sbt', 'project/**', '**/src/**', 'web-harness/vite/**', 'browser-STT-TTS/**', '.github/workflows/docker.yml']
   schedule:
-    - cron: '23 5 * * *' # Daily rebuilds pick up base, apt and tool security updates.
+    - cron: '23 5 * * 0' # Sunday 05:23 UTC: refresh base, apt and tool security updates.
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: Architecture to build/test/publish (single-arch runs leave multi-arch latest unchanged)
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - x86_64
+          - aarch64
 
 permissions:
   contents: read
 
-# A new security rebuild must not cancel another build midway through a manifest publication.
+# Do not interrupt an existing manifest publication, even when a different architecture is selected.
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      architectures: ${{ steps.select.outputs.architectures }}
+    steps:
+      - name: Select native runners
+        id: select
+        env:
+          # Scheduled runs have no inputs; rebuild both architectures.
+          REQUESTED_ARCH: ${{ inputs.architecture || 'both' }}
+        run: |
+          case "$REQUESTED_ARCH" in
+            both)
+              matrix='{"include":[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]}'
+              architectures='amd64 arm64'
+              ;;
+            x86_64)
+              matrix='{"include":[{"arch":"amd64","runner":"ubuntu-latest"}]}'
+              architectures='amd64'
+              ;;
+            aarch64)
+              matrix='{"include":[{"arch":"arm64","runner":"ubuntu-24.04-arm"}]}'
+              architectures='arm64'
+              ;;
+            *) printf 'Unsupported architecture selection.\n' >&2; exit 2 ;;
+          esac
+          printf 'matrix=%s\narchitectures=%s\n' "$matrix" "$architectures" >> "$GITHUB_OUTPUT"
+
   verify:
-    name: ${{ matrix.target }} / ${{ matrix.arch }}
+    needs: plan
+    name: latest / ${{ matrix.arch }}
     strategy:
       fail-fast: false
-      # Explicit native combinations avoid emulation masking native-library failures.
-      matrix:
-        include:
-          - { target: runtime, arch: amd64, runner: ubuntu-latest }
-          - { target: development, arch: amd64, runner: ubuntu-latest }
-          - { target: runtime, arch: arm64, runner: ubuntu-24.04-arm }
-          - { target: development, arch: arm64, runner: ubuntu-24.04-arm }
+      # Only the selected native runners are scheduled; no wasted opposite-architecture job.
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
-      IMAGE: yallmo:${{ matrix.target }}
-      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != '' }}
+      IMAGE: yallmo:latest
+      PUBLISH: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != '' }}
     steps:
-      # Actions follow maintained major tags; container bases and installed tools follow latest stable.
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - name: Fast tests
         run: |
-          python3 -m pip install --disable-pip-version-check --quiet --target "$RUNNER_TEMP/docker-test-deps" docker pyyaml
-          PYTHONPATH="$RUNNER_TEMP/docker-test-deps" python3 -m unittest discover -s docker -p 'test_*.py' -v
-          bash -n docker/entrypoint.sh docker/smoke.sh docker/publish.sh docker/yallmo-sandbox-sbx-example/pi/start.sh
+          python3 -m pip install --disable-pip-version-check --quiet --target "$RUNNER_TEMP/docker-test-deps" docker pyyaml supervisor
+          PATH="$RUNNER_TEMP/docker-test-deps/bin:$PATH" PYTHONPATH="$RUNNER_TEMP/docker-test-deps" python3 -m unittest discover -s docker/tests -p 'test_*.py' -v
+          bash -n docker/image/entrypoint.sh docker/image/coursier-env.sh docker/image/coursier-tool.sh docker/tests/smoke.sh docker/publish.sh docker/publishing/push-image.sh docker/publishing/publish-manifests.sh docker/yallmo-sandbox/kit/start.sh docker/yallmo-sandbox/yallmo-workspace/server.sh
       - name: Build fresh native image
-        run: docker buildx build --pull --no-cache --load --file docker/Dockerfile --target '${{ matrix.target }}' --tag "$IMAGE" .
+        run: docker buildx build --platform 'linux/${{ matrix.arch }}' --pull --no-cache --load --provenance=false --file docker/Dockerfile --target runtime --tag "$IMAGE" .
       - name: Native image smoke tests
-        run: bash docker/smoke.sh "$IMAGE" '${{ matrix.target }}'
+        run: bash docker/tests/smoke.sh "$IMAGE"
       - name: Scan the final image, including installed application dependencies
         run: |
           mkdir -p "$RUNNER_TEMP/yallmo-scan"
           docker save --output "$RUNNER_TEMP/yallmo-scan/image.tar" "$IMAGE"
-          # A high/critical finding blocks publication; we do not silently ignore unfixed vulnerabilities.
-          # Expose only this archive directory, not the runner's other temporary files or Docker socket.
+          # High/critical findings block publication, including unfixed vulnerabilities.
           docker run --rm --mount "type=bind,src=$RUNNER_TEMP/yallmo-scan,dst=/scan,readonly" \
             aquasec/trivy:latest image --input /scan/image.tar --exit-code 1 --severity HIGH,CRITICAL
-      - name: Docker Hub login (opt-in; never on a pull request)
+      - name: Docker Hub login (opt-in; manual or scheduled runs on main only)
         if: env.PUBLISH == 'true'
         uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Push exactly the native image that passed smoke tests and scanning
+      - name: Push the exact scanned image to its architecture staging tag
         if: env.PUBLISH == 'true'
+        env:
+          REPOSITORY: ${{ vars.DOCKERHUB_USERNAME }}/yallmo
+          ARCH: ${{ matrix.arch }}
         run: |
-          ref='${{ vars.DOCKERHUB_USERNAME }}/yallmo:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}-${{ matrix.arch }}'
-          docker tag "$IMAGE" "$ref"
-          docker push "$ref"
+          mkdir -p "$RUNNER_TEMP/yallmo-digests"
+          bash docker/publishing/push-image.sh "$RUNNER_TEMP/yallmo-scan/image.tar" \
+            "$IMAGE" "$REPOSITORY:staging-$ARCH" "$RUNNER_TEMP/yallmo-digests/$ARCH.txt"
+      - name: Share only the immutable digest with the publication job
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-${{ github.run_attempt }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/yallmo-digests/${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
-    needs: verify
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != ''
+    needs: [plan, verify]
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && vars.DOCKERHUB_PUBLISH == 'true' && vars.DOCKERHUB_USERNAME != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Publish multi-architecture tags only after every native test/scan passes
+      - name: Download the selected image digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: image-digest-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/yallmo-digests
+          merge-multiple: true
+      - name: Merge selected staging images into one build tag and update latest only for both
+        env:
+          REPOSITORY: ${{ vars.DOCKERHUB_USERNAME }}/yallmo
+          BUILD_TAG: build-${{ github.run_id }}-${{ github.run_attempt }}
+          ARCHITECTURES: ${{ needs.plan.outputs.architectures }}
         run: |
-          repo='${{ vars.DOCKERHUB_USERNAME }}/yallmo'
-          build='build-${{ github.run_id }}-${{ github.run_attempt }}'
-          docker buildx imagetools create --tag "$repo:latest" "$repo:$build-runtime-amd64" "$repo:$build-runtime-arm64"
-          docker buildx imagetools create --tag "$repo:dev" "$repo:$build-development-amd64" "$repo:$build-development-arm64"
+          read -r -a architectures <<< "$ARCHITECTURES"
+          images=()
+          for arch in "${architectures[@]}"; do
+            case "$arch" in amd64|arm64) ;; *) printf 'Invalid architecture.\n' >&2; exit 2 ;; esac
+            digest="$(< "$RUNNER_TEMP/yallmo-digests/$arch.txt")"
+            images+=("$arch=$digest")
+          done
+          bash docker/publishing/publish-manifests.sh "$REPOSITORY" "$BUILD_TAG" "${images[@]}"

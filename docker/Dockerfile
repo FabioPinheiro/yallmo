@@ -9,7 +9,7 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
        bash ca-certificates curl git jq libatomic1 openssh-client python3 python3-pip python3-venv \
-       ripgrep tini unzip xz-utils \
+       ripgrep tini unzip util-linux xz-utils \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 # Ubuntu may already reserve UID/GID 1000. Reuse that account, as required by Docker Sandbox.
@@ -41,9 +41,28 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 RUN export HOME=/root XDG_CACHE_HOME=/root/.cache \
     && npm install --global --ignore-scripts npm@latest \
     && npm cache clean --force
-COPY docker/install-tools.py /tmp/install-tools.py
-# Root installers must not create root-owned files inside the agent's HOME/cache.
-RUN HOME=/root XDG_CACHE_HOME=/root/.cache python3 /tmp/install-tools.py && rm /tmp/install-tools.py
+COPY docker/image/install-sbt.py docker/image/install-coursier.py /tmp/
+# Keep all image-built launchers and the public artifacts they reference outside /root.
+RUN HOME=/root XDG_CACHE_HOME=/root/.cache python3 /tmp/install-sbt.py \
+    && python3 /tmp/install-coursier.py \
+    && mkdir -p /usr/share/coursier/bin \
+    && HOME=/root XDG_CACHE_HOME=/usr/share/coursier/bootstrap/xdg \
+       COURSIER_CACHE=/usr/share/coursier/bootstrap/cache \
+       COURSIER_ARCHIVE_CACHE=/usr/share/coursier/bootstrap/arc \
+       COURSIER_JVM_CACHE=/usr/share/coursier/bootstrap/jvm \
+       /usr/share/coursier/cs install --dir /usr/share/coursier/bin --jvm system scala-cli \
+    # Use Scala CLI for scala too, without the Scala distribution's bundled offline repository. \
+    && ln -s scala-cli /usr/share/coursier/bin/scala \
+    && chmod -R a+rX,go-w /usr/share/coursier /opt/sbt \
+    && rm /tmp/install-sbt.py /tmp/install-coursier.py
+COPY --chmod=755 docker/image/coursier-env.sh docker/image/coursier-tool.sh /usr/local/libexec/
+# Never make shared executables/JARs writable by other users. Each UID gets private writable state.
+RUN install -d -m 1777 /var/cache/coursier \
+    && for tool in cs scala scala-cli sbt; do \
+         ln -sf /usr/local/libexec/coursier-tool.sh "/usr/local/bin/$tool"; \
+       done \
+    && printf '\nsource /usr/local/libexec/coursier-env.sh\n' >> /etc/bash.bashrc
+ENV BASH_ENV=/usr/local/libexec/coursier-env.sh
 
 FROM toolchain AS build
 WORKDIR /build
@@ -56,25 +75,14 @@ RUN test -w "$HOME" && test -w "$XDG_CACHE_HOME/coursier" \
     && npm --prefix web-harness/vite ci
 RUN sbt --server -no-server 'dockerStage'
 
-FROM toolchain AS development
+# One published image: application plus Scala CLI/sbt/Node. Metals, Bloop and Pi belong to the Sandbox kit.
+FROM toolchain AS runtime
 COPY --from=build /build/target/docker/lib /opt/yallmo/lib
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/yallmo
-# No Pi login/auth files are copied. npm and Pi intentionally follow current releases.
-RUN export HOME=/root XDG_CACHE_HOME=/root/.cache \
-    && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@latest \
-    && npm cache clean --force
+COPY --chmod=755 docker/image/entrypoint.sh /usr/local/bin/yallmo
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 USER agent
 WORKDIR /workspace
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/yallmo"]
-CMD ["bash"]
-
-# Default/final target: Python/Bash/Git/SSH client + JVM apps, without Node/Pi/sbt/Scala CLI.
-# Use development for Scala CLI; offline scalamode compiler-cache preparation is not implemented yet.
-FROM base AS runtime
-COPY --from=build /build/target/docker/lib /opt/yallmo/lib
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/yallmo
-USER agent
+# Offline scalamode also needs its pinned compiler/dependency cache; provisioning remains pending.
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/yallmo"]
 CMD ["server"]

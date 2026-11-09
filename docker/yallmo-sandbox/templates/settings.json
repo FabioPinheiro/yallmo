@@ -1,0 +1,12 @@
+{
+  "defaultProvider": "sbx-openai",
+  "defaultModel": "gpt-6.1-sol",
+  "defaultThinkingLevel": "high",
+  "theme": "dark",
+  "hideThinkingBlock": false,
+  "cacheWarming": "off",
+  "packages": [
+    "/opt/pi-extensions/node_modules/pi-subagents",
+    "/opt/pi-extensions/node_modules/pi-ssh-remote"
+  ]
+}

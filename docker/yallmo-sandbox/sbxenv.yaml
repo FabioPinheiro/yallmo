@@ -1,0 +1,33 @@
+# Keep this file and kit/ outside the shared workspace and private Pi directory.
+schemaVersion: "1"
+name: yallmo-sandbox
+agent: kit
+
+kits:
+  - source: ./kit
+    args:
+      image: docker.io/fmgp/yallmo:latest
+
+# Kit-declared mounts; host sources resolve relative to this file.
+# Share only the named subdirectories, never this directory (which contains kit/).
+mounts:
+  /home/agent/workspace: ./workspace
+  /home/agent/yallmo-workspace: ./yallmo-workspace
+  # A sandbox-specific copy, NOT the host's live ~/.pi.
+  /home/agent/.pi: ./pi
+
+env:
+  YALLMO_WORKSPACE: /home/agent/yallmo-workspace
+  YALLMO_AUTOSTART: "0" # Set to "0" to keep Bash/Pi but start the service manually.
+  YALLMO_SBX_OPENAI_ACCESS_TOKEN: oai-oat01-proxy-managed
+  YALLMO_SBX_OPENAI_REFRESH_TOKEN: oai-ort01-proxy-managed
+  YALLMO_SBX_HTTP_PROXY: "true"
+
+ports:
+  - sandbox: 8080
+    host: 8080
+    hostIP: 127.0.0.1
+
+sandboxOptions:
+  skills: off
+  pullPolicy: always

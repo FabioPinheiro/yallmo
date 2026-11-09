@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "playwright-mcp",
+      "args": ["--browser", "chromium", "--headless", "--isolated"],
+      "cwd": "/home/agent/workspace",
+      "exposure": "direct",
+      "description": "Playwright browser automation for the sandbox workspace."
+    }
+  }
+}

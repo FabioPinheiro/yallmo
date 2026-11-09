@@ -1,0 +1,109 @@
+# syntax=docker/sandbox-kit:3
+# Real OpenAI OAuth tokens stay on the host. Only a public sentinel is stored in Pi's auth.json.
+schemaVersion: "3"
+kind: workload
+displayName: Yallmo development Bash with Pi and host-managed OAuth
+dockerfile: ./kit.dockerfile
+args:
+  image:
+    default: docker.io/fmgp/yallmo:latest
+    buildArg: YALLMO_IMAGE
+capabilities:
+  - type: com.docker.sandbox/host-mount@1
+    config:
+      path: /home/agent/.pi
+      mode: "0700"
+  - type: com.docker.sandbox/host-mount@1
+    config:
+      path: /home/agent/workspace
+  - type: com.docker.sandbox/host-mount@1
+    config:
+      path: /home/agent/yallmo-workspace
+  - type: com.docker.sandbox/sbx@1
+  # Keep the background service alive when the last Bash/Pi session disconnects.
+  - type: com.docker.sandbox/long-running@1
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      startup:
+        - command: [yallmo-service, supervise]
+          user: agent
+          background: true
+          description: Run the Yallmo service manager independently of interactive Bash sessions
+          # Hook environments are deny-by-default. Forward only the needed sandbox runtime inputs.
+          env:
+            # Temurin's java lives under JAVA_HOME/bin, outside the default system PATH.
+            - PATH
+            - YALLMO_AUTOSTART
+            - YALLMO_WORKSPACE
+            - XDG_STATE_HOME
+            - XDG_CACHE_HOME
+            - BASH_ENV
+            - JAVA_HOME
+            - JAVA_TOOL_OPTIONS
+            - JDK_JAVA_OPTIONS
+            - GH_TOKEN
+            - COURSIER_CACHE
+            - COURSIER_ARCHIVE_CACHE
+            - COURSIER_JVM_CACHE
+            - COURSIER_BIN_DIR
+            - YALLMO_SBX_OPENAI_ACCESS_TOKEN
+            - YALLMO_SBX_OPENAI_REFRESH_TOKEN
+            - YALLMO_SBX_HTTP_PROXY
+            - HTTP_PROXY
+            - HTTPS_PROXY
+            - ALL_PROXY
+            - NO_PROXY
+            - http_proxy
+            - https_proxy
+            - all_proxy
+            - no_proxy
+            - SSL_CERT_FILE
+            - CURL_CA_BUNDLE
+            - REQUESTS_CA_BUNDLE
+            - NODE_EXTRA_CA_CERTS
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - chatgpt.com:443
+          - auth.openai.com:443
+          # host.docker.internal is translated to localhost by the Sandbox proxy.
+          # Only Model Runner's loopback TCP API is exposed, not the whole host network.
+          - localhost:12434
+          - pi.dev:443
+          - github.com:443
+          - api.github.com:443
+          - raw.githubusercontent.com:443
+          - release-assets.githubusercontent.com:443
+          - repo.maven.apache.org:443
+          - repo1.maven.org:443
+          - repo.scala-sbt.org:443
+          - repo.scala-lang.org:443
+          - registry.npmjs.org:443
+          - pypi.org:443
+          - files.pythonhosted.org:443
+  - type: com.docker.sandbox/credential@1
+    description: Host-managed ChatGPT subscription; no API-key fallback or token passthrough
+    config:
+      service: openai
+      phase: runtime
+      oauth:
+        tokenEndpoint: {host: auth.openai.com, path: /oauth/token}
+        resourceHosts: [chatgpt.com]
+        sentinels:
+          accessToken: oai-oat01-proxy-managed
+          refreshToken: oai-ort01-proxy-managed
+        # Explicit false: never return real OAuth tokens to the Sandbox.
+        passthrough: false
+  - type: com.docker.sandbox/credential@1
+    optional: true
+    description: Optional host-managed GitHub access for gh and HTTPS Git
+    config:
+      service: github
+      phase: runtime
+      apiKey:
+        name: GH_TOKEN
+        proxyManaged: true
+        inject:
+          - {domain: api.github.com, header: Authorization, format: "Bearer %s"}
+          - {domain: github.com, scheme: basic, username: x-access-token}

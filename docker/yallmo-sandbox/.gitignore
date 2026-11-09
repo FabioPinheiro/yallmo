@@ -1,5 +1,9 @@
-/pi/
-!/pi/agent/skills/*
+# Keep Pi credentials, sessions and runtime state private; version skills only.
+!/pi/
+/pi/*
+!/pi/agent/
+/pi/agent/*
+!/pi/agent/skills/
 
 /workspace/*
 !/workspace/hello.py

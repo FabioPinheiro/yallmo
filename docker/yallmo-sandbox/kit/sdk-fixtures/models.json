@@ -15,23 +15,23 @@
       "models": [
         {
           "id": "gpt-6.1-sol",
-          "name": "Sandbox ChatGPT",
+          "name": "GPT-6.1 Sol (Sandbox ChatGPT)",
           "reasoning": true,
           "thinkingLevelMap": {
-            "off": "low",
+            "off": null,
             "minimal": "low",
             "low": "low",
             "medium": "medium",
             "high": "high",
-            "xhigh": null,
-            "max": null
+            "xhigh": "xhigh",
+            "max": "max"
           },
           "input": [
             "text",
             "image"
           ],
-          "contextWindow": 128000,
-          "maxTokens": 16384,
+          "contextWindow": 500000,
+          "maxTokens": 128000,
           "cost": {
             "input": 0,
             "output": 0,

@@ -1,5 +1,4 @@
 """Bash-first sandbox setup tests. Only synthetic profiles; no host secrets or network."""
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -15,108 +14,127 @@ except ModuleNotFoundError:
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
-spec = importlib.util.spec_from_file_location("sandbox_prepare", ROOT / "prepare.py")
-prepare = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(prepare)
 
 
 class SandboxSetupTests(unittest.TestCase):
-    def test_copy_imports_skills_and_models_but_not_host_auth_or_credential_resolvers(self):
+    def run_prepare(self, destination, home, script=ROOT / "prepare.py"):
+        return subprocess.run([sys.executable, str(script), "--destination", str(destination)],
+                              env=dict(os.environ, HOME=str(home)), text=True, capture_output=True)
+
+    def test_fresh_profile_contains_only_local_templates_with_private_permissions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "host"
-            source.mkdir()
-            # Invalid JSON proves the host credential file is not read at all.
-            (source / "auth.json").write_text("synthetic-do-not-import")
-            (source / "settings.json").write_text("synthetic-do-not-import")
-            models = {"providers": {"example": {
-                "baseUrl": "https://example.com/v1", "api": "openai-completions",
-                "apiKey": "!do-not-execute", "headers": {"Authorization": "synthetic-do-not-import"},
-                "models": [{"id": "example", "headers": {"x-key": "synthetic-do-not-import"}}],
-            }}}
-            (source / "models.json").write_text(json.dumps(models))
-            (source / "models-store.json").write_text(json.dumps({"catalog": ["local-model"]}))
-            skill = source / "skills/test"
-            skill.mkdir(parents=True)
-            (skill / "SKILL.md").write_text("synthetic skill")
-            (source / "skills/linked").symlink_to(skill, target_is_directory=True)
             destination = root / "pi"
-            result = subprocess.run([sys.executable, str(ROOT / "prepare.py"),
-                                     "--source", str(source), "--destination", str(destination)],
-                                    text=True, capture_output=True)
+            result = self.run_prepare(destination, root / "missing-home")
             self.assertEqual(result.returncode, 0, result.stderr)
             profile = destination / "agent"
-            imported = json.loads((profile / "models.json").read_text())
-            self.assertEqual(set(imported["providers"]), {"example", "sbx-openai", "docker-mr"})
-            self.assertNotIn("apiKey", imported["providers"]["example"])
-            self.assertNotIn("headers", imported["providers"]["example"]["models"][0])
-            self.assertNotIn("do-not-execute", json.dumps(imported))
-            self.assertNotIn("synthetic-do-not-import", json.dumps(imported) + result.stdout + result.stderr)
-            self.assertEqual(json.loads((profile / "models-store.json").read_text()), {"catalog": ["local-model"]})
-            self.assertEqual((profile / "skills/linked/SKILL.md").read_text(), "synthetic skill")
-            self.assertFalse((profile / "skills/linked").is_symlink())
-            self.assertEqual((profile / "auth.json").stat().st_mode & 0o777, 0o600)
-            self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
-            settings = json.loads((profile / "settings.json").read_text())
-            self.assertEqual(settings["packages"], ["/opt/pi-extensions/node_modules/pi-subagents",
-                                                     "/opt/pi-extensions/node_modules/pi-ssh-remote"])
-            # Reruns preserve every existing file, even after changing the source.
-            (profile / "settings.json").write_text('{"theme":"light"}')
-            (profile / "mcp.json").write_text('{"mcpServers":{"custom":{"command":"synthetic"}}}')
-            before = {p.relative_to(profile): p.read_bytes() for p in profile.rglob("*") if p.is_file()}
-            (source / "models.json").write_text("invalid-source-not-reread")
-            second = subprocess.run([sys.executable, str(ROOT / "prepare.py"),
-                                      "--source", str(source), "--destination", str(destination)],
-                                     text=True, capture_output=True)
-            self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(before, {p.relative_to(profile): p.read_bytes() for p in profile.rglob("*") if p.is_file()})
-
-    def test_setup_supports_an_absent_host_profile_using_only_public_templates(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            result = subprocess.run([sys.executable, str(ROOT / "prepare.py"),
-                                     "--source", str(root / "missing"), "--destination", str(root / "pi")],
-                                    text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            profile = root / "pi/agent"
-            self.assertTrue((profile / "settings.json").is_file())
+            names = {"auth.json", "settings.json", "mcp.json", "models.json"}
+            self.assertEqual({p.name for p in profile.iterdir()}, names)
+            for name in names:
+                self.assertEqual(json.loads((profile / name).read_text()),
+                                 json.loads((ROOT / "templates" / name).read_text()))
+                self.assertEqual((profile / name).stat().st_mode & 0o777, 0o600)
+            for directory in (destination, profile):
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(set(json.loads((profile / "models.json").read_text())["providers"]),
+                             {"sbx-openai", "docker-mr"})
             mcp = json.loads((profile / "mcp.json").read_text())["mcpServers"]["playwright"]
             self.assertEqual(mcp["command"], "playwright-mcp")
             self.assertEqual(mcp["exposure"], "direct")
             self.assertEqual(mcp["cwd"], "/home/agent/workspace")
             self.assertEqual(mcp["args"], ["--browser", "chromium", "--headless", "--isolated"])
             self.assertNotIn("directTools", mcp)
-            self.assertEqual((profile / "mcp.json").stat().st_mode & 0o777, 0o600)
-            self.assertFalse((profile / "models-store.json").exists())
 
-    def test_import_rejects_endpoint_credentials_without_creating_output(self):
+    def test_host_profile_is_never_imported_or_required(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "source"
-            source.mkdir()
-            (source / "models.json").write_text(json.dumps({"providers": {"example": {
-                "baseUrl": "https://user:synthetic-secret@example.com/v1"}}}))
-            result = subprocess.run([sys.executable, str(ROOT / "prepare.py"), "--source", str(source),
-                                     "--destination", str(root / "pi")], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 1)
-            self.assertFalse((root / "pi").exists())
-            self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
+            home = root / "home"
+            host = home / ".pi/agent"
+            host.mkdir(parents=True)
+            # Invalid JSON and recognizable content must never be read or copied.
+            for name in ("auth.json", "settings.json", "mcp.json", "models.json", "models-store.json"):
+                (host / name).write_text("synthetic-do-not-import")
+            (host / "skills/test").mkdir(parents=True)
+            (host / "skills/test/SKILL.md").write_text("synthetic-do-not-import")
+            (host / "sessions").mkdir()
+            (host / "sessions/test.jsonl").write_text("synthetic-do-not-import")
+            before = {p.relative_to(host): p.read_bytes() for p in host.rglob("*") if p.is_file()}
+            result = self.run_prepare(root / "pi", home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = root / "pi/agent"
+            self.assertEqual({p.name for p in profile.iterdir()},
+                             {"auth.json", "settings.json", "mcp.json", "models.json"})
+            self.assertNotIn("synthetic-do-not-import", result.stdout + result.stderr +
+                             "".join(p.read_text() for p in profile.iterdir()))
+            self.assertEqual(before, {p.relative_to(host): p.read_bytes()
+                                      for p in host.rglob("*") if p.is_file()})
 
-    def test_existing_non_sentinel_auth_is_not_overwritten(self):
+    def test_rerun_preserves_direct_edits_and_unmanaged_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual(self.run_prepare(root / "pi", root / "home").returncode, 0)
+            profile = root / "pi/agent"
+            edits = {
+                "models.json": '{"providers":{"custom":{}}}\n',
+                "settings.json": '{"theme":"light"}\n',
+                "mcp.json": '{"mcpServers":{}}\n',
+                "models-store.json": '{"catalog":[]}\n',
+                "skills/custom/SKILL.md": "Local skill\n",
+                "sessions/test.jsonl": "Local session\n",
+            }
+            for name, content in edits.items():
+                path = profile / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            before = {p.relative_to(profile): p.read_bytes() for p in profile.rglob("*") if p.is_file()}
+            result = self.run_prepare(root / "pi", root / "home")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(before, {p.relative_to(profile): p.read_bytes()
+                                      for p in profile.rglob("*") if p.is_file()})
+
+    def test_incomplete_profile_gets_only_missing_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile = root / "pi/agent"
             profile.mkdir(parents=True)
-            auth = profile / "auth.json"
-            auth.write_text('{"other":{"type":"api_key","key":"synthetic-secret"}}')
-            before = auth.read_bytes()
-            result = subprocess.run([sys.executable, str(ROOT / "prepare.py"),
-                                     "--source", str(root / "source"), "--destination", str(root / "pi")],
-                                    text=True, capture_output=True)
-            self.assertEqual(result.returncode, 1)
-            self.assertEqual(auth.read_bytes(), before)
-            self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
-            self.assertFalse((profile / "settings.json").exists())
+            settings = profile / "settings.json"
+            settings.write_text('{"theme":"light"}\n')
+            before = settings.read_bytes()
+            result = self.run_prepare(root / "pi", root / "home")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(settings.read_bytes(), before)
+            for name in ("auth.json", "models.json", "mcp.json"):
+                self.assertEqual(json.loads((profile / name).read_text()),
+                                 json.loads((ROOT / "templates" / name).read_text()))
+
+    def test_existing_non_sentinel_or_invalid_auth_is_rejected_without_writes(self):
+        for content in ('{"other":{"type":"api_key","key":"synthetic-secret"}}',
+                        'invalid-synthetic-secret', '["synthetic-secret"]'):
+            with self.subTest(content_type=content[:1]), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                profile = root / "pi/agent"
+                profile.mkdir(parents=True)
+                auth = profile / "auth.json"
+                auth.write_text(content)
+                before = auth.read_bytes()
+                result = self.run_prepare(root / "pi", root / "home")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(auth.read_bytes(), before)
+                self.assertEqual({p.name for p in profile.iterdir()}, {"auth.json"})
+                self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
+
+    def test_invalid_templates_are_rejected_before_creating_profile(self):
+        for name, content in (("auth.json", '{"key":"synthetic-secret"}'),
+                              ("models.json", 'invalid-synthetic-secret')):
+            with self.subTest(template=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                shutil.copyfile(ROOT / "prepare.py", root / "prepare.py")
+                shutil.copytree(ROOT / "templates", root / "templates")
+                (root / "templates" / name).write_text(content)
+                result = self.run_prepare(root / "pi", root / "home", root / "prepare.py")
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse((root / "pi").exists())
+                self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
 
 
 @unittest.skipUnless(shutil.which("jq"), "jq required for shell launcher tests")

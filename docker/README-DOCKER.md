@@ -70,7 +70,7 @@ without recreating the sandbox.
 On the host, from the repository root:
 
 ```bash
-python3 docker/yallmo-sandbox/prepare.py # Optional: --source /path/to/pi/agent
+python3 docker/yallmo-sandbox/prepare.py # Once: create missing Pi files from local templates
 sbx login
 sbx secret set openai --oauth       # Once per host
 sbx secret set github --command 'gh auth token' # Once per host but requires 'gh auth login'
@@ -112,8 +112,27 @@ sandbox to apply the new credential capability.
 
 Approve the host-managed OAuth request, repository workspace and fixed coding,
 Yallmo and private Pi mounts.
-Setup copies skills and sanitized model metadata into ignored `pi/agent/`, preserving existing files.
-Review copied content before use. **Never copy your real host `auth.json`, run Pi
+`prepare.py` creates only missing `auth.json`, `settings.json`, `mcp.json` and
+`models.json` in ignored `docker/yallmo-sandbox/pi/agent/` from the local
+`templates/`. It never reads or imports a host `~/.pi/agent`, skills, sessions or
+model catalog; no host Pi installation is required. Existing profile contents,
+including any skills you add manually, are left alone. It also validates that
+`auth.json` contains only the public proxy placeholder and sets private permissions.
+Git ignores the profile except for `pi/agent/skills/`: edit skills there and use
+`git add docker/yallmo-sandbox/pi/agent/skills/` to version them after reviewing
+for private content. Ignoring the other files only excludes them from Git; it
+never prevents editing them through the bind mount.
+
+This is one-time initialization, not synchronization: edit
+`docker/yallmo-sandbox/pi/agent/models.json` directly to change the running sandbox's
+`/home/agent/.pi/agent/models.json` through the bind mount. Open `/model` in Pi to
+reload the file, then reselect the model (or restart Pi); no `prepare.py` rerun,
+image rebuild or sandbox recreation is needed. Templates only seed new profiles;
+rerunning setup never overwrites your edits. The custom `sbx-openai` provider does
+not inherit built-in Codex model metadata: its Sol limits and thinking levels are
+explicitly configured in the live file and the template. Zero token prices are
+intentional for this host-managed subscription route, not API pricing estimates.
+**Never copy real OAuth credentials into `auth.json`, run Pi
 `/login` here, or put secrets in the workspace:** real ChatGPT tokens stay on the host.
 
 Bash opens normally; **Yallmo starts in the background, Pi stays manual**:

@@ -53,7 +53,7 @@ Keep `docker/Dockerfile.dockerignore`: it excludes private runtime data from bui
 
 The sandbox adds Bash, Metals, Bloop, Pi, `pi-subagents`, `pi-ssh-remote`, Playwright/MCP,
 `gh`, `vim` and `htop`. It uses the **published** `fmgp/yallmo:latest`, not your local build.
-The kit explicitly provisions Node/npm from the official `node:latest` image and
+The Pi mixin explicitly provisions Node/npm from the official `node:latest` image and
 refreshes npm before installing Pi and Playwright, so it also supports published
 Yallmo images that do not yet include Node/npm.
 Metals and Bloop use upstream Coursier installations, without forced dependency versions.
@@ -61,8 +61,20 @@ Their reported dependency CVEs remain a kit concern: moving them out of the publ
 Yallmo image does not patch them. The publication scan covers Yallmo, not the derived kit.
 Live sandbox creation and host-proxy authentication still need host validation.
 
-The kit sets `PI_CLIPBOARD_OSC52=1` so Pi's `/copy` and Ctrl+X send text to the host
-terminal clipboard. This requires an OSC 52-capable terminal (such as Ghostty) with
+The environment composes three kits:
+
+- `kit-yallmo/` — workload: development tools, Yallmo service manager, workspace
+  mounts, shared network/host-credential policy and interactive shell launcher.
+- `kit-pi/` — mixin: Pi, extensions, Playwright/MCP, public configuration templates
+  and `prepare.py`. Removing it leaves a working Yallmo development shell; also
+  remove the `/home/agent/.pi` mount from the environment when omitting this kit.
+- `kit-zsh/` — optional mixin: Zsh configuration and private persistent history.
+
+The `pi/`, `workspace/` and `yallmo-workspace/` directories remain user-managed
+state beside the kits. No existing profile contents are rewritten by this split.
+
+The Pi launcher defaults to `PI_CLIPBOARD_OSC52=1` so Pi's `/copy` and Ctrl+X send
+text to the host terminal clipboard. This requires an OSC 52-capable terminal (such as Ghostty) with
 clipboard writes allowed; no `wl-clipboard` installation is needed. In an existing
 sandbox, run `export PI_CLIPBOARD_OSC52=1` before launching Pi to apply the workaround
 without recreating the sandbox.
@@ -70,7 +82,7 @@ without recreating the sandbox.
 On the host, from the repository root:
 
 ```bash
-python3 docker/yallmo-sandbox/prepare.py # Once: create missing Pi files from local templates
+python3 docker/yallmo-sandbox/kit-pi/prepare.py # Once: create missing Pi files from local templates
 sbx login
 sbx secret set openai --oauth       # Once per host
 sbx secret set github --command 'gh auth token' # Once per host but requires 'gh auth login'
@@ -81,7 +93,7 @@ sbx env run docker/yallmo-sandbox
 
 Host mount sources in `sbxenv.yaml` resolve relative to that file, not your shell's
 working directory. `workspace: ../..` shares the repository root at its host absolute
-path, for example `/Users/fabio/workspace/yallmo`. The kit also declares three fixed
+path, for example `/Users/fabio/workspace/yallmo`. The kits also declare three fixed
 sandbox destinations:
 
 | Host directory (beside `sbxenv.yaml`) | Sandbox path | Purpose |
@@ -112,9 +124,9 @@ sandbox to apply the new credential capability.
 
 Approve the host-managed OAuth request, repository workspace and fixed coding,
 Yallmo and private Pi mounts.
-`prepare.py` creates only missing `auth.json`, `settings.json`, `mcp.json` and
+`kit-pi/prepare.py` creates only missing `auth.json`, `settings.json`, `mcp.json` and
 `models.json` in ignored `docker/yallmo-sandbox/pi/agent/` from the local
-`templates/`. It never reads or imports a host `~/.pi/agent`, skills, sessions or
+`kit-pi/templates/`. It never reads or imports a host `~/.pi/agent`, skills, sessions or
 model catalog; no host Pi installation is required. Existing profile contents,
 including any skills you add manually, are left alone. It also validates that
 `auth.json` contains only the public proxy placeholder and sets private permissions.
@@ -189,7 +201,7 @@ is not mounted or synced.
 
 ### Optional Zsh kit
 
-`docker/yallmo-sandbox/zsh/` is a separate mixin that **installs Zsh**, bundles
+`docker/yallmo-sandbox/kit-zsh/` is a separate mixin that **installs Zsh**, bundles
 `zshrc` at `/usr/share/yallmo-zsh/zshrc`, and declares a private 512 MiB persistent
 volume at `/home/agent/.zsh-data`. SBX's `lifecycle.files` feature generates an
 agent-owned `/home/agent/.zshrc` that sources the bundled config; `overwrite: false`
@@ -198,15 +210,18 @@ are sandbox-local, whereas history and completion caches live in the persistent
 volume. No host bind mount is needed. The workload still defaults to Bash without
 this opt-in.
 
-On the **host**, update `docker/yallmo-sandbox/sbxenv.yaml` to select both kits and
-set the interactive shell (keep the other existing fields):
+Select all three kits and Zsh with the following configuration. On the **host**,
+update the kit sources in `docker/yallmo-sandbox/sbxenv.yaml` (preserve its other fields):
 
 ```yaml
 kits:
-  - source: ./kit
+  - source: ./kit-yallmo
     args:
       image: docker.io/fmgp/yallmo:latest
-  - source: ./zsh
+  - source: ./kit-pi
+    args:
+      image: docker.io/fmgp/yallmo:latest
+  - source: ./kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest
 
@@ -215,10 +230,11 @@ env:
   # Keep the existing YALLMO_* environment entries here too.
 ```
 
-Use the same image argument for both kits so Zsh is built against the workload's
-native libraries. The Bash launcher initializes the existing tool environment,
-checks Pi's public auth sentinel and reports service status before handing off to
-Zsh. It forwards shell arguments and sets `SHELL`; it does not change the account's
+Use the same image argument for all kits so native libraries stay compatible.
+The Bash launcher initializes the existing tool environment and reports service
+status before handing off to Zsh. Pi validates its public auth sentinel only when
+you launch `pi`; a missing Pi profile never blocks the workload shell. The shell
+launcher forwards arguments and sets `SHELL`; it does not change the account's
 login shell or start Pi automatically. Run `bash` when you need a Bash session.
 
 Kit/volume additions require sandbox recreation; follow the upgrade procedure below
@@ -230,8 +246,8 @@ when the sandbox name, kit source and volume path stay stable. Check your host's
 `sbx` version and storage behavior before relying on removal for important data.
 A different name gets separate storage. This volume is private state, not a backup.
 
-The old Compose `zsh/zsh-data/` directory is ignored by Git and excluded from the
-Zsh build context. Its history is **not** read or imported automatically. If needed,
+The old Compose history directory (now `kit-zsh/zsh-data/`) is ignored by Git and
+excluded from the Zsh build context. Its history is **not** read or imported automatically. If needed,
 migrate it explicitly after reviewing it for secrets. The kit preserves your prompt,
 completion and keybinding preferences, expands home paths correctly, and leaves
 SBX-managed GitHub credentials untouched.
@@ -241,6 +257,14 @@ requires recreation. Zsh's history remains separate from the host-mounted Pi,
 coding and Yallmo workspaces.
 
 ### Upgrade an existing sandbox
+
+When upgrading from the old layout, change `./kit` to `./kit-yallmo`, add
+`./kit-pi`, and change `./zsh` to `./kit-zsh` in `sbxenv.yaml` **on the host**
+before running `sbx env` again. SBX may mount that file read-only inside a running
+sandbox. All three kits should use the same image argument, as shown above.
+The renamed Zsh kit may receive a new history volume: back up any important
+history and sandbox-local `.zshrc` before removal. The host-mounted Pi profile
+and workspaces do not move.
 
 Kit/image/mount changes require a fresh sandbox. Stop the old sandbox before moving
 its service data. If your old checkout still has service files under `workspace/`,

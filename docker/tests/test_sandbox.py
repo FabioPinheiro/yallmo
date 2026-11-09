@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
 
 
 class SandboxSetupTests(unittest.TestCase):
-    def run_prepare(self, destination, home, script=ROOT / "prepare.py"):
+    def run_prepare(self, destination, home, script=ROOT / "kit-pi/prepare.py"):
         return subprocess.run([sys.executable, str(script), "--destination", str(destination)],
                               env=dict(os.environ, HOME=str(home)), text=True, capture_output=True)
 
@@ -32,7 +32,7 @@ class SandboxSetupTests(unittest.TestCase):
             self.assertEqual({p.name for p in profile.iterdir()}, names)
             for name in names:
                 self.assertEqual(json.loads((profile / name).read_text()),
-                                 json.loads((ROOT / "templates" / name).read_text()))
+                                 json.loads((ROOT / "kit-pi/templates" / name).read_text()))
                 self.assertEqual((profile / name).stat().st_mode & 0o777, 0o600)
             for directory in (destination, profile):
                 self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
@@ -105,7 +105,7 @@ class SandboxSetupTests(unittest.TestCase):
             self.assertEqual(settings.read_bytes(), before)
             for name in ("auth.json", "models.json", "mcp.json"):
                 self.assertEqual(json.loads((profile / name).read_text()),
-                                 json.loads((ROOT / "templates" / name).read_text()))
+                                 json.loads((ROOT / "kit-pi/templates" / name).read_text()))
 
     def test_existing_non_sentinel_or_invalid_auth_is_rejected_without_writes(self):
         for content in ('{"other":{"type":"api_key","key":"synthetic-secret"}}',
@@ -128,8 +128,8 @@ class SandboxSetupTests(unittest.TestCase):
                               ("models.json", 'invalid-synthetic-secret')):
             with self.subTest(template=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                shutil.copyfile(ROOT / "prepare.py", root / "prepare.py")
-                shutil.copytree(ROOT / "templates", root / "templates")
+                shutil.copyfile(ROOT / "kit-pi/prepare.py", root / "prepare.py")
+                shutil.copytree(ROOT / "kit-pi/templates", root / "templates")
                 (root / "templates" / name).write_text(content)
                 result = self.run_prepare(root / "pi", root / "home", root / "prepare.py")
                 self.assertEqual(result.returncode, 1)
@@ -137,48 +137,47 @@ class SandboxSetupTests(unittest.TestCase):
                 self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
 
 
-@unittest.skipUnless(shutil.which("jq"), "jq required for shell launcher tests")
-class SandboxShellTests(unittest.TestCase):
-    def test_shell_with_autostart_disabled_does_not_start_services_or_mutate_pi(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            profile = root / "pi/agent"
-            profile.mkdir(parents=True)
-            for name in ("auth.json", "models.json", "settings.json"):
-                shutil.copyfile(ROOT / "templates" / name, profile / name)
-            before = {p.name: p.read_bytes() for p in profile.iterdir()}
-            workspace = root / "workspace"
-            workspace.mkdir()
-            script = root / "start.sh"
-            script.write_text((ROOT / "kit/start.sh").read_text()
-                              .replace("/home/agent/.pi/agent", str(profile))
-                              .replace("/home/agent/workspace", str(workspace)))
-            for mode in ("", "oauth"):
-                result = subprocess.run(["bash", str(script), "-c", 'printf "%s\\n" "$PWD" "$PI_CODING_AGENT_DIR"'],
-                                        env=dict(os.environ, SBX_CRED_OPENAI_MODE=mode, YALLMO_AUTOSTART="0"), text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines(), [str(workspace), str(profile)])
-                self.assertEqual(before, {p.name: p.read_bytes() for p in profile.iterdir()})
-                self.assertEqual("ChatGPT needs host OAuth" in result.stderr, mode != "oauth")
-            (profile / "auth.json").write_text('{"other":"synthetic-secret"}')
-            failed = subprocess.run(["bash", str(script), "-c", 'printf "must-not-run"'],
-                                    text=True, capture_output=True)
-            self.assertEqual(failed.returncode, 1)
-            self.assertNotIn("must-not-run", failed.stdout)
-            self.assertNotIn("synthetic-secret", failed.stdout + failed.stderr)
-
-    def test_default_shell_reports_service_state_without_starting_a_second_service(self):
+class SandboxLauncherTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("jq"), "jq required for Pi sentinel validation")
+    def test_pi_launcher_validates_profile_without_modifying_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile = root / "profile"
-            profile.mkdir()
+            shutil.copytree(ROOT / "kit-pi/templates", profile)
+            before = {p.name: p.read_bytes() for p in profile.iterdir()}
+            script = root / "pi.sh"
+            script.write_text((ROOT / "kit-pi/start.sh").read_text()
+                              .replace("/home/agent/.pi/agent", str(profile))
+                              .replace("/usr/local/bin/pi-cli", str(root / "bin/pi-cli")))
+            binaries = root / "bin"
+            binaries.mkdir()
+            node = binaries / "pi-cli"
+            node.write_text('#!/bin/sh\nprintf "%s\\n" "$PI_CODING_AGENT_DIR" "$PI_CLIPBOARD_OSC52" "$PLAYWRIGHT_BROWSERS_PATH" "$@"\n')
+            node.chmod(0o755)
+            env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                       PI_CLIPBOARD_OSC52="1")
+            result = subprocess.run(["bash", str(script), "--version"], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [str(profile), "1", "/opt/playwright-browsers",
+                             "--version"])
+            self.assertEqual(before, {p.name: p.read_bytes() for p in profile.iterdir()})
+            (profile / "auth.json").write_text('{"other":"synthetic-secret"}')
+            failed = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("public OAuth sentinel", failed.stderr)
+            self.assertNotIn("synthetic-secret", failed.stdout + failed.stderr)
+            (profile / "settings.json").unlink()
+            failed = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("kit-pi/prepare.py", failed.stderr)
+
+    def test_workload_shell_needs_no_pi_profile_and_never_starts_a_second_service(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
             workspace = root / "workspace"
             workspace.mkdir()
-            for name in ("auth.json", "models.json", "settings.json"):
-                shutil.copyfile(ROOT / "templates" / name, profile / name)
             script = root / "start.sh"
-            script.write_text((ROOT / "kit/start.sh").read_text()
-                              .replace("/home/agent/.pi/agent", str(profile))
+            script.write_text((ROOT / "kit-yallmo/start.sh").read_text()
                               .replace("/home/agent/workspace", str(workspace)))
             binaries = root / "bin"
             binaries.mkdir()
@@ -186,104 +185,49 @@ class SandboxShellTests(unittest.TestCase):
             service = binaries / "yallmo-service"
             service.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SERVICE_TEST_CALLS"\nexit 3\n')
             service.chmod(0o755)
-            env = {key: value for key, value in os.environ.items() if key != "YALLMO_AUTOSTART"}
-            env.update(PATH=str(binaries) + os.pathsep + os.environ["PATH"], SERVICE_TEST_CALLS=str(calls),
-                       SBX_CRED_OPENAI_MODE="oauth")
-            result = subprocess.run(["bash", str(script), "-c", 'printf "bash-is-available"'],
-                                    env=env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, "bash-is-available")
+            env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                       SERVICE_TEST_CALLS=str(calls), YALLMO_SHELL="/bin/bash")
+            for autostart in ("0", "1"):
+                env["YALLMO_AUTOSTART"] = autostart
+                result = subprocess.run(["bash", str(script), "-c", 'printf "%s" "$PWD"'],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, str(workspace))
+                self.assertEqual(calls.exists(), autostart == "1")
             self.assertEqual(calls.read_text().splitlines(), ["status", "--wait"])
             self.assertIn("yallmo-service logs --follow", result.stderr)
 
 
 class SandboxToolchainTests(unittest.TestCase):
-    def test_metals_and_bloop_are_upstream_kit_only_installations(self):
+    def test_tools_and_build_checks_belong_to_their_respective_kits(self):
         base = (ROOT.parent / "Dockerfile").read_text()
-        kit = (ROOT / "kit/kit.dockerfile").read_text()
-        smoke = (ROOT.parent / "tests/smoke.sh").read_text()
-        self.assertIn("cs install --dir /usr/share/coursier/bin --jvm system scala-cli", base)
-        self.assertIn("for tool in cs scala scala-cli sbt;", base)
-        self.assertNotRegex(base, r"cs install[^\n]*(?:metals|bloop)")
-        self.assertNotRegex(base, r"for tool in[^\n]*(?:metals|bloop)")
-        self.assertIn("cs install --dir /usr/share/coursier/bin --jvm system metals bloop", kit)
-        self.assertIn("for tool in metals bloop;", kit)
-        self.assertIn("chmod -R a+rX,go-w /usr/share/coursier", kit)
-        self.assertIn("RUN metals --version", kit)
-        self.assertIn("RUN bloop --help", kit)
-        self.assertNotIn("--force-version", base + kit)
-        self.assertNotIn("install-scala-tools.py", base)
-        self.assertIn("for tool in metals bloop pi;", smoke)
-        self.assertNotIn("metals --version", smoke)
-        self.assertNotIn("bloop --version", smoke)
-
-    def test_build_checks_run_in_fresh_agent_steps_not_roots_inherited_cache_environment(self):
-        kit = (ROOT / "kit/kit.dockerfile").read_text()
-        provisioning, validation = kit.split("\nUSER agent\n", 1)
-        self.assertNotIn("&& runuser", kit)
-        self.assertIn("rm -rf /var/lib/apt/lists/* /var/cache/coursier/0", provisioning)
-        self.assertIn("ENV HOME=/home/agent", validation)
-        self.assertIn("XDG_CACHE_HOME=/home/agent/.cache", validation)
-        self.assertIn("WORKDIR /home/agent/workspace", validation)
-        checks = (
-            "metals --version",
-            "bloop --help",
-            "pi --version",
-            "node --test /opt/pi-sdk-tests/test-provider.mjs",
-            "/usr/local/bin/playwright-mcp --version",
-            "node /opt/playwright/browser-smoke.mjs",
-        )
-        for command in checks:
-            self.assertNotIn(command, provisioning)
-            self.assertIn("RUN " + command, validation.splitlines())
-        self.assertLess(validation.index("WORKDIR /home/agent/workspace"),
-                        validation.index("RUN metals --version"))
-
-
-class SandboxClipboardTests(unittest.TestCase):
-    def test_pi_clipboard_uses_host_terminal_osc52_in_kit_only(self):
-        base = (ROOT.parent / "Dockerfile").read_text()
-        kit = (ROOT / "kit/kit.dockerfile").read_text()
-        self.assertIn("    PI_CLIPBOARD_OSC52=1 \\\n", kit)
-        self.assertNotIn("PI_CLIPBOARD_OSC52", base)
+        workload = (ROOT / "kit-yallmo/kit.dockerfile").read_text()
+        pi = (ROOT / "kit-pi/kit.dockerfile").read_text()
+        self.assertNotIn("@earendil-works/pi-coding-agent", base + workload)
+        self.assertNotRegex(base + pi, r"cs install[^\n]*(?:metals|bloop)")
+        self.assertIn("cs install --dir /usr/share/coursier/bin --jvm system metals bloop", workload)
+        self.assertIn("@earendil-works/pi-coding-agent@latest", pi)
+        self.assertIn("pi-subagents@latest pi-ssh-remote@latest", pi)
+        self.assertIn("FROM scratch", pi)
+        self.assertNotIn("ENTRYPOINT", pi)
+        for dockerfile, commands in ((workload, ("metals --version", "bloop --help")),
+                                     (pi, ("node --test /opt/pi-sdk-tests/test-provider.mjs",
+                                           "/usr/local/bin/playwright-mcp --version",
+                                           "node /opt/playwright/browser-smoke.mjs"))):
+            provisioning, validation = dockerfile.split("\nUSER agent\n", 1)
+            self.assertNotIn("&& runuser", provisioning)
+            for command in commands:
+                self.assertIn("RUN " + command, validation.splitlines())
+        self.assertIn('PI_CLIPBOARD_OSC52="${PI_CLIPBOARD_OSC52:-1}"',
+                      (ROOT / "kit-pi/start.sh").read_text())
+        self.assertNotIn("PI_CLIPBOARD_OSC52", base + workload)
 
 
 @unittest.skipUnless(yaml, "PyYAML required for sandbox declaration tests")
 class SandboxConfigurationTests(unittest.TestCase):
-    def test_kit_provisions_node_and_npm_before_installing_pi(self):
-        kit = (ROOT / "kit/kit.dockerfile").read_text()
-        # The published Yallmo image may lag behind this checkout's Node-enabled image.
-        steps = [
-            "ARG YALLMO_IMAGE",
-            "FROM node:latest AS sandbox-node",
-            "FROM ${YALLMO_IMAGE}",
-            "COPY --from=sandbox-node /usr/local/bin/node /usr/local/bin/node",
-            "COPY --from=sandbox-node /usr/local/lib/node_modules /usr/local/lib/node_modules",
-            "ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm",
-            "ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx",
-            "node --version",
-            "npm --version",
-            "npm install --global --ignore-scripts npm@latest",
-            "npm install --global --ignore-scripts @earendil-works/pi-coding-agent@latest",
-        ]
-        positions = [kit.index(step) for step in steps]
-        self.assertEqual(positions, sorted(positions))
-
-    def test_pi_installation_and_sdk_build_checks_are_kit_only(self):
-        base = (ROOT.parent / "Dockerfile").read_text()
-        kit = (ROOT / "kit/kit.dockerfile").read_text()
-        self.assertNotIn("@earendil-works/pi-coding-agent", base)
-        self.assertIn("@earendil-works/pi-coding-agent@latest", kit)
-        self.assertIn("node --test /opt/pi-sdk-tests/test-provider.mjs", kit)
-        # These paths are aliases to the same public files, not drifting test-only copies.
-        for name in ("auth.json", "models.json"):
-            self.assertEqual((ROOT / "templates" / name).resolve(),
-                             (ROOT / "kit/sdk-fixtures" / name).resolve())
-
     def test_background_service_is_a_sandbox_boot_hook_with_explicit_runtime_environment(self):
         environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
-        kit = yaml.safe_load((ROOT / "kit/kit.yaml").read_text())
-        # Both documented choices are valid; local sandbox configuration may disable autostart.
+        kit = yaml.safe_load((ROOT / "kit-yallmo/kit.yaml").read_text())
         self.assertIn(environment["env"]["YALLMO_AUTOSTART"], {"0", "1"})
         self.assertEqual(environment["env"]["YALLMO_WORKSPACE"], "/home/agent/yallmo-workspace")
         long_running = next(cap for cap in kit["capabilities"]
@@ -300,51 +244,30 @@ class SandboxConfigurationTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", hook["env"])
         self.assertNotIn("GITHUB_TOKEN", hook["env"])
 
-    def test_repository_workspace_and_fixed_kit_mounts_are_declared(self):
+    def test_kits_compose_with_separate_private_profile_and_workspace_mounts(self):
         environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
-        kit = yaml.safe_load((ROOT / "kit/kit.yaml").read_text())
+        self.assertEqual(environment["agent"], "kit-yallmo")
         self.assertEqual(environment["workspace"], "../..")
-        self.assertEqual((ROOT / environment["workspace"]).resolve(), ROOT.parents[1])
-        self.assertNotIn("additionalWorkspaces", environment)
-        self.assertFalse(environment.get("sandboxOptions", {}).get("writableEnvFiles", False))
         self.assertEqual(environment["mounts"], {
             "/home/agent/workspace": "./workspace",
             "/home/agent/yallmo-workspace": "./yallmo-workspace",
             "/home/agent/.pi": "./pi",
         })
-        declared_paths = [cap["config"]["path"] for cap in kit["capabilities"]
-                          if cap["type"] == "com.docker.sandbox/host-mount@1"]
-        self.assertCountEqual(declared_paths, environment["mounts"])
-        coding = (ROOT / environment["mounts"]["/home/agent/workspace"]).resolve()
-        service = (ROOT / environment["mounts"]["/home/agent/yallmo-workspace"]).resolve()
-        self.assertFalse(coding.is_relative_to(service))
-        self.assertFalse(service.is_relative_to(coding))
-        for workspace in (coding, service):
-            for protected in (ROOT / "sbxenv.yaml", ROOT / "kit", ROOT / "pi"):
-                self.assertFalse(protected.resolve().is_relative_to(workspace))
-        self.assertTrue((coding / "hello.py").is_file())
-        for name in ("server.sh", "yallmo.yaml", "storage/.gitkeep"):
-            self.assertTrue((service / name).is_file())
-            self.assertFalse((coding / name).exists())
-
-    def test_private_pi_mount_matches_declared_capability_and_only_8080_is_published(self):
-        environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
-        kit = yaml.safe_load((ROOT / "kit/kit.yaml").read_text())
-        self.assertEqual(environment["agent"], "kit")
-        self.assertEqual(environment["kits"][0]["source"], "./kit")
-        self.assertEqual(environment["mounts"]["/home/agent/.pi"], "./pi")
-        self.assertEqual(environment["ports"], [{"sandbox": 8080, "host": 8080, "hostIP": "127.0.0.1"}])
-        self.assertNotIn("lifecycle", environment)
-        mount = next(c for c in kit["capabilities"]
-                     if c["type"] == "com.docker.sandbox/host-mount@1"
-                     and c["config"]["path"] == "/home/agent/.pi")
-        self.assertEqual(mount["config"]["mode"], "0700")
-        credential = next(c for c in kit["capabilities"] if c["type"] == "com.docker.sandbox/credential@1")
-        self.assertFalse(credential["config"]["oauth"]["passthrough"])
-        self.assertEqual(credential["config"]["oauth"]["sentinels"]["accessToken"],
-                         json.loads((ROOT / "templates/auth.json").read_text())["sbx-openai"]["key"])
-        allowed = next(c for c in kit["capabilities"] if c["type"] == "com.docker.sandbox/network-policy@1")
-        self.assertIn("localhost:12434", allowed["config"]["runtime"]["allow"])
+        declared = {}
+        for name, kind in (("kit-yallmo", "workload"), ("kit-pi", "mixin"), ("kit-zsh", "mixin")):
+            kit = yaml.safe_load((ROOT / name / "kit.yaml").read_text())
+            self.assertEqual(kit["kind"], kind)
+            self.assertTrue((ROOT / name / kit["dockerfile"]).is_file())
+            for cap in kit["capabilities"]:
+                if cap["type"] == "com.docker.sandbox/host-mount@1":
+                    declared[cap["config"]["path"]] = cap["config"]
+        self.assertCountEqual(declared, environment["mounts"])
+        self.assertEqual(declared["/home/agent/.pi"]["mode"], "0700")
+        # Loopback-only publication, including optional frontend development ports.
+        self.assertTrue(all(port["hostIP"] == "127.0.0.1" for port in environment["ports"]))
+        self.assertIn({"sandbox": 8080, "host": 8080, "hostIP": "127.0.0.1"}, environment["ports"])
+        self.assertEqual([kit["source"] for kit in environment["kits"]],
+                         ["./kit-yallmo", "./kit-pi", "./kit-zsh"])
 
 
 if __name__ == "__main__":

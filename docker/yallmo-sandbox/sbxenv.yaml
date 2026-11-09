@@ -2,16 +2,19 @@
 # Review host-side changes before applying this environment again.
 schemaVersion: "1"
 name: yallmo-sandbox
-agent: kit
+agent: kit-yallmo
 
 # Resolve the checkout root relative to this file; sbx preserves its host path.
 workspace: ../..
 
 kits:
-  - source: ./kit
+  - source: ./kit-yallmo
     args:
       image: docker.io/fmgp/yallmo:latest
-  - source: ./zsh
+  - source: ./kit-pi
+    args:
+      image: docker.io/fmgp/yallmo:latest
+  - source: ./kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest
 

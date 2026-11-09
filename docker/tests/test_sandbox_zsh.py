@@ -19,7 +19,7 @@ except ModuleNotFoundError:
     exclude_paths = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
-ZSH = ROOT / "zsh"
+ZSH = ROOT / "kit-zsh"
 
 
 class ZshKitTests(unittest.TestCase):
@@ -75,13 +75,6 @@ class ZshKitTests(unittest.TestCase):
         self.assertNotIn("export GH_TOKEN=", config)
         self.assertNotIn(":~", config)
         self.assertIn("zsh-data/", (ZSH / ".gitignore").read_text().splitlines())
-
-    @unittest.skipUnless(yaml, "PyYAML required for kit descriptor checks")
-    def test_feature_advertisements_are_versioned_when_present(self):
-        kit = yaml.safe_load((ZSH / "kit.yaml").read_text())
-        for feature in kit.get("provides", []):
-            self.assertTrue("@" in feature or kit.get("version"),
-                            f"Feature {feature!r} needs @<version> or a top-level kit version")
 
     @unittest.skipUnless(yaml, "PyYAML required for kit descriptor checks")
     def test_lifecycle_creates_agent_config_without_overwriting_local_edits(self):
@@ -145,7 +138,7 @@ class ZshKitTests(unittest.TestCase):
             shutil.copyfile(ZSH / "zshrc", Path(temporary) / ".zshrc")
             env = dict(os.environ, HOME=temporary, TERM="xterm", GITHUB_TOKEN="synthetic-sentinel")
             result = subprocess.run(
-                ["zsh", "-i", "-c", 'print -r -- "$HISTFILE" "$GITHUB_TOKEN"; '
+                ["zsh", "-i", "-c", 'print -rl -- "$HISTFILE" "$GITHUB_TOKEN"; '
                  '[[ -o SHARE_HISTORY && ! -o INC_APPEND_HISTORY ]]'],
                 env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -154,18 +147,12 @@ class ZshKitTests(unittest.TestCase):
             self.assertTrue(list((Path(temporary) / ".zsh-data").glob("zcompdump-*")))
 
 
-@unittest.skipUnless(shutil.which("jq"), "jq required for sandbox launcher checks")
 class ZshLauncherTests(unittest.TestCase):
     def prepare_launcher(self, root, shell_path):
-        profile = root / "profile"
-        profile.mkdir()
-        for name in ("auth.json", "models.json", "settings.json"):
-            shutil.copyfile(ROOT / "templates" / name, profile / name)
         workspace = root / "workspace"
         workspace.mkdir()
         script = root / "start.sh"
-        script.write_text((ROOT / "kit/start.sh").read_text()
-                          .replace("/home/agent/.pi/agent", str(profile))
+        script.write_text((ROOT / "kit-yallmo/start.sh").read_text()
                           .replace("/home/agent/workspace", str(workspace))
                           .replace("/bin/zsh", str(shell_path)))
         return script

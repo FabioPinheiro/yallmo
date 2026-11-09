@@ -55,8 +55,8 @@ def prepare(destination, templates):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--destination", type=Path, default=ROOT / "pi",
-                        help="Sandbox Pi directory (default: ./pi beside this script)")
+    parser.add_argument("--destination", type=Path, default=ROOT.parent / "pi",
+                        help="Sandbox Pi directory (default: ../pi beside this kit)")
     args = parser.parse_args()
     try:
         prepare(args.destination, ROOT / "templates")

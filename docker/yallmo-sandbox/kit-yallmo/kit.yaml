@@ -2,7 +2,7 @@
 # Real OpenAI OAuth tokens stay on the host. Only a public sentinel is stored in Pi's auth.json.
 schemaVersion: "3"
 kind: workload
-displayName: Yallmo development Bash with Pi and host-managed OAuth
+displayName: Yallmo development workload with host-managed OAuth
 dockerfile: ./kit.dockerfile
 args:
   image:
@@ -11,16 +11,12 @@ args:
 capabilities:
   - type: com.docker.sandbox/host-mount@1
     config:
-      path: /home/agent/.pi
-      mode: "0700"
-  - type: com.docker.sandbox/host-mount@1
-    config:
       path: /home/agent/workspace
   - type: com.docker.sandbox/host-mount@1
     config:
       path: /home/agent/yallmo-workspace
   - type: com.docker.sandbox/sbx@1
-  # Keep the background service alive when the last Bash/Pi session disconnects.
+  # Keep the background service alive when the last shell session disconnects.
   - type: com.docker.sandbox/long-running@1
   - type: com.docker.sandbox/lifecycle@1
     config:

@@ -1,0 +1,15 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: mixin
+displayName: Pi with extensions and Playwright/MCP
+dockerfile: ./kit.dockerfile
+args:
+  image:
+    # Match the workload's Ubuntu-based image for browser library compatibility.
+    default: docker.io/fmgp/yallmo:latest
+    buildArg: YALLMO_IMAGE
+capabilities:
+  - type: com.docker.sandbox/host-mount@1
+    config:
+      path: /home/agent/.pi
+      mode: "0700"

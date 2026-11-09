@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
-const directory = path.join(path.dirname(fileURLToPath(import.meta.url)), "sdk-fixtures");
+const directory = path.join(path.dirname(fileURLToPath(import.meta.url)), "templates");
 const packageDirectory = process.env.PI_TEST_PACKAGE_DIR || "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent";
 const { ModelRuntime } = await import(pathToFileURL(path.join(packageDirectory, "dist/index.js")).href);
 const sentinel = "oai-oat01-proxy-managed";

@@ -17,8 +17,8 @@ except ModuleNotFoundError:
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
-CONTROL = ROOT / "kit/service/control.py"
-CONFIG = ROOT / "kit/service/supervisord.conf"
+CONTROL = ROOT / "kit-yallmo/service/control.py"
+CONFIG = ROOT / "kit-yallmo/service/supervisord.conf"
 SUPERVISOR = importlib.util.find_spec("supervisor")
 FAKE_SERVER = '''import http.server,os,signal,sys,time
 print("stdout from fake Yallmo",flush=True)
@@ -137,7 +137,7 @@ class SandboxServiceTests(unittest.TestCase):
             'if [[ "$(command -v java)" != "$JAVA_HOME/bin/java" ]]; then\n'
             '  printf "image Java missing from service PATH\\n" >&2; exit 127\n'
             'fi\nexec java\n')
-        kit = yaml.safe_load((ROOT / "kit/kit.yaml").read_text())
+        kit = yaml.safe_load((ROOT / "kit-yallmo/kit.yaml").read_text())
         lifecycle = next(cap for cap in kit["capabilities"]
                          if cap["type"] == "com.docker.sandbox/lifecycle@1")
         forwarded = lifecycle["config"]["startup"][0]["env"]

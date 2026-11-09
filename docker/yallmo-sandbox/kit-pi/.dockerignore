@@ -1,0 +1,13 @@
+# Only public kit inputs; never include a private Pi profile.
+**
+!kit.yaml
+!kit.dockerfile
+!start.sh
+!playwright.sh
+!browser-smoke.mjs
+!test-provider.mjs
+!templates/
+!templates/auth.json
+!templates/models.json
+!templates/settings.json
+!templates/mcp.json

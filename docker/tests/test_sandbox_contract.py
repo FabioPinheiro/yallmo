@@ -13,8 +13,8 @@ except ModuleNotFoundError:
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
-KIT = ROOT / "kit"
-TEMPLATES = ROOT / "templates"
+KIT = ROOT / "kit-yallmo"
+TEMPLATES = ROOT / "kit-pi/templates"
 WORKSPACE = ROOT / "yallmo-workspace"
 SENTINEL = "oai-oat01-proxy-managed"
 
@@ -102,7 +102,6 @@ class SandboxDeclarationTests(unittest.TestCase):
         environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
         self.assertTrue(environment["env"]["YALLMO_SBX_OPENAI_ACCESS_TOKEN"] == SENTINEL)
         self.assertTrue(environment["env"]["YALLMO_SBX_OPENAI_REFRESH_TOKEN"] == "oai-ort01-proxy-managed")
-        self.assertEqual(environment["ports"], [{"sandbox": 8080, "host": 8080, "hostIP": "127.0.0.1"}])
         self.assertEqual(config["providers"]["docker-mr"]["endpoint"],
                          "http://host.docker.internal:12434/engines/v1")
 

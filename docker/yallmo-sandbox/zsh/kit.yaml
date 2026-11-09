@@ -1,0 +1,30 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: mixin
+displayName: Zsh with private persistent history
+dockerfile: ./kit.dockerfile
+args:
+  image:
+    # Match the workload's Ubuntu-based image so native libraries stay compatible.
+    default: docker.io/fmgp/yallmo:latest
+    buildArg: YALLMO_IMAGE
+capabilities:
+  - type: com.docker.sandbox/volume@1
+    config:
+      path: /home/agent/.zsh-data
+      size: 512m
+      tmpfs: false
+      mode: "0700"
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      files:
+        - path: /home/agent/.zshrc
+          content: |
+            # Managed default from the Zsh kit; local edits are preserved.
+            source /usr/share/yallmo-zsh/zshrc
+          mode: "0644"
+          overwrite: false
+      install:
+        # The volume is mounted before this hook. Never truncate/import history.
+        - command: [install, -d, -o, "1000", -g, "1000", -m, "0700", /home/agent/.zsh-data]
+          user: "0"

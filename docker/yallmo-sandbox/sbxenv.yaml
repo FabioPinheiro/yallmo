@@ -11,6 +11,9 @@ kits:
   - source: ./kit
     args:
       image: docker.io/fmgp/yallmo:latest
+  - source: ./zsh
+    args:
+      image: docker.io/fmgp/yallmo:latest
 
 # Kit-declared mounts; host sources resolve relative to this file.
 # These fixed paths remain separate from the repository's host-path workspace.
@@ -26,10 +29,14 @@ env:
   YALLMO_SBX_OPENAI_ACCESS_TOKEN: oai-oat01-proxy-managed
   YALLMO_SBX_OPENAI_REFRESH_TOKEN: oai-ort01-proxy-managed
   YALLMO_SBX_HTTP_PROXY: "true"
+  YALLMO_SHELL: /bin/zsh
 
 ports:
   - sandbox: 8080
     host: 8080
+    hostIP: 127.0.0.1
+  - sandbox: 5173
+    host: 15173
     hostIP: 127.0.0.1
 
 sandboxOptions:

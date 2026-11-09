@@ -168,6 +168,59 @@ sbx env exec docker/yallmo-sandbox -- yallmo-service logs --follow
 and are writable by sandbox processes. Back them up; the original host Pi profile
 is not mounted or synced.
 
+### Optional Zsh kit
+
+`docker/yallmo-sandbox/zsh/` is a separate mixin that **installs Zsh**, bundles
+`zshrc` at `/usr/share/yallmo-zsh/zshrc`, and declares a private 512 MiB persistent
+volume at `/home/agent/.zsh-data`. SBX's `lifecycle.files` feature generates an
+agent-owned `/home/agent/.zshrc` that sources the bundled config; `overwrite: false`
+preserves an existing `.zshrc` rather than replacing local edits. Those local edits
+are sandbox-local, whereas history and completion caches live in the persistent
+volume. No host bind mount is needed. The workload still defaults to Bash without
+this opt-in.
+
+On the **host**, update `docker/yallmo-sandbox/sbxenv.yaml` to select both kits and
+set the interactive shell (keep the other existing fields):
+
+```yaml
+kits:
+  - source: ./kit
+    args:
+      image: docker.io/fmgp/yallmo:latest
+  - source: ./zsh
+    args:
+      image: docker.io/fmgp/yallmo:latest
+
+env:
+  YALLMO_SHELL: /bin/zsh
+  # Keep the existing YALLMO_* environment entries here too.
+```
+
+Use the same image argument for both kits so Zsh is built against the workload's
+native libraries. The Bash launcher initializes the existing tool environment,
+checks Pi's public auth sentinel and reports service status before handing off to
+Zsh. It forwards shell arguments and sets `SHELL`; it does not change the account's
+login shell or start Pi automatically. Run `bash` when you need a Bash session.
+
+Kit/volume additions require sandbox recreation; follow the upgrade procedure below
+and back up any sandbox-local work first. Environment files may be protected
+read-only inside SBX, so make and review these edits on the host.
+
+Current local SBX releases retain persistent kit volumes across removal/recreation
+when the sandbox name, kit source and volume path stay stable. Check your host's
+`sbx` version and storage behavior before relying on removal for important data.
+A different name gets separate storage. This volume is private state, not a backup.
+
+The old Compose `zsh/zsh-data/` directory is ignored by Git and excluded from the
+Zsh build context. Its history is **not** read or imported automatically. If needed,
+migrate it explicitly after reviewing it for secrets. The kit preserves your prompt,
+completion and keybinding preferences, expands home paths correctly, and leaves
+SBX-managed GitHub credentials untouched.
+
+To return to Bash, set `YALLMO_SHELL: /bin/bash`; removing the optional kit also
+requires recreation. Zsh's history remains separate from the host-mounted Pi,
+coding and Yallmo workspaces.
+
 ### Upgrade an existing sandbox
 
 Kit/image/mount changes require a fresh sandbox. Stop the old sandbox before moving

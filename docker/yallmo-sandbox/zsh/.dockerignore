@@ -1,0 +1,5 @@
+# Only public kit inputs. Never send local history to the builder.
+**
+!kit.yaml
+!kit.dockerfile
+!zshrc

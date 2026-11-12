@@ -1,6 +1,7 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageId, MessagePayload, ToolKey}
+import fmgp.yallmo.model.{AgentId, BlobId, Message, MessageId, MessagePayload}
+import fmgp.yallmo.tool.FunctionKey
 import java.time.Instant
 import zio.Chunk
 
@@ -43,7 +44,7 @@ final case class EventMessage(
     role: String,
     content: String,
     blobIds: Chunk[BlobId],
-    toolName: Option[ToolKey]
+    toolName: Option[FunctionKey]
 )
 
 object EventMessage {

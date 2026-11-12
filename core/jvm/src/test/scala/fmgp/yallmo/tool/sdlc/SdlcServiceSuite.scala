@@ -1,8 +1,10 @@
 package fmgp.yallmo.tool.sdlc
 
+import fmgp.yallmo.model.tool.SdlcToolDefinition
+
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
-import fmgp.yallmo.model.{ToolKey, YallmoError}
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.orchestration.ExternalFunctionCall
 import fmgp.yallmo.tool.sdlc.llm.{PlanIntentSimplifiedModel, PlanTaskSimplifiedModel}
 import java.nio.file.{Files, Path}
 import java.time.Instant
@@ -175,23 +177,23 @@ final class SdlcServiceSuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          tools = SdlcTools.make(service)
-          set = tools.find(_.definition.key == ToolKey.SdlcSetIntents).get
-          read = tools.find(_.definition.key == ToolKey.SdlcReadIntent).get
+          tools = SdlcTools.makeFunctions(service)
+          set = tools.find(_.definition.name == SdlcToolDefinition.SetIntents).get
+          read = tools.find(_.definition.name == SdlcToolDefinition.ReadIntent).get
           created <- set.execute(
-            ExternalToolCall(ToolKey.SdlcSetIntents, """{"intentsJson":[{"id":"","text":"Outcome"}]}""")
+            ExternalFunctionCall(SdlcToolDefinition.SetIntents, """{"intentsJson":[{"id":"","text":"Outcome"}]}""")
           )
           full <- service.listIntents
-          loaded <- read.execute(ExternalToolCall(ToolKey.SdlcReadIntent, """{"intentIds":["I-1"]}"""))
+          loaded <- read.execute(ExternalFunctionCall(SdlcToolDefinition.ReadIntent, """{"intentIds":["I-1"]}"""))
           injected <- set
             .execute(
-              ExternalToolCall(
-                ToolKey.SdlcSetIntents,
+              ExternalFunctionCall(
+                SdlcToolDefinition.SetIntents,
                 """{"intentsJson":[{"id":"I-1","text":"Forged","updatedAt":"2000-01-01T00:00:00Z"}]}"""
               )
             )
             .either
-          wrongKey <- set.execute(ExternalToolCall(ToolKey.SdlcSet, """{"intentsJson":[]}""")).either
+          wrongKey <- set.execute(ExternalFunctionCall(SdlcToolDefinition.SetTasks, """{"intentsJson":[]}""")).either
         } yield {
           assertEquals(created, loaded)
           assertEquals(created.text.fromJson[List[PlanIntentSimplifiedModel]], Right(full.map(_.toSimplifiedModel)))

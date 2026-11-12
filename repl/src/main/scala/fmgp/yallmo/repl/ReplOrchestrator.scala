@@ -3,7 +3,8 @@ package fmgp.yallmo.repl
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.server.application.SessionSubmission
+import java.time.{Instant, ZoneOffset}
+import java.time.format.DateTimeFormatter
 import zio.*
 
 /** REPL-facing extension of [[Orchestrator]]. */
@@ -50,7 +51,8 @@ trait ReplOrchestrator[-R] extends Orchestrator[R] {
 /** Adapts the application-facing orchestrator API to REPL state and session conventions. */
 final class ReplOrchestratorLive[-R] private (
     orchestrator: Orchestrator[R],
-    sessions: SessionSubmission[?]
+    authorId: AgentId,
+    selectedAgentId: Option[AgentId]
 ) extends ReplOrchestrator[R] {
 
   export orchestrator.{
@@ -90,21 +92,46 @@ final class ReplOrchestratorLive[-R] private (
     listSessions.map(_.map(_.id.value))
 
   override def newReplSession(name: Option[String]): IO[YallmoError, ReplState] =
-    sessions.create(name).map(session => ReplState().withSession(session))
+    create(name).map(session => ReplState().withSession(session))
 
   override private[repl] def submitPrompt[R1](
       previous: ReplState,
       prompt: String,
       execution: AgentExecution[R1]
   ): ZIO[R1, SessionSubmitFailure, ReplTurn] =
-    sessions.submitExecution(previous.sessionId, prompt, execution).map { turn =>
-      ReplTurn(previous.withSession(turn.session), turn.result, turn.newMessages)
-    }
+    for {
+      _ <- ZIO
+        .fail(SessionSubmitFailure(YallmoError.InvalidConfig("No matching assistant selected"), None))
+        .unless(selectedAgentId.contains(execution.agentId))
+      session <- (previous.sessionId match {
+        case Some(value) => sessionId(Some(value))
+        case None        => create(None).map(_.id)
+      }).mapError(SessionSubmitFailure(_, None))
+      turn <- orchestrator.submit(session, authorId, AgentTask(prompt), execution)
+    } yield ReplTurn(previous.withSession(turn.session), turn.result, turn.newMessages)
 
   override def resumeReplSession(id: String): IO[YallmoError, ReplState] =
-    sessions.load(id).map { session =>
+    sessionId(Some(id)).flatMap(orchestrator.loadSession).map { session =>
       ReplState(continuationStart = session.messages.size).withSession(session)
     }
+
+  private def create(name: Option[String]): IO[YallmoError, Session] =
+    sessionId(name)
+      .flatMap(orchestrator.createSession(_, Chunk(authorId) ++ Chunk.fromIterable(selectedAgentId)))
+      .catchSome {
+        case YallmoError.StorageFailed(_: YallmoError.SessionAlreadyExists) if name.isEmpty => create(None)
+      }
+
+  private def sessionId(name: Option[String]): IO[YallmoError, SessionId] = name match {
+    case Some(value) => ZIO.fromEither(SessionId.from(value).left.map(YallmoError.InvalidSessionId(value, _)))
+    case None        =>
+      val id = SessionId.unsafe(ReplOrchestratorLive.SessionNameFormatter.format(Instant.now()))
+      orchestrator.loadSession(id).either.flatMap {
+        case Left(YallmoError.StorageFailed(_: YallmoError.SessionNotFound)) => ZIO.succeed(id)
+        case Right(_)                                                        => ZIO.sleep(1.second) *> sessionId(None)
+        case Left(error)                                                     => ZIO.fail(error)
+      }
+  }
 
 }
 
@@ -121,14 +148,7 @@ object ReplOrchestratorLive {
       userAgent: Agent[R],
       assistantAgent: Option[Agent[R]]
   ): ReplOrchestrator[R] =
-    new ReplOrchestratorLive(
-      orchestrator,
-      SessionSubmission.make(orchestrator, userAgent.id, assistantAgent.map(_.id))
-    )
+    new ReplOrchestratorLive(orchestrator, userAgent.id, assistantAgent.map(_.id))
 
-  private[repl] def fromApplication[R](
-      orchestrator: Orchestrator[R],
-      sessions: SessionSubmission[R]
-  ): ReplOrchestrator[R] =
-    new ReplOrchestratorLive(orchestrator, sessions)
+  private val SessionNameFormatter = DateTimeFormatter.ofPattern("'main-'uuuuMMdd-HHmmss").withZone(ZoneOffset.UTC)
 }

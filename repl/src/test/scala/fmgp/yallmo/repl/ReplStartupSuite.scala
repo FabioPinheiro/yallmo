@@ -1,9 +1,10 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.server.application.{ApplicationRuntime, ProviderCatalog}
-import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.{AgentId, AudioFormat, MessageId, MessagePayload, YallmoError}
+import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
+
+import fmgp.yallmo.server.application.{ServerApplication, ProviderCatalog}
+import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.model.llm.ThinkingLevel
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{
@@ -101,7 +102,7 @@ final class ReplStartupSuite extends FunSuite {
       launch: ReplLaunchOptions,
       storageRoot: Option[Path] = None,
       transcriberAgentId: Option[AgentId] = None
-  ): ZIO[Client, YallmoError, ReplStartup] =
+  ): ZIO[Client & Scope, YallmoError, ReplStartup] =
     for {
       userId <- ZIO.fromEither(AgentId.from(launch.userName).left.map(YallmoError.InvalidConfig(_)))
       channel <- HumanTurnChannel.make
@@ -113,16 +114,23 @@ final class ReplStartupSuite extends FunSuite {
             _ <- ZIO
               .attempt(Files.writeString(path, definition.toJson))
               .mapError(error => YallmoError.InvalidConfig(error.getMessage))
-            loaded <- ApplicationRuntime.load(Chunk(human), path, storageRoot = Some(root))
+            application <- ServerApplication.workspace(
+              definition,
+              Chunk(human),
+              Some(root),
+              Path.of("").toAbsolutePath.normalize
+            )
+            catalog <- ProviderCatalog.make(path)
+            loaded = (application, catalog)
           } yield loaded
         case None =>
           for {
-            runtime <- ApplicationRuntime.make(definition, Chunk(human))
+            runtime <- ServerApplication.workspace(definition, Chunk(human), None, Path.of("").toAbsolutePath.normalize)
             catalog <- ProviderCatalog.make(Paths.get("unused-test-catalog.json"))
           } yield (runtime, catalog)
       }
       (runtime, catalog) = loaded
-      current <- ReplStartup.fromRuntime(runtime, catalog, human, launch, transcriberAgentId)
+      current <- ReplStartup.fromApplication(runtime, catalog, human, launch, transcriberAgentId)
     } yield current
 
   private def startup(
@@ -131,7 +139,8 @@ final class ReplStartupSuite extends FunSuite {
       transcriberAgentId: Option[AgentId] = None
   )(using Scope): ReplStartup =
     run(
-      fixture(definition, launch, transcriberAgentId = transcriberAgentId).provideEnvironment(ZEnvironment(noNetwork))
+      fixture(definition, launch, transcriberAgentId = transcriberAgentId)
+        .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
     )
 
   private def submit(
@@ -148,7 +157,7 @@ final class ReplStartupSuite extends FunSuite {
     val application = run(current.application)
     assertEquals(current.selected, None)
     assertEquals(current.userAgent.id, AgentId("operator"))
-    assert(run(current.instances.getAgent(current.userAgent.id)) eq current.userAgent)
+    assert(run(current.catalog.getAgent(current.userAgent.id)) eq current.userAgent)
     assertEquals(application.activeAgent, None)
     assertEquals(application.userId, AgentId("operator"))
     val before = ReplState(logLevel = LogLevel.Debug)
@@ -174,7 +183,7 @@ final class ReplStartupSuite extends FunSuite {
     assertEquals(startup(config, options.copy(agentId = None)).selected, None)
     val missing = run(
       fixture(config, options.copy(agentId = Some(AgentId("missing"))))
-        .provideEnvironment(ZEnvironment(noNetwork))
+        .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
         .either
     )
     assertEquals(missing, Left(YallmoError.UnknownAgent(AgentId("missing"))))
@@ -207,7 +216,7 @@ final class ReplStartupSuite extends FunSuite {
     )
     bad.foreach { fields =>
       val definition = config.copy(agents = config.agents.updated(bob, config.agents(bob).copy(config = fields)))
-      val result = run(fixture(definition, options).provideEnvironment(ZEnvironment(noNetwork)).either)
+      val result = run(fixture(definition, options).provideSomeEnvironment[Scope](_.add[Client](noNetwork)).either)
       assert(result.isLeft)
       assert(!result.swap.toOption.get.getMessage.contains("secret-placeholder"))
     }
@@ -271,7 +280,7 @@ final class ReplStartupSuite extends FunSuite {
     val unsupported = definition.copy(agents = definition.agents.updated(folderId, AgentConfig("UnknownAgent")))
     val result = run(
       fixture(unsupported, options.copy(agentId = Some(folderId)))
-        .provideEnvironment(ZEnvironment(noNetwork))
+        .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
         .either
     )
     assert(result.swap.toOption.exists(_.getMessage.contains("Unsupported agentType")))
@@ -280,7 +289,7 @@ final class ReplStartupSuite extends FunSuite {
   scopedTest("operator IDs cannot collide with configured agents") {
     val result = run(
       fixture(config, options.copy(userName = "bob"))
-        .provideEnvironment(ZEnvironment(noNetwork))
+        .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
         .either
     )
     assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
@@ -305,7 +314,7 @@ final class ReplStartupSuite extends FunSuite {
       )
       val current = run(
         fixture(config, options, storageRoot = Some(root))
-          .provideEnvironment(ZEnvironment(client))
+          .provideSomeEnvironment[Scope](_.add[Client](client))
       )
       val application = run(current.application)
       assertEquals(application.activeAgent.map(_.provider), Some("local-1"))
@@ -314,7 +323,7 @@ final class ReplStartupSuite extends FunSuite {
       val turn = submit(application, ReplState(), "Hello")
       assert(turn.events.exists(_.isInstanceOf[ReplEvent.AgentTurn]), turn.events.toString)
       val sessionId = SessionId.unsafe(turn.state.sessionId.get)
-      val stored = run(OrchestratorLive.filesystem(root, current.instances).flatMap(_.loadSession(sessionId)))
+      val stored = run(OrchestratorLive.filesystem(root, current.catalog).flatMap(_.loadSession(sessionId)))
       assertEquals(stored.agentIds, Chunk(AgentId("operator"), bob))
       assertEquals(stored.messages.map(_.agentId), Chunk(AgentId("operator"), bob))
       assertEquals(stored.messages.map(_.payload), Chunk(MessagePayload.User("Hello"), MessagePayload.Assistant("Hi")))
@@ -360,7 +369,7 @@ final class ReplStartupSuite extends FunSuite {
       }
     )
     val current = run(
-      fixture(definition, options.copy(agentId = Some(eve))).provideEnvironment(ZEnvironment(client))
+      fixture(definition, options.copy(agentId = Some(eve))).provideSomeEnvironment[Scope](_.add[Client](client))
     )
     val application = run(current.application)
     val first = submit(application, application.initialState, "Hello")
@@ -378,10 +387,10 @@ final class ReplStartupSuite extends FunSuite {
         for {
           channel <- HumanTurnChannel.make
           human = HumanAgent.make(AgentId("new-operator"), channel)
-          loaded <- ApplicationRuntime.load(Chunk(human), path).provideEnvironment(ZEnvironment(noNetwork))
+          loaded <- ServerApplication.load(Chunk(human), path).provideSomeEnvironment[Scope](_.add[Client](noNetwork))
           initialized <- ReplStartup
-            .fromRuntime(loaded._1, loaded._2, human, launch)
-            .provideEnvironment(ZEnvironment(noNetwork))
+            .fromApplication(loaded._1, loaded._2, human, launch)
+            .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
         } yield initialized
       }
       assert(Files.exists(path))
@@ -409,14 +418,14 @@ final class ReplStartupSuite extends FunSuite {
         (for {
           channel <- HumanTurnChannel.make
           human = HumanAgent.make(AgentId("supplied-human"), channel)
-          loaded <- ApplicationRuntime.load(Chunk(human), path, storageRoot = Some(storage))
-          initialized <- ReplStartup.fromRuntime(loaded._1, loaded._2, human, launch)
-        } yield initialized).provideEnvironment(ZEnvironment(noNetwork))
+          loaded <- ServerApplication.load(Chunk(human), path, storageRoot = Some(storage))
+          initialized <- ReplStartup.fromApplication(loaded._1, loaded._2, human, launch)
+        } yield initialized).provideSomeEnvironment[Scope](_.add[Client](noNetwork))
       }
       val app = run(current.application)
       assertEquals(current.browserAudioPort, 6199)
       assertEquals(app.userId, AgentId("supplied-human"))
-      assert(run(current.instances.getAgent(app.userId)) eq current.userAgent)
+      assert(run(current.catalog.getAgent(app.userId)) eq current.userAgent)
       assertEquals(current.selected, None)
       assertEquals(app.transcriber, None)
       def storageEntries = {
@@ -428,7 +437,7 @@ final class ReplStartupSuite extends FunSuite {
       val before = app.initialState
       assertEquals(submit(app, before, "unselected prompt").state, before)
       assertEquals(storageEntries, entriesBefore)
-      assertEquals(run(OrchestratorLive.filesystem(storage, current.instances).flatMap(_.listSessions)), Chunk.empty)
+      assertEquals(run(OrchestratorLive.filesystem(storage, current.catalog).flatMap(_.listSessions)), Chunk.empty)
       assertEquals(Files.readString(path), raw)
     } finally {
       val paths = Files.walk(root)
@@ -453,8 +462,8 @@ final class ReplStartupSuite extends FunSuite {
       selectedVoice: Option[AgentId] = Some(voiceId)
   ): IO[YallmoError, Option[Transcriber]] =
     for {
-      runtime <- ApplicationRuntime.make(definition, Chunk.empty).provideEnvironment(ZEnvironment(noNetwork))
-      orchestrator <- OrchestratorLive.inMemory(runtime.instances)
+      runtime <- ServerApplication.make(definition, Chunk.empty).provideEnvironment(ZEnvironment(noNetwork))
+      orchestrator <- OrchestratorLive.inMemory(runtime.catalog)
       voice <- ReplStartup.voice(runtime, selectedVoice, available, orchestrator, AgentId("operator"))
     } yield voice
 
@@ -483,7 +492,10 @@ final class ReplStartupSuite extends FunSuite {
   }
 
   scopedTest("REPL voice checks effective empty capabilities and inherited fields in partial policies") {
-    val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition(ToolKey.unsafe("shell"), "commands")))
+    val tool = StaticContext[Any](
+      "chat",
+      functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
+    )
     val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
     val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
     val ext = StaticContext[Any](
@@ -503,13 +515,13 @@ final class ReplStartupSuite extends FunSuite {
       run(configuredVoice(c, context).either)
     }
     for context <- List(tool, rag, skill, ext) do assert(check(AgentCapabilities(), context).isLeft)
-    assert(check(AgentCapabilities(tools = Some(Set.empty)), skill).isLeft)
-    assert(check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))), tool).isLeft)
+    assert(check(AgentCapabilities(functions = Some(Set.empty)), skill).isLeft)
+    assert(check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell")))), tool).isLeft)
     assert(
-      check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown")))), tool).swap.toOption.get.getMessage
+      check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unknown")))), tool).swap.toOption.get.getMessage
         .contains("unknown")
     )
-    assert(check(AgentCapabilities(tools = Some(Set.empty)), tool).isRight)
+    assert(check(AgentCapabilities(functions = Some(Set.empty)), tool).isRight)
     assert(check(AgentCapabilities(), StaticContext[Any]("chat")).isRight)
   }
 
@@ -544,7 +556,7 @@ final class ReplStartupSuite extends FunSuite {
     val selectedFailure =
       run(
         fixture(invalidSelected, options.copy(agentId = Some(voiceId)))
-          .provideEnvironment(ZEnvironment(noNetwork))
+          .provideSomeEnvironment[Scope](_.add[Client](noNetwork))
           .either
       )
     assert(
@@ -561,10 +573,12 @@ final class ReplStartupSuite extends FunSuite {
       config.agents
         .updated(
           eve,
-          config.agents(eve).copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown-tool")))))
+          config
+            .agents(eve)
+            .copy(capabilities = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unknown-tool")))))
         )
     )
-    assert(run(startup(typo).application.either).isLeft)
+    assert(run(fixture(typo, options).provideSomeEnvironment[Scope](_.add[Client](noNetwork)).either).isLeft)
   }
 
   scopedTest(
@@ -581,7 +595,7 @@ final class ReplStartupSuite extends FunSuite {
     try {
       val current = run(
         fixture(voiceConfig, options.copy(agentId = None), storageRoot = Some(root), transcriberAgentId = Some(voiceId))
-          .provideEnvironment(ZEnvironment(client))
+          .provideSomeEnvironment[Scope](_.add[Client](client))
       )
       val first = run(current.application)
       assert(first.agentChoices.exists(_.id == voiceId))
@@ -591,7 +605,7 @@ final class ReplStartupSuite extends FunSuite {
       assert(first.transcriber.get eq second.transcriber.get)
       assert(second.transcriber.get eq third.transcriber.get)
       val chatTurn = submit(third, chat, "ordinary prompt").state
-      val storeBefore = run(OrchestratorLive.filesystem(root, current.instances))
+      val storeBefore = run(OrchestratorLive.filesystem(root, current.catalog))
       val storedChatBefore = run(storeBefore.loadSession(SessionId.unsafe("ordinary-chat")))
       val chatRequestCount = requests.size
       val audio = CapturedAudio(
@@ -611,10 +625,10 @@ final class ReplStartupSuite extends FunSuite {
         assertEquals(request("model").str, "audio-model")
         assertEquals(request("messages").arr.size, 2)
         assert(!request.obj.contains("tools"))
-        assertEquals(request("tool_choice").str, "none")
+        assert(!request.obj.contains("tool_choice"))
         assertEquals(request("parallel_tool_calls").bool, false)
       }
-      val store = run(OrchestratorLive.filesystem(root, current.instances))
+      val store = run(OrchestratorLive.filesystem(root, current.catalog))
       val sessions = run(store.listSessions)
       val retained = sessions.filter(_.id.value.startsWith("transcription-"))
       assertEquals(retained.size, 3)
@@ -717,7 +731,7 @@ final class ReplStartupSuite extends FunSuite {
     try {
       val current = run(
         fixture(changedConfig, options, storageRoot = Some(root))
-          .provideEnvironment(ZEnvironment(client))
+          .provideSomeEnvironment[Scope](_.add[Client](client))
       )
       val first = run(current.application)
       val named = submit(first, first.initialState, "/new before-switch").state
@@ -734,7 +748,7 @@ final class ReplStartupSuite extends FunSuite {
       assert(secondMessages.exists(_("content").str == "Eve prompt"))
       assert(secondMessages.exists(_("content").str == "old prompt"))
       assertEquals(second.activeAgent.map(_.model), Some("eve-model"))
-      val store = run(OrchestratorLive.filesystem(root, current.instances))
+      val store = run(OrchestratorLive.filesystem(root, current.catalog))
       val after = run(store.loadSession(SessionId.unsafe(newTurn.state.sessionId.get)))
       assertEquals(newTurn.state.sessionId, oldTurn.state.sessionId)
       assertEquals(newTurn.state.runContext.messages.take(2), oldTurn.state.runContext.messages)

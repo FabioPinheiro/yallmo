@@ -1,7 +1,9 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
-import fmgp.yallmo.orchestration.ExternalToolResult
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
+import fmgp.yallmo.model.ScalaModeResult
+import fmgp.yallmo.orchestration.ExternalFunctionResult
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
 import java.nio.file.{Files, Path}
@@ -29,7 +31,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       executable: Path,
       timeout: Duration = 10.seconds,
       limit: Int = 1024
-  ): ExternalToolResult.ScalaMode =
+  ): ExternalFunctionResult.ScalaMode =
     run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute("42", timeout, limit))
@@ -188,7 +190,9 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.1"), Seq.empty) do {
         val result = run(
           new ScalaTool(dependencies = dependencies)
-            .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"42"}"""))
+            .execute(
+              fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"42"}""")
+            )
             .provide(ScalaCodeExecutor.layer(executable.toString))
         )
         val arguments = result.text.linesIterator.toList
@@ -372,10 +376,12 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     ) { executable =>
       val result = run(
         new ScalaTool()
-          .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"missing"}"""))
+          .execute(
+            fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"missing"}""")
+          )
           .provide(ScalaCodeExecutor.layer(executable.toString))
       )
-      val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+      val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
       assertEquals(typed.exitCode, 1)
       assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
       assert(typed.output.contains("[E006] Not Found Error"))
@@ -492,11 +498,13 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     withFakeCli("printf 'Checking compiler metadata\\n'; printf 'Compiler stalled\\n' >&2; sleep 60\n") { executable =>
       val result = run(
         new ScalaTool(timeout = 300.millis)
-          .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
+          .execute(
+            fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"2 + 3"}""")
+          )
           .provide(ScalaCodeExecutor.layer(executable.toString))
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
-      val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+      val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
       assert(typed.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(typed.output.contains("Checking compiler metadata"))
       assert(typed.output.contains("deadline"))
@@ -823,11 +831,13 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler integration test")
     val result = run(
       new ScalaTool(timeout = 1.second)
-        .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"2 + 3"}"""))
+        .execute(
+          fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"2 + 3"}""")
+        )
         .provide(ScalaCodeExecutor.layer(realCli.get, scalaVersion = "3.nightly", offline = false))
         .timeoutFail(new RuntimeException("Scala CLI resolution did not respect its deadline"))(5.seconds)
     )
-    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
     if typed.result.isInstanceOf[ScalaModeResult.TimedOut] then assert(typed.output.contains("deadline"))
   }
 
@@ -835,10 +845,12 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler diagnostics integration test")
     val result = run(
       new ScalaTool(timeout = 120.seconds)
-        .execute(fmgp.yallmo.orchestration.ExternalToolCall(ToolKey.Scalamode, """{"code":"doesNotExist"}"""))
+        .execute(
+          fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"doesNotExist"}""")
+        )
         .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))
     )
-    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
     assertEquals(typed.exitCode, 1)
     assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
     assert(typed.output.contains("[E006] Not Found Error"), result.text)
@@ -940,7 +952,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("pinned compiler accepts pure code and rejects ambient JVM authority") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler integration test")
-    def evaluate(code: String, timeout: Duration = 120.seconds): ExternalToolResult.ScalaMode = run(
+    def evaluate(code: String, timeout: Duration = 120.seconds): ExternalFunctionResult.ScalaMode = run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, 16 * 1024))
         .provide(ScalaCodeExecutor.layer(realCli.get, realVersion, realOffline))

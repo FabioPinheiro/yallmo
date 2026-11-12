@@ -1,16 +1,8 @@
 package fmgp.yallmo.server
 
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, UserId, YallmoError}
-import fmgp.yallmo.orchestration.{
-  BlobUploader,
-  EventSession,
-  EventUpdate,
-  OrchestrationEvents,
-  OrchestratorLive,
-  Session,
-  SessionSummary
-}
-import fmgp.yallmo.server.application.ServerApplication
+import fmgp.yallmo.orchestration.{BlobUploader, EventSession, EventUpdate, OrchestrationEvents, Session, SessionSummary}
+import fmgp.yallmo.server.application.ServerExecutionService
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.given
@@ -20,20 +12,13 @@ import zio.*
 import zio.json.*
 import zio.json.ast.Json
 
-/** Shared read and configured trusted-client submission handler. It owns neither transports nor an additional
-  * runtime/storage service. Initialization state belongs to each connection; a future Unix adapter can use the same
-  * handler unchanged.
+/** Trusted-client read and submission handler. It owns neither transports nor an additional runtime/storage service.
+  * Initialization state belongs to each connection; a future Unix adapter can use the same handler unchanged.
   */
-private[server] final class OrchestratorRpc(
-    master: OrchestratorLive[?],
-    configured: Option[ServerApplication.Configured] = None
-) {
+private[server] final class OrchestratorRpc(configured: ServerExecutionService) {
   import OrchestratorRpc.*
 
-  require(
-    configured.forall(backend => backend.assembly.orchestrator eq master),
-    "Configured backend must use the supplied master"
-  )
+  private val master = configured.application.master
 
   private val instanceId = UUID.randomUUID().toString
   // Presence only: never inserted into the executable runtime registry or storage.
@@ -64,7 +49,7 @@ private[server] final class OrchestratorRpc(
           connection.uploads
             .getAndSet(Map.empty)
             .flatMap(uploads => ZIO.foreachDiscard(uploads.values)(_.abort.ignore)) *>
-            ZIO.foreachDiscard(configured)(_.providers.disconnect(connection.id)) *>
+            configured.providers.disconnect(connection.id) *>
             stopEvents(connection, None)
         )
     }.uninterruptible
@@ -147,7 +132,7 @@ private[server] final class OrchestratorRpc(
             owned = request.userId.fold(Chunk.empty[AgentId])(actors)
             _ <- ZIO.foreachDiscard(owned.filter(registered.contains)) { id =>
               for {
-                known <- configured.fold[UIO[Boolean]](ZIO.succeed(false))(_.runtime.isUser(id))
+                known <- configured.application.isUser(id)
                 _ <- ZIO
                   .fail(JsonRpc.Error(ErrorCode.Conflict, "Owned actor conflicts with a runtime agent"))
                   .unless(known)
@@ -158,10 +143,10 @@ private[server] final class OrchestratorRpc(
                 instanceId,
                 Identity(
                   request.userId.getOrElse(UserId("local-viewer")),
-                  if permitted(request.userId) then Role.Operator else Role.Viewer,
+                  if request.userId.nonEmpty then Role.Operator else Role.Viewer,
                   owned
                 ),
-                if permitted(request.userId) then
+                if request.userId.nonEmpty then
                   methods ++ List(
                     TurnSubmit.method,
                     BranchesSubmit.method,
@@ -176,7 +161,7 @@ private[server] final class OrchestratorRpc(
                 else methods,
                 List(EventsUpdate.method),
                 MaxBlobChunkBytes,
-                configured.map(value => Chunk.fromIterable(value.runtime.agentSummaries.map(_.id)))
+                Some(Chunk.fromIterable(configured.application.agentSummaries.map(_.id)))
               )
             )
             _ <- ZIO.when(current == ConnectionState.Uninitialized) {
@@ -229,8 +214,8 @@ private[server] final class OrchestratorRpc(
             connection.state.modifyZIO { current =>
               (operator(current) *> upload(params, connection)).map(result => (result, current))
             }.uninterruptible
-          case BlobsRead.method                         => readBlob(params)
-          case TurnSubmit.method if configured.nonEmpty =>
+          case BlobsRead.method  => readBlob(params)
+          case TurnSubmit.method =>
             for {
               request <- decode[TurnSubmit.Params](params)
               author <- acting(state, request.actingAgentId)
@@ -242,7 +227,7 @@ private[server] final class OrchestratorRpc(
                 }
               ) {
                 ZIO.logAnnotate("agentId", AgentId.value(request.agentId)) {
-                  configured.get.submit(
+                  configured.submit(
                     author,
                     request.target,
                     request.agentId,
@@ -254,54 +239,54 @@ private[server] final class OrchestratorRpc(
               }
               result <- encode(outcome)
             } yield result
-          case BranchesSubmit.method if configured.nonEmpty =>
+          case BranchesSubmit.method =>
             for {
               request <- decode[BranchesSubmit.Params](params)
               author <- acting(state, request.actingAgentId)
               _ <- ZIO.fail(JsonRpc.Error.InvalidParams).when(request.task.prompt.trim.isEmpty)
-              outcome <- configured.get.submitBranch(author, request.parentId, request.agentId, request.task.prompt)
+              outcome <- configured.submitBranch(author, request.parentId, request.agentId, request.task.prompt)
               result <- encode(outcome)
             } yield result
-          case AgentsInvoke.method if configured.nonEmpty =>
+          case AgentsInvoke.method =>
             for {
               request <- decode[AgentsInvoke.Params](params)
               author <- acting(state, request.actingAgentId)
-              response <- configured.get.invoke(author, request.agentId, request.input)
+              response <- configured.invoke(author, request.agentId, request.input)
               result <- encode(response)
             } yield result
-          case ProvidersList.method if configured.nonEmpty =>
-            operator(state) *> decode[Empty](params) *> configured.get.providers.list.flatMap(encode(_))
-          case ProvidersLoginStart.method if configured.nonEmpty =>
+          case ProvidersList.method =>
+            operator(state) *> decode[Empty](params) *> configured.providers.list.flatMap(encode(_))
+          case ProvidersLoginStart.method =>
             // Start admission shares the connection lock with disconnect, so no pending secret can outlive closure.
             connection.state.modifyZIO { current =>
               (for {
                 _ <- operator(current)
                 request <- decode[ProvidersLoginStart.Params](params)
                 _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(request.providerId.length <= 1024)
-                started <- configured.get.providers.start(connection.id, request.providerId)
+                started <- configured.providers.start(connection.id, request.providerId)
                 result <- encode(started)
               } yield (result, current))
             }
-          case ProvidersLoginComplete.method if configured.nonEmpty =>
+          case ProvidersLoginComplete.method =>
             for {
               _ <- operator(state)
               request <- decode[ProvidersLoginComplete.Params](params)
-              completed <- configured.get.providers.complete(connection.id, request)
+              completed <- configured.providers.complete(connection.id, request)
               result <- encode(completed)
             } yield result
-          case ProvidersLoginCancel.method if configured.nonEmpty =>
+          case ProvidersLoginCancel.method =>
             for {
               _ <- operator(state)
               request <- decode[ProvidersLoginCancel.Params](params)
               _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(request.attemptId.length <= 64)
-              cancelled <- configured.get.providers.cancel(connection.id, request.attemptId)
+              cancelled <- configured.providers.cancel(connection.id, request.attemptId)
               result <- encode(cancelled)
             } yield result
-          case DiagnosticsRequest.method if configured.nonEmpty =>
+          case DiagnosticsRequest.method =>
             for {
               _ <- operator(state)
               request <- decode[DiagnosticsRequest.Params](params)
-              result <- configured.get.providerRequest(request.sessionId).flatMap(encode(_))
+              result <- configured.providerRequest(request.sessionId).flatMap(encode(_))
             } yield result
           case _ => ZIO.fail(JsonRpc.Error.MethodNotFound)
         }
@@ -418,11 +403,8 @@ private[server] final class OrchestratorRpc(
           .catchSome { case "Subscription closed" => nextNotification(connection) }
     }
 
-  private def permitted(human: Option[UserId]): Boolean =
-    configured.nonEmpty && human.nonEmpty
-
   private def operator(state: ConnectionState): IO[JsonRpc.Error, UserId] = state match {
-    case ConnectionState.Initialized(Some(id)) if permitted(Some(id)) => ZIO.succeed(id)
+    case ConnectionState.Initialized(Some(id)) => ZIO.succeed(id)
     case _ => ZIO.fail(JsonRpc.Error(ErrorCode.Forbidden, "Operator permission unavailable for this connection"))
   }
 

@@ -247,7 +247,7 @@ The parent reran the focused checks against the final working tree:
 # 343 core tests, including 20 orchestration event tests
 sbt 'core/testOnly *OrchestratorLiveSuite *OrchestratorListingSuite *OrchestratorAppendSuite *OrchestrationEventsSuite *OrchestratorSubmitSuite *OrchestratorBranchSuite *OrchestratorRebaseSuite *ManagedHistorySubmitSuite'
 # 108 server/submission/transport/logging tests
-sbt 'server/testOnly *ServerSubmissionSuite *SessionSubmissionSuite *OrchestratorRpcSuite *OrchestratorWSClientTransportSuite *OrchestratorWebSocketSuite *OrchestratorServerLoggingSuite'
+sbt 'server/testOnly *ServerSubmissionSuite *OrchestratorRpcSuite *OrchestratorWSClientTransportSuite *OrchestratorWebSocketSuite *OrchestratorServerLoggingSuite'
 # 33 protocol tests on each platform
 sbt 'protocol/testOnly *YallmoProtocolSuite'
 sbt 'protocolJS/testOnly *YallmoProtocolSuite'
@@ -270,7 +270,7 @@ synthetic evidence, not portable repository tests. The deterministic regressions
 
 Broader checks are **not all green**: an earlier broad core run passed 814 tests with 17 skips; the broad server run
 reported 191 passes, 1 skip and 6 failures outside the scoped event changes. Four failures are SDLC fixtures omitting the
-required task `title` (`ApplicationToolsSuite`, `ApplicationRuntimeSuite`); two are packaged-host fixtures requesting
+required task `title` (`ApplicationToolsSuite`, `ServerCompositionSuite`); two are packaged-host fixtures requesting
 missing `/assets/test.js` (`OrchestratorWebHostSuite`). Those source/fixture files were not changed by this task. The
 focused final 108-test server command above passed. No broad-server success is claimed.
 

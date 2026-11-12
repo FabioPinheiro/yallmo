@@ -1,8 +1,9 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.model.tool.RepositoryChangesToolDefinition
+
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.orchestration.{ExternalToolCall}
+import fmgp.yallmo.orchestration.{ExternalFunctionCall}
 import munit.FunSuite
 import zio.*
 
@@ -49,8 +50,10 @@ final class RepositoryChangesToolSuite extends FunSuite {
       tool: RepositoryChangesTool,
       view: String,
       git: GitClient
-  ): ZIO[Any, YallmoError, fmgp.yallmo.orchestration.ExternalToolResult] =
-    tool.execute(ExternalToolCall(ToolKey.RepositoryChanges, s"""{"view":"$view"}""")).provide(ZLayer.succeed(git))
+  ): ZIO[Any, YallmoError, fmgp.yallmo.orchestration.ExternalFunctionResult] =
+    tool
+      .execute(ExternalFunctionCall(RepositoryChangesToolDefinition.Inspect, s"""{"view":"$view"}"""))
+      .provide(ZLayer.succeed(git))
 
   private def recordingGitClient(calls: ArrayBuffer[String]): GitClient = new GitClient {
     override val isAvailable: UIO[Boolean] = ZIO.succeed(true)

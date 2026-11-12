@@ -1,12 +1,12 @@
 package fmgp.yallmo.server
 
+import fmgp.yallmo.model.tool.SdlcToolDefinition
+
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
-import fmgp.yallmo.model.Agent
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances}
+import fmgp.yallmo.orchestration.OrchestratorLive
 import fmgp.yallmo.tool.sdlc.{PlanIntent, PlanIntentStorage, PlanTask, PlanTaskId, SdlcService, SdlcTools}
 import fmgp.yallmo.tool.sdlc.llm.{PlanIntentSimplifiedModel, PlanTaskSimplifiedModel}
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.orchestration.ExternalFunctionCall
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
 import java.nio.file.{Files, Path}
@@ -94,10 +94,13 @@ final class SdlcHttpRoutesSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         fixture <- start
-        tools = SdlcTools.make(fixture.service)
-        set = tools.find(_.definition.key == ToolKey.SdlcSetIntents).get
+        tools = SdlcTools.makeFunctions(fixture.service)
+        set = tools.find(_.definition.name == SdlcToolDefinition.SetIntents).get
         created <- set.execute(
-          ExternalToolCall(ToolKey.SdlcSetIntents, """{"intentsJson":[{"id":"","text":"Created by agent"}]}""")
+          ExternalFunctionCall(
+            SdlcToolDefinition.SetIntents,
+            """{"intentsJson":[{"id":"","text":"Created by agent"}]}"""
+          )
         )
         read <- request(fixture.port, "/api/sdlc/intents")
         full <- fixture.service.listIntents
@@ -167,9 +170,9 @@ final class SdlcHttpRoutesSuite extends FunSuite {
       }
       fs <- FileSystem.open(root.toString).mapError(error => new java.io.IOException(error.toString))
       service <- SdlcService.make(fs, fs)
-      registry <- RuntimeInstances.fromAgents(Chunk.empty[Agent[Any]])
-      master <- OrchestratorLive.inMemory(registry)
-      port <- new OrchestratorWSServer(master, sdlc = Some(service)).start(0)
+      backend <- application.TestServerApplication.make()
+      master = backend.application.master
+      port <- new OrchestratorWSServer(backend, sdlc = Some(service)).start(0)
     } yield Fixture(root, fs, service, master, port)
 
   private def request(port: Int, path: String, method: String = "GET"): Task[HttpResponse[String]] =

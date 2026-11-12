@@ -11,18 +11,18 @@ import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.http.Server
 
 /** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
-  * Embedded applications should supply their existing master instead.
+  * Embedded applications should supply their configured backend instead.
   */
 object OrchestratorServerMain extends ZIOAppDefault {
   private val Levels = "trace|debug|info|warning|error|fatal|off"
   private val Usage =
-    s"Usage: server/run --storage <existing-directory> [--config <path> [--workspace <existing-directory>]] [--port <1-65535>] [--log-level <$Levels>]"
+    s"Usage: server/run --storage <existing-directory> --config <path> [--workspace <existing-directory>] [--port <1-65535>] [--log-level <$Levels>]"
 
   private[server] final case class Options(
       storage: Path,
+      config: Path,
       port: Int = 8080,
       logLevel: LogLevel = LogLevel.Info,
-      config: Option[Path] = None,
       workspace: Option[Path] = None
   )
 
@@ -32,53 +32,80 @@ object OrchestratorServerMain extends ZIOAppDefault {
       options <- ZIO.fromEither(parse(args.toList)).mapError(new IllegalArgumentException(_))
       // Install before creating the HTTP runtime so its connection fibers inherit the configured logger.
       _ <- configureLogging(options.logLevel).build
-      _ <- ZIO.logInfo(s"Starting Orchestrator server (log-level=${options.logLevel.label})")
-      _ <- ZIO.addFinalizer(ZIO.logInfo("Orchestrator server stopped"))
+      _ <- Console.printLine(
+        """  ██╗   ██╗ █████╗ ██╗     ██╗     ███╗   ███╗ ██████╗
+          |  ╚██╗ ██╔╝██╔══██╗██║     ██║     ████╗ ████║██╔═══██╗
+          |   ╚████╔╝ ███████║██║     ██║     ██╔████╔██║██║   ██║
+          |    ╚██╔╝  ██╔══██║██║     ██║     ██║╚██╔╝██║██║   ██║
+          |     ██║   ██║  ██║███████╗███████╗██║ ╚═╝ ██║╚██████╔╝
+          |     ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝ ╚═════╝
+          | AI Server Orchestrator
+          |""".stripMargin
+      )
+      _ <- ZIO.logInfo(s"Starting YALLMO server (log-level=${options.logLevel.label})")
+      _ <- ZIO.addFinalizer(ZIO.logInfo("YALLMO server stopped"))
       _ <- ZIO
-        .logWarning(
-          "TRACE logs include full RPC payloads, transcripts and attachment data. Use only for private local debugging."
-        )
+        .logWarning("TRACE logs include full RPC payloads. Use only for private local debugging.")
         .when(options.logLevel == LogLevel.Trace)
-      _ <- ZIO.logDebug(s"Opening storage ${options.storage.toAbsolutePath.normalize()}")
+      _ <- ZIO.logInfo(s"Serve storage path: '${options.storage.toAbsolutePath.normalize()}'")
       _ <- ZIO
         .scoped(for {
           storageRoot <- ZIO.attemptBlocking(options.storage.toRealPath())
           filesystem <- FileSystem.open(storageRoot.toString).mapError(error => new java.io.IOException(error.toString))
-          // Exactly one planning service is shared by agent tools and HTTP routes, even in viewer-only mode.
+          // Exactly one planning service is shared by agent tools and HTTP routes.
           sdlc <- SdlcService.make(filesystem, filesystem)
-          application <- options.config match {
-            case None    => ServerApplication.open(storageRoot, options.config, options.workspace, Some(sdlc))
-            case Some(_) =>
-              for {
-                route <- RpcWebSocket.route()
-                http <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
-                port <- Server.install(route.routes).provideEnvironment(http)
-                application <- ServerApplication
-                  .openRpc(
-                    storageRoot,
-                    options.config,
-                    options.workspace,
-                    s"ws://127.0.0.1:$port/rpc",
-                    Some(sdlc)
-                  )
-                  .provideSomeEnvironment[Scope & ServerApplication.Environment](_.add[RpcWebSocket.RpcRoute](route))
-              } yield application
-          }
-          bound <- new OrchestratorWSServer(application.master, application.configured, Some(sdlc))
+          route <- RpcWebSocket.route()
+          hostname = "127.0.0.1"
+          http <- Server.defaultWith(_.binding(hostname, 0)).build
+          port <- Server.install(route.routes).provideEnvironment(http)
+          configured <- ServerApplication
+            .openRpc(
+              storageRoot,
+              options.config,
+              options.workspace,
+              s"ws://$hostname:$port/rpc",
+              Some(sdlc)
+            )
+            .provideSomeEnvironment[Scope & ServerApplication.Environment](_.add[RpcWebSocket.RpcRoute](route))
+          bound <- new OrchestratorWSServer(configured, Some(sdlc))
             .start(options.port)
-          _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)")
+          _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)") // loopback
           _ <- ZIO.never
         } yield ())
         .provideLayer(ServerApplication.live)
     } yield ()
 
-  /** Replace ZIO's INFO-filtered default console logger, rather than changing individual statements' severity. */
+  /** Replace ZIO's INFO-filtered default logger and give cause-only runtime failures a readable message. */
   private[server] def configureLogging(
       minimum: LogLevel,
       logger: ZLogger[String, Any] = ZLogger.default.map(line => scala.Console.println(line))
   ): ULayer[Unit] =
     Runtime.removeDefaultLoggers >>> Runtime.addLogger(
-      logger.filterLogLevel(level => minimum != LogLevel.None && level >= minimum)
+      new ZLogger[String, Any] {
+        override def apply(
+            trace: Trace,
+            fiberId: FiberId,
+            logLevel: LogLevel,
+            message: () => String,
+            cause: Cause[Any],
+            context: FiberRefs,
+            spans: List[LogSpan],
+            annotations: Map[String, String]
+        ): Any = {
+          val renderedMessage = () => {
+            val text = message()
+            if text.nonEmpty || cause.isEmpty then text
+            else
+              cause.failureOption
+                .map(_.asInstanceOf[Matchable])
+                .collect { case error: Throwable => error }
+                .orElse(cause.dieOption)
+                .flatMap(error => Option(error.getMessage).filter(_.nonEmpty))
+                .getOrElse("Unhandled application failure")
+          }
+          logger(trace, fiberId, logLevel, renderedMessage, cause, context, spans, annotations)
+        }
+      }.filterLogLevel(level => minimum != LogLevel.None && level >= minimum)
     )
 
   private[server] def parse(args: List[String]): Either[String, Options] = {
@@ -109,9 +136,9 @@ object OrchestratorServerMain extends ZIOAppDefault {
       values <- collect(args, Map.empty)
       storage <- values.get("--storage").toRight("--storage is required")
       root <- Try(Path.of(storage)).toEither.left.map(_ => "Invalid --storage path")
-      config <- values.get("--config").traversePath("--config")
+      configValue <- values.get("--config").toRight("--config is required")
+      config <- Try(Path.of(configValue)).toEither.left.map(_ => "Invalid --config path")
       workspace <- values.get("--workspace").traversePath("--workspace")
-      _ <- Either.cond(workspace.isEmpty || config.nonEmpty, (), "--workspace requires --config")
       port <- values.get("--port").fold[Either[String, Int]](Right(8080)) { value =>
         value.toIntOption.filter(port => port >= 1 && port <= 65535).toRight("Invalid --port; expected 1-65535")
       }
@@ -127,7 +154,7 @@ object OrchestratorServerMain extends ZIOAppDefault {
           case _         => Left(s"Invalid --log-level; expected $Levels")
         }
       }
-    } yield Options(root, port, level, config, workspace)).left.map(error => s"$error\n$Usage")
+    } yield Options(root, config, port, level, workspace)).left.map(error => s"$error\n$Usage")
   }
 
   extension (value: Option[String])

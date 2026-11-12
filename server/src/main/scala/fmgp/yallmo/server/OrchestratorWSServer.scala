@@ -1,22 +1,19 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.orchestration.OrchestratorLive
-import fmgp.yallmo.server.application.ServerApplication
+import fmgp.yallmo.server.application.ServerExecutionService
 import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.*
 import zio.http.*
 
-/** JSON-RPC WebSocket adapter and SPA host over the supplied master. Construction starts nothing. start binds to
-  * 0.0.0.0; routes may also be installed in an existing trusted host. Configured clients claiming a human ID can
-  * execute regardless of Origin or peer address. No authentication or Host/Origin restrictions: deploy only in a
-  * trusted environment.
+/** JSON-RPC WebSocket adapter and SPA host over the configured application. Construction starts nothing. Configured
+  * clients claiming a human ID can execute regardless of Origin or peer address. No authentication or Host/Origin
+  * restrictions: deploy only in a trusted environment.
   */
 final class OrchestratorWSServer(
-    master: OrchestratorLive[?],
-    configured: Option[ServerApplication.Configured] = None,
+    configured: ServerExecutionService,
     sdlc: Option[SdlcService] = None
 ) {
-  private val rpc = new OrchestratorRpc(master, configured)
+  private val rpc = new OrchestratorRpc(configured)
 
   private val hostRoutes: Routes[Any, Nothing] = Routes(
     RoutePattern.any -> handler { (_: Path, request: Request) =>
@@ -127,7 +124,7 @@ final class OrchestratorWSServer(
                                       count < OrchestratorWSServer.MaxConnectionWorkers,
                                       if count < OrchestratorWSServer.MaxConnectionWorkers then count + 1 else count
                                     )
-                                  )
+                                  ) // TODO REVIEW DO we really need this?
                                   .flatMap {
                                     case true =>
                                       work.ensuring(workers.update(_ - 1)).interruptible.forkIn(workerScope).unit

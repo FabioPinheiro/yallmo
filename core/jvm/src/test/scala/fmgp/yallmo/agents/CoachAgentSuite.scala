@@ -1,9 +1,13 @@
 package fmgp.yallmo.agents
 
+import fmgp.yallmo.tool.FunctionToolDefinition
+
+import fmgp.yallmo.model.tool.BashToolDefinition
+
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
-import fmgp.yallmo.orchestration.RuntimeInstances
+import fmgp.yallmo.orchestration.AgentCatalog
 import fmgp.yallmo.orchestration.config.{
   AgentConfig,
   Config,
@@ -24,8 +28,13 @@ final class CoachAgentSuite extends FunSuite {
   private val request = AgentTurnRequest(
     "test-model",
     Chunk(MessagePayload.User("Help me find a better role"), MessagePayload.Instructions("Be concise")),
-    tools =
-      Chunk(FunctionToolDefinition(ToolKey.Bash, "shell", fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty))),
+    tools = Chunk(
+      FunctionToolDefinition(
+        BashToolDefinition.Execute,
+        "shell",
+        fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty)
+      )
+    ),
     parallelToolCalls = true
   )
   private val answer =
@@ -51,7 +60,6 @@ final class CoachAgentSuite extends FunSuite {
           assertEquals(prepared.model, request.model)
           assertEquals(prepared.options, request.options)
           assertEquals(prepared.tools, Chunk.empty)
-          assertEquals(prepared.toolChoice, ToolChoice.None)
           assert(!prepared.parallelToolCalls)
           val context = prepared.input.collect { case MessagePayload.Context(_, text) => text }.mkString
           val evidence = context.fromJson[Chunk[CoachAgent.Evidence]].toOption.get
@@ -124,7 +132,7 @@ final class CoachAgentSuite extends FunSuite {
       val invalid = makeCoach(delegate(_ => ZIO.dieMessage("Invalid request must not reach provider")), fs)
       assert(run(invalid.turn(request.copy(input = Chunk.empty)).either).isLeft)
       val toolResponse = AgentTurnResponse(
-        Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.Bash, "{}"))),
+        Chunk(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), BashToolDefinition.Execute, "{}"))),
         LlmStopReason.ToolUse
       )
       val agent = makeCoach(delegate(_ => ZIO.succeed(toolResponse)), fs)
@@ -141,7 +149,7 @@ final class CoachAgentSuite extends FunSuite {
       val settings = AgentConfig("CoachAgent", Seq(provider), filesystem = Some(FileSystemConfig(root.toString)))
       for connection <- List(ProviderConfig.OAI("http://127.0.0.1:1/v1"), ProviderConfig.ChatGPT()) do {
         val config = Config(agents = Map(id -> settings), providers = Map(provider -> connection))
-        val registry = run(RuntimeInstances.make(config).provide(Client.default))
+        val registry = run(AgentCatalog.make(config).provide(Client.default))
         val agent = run(registry.getAgent(id))
         assert(run(registry.getAgent(id)) eq agent)
         assertEquals(agent.asInstanceOf[HasAgentCapabilities].capabilities, CoachAgent.Capabilities)
@@ -151,7 +159,7 @@ final class CoachAgentSuite extends FunSuite {
           agents = Map(id -> definition),
           providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
         )
-        val registry = run(RuntimeInstances.make(config).provide(Client.default))
+        val registry = run(AgentCatalog.make(config).provide(Client.default))
         assert(run(registry.getAgent(id).either).isLeft)
       }
     }

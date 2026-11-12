@@ -3,8 +3,8 @@
 Start here when deciding where code belongs:
 
 ```text
-ApplicationRuntime → wires the application together
-RuntimeInstances   → constructs and caches agents/providers
+ServerApplication  → composes services and owns application lifetime
+AgentCatalog       → caches complete executable agents and providers
 Agent              → prepares a model turn
 AgentRunner        → controls the loop and executes tools
 Tools              → perform specific operations
@@ -17,8 +17,8 @@ whole conversation. Most agents use a model; provider-free agents can complete a
 
 | Component | Responsibility | Not its responsibility |
 | --- | --- | --- |
-| `ApplicationRuntime` | Connect configuration, selected agents, execution settings, tools and session services. | Perform inference or implement the agent loop. |
-| `RuntimeInstances` | Lazily construct agents/providers, bind dependencies and reuse successful instances by ID. | Store conversations or execute tools. |
+| `ServerApplication` | Own configuration, tool startup, one master/catalog, admission and application-scoped work. | Perform inference or implement the agent loop. |
+| `AgentCatalog` | Lazily cache complete `ResolvedAgent` generations (program, effective context, bound tools), adapters/providers and rooted filesystems. | Store conversations or execute tools. |
 | `Agent` | Handle one turn: prepare/delegate a model request or perform provider-free work, then return a response. | Own the runner's multi-turn tool loop. |
 | `AgentRunner` | Drive an agent program, enforce budgets and available capabilities, validate tool arguments and execute requested actions. | Implement provider HTTP protocols or persist session history. |
 | Tools | Implement specific operations using their supplied dependencies, such as saving an application record. | Decide the overall conversation flow. |
@@ -36,13 +36,11 @@ SETUP
 Configuration
     │
     ▼
-ApplicationRuntime ──uses──► RuntimeInstances
-    │                           │
-    │                           └── initialized agents/providers
-    ▼
-Assembly: session services + tools + context
-    │
-    └── selected agent binding → submission service
+ServerApplication ──owns──► AgentCatalog
+    │                         └── cached complete ResolvedAgent generations
+    ├── startup tool services      (program + effective context + bound tools)
+    └── one OrchestratorLive
+          └── selected generation → AgentRunner.execution / invocation
 
 EXECUTION
 User message
@@ -214,19 +212,25 @@ See [integration evidence and pending acceptance](../lixo/completed/orchestratio
 In a configured standalone server:
 
 ```text
-ServerApplication.Configured
-    ├── ApplicationRuntime
-    │      └── RuntimeInstances
-    │             ├── cached agents
-    │             └── cached providers
-    └── Assembly
-           ├── orchestrator / session storage
-           └── shared tools and context
+ServerApplication
+    ├── AgentCatalog
+    │      ├── complete executable generations
+    │      ├── adapters/providers
+    │      └── rooted filesystems
+    ├── OrchestratorLive / session storage
+    ├── shared tool-service lifetime
+    └── ServerExecutionService: admission + author/continuation policy + owned execution scope
 ```
 
 Connections and sessions reuse this application composition. Selecting another agent does not create another runtime.
 ZIO scopes manage resource lifetime; the tree above describes ordinary object references, not a language-enforced
-ownership system. Configuration is a snapshot: editing the file does not mutate existing instances automatically.
+ownership system. Configuration is a snapshot: editing the file does not mutate existing instances automatically. Explicit ChatGPT
+credential replacement invalidates dependent adapter and complete-agent caches atomically while preserving rooted
+filesystems. In-flight work retains its old generation.
+
+`readFile`/`listFiles` use the selected agent's configured `FsRead`, otherwise workspace, regardless of Scala RPC wiring.
+Bash/Git remain workspace-bound; SDLC stays server-storage-bound. Filesystem-enabled Scala effects additionally require
+an explicitly supplied trusted RPC route/endpoint and the selected read capability.
 
 ## Keep it simple
 
@@ -237,8 +241,9 @@ ownership system. Configuration is a snapshot: editing the file does not mutate 
 
 ## Code and related documentation
 
-- [ApplicationRuntime](../server/src/main/scala/fmgp/yallmo/server/application/ApplicationRuntime.scala)
-- [RuntimeInstances](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/RuntimeInstances.scala)
+- [ServerApplication](../server/src/main/scala/fmgp/yallmo/server/application/ServerApplication.scala)
+- [ServerExecutionService](../server/src/main/scala/fmgp/yallmo/server/application/ServerExecutionService.scala)
+- [AgentCatalog](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala)
 - [Agent](../model/shared/src/main/scala/fmgp/yallmo/model/Agent.scala)
 - [AgentRunner](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala)
 - [Tool interfaces](../core/shared/src/main/scala/fmgp/yallmo/orchestration/Capabilities.scala)

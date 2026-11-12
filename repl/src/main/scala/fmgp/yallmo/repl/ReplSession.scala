@@ -7,7 +7,6 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.repl.debug.ReplDebugSnapshot
 import fmgp.yallmo.orchestration.{AgentResult, RunContext, StaticContext}
-import fmgp.yallmo.server.application.SessionSubmission
 
 /** The immutable state retained by one interactive REPL session.
   *
@@ -60,7 +59,7 @@ final class ReplSession[R] private (
       orchestrator.submitPrompt(
         state,
         prompt,
-        SessionSubmission.configuredExecution(runner, selected, staticContext, state.continuationStart)
+        runner.execution(AgentContinuations.withCurrentContinuations(selected, state.continuationStart), staticContext)
       )
     })
 
@@ -92,11 +91,16 @@ final class ReplSession[R] private (
 
 object ReplSession {
 
-  /** Normal local-mode construction delegates configured execution entirely to the server application. */
-  private[repl] def fromApplication[R](application: SessionSubmission[R]): ReplSession[R] =
-    new ReplSession[R](Option.when(application.selectedAgentId.nonEmpty) { (state, prompt, _) =>
-      application.submit(state.sessionId, prompt, state.continuationStart).map { turn =>
-        ReplTurn(state.withSession(turn.session), turn.result, turn.newMessages)
-      }
+  /** Retained embedded path consumes the same complete generation as the server. */
+  private[repl] def resolved(selection: Option[ResolvedAgent]): ReplSession[Any] =
+    new ReplSession(selection.map { agent => (state, prompt, orchestrator) =>
+      orchestrator.submitPrompt(
+        state,
+        prompt,
+        AgentRunner.execution(
+          agent,
+          program => AgentContinuations.withCurrentContinuations(program, state.continuationStart)
+        )
+      )
     })
 }

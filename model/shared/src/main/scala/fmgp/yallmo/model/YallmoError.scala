@@ -1,5 +1,7 @@
 package fmgp.yallmo.model
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.orchestration.SessionId
 import zio.Duration
 
@@ -23,16 +25,16 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not associated with session '${sessionId.value}'")
       with YallmoError
 
-  final case class UnknownTool(requestedKey: ToolKey)
+  final case class UnknownTool(requestedKey: FunctionKey)
       extends RuntimeException(s"No tool is registered with key '$requestedKey'")
       with YallmoError
 
-  final case class ToolUnavailable(toolKey: ToolKey, reason: String)
-      extends RuntimeException(s"Tool '$toolKey' is unavailable: $reason")
+  final case class ToolUnavailable(functionKey: FunctionKey, reason: String)
+      extends RuntimeException(s"Tool '$functionKey' is unavailable: $reason")
       with YallmoError
 
-  final case class ToolUnavailableToAgent(agentId: AgentId, toolKey: ToolKey)
-      extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to call tool '$toolKey'")
+  final case class ToolUnavailableToAgent(agentId: AgentId, functionKey: FunctionKey)
+      extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to call tool '$functionKey'")
       with YallmoError
 
   final case class UnknownRetriever(requestedKey: String)
@@ -69,16 +71,16 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' failed: $message", cause)
       with YallmoError
 
-  final case class ToolExecutionFailed(toolKey: ToolKey, message: String, cause: Throwable)
-      extends RuntimeException(s"Tool '$toolKey' failed: $message", cause)
+  final case class ToolExecutionFailed(functionKey: FunctionKey, message: String, cause: Throwable)
+      extends RuntimeException(s"Tool '$functionKey' failed: $message", cause)
       with YallmoError
 
-  final case class ToolApprovalDenied(toolKey: ToolKey, reason: String)
-      extends RuntimeException(s"Tool '$toolKey' was not approved: $reason")
+  final case class FunctionApprovalDenied(functionKey: FunctionKey, reason: String)
+      extends RuntimeException(s"Tool '$functionKey' was not approved: $reason")
       with YallmoError
 
-  final case class InvalidToolArguments(toolKey: ToolKey, reason: String)
-      extends RuntimeException(s"Tool '$toolKey' received invalid arguments: $reason")
+  final case class InvalidToolArguments(functionKey: FunctionKey, reason: String)
+      extends RuntimeException(s"Tool '$functionKey' received invalid arguments: $reason")
       with YallmoError
 
   final case class RetrievalFailed(retrieverKey: String, message: String, cause: Throwable)
@@ -131,10 +133,10 @@ object YallmoError {
   final case class HttpFailure(message: String) extends RuntimeException(message) with YallmoError
   final case class ProtocolFailure(message: String) extends RuntimeException(message) with YallmoError
   final case class EmptyResponse(message: String) extends RuntimeException(message) with YallmoError
-  final case class LlmUnknownTool(name: ToolKey)
+  final case class LlmUnknownTool(name: FunctionKey)
       extends RuntimeException(s"OpenAI Codex requested unknown tool '$name'")
       with YallmoError
-  final case class ToolExecutionFailure(name: ToolKey, cause: Throwable)
+  final case class ToolExecutionFailure(name: FunctionKey, cause: Throwable)
       extends RuntimeException(s"Tool '$name' failed: ${cause.getMessage}", cause)
       with YallmoError
   final case class ToolLoopLimitExceeded(limit: Int)

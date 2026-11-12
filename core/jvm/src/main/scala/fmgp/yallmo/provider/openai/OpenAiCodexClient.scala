@@ -1,6 +1,6 @@
 package fmgp.yallmo.provider.openai
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.tool.FunctionKey
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
 import fmgp.yallmo.provider.SandboxProviderHttpClient
 import fmgp.yallmo.model.YallmoError
@@ -198,7 +198,6 @@ object OpenAiCodexClient {
       "include" -> ujson.Arr("reasoning.encrypted_content"),
       "instructions" -> options.systemInstruction.filter(_.trim.nonEmpty).getOrElse("You are a helpful assistant."),
       "input" -> history,
-      "tool_choice" -> "auto",
       "parallel_tool_calls" -> true
     )
     options.thinkingLevel.foreach(level => body("reasoning") = ujson.Obj("effort" -> thinkingEffort(level)))
@@ -372,7 +371,7 @@ object OpenAiCodexClient {
           json
             .get("name")
             .map(_.str)
-            .flatMap(name => ToolKey.from(name).toOption)
+            .flatMap(name => FunctionKey.from(name).toOption)
             .getOrElse(throw IllegalArgumentException("function call name is missing")),
           json.get("arguments").map(_.str).getOrElse("{}")
         )
@@ -402,7 +401,7 @@ object OpenAiCodexConfig {
   val Model = "gpt-6.1-sol"
 }
 
-private[openai] final case class OpenAiCodexFunctionCall(callId: String, name: ToolKey, arguments: String)
+private[openai] final case class OpenAiCodexFunctionCall(callId: String, name: FunctionKey, arguments: String)
 private[openai] final case class OpenAiCodexResponse(
     output: Vector[ujson.Value],
     functionCalls: Vector[OpenAiCodexFunctionCall],

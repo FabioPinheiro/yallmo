@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.som.*
 import zio.json.*
@@ -16,7 +18,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
   private val sessionId = SessionId.unsafe("managed")
   private val userId = AgentId("human")
   private val agentId = AgentId("assistant")
-  private val toolKey = ToolKey.unsafe("probe")
+  private val functionKey = FunctionKey.unsafe("probe")
   private val context = StaticContext[Any]("Managed history")
   private val finalTurn = AgentTurn(Some(MessagePayload.Assistant("done")), AgentDecision.FinalAnswer("done"))
   private val failure = YallmoError.InvalidConfig("injected storage failure")
@@ -381,7 +383,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 assertEquals(stored.size, 1) // Tool has already run while every generated object is blocked.
               }
               _ <- release.succeed(())
-            } yield ExternalToolResult("result")
+            } yield ExternalFunctionResult("result")
           }
           turn <- orchestrator.submit(sessionId, userId, AgentTask("run"), execution(agent, tool))
           history <- captured.await
@@ -435,7 +437,9 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                   AgentTurn(
                     Some(MessagePayload.Assistant("calling")),
                     AgentDecision.Actions(Chunk("first", "second").map { name =>
-                      LlmAction.CallExternalTool(ExternalToolCall(toolKey, "{}", Some(FunctionCallId.unsafe(name))))
+                      LlmAction.CallExternalFunction(
+                        ExternalFunctionCall(functionKey, "{}", Some(FunctionCallId.unsafe(name)))
+                      )
                     }),
                     Chunk(MessagePayload.Context("generated", "additional"))
                   )
@@ -450,14 +454,14 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 assertEquals(active.count(_.payload.isInstanceOf[MessagePayload.ToolCall]), 2)
                 assertEquals(active.count(_.payload.isInstanceOf[MessagePayload.ToolOutput]), count - 1)
               }
-            } yield ExternalToolResult("result")
+            } yield ExternalFunctionResult("result")
           }
           turn <- orchestrator.submit(
             sessionId,
             userId,
             AgentTask("latest"),
-            new AgentRunner[Any](Map(toolKey -> tool), Map.empty)
-              .execution(agent, context.copy(tools = Chunk(tool.definition), extensions = Chunk(extension)))
+            new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
+              .execution(agent, context.copy(functions = Chunk(tool.definition), extensions = Chunk(extension)))
           )
           history <- captured.await
           active <- history.messages
@@ -928,7 +932,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                     Chunk(
                       callPayload("one"),
                       MessagePayload.ToolOutput(
-                        FunctionGenericOutput(FunctionCallId.unsafe("one"), ToolKey.unsafe("different"), "result")
+                        FunctionGenericOutput(FunctionCallId.unsafe("one"), FunctionKey.unsafe("different"), "result")
                       )
                     )
                   case "wrong-id"      => Chunk(callPayload("one"), outputPayload("other"))
@@ -936,7 +940,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                   case "false-pairing" =>
                     Chunk(
                       MessagePayload.ToolCall(
-                        FunctionCall(FunctionCallId.unsafe("one"), toolKey, "{\"original\":true}")
+                        FunctionCall(FunctionCallId.unsafe("one"), functionKey, "{\"original\":true}")
                       ),
                       outputPayload("one"),
                       MessagePayload.Context("cut", "cut"),
@@ -1100,7 +1104,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                       MessagePayload.ToolCall(
                         FunctionCall(
                           FunctionCallId.unsafe("first"),
-                          toolKey,
+                          functionKey,
                           "{\"kept\":true}",
                           Some("kept-provider-item")
                         )
@@ -1255,7 +1259,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                   .updateAndGet(_ + 1)
                   .flatMap(n =>
                     if n == 1 then ZIO.fail(YallmoError.InvalidConfig("first attempt failed"))
-                    else ZIO.succeed(ExternalToolResult("success"))
+                    else ZIO.succeed(ExternalFunctionResult("success"))
                   )
               )
               turn <- orchestrator.submit(sessionId, userId, AgentTask("retry once"), execution(agent, tool))
@@ -1319,7 +1323,9 @@ final class ManagedHistorySubmitSuite extends FunSuite {
           observations <- Ref.make(Chunk.empty[Chunk[Message]])
           effects <- Ref.make(0)
           agent = observingAgent(observations, captured)
-          tool = toolWith(effects.update(_ + 1) *> entered.succeed(()) *> release.await.as(ExternalToolResult("late")))
+          tool = toolWith(
+            effects.update(_ + 1) *> entered.succeed(()) *> release.await.as(ExternalFunctionResult("late"))
+          )
           stopped <- Ref.make(false)
           inspectAudit = new AgentExecution[Any] {
             val agentId = ManagedHistorySubmitSuite.this.agentId
@@ -1370,8 +1376,8 @@ final class ManagedHistorySubmitSuite extends FunSuite {
     }
 
     for protocol <- List[MessagePayload](
-        MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), toolKey, "{}")),
-        MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe("call"), toolKey, "actual result"))
+        MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), functionKey, "{}")),
+        MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe("call"), functionKey, "actual result"))
       )
     do {
       test(s"$backend: changed ${protocol.getClass.getSimpleName} context rejected; exact no-op allowed") {
@@ -1497,7 +1503,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
               rejected <- history.rebase(seed.messages.head.id, before.last.id, None).exit
               after <- history.messages
               _ <- ZIO.succeed { assert(rejected.isFailure); assertEquals(after, before) }
-            } yield ExternalToolResult("actual side effect")
+            } yield ExternalFunctionResult("actual side effect")
           }
           _ <- orchestrator.submit(
             sessionId,
@@ -1975,15 +1981,15 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                       )
                 }
             }
-            tool = toolWith(attempted.await.as(ExternalToolResult("result")))
+            tool = toolWith(attempted.await.as(ExternalFunctionResult("result")))
             result <- orchestrator
               .submit(
                 sessionId,
                 userId,
                 AgentTask("preserve"),
-                new AgentRunner[Any](Map(toolKey -> tool), Map.empty).execution(
+                new AgentRunner[Any](Map(functionKey -> tool), Map.empty).execution(
                   observingAgent(seen, captured),
-                  context.copy(tools = Chunk(tool.definition), extensions = Chunk(extension))
+                  context.copy(functions = Chunk(tool.definition), extensions = Chunk(extension))
                 )
               )
               .either
@@ -2045,7 +2051,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             }
             orchestrator <- make(probe)
             agent = observingAgent(observed, captured)
-            tool = toolWith(failed.await.as(ExternalToolResult("after failure")))
+            tool = toolWith(failed.await.as(ExternalFunctionResult("after failure")))
             turn <- orchestrator.submit(sessionId, userId, AgentTask("retry"), execution(agent, tool))
             history <- captured.await
             active <- history.messages
@@ -2095,7 +2101,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 saved <- orchestrator.append(sessionId, userId, Chunk(MessagePayload.User("concurrent")))
                 _ <- competitor.succeed(saved)
                 _ <- release.succeed(())
-              } yield ExternalToolResult("continue on original branch")
+              } yield ExternalFunctionResult("continue on original branch")
             }
             turn <- orchestrator.submit(sessionId, userId, AgentTask("branch"), execution(agent, tool))
             history <- captured.await
@@ -2264,13 +2270,13 @@ final class ManagedHistorySubmitSuite extends FunSuite {
               started.succeed(()) *> (ending match {
                 case "timeout" | "cancellation" => ZIO.never
                 case "tool-error"               => ZIO.fail(YallmoError.InvalidConfig("tool failed"))
-                case _                          => ZIO.succeed(ExternalToolResult("before inference failure"))
+                case _                          => ZIO.succeed(ExternalFunctionResult("before inference failure"))
               })
             }
             orchestrator <- make(storage)
             budget = AgentBudget.default.copy(timeout = if ending == "timeout" then 100.millis else 5.seconds)
-            execution = new AgentRunner[Any](Map(toolKey -> tool), Map.empty)
-              .execution(agent, context.copy(tools = Chunk(tool.definition)), budget)
+            execution = new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
+              .execution(agent, context.copy(functions = Chunk(tool.definition)), budget)
             fiber <- orchestrator.submit(sessionId, userId, AgentTask("finish"), execution).fork
             _ <- started.await
             exit <- if ending == "cancellation" then fiber.interrupt else fiber.await
@@ -2412,10 +2418,10 @@ final class ManagedHistorySubmitSuite extends FunSuite {
   )
 
   private def callPayload(id: String): MessagePayload =
-    MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(id), toolKey, "{\"kept\":true}"))
+    MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(id), functionKey, "{\"kept\":true}"))
 
   private def outputPayload(id: String, text: String = "result"): MessagePayload =
-    MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe(id), toolKey, text))
+    MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe(id), functionKey, text))
 
   private def persistChain(storage: Storage, payloads: Chunk[MessagePayload]): IO[YallmoError, Chunk[Message]] =
     ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (chain, payload) =>
@@ -2444,26 +2450,29 @@ final class ManagedHistorySubmitSuite extends FunSuite {
         _ <- ZIO.succeed {
           assertEquals(messages.map(_.payload), current.messages)
           assertEquals(current.messages.count(_ == MessagePayload.User(task.prompt)), 1)
-          assertEquals(context.tools.map(_.key), Chunk(toolKey))
+          assertEquals(context.functions.map(_.name), Chunk(functionKey))
         }
       } yield
         if current.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then finalTurn
         else
           AgentTurn(
             Some(MessagePayload.Assistant("calling")),
-            AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(toolKey, "{}"))))
+            AgentDecision.Actions(Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(functionKey, "{}"))))
           )
   }
 
-  private def toolWith(effect: IO[YallmoError, ExternalToolResult]): AgentTool[Any] = new AgentTool[Any] {
-    val definition = AgentToolDefinition(toolKey, "Probe asynchronous persistence")
-    def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-      ZIO.succeed(assertEquals(call.toolKey, toolKey)) *> effect
+  private def toolWith(effect: IO[YallmoError, ExternalFunctionResult]): AgentFunction[Any] = new AgentFunction[Any] {
+    val definition = FunctionToolDefinition(
+      functionKey,
+      "Probe asynchronous persistence"
+    )
+    def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+      ZIO.succeed(assertEquals(call.functionKey, functionKey)) *> effect
   }
 
-  private def execution(agent: AgentInstance[Any], tool: AgentTool[Any]): AgentExecution[Any] =
-    new AgentRunner[Any](Map(toolKey -> tool), Map.empty)
-      .execution(agent, context.copy(tools = Chunk(tool.definition)))
+  private def execution(agent: AgentInstance[Any], tool: AgentFunction[Any]): AgentExecution[Any] =
+    new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
+      .execution(agent, context.copy(functions = Chunk(tool.definition)))
 
   private def make(storage: Storage): IO[YallmoError, Orchestrator[Any]] = {
     val participant = new Agent[Any] {
@@ -2472,7 +2481,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
         ZIO.dieMessage(s"Only the supplied execution runs: ${request.model}")
     }
     for {
-      instances <- RuntimeInstances.fromAgents(Chunk(participant))
+      instances <- AgentCatalog.fromAgents(Chunk(participant))
       _ <- instances.registerUser(userId)
       orchestrator <- OrchestratorLive.make(storage, instances)
       _ <- orchestrator.createSession(sessionId, Chunk(userId))

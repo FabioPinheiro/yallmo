@@ -1,11 +1,12 @@
 package fmgp.yallmo.server.jsonrpc
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{JsonSchema, ProviderContinuation, ProviderId}
 import fmgp.yallmo.orchestration.{
   AgentResult,
   AgentTask,
-  AgentToolDefinition,
   EventMessage,
   EventSession,
   Session,
@@ -480,10 +481,10 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire(AgentResult(agentId, "Hi"), """{"agentId":"agent1","text":"Hi"}""")
   }
 
-  test("tools use AgentToolDefinition and its existing JsonSchema model, not a duplicate DTO") {
+  test("tools use FunctionToolDefinition and its existing JsonSchema model, not a duplicate DTO") {
     val tools: ToolsList.Result = Chunk(
-      AgentToolDefinition(
-        ToolKey.unsafe("inspect"),
+      FunctionToolDefinition(
+        FunctionKey.unsafe("inspect"),
         "Read",
         JsonSchema.ObjectSchema(
           Map("path" -> JsonSchema.StringSchema()),
@@ -493,7 +494,7 @@ final class YallmoProtocolSuite extends FunSuite {
     )
     assertWire(
       tools,
-      """[{"key":"inspect","description":"Read","inputSchema":{"properties":{"path":{"StringSchema":{"allowedValues":[]}}},"required":["path"],"additionalProperties":false}}]"""
+      """[{"name":"inspect","description":"Read","inputSchema":{"properties":{"path":{"StringSchema":{"allowedValues":[]}}},"required":["path"],"additionalProperties":false}}]"""
     )
     val schema: JsonSchema = JsonSchema.ArraySchema(JsonSchema.IntegerSchema(Some("index")))
     assertEquals(schema.toJson.fromJson[JsonSchema], Right(schema))

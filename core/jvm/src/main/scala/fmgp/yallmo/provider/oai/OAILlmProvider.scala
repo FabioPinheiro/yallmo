@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import zio.*
 import zio.http.*
@@ -285,7 +287,7 @@ object OAIConfig {
     } yield OAIConfig(normalizedUrl, "")
 }
 
-private[oai] final case class OAIFunctionCall(callId: String, name: ToolKey, arguments: String)
+private[oai] final case class OAIFunctionCall(callId: String, name: FunctionKey, arguments: String)
 private[oai] final case class OAIResponse(
     message: ujson.Obj,
     functionCalls: Vector[OAIFunctionCall],

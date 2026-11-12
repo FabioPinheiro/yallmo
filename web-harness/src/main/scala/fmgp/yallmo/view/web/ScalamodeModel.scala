@@ -1,5 +1,7 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import com.raquo.laminar.api.L.Var
 import fmgp.yallmo.model.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -112,8 +114,8 @@ private[web] final class ScalamodeModel(
       case None         =>
         val agent = selected.get
         val call = FunctionCall(
-          FunctionCallId.unsafe(s"${ToolKey.Scalamode.value}-${UUID.randomUUID()}"),
-          ToolKey.Scalamode,
+          FunctionCallId.unsafe(s"${ScalamodeToolDefinition.Execute.value}-${UUID.randomUUID()}"),
+          ScalamodeToolDefinition.Execute,
           Json.Obj("code" -> Json.Str(current.code), "mode" -> Json.Str("filesystem")).toJson
         )
         val input = Message(MessageData(identity.get, None, Instant.now(), MessagePayload.ToolCall(call)))

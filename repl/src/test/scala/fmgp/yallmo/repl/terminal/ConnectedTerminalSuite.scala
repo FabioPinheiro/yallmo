@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.clientharness.ControlAction
 
 import fmgp.yallmo.model.*
@@ -26,7 +28,7 @@ final class ConnectedTerminalSuite extends FunSuite {
     "tool\u009b",
     "hello\u001b[31mRED\u001b[0m\n\u0007",
     Chunk(BlobId.fresh()),
-    Some(ToolKey.unsafe("name\r\u001b"))
+    Some(FunctionKey.unsafe("name\r\u001b"))
   )
 
   test("snapshot rendering keeps wire role, author, content, tool and blob references with controls sanitized") {

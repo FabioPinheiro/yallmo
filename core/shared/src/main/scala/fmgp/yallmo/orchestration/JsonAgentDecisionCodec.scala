@@ -1,11 +1,11 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.tool.FunctionKey
 import fmgp.yallmo.model.YallmoError
 import zio.*
 import zio.json.*
 import zio.json.ast
-import fmgp.yallmo.orchestration.{AgentDecision, ExternalToolCall, LlmAction, RagQuery, StaticContext}
+import fmgp.yallmo.orchestration.{AgentDecision, ExternalFunctionCall, LlmAction, RagQuery, StaticContext}
 
 /** Strict JSON protocol for [[LlmDecisionAgent]].
   *
@@ -24,7 +24,7 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
       |
       |Each action has one of these forms:
       |{"kind":"retrieve_rag","retrieverKey":"knowledge","query":"search terms"}
-      |{"kind":"call_external_tool","toolKey":"tool-name","arguments":{"key":"value"}}""".stripMargin
+      |{"kind":"call_external_tool","toolKey":"function-name","arguments":{"key":"value"}}""".stripMargin
 
   override def decode(response: String, _staticContext: StaticContext[?]): IO[YallmoError, AgentDecision] =
     ZIO.fromEither(response.fromJson[DecisionPayload]).mapError(YallmoError.InvalidAgentDecision.apply).flatMap {
@@ -47,8 +47,8 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
       case "call_external_tool" =>
         for {
           value <- required(action.toolKey, "toolKey")
-          toolKey <- ZIO.fromEither(ToolKey.from(value)).mapError(YallmoError.InvalidAgentDecision.apply)
-        } yield LlmAction.CallExternalTool(ExternalToolCall(toolKey, action.arguments.fold("{}")(_.toJson)))
+          functionKey <- ZIO.fromEither(FunctionKey.from(value)).mapError(YallmoError.InvalidAgentDecision.apply)
+        } yield LlmAction.CallExternalFunction(ExternalFunctionCall(functionKey, action.arguments.fold("{}")(_.toJson)))
       case unsupported =>
         ZIO.fail(YallmoError.InvalidAgentDecision(s"unsupported action kind '$unsupported'"))
 
@@ -62,6 +62,7 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
       actions: Chunk[ActionPayload] = Chunk.empty
   ) derives JsonDecoder
 
+  // Keep the legacy non-native protocol spelling `toolKey`; its value is a FunctionKey, not a tool group.
   private final case class ActionPayload(
       kind: String,
       retrieverKey: Option[String] = None,

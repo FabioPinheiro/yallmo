@@ -1,5 +1,9 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import RunnerTestSupport.*
 
 import fmgp.yallmo.model.YallmoError
@@ -64,7 +68,7 @@ final class AgentRunnerSuite extends FunSuite:
     runZIO {
       for
         turns <- Ref.make(0)
-        calls <- Ref.make(Chunk.empty[ExternalToolCall])
+        calls <- Ref.make(Chunk.empty[ExternalFunctionCall])
         agent = TestAgent[Any](
           CoordinatorId,
           (_, _, runContext) =>
@@ -72,29 +76,34 @@ final class AgentRunnerSuite extends FunSuite:
               case 1 =>
                 ZIO.succeed(
                   AgentDecision
-                    .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
+                    .Actions(
+                      Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}")))
+                    )
                 )
               case 2 =>
                 val toolResult = runContext.messages.collectFirst {
-                  case Message.ToolOutput(output) if output.name == ToolKey.unsafe("clock") =>
+                  case Message.ToolOutput(output) if output.name == FunctionKey.unsafe("clock") =>
                     output.output
                 }
                 ZIO.succeed(AgentDecision.FinalAnswer(toolResult.getOrElse("missing tool result")))
               case _ => ZIO.dieMessage("unexpected extra turn")
             }
         )
-        tool = new AgentTool[Any] {
-          override val definition: AgentToolDefinition =
-            AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
+        tool = new AgentFunction[Any] {
+          override val definition: FunctionToolDefinition =
+            FunctionToolDefinition(
+              FunctionKey.unsafe("clock"),
+              "Returns a fixed time"
+            )
 
-          override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            calls.update(_ :+ call).as(ExternalToolResult("2026-10-02T12:00:00Z"))
+          override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            calls.update(_ :+ call).as(ExternalFunctionResult("2026-10-02T12:00:00Z"))
         }
-        runner = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
+        runner = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
         answer <- runner.runWithContext(
           agent,
           AgentTask("What time is it?"),
-          StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(tool.definition)),
+          StaticContext[Any](systemPrompt = "Tool context", functions = Chunk(tool.definition)),
           RunContext()
         )
         recordedCalls <- calls.get
@@ -105,11 +114,11 @@ final class AgentRunnerSuite extends FunSuite:
       val outputs = result._1.runContext.messages.collect { case Message.ToolOutput(output) => output }
       assertEquals(requests.size, 1)
       assert(FunctionCallId.from(requests.head.id.value).isRight)
-      assertEquals(result._2, Chunk(ExternalToolCall(ToolKey.unsafe("clock"), "{}", Some(requests.head.id))))
+      assertEquals(result._2, Chunk(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}", Some(requests.head.id))))
       assertEquals(
         outputs,
         Chunk(
-          FunctionGenericOutput(requests.head.id, ToolKey.unsafe("clock"), "2026-10-02T12:00:00Z")
+          FunctionGenericOutput(requests.head.id, FunctionKey.unsafe("clock"), "2026-10-02T12:00:00Z")
         )
       )
       val transcript = result._1.runContext.messages
@@ -122,21 +131,30 @@ final class AgentRunnerSuite extends FunSuite:
   }
 
   test("runner propagates typed Scala results and metadata without rendering JSON") {
-    val call = FunctionCall(FunctionCallId.unsafe("scala-1"), ToolKey.Scalamode, "{}")
+    val call = FunctionCall(FunctionCallId.unsafe("scala-1"), ScalamodeToolDefinition.Execute, "{}")
     val results = List(
-      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("42\n"), Seq("info")),
-      ExternalToolResult.ScalaMode(ScalaModeResult.CompilationError("[E006] Not found: missing"), Seq("diagnostic"), 1),
-      ExternalToolResult.ScalaMode(ScalaModeResult.Executed("ArithmeticException"), Seq("stack"), 1, truncated = true),
-      ExternalToolResult.ScalaMode(ScalaModeResult.TimedOut("deadline exceeded"), exitCode = 137)
+      ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("42\n"), Seq("info")),
+      ExternalFunctionResult.ScalaMode(
+        ScalaModeResult.CompilationError("[E006] Not found: missing"),
+        Seq("diagnostic"),
+        1
+      ),
+      ExternalFunctionResult.ScalaMode(
+        ScalaModeResult.Executed("ArithmeticException"),
+        Seq("stack"),
+        1,
+        truncated = true
+      ),
+      ExternalFunctionResult.ScalaMode(ScalaModeResult.TimedOut("deadline exceeded"), exitCode = 137)
     ).map(_.copy(compilationTime = 1200L, executionTime = 250L, totalTime = 1500L))
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
     runZIO(ZIO.foreach(results) { result =>
-      val tool = new AgentTool[Any] {
-        val definition = AgentToolDefinition(ToolKey.Scalamode, "Scala")
-        def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = ZIO.succeed(result)
+      val tool = new AgentFunction[Any] {
+        val definition = FunctionToolDefinition(ScalamodeToolDefinition.Execute, "Scala")
+        def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = ZIO.succeed(result)
       }
-      new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
-        .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+      new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool), Map.empty)
+        .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
         .invoke(Message.ToolCall(call))
     }) { outputs =>
       assertEquals(
@@ -161,24 +179,28 @@ final class AgentRunnerSuite extends FunSuite:
 
   test("runner represents Scala host infrastructure and argument failures as execution attempts") {
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
-    val tool = new AgentTool[Any] {
-      val definition = AgentToolDefinition(ToolKey.Scalamode, "Scala")
-      def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+    val tool = new AgentFunction[Any] {
+      val definition = FunctionToolDefinition(ScalamodeToolDefinition.Execute, "Scala")
+      def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
         ZIO.fail(
-          YallmoError.ToolExecutionFailed(call.toolKey, "CLI unavailable", new java.io.IOException("CLI unavailable"))
+          YallmoError.ToolExecutionFailed(
+            call.functionKey,
+            "CLI unavailable",
+            new java.io.IOException("CLI unavailable")
+          )
         )
     }
-    val execution = new AgentRunner[Any](Map(ToolKey.Scalamode -> tool), Map.empty)
-      .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+    val execution = new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool), Map.empty)
+      .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
     runZIO(ZIO.foreach(List("{}", "not-json")) { arguments =>
       execution.invoke(
-        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), ToolKey.Scalamode, arguments))
+        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), ScalamodeToolDefinition.Execute, arguments))
       )
     }) { outputs =>
       outputs.foreach {
         case Message.ToolOutput(output: ScalaModeOutput) =>
           assert(output.result.isInstanceOf[ScalaModeResult.Executed])
-          assertEquals(output.name, ToolKey.Scalamode)
+          assertEquals(output.name, ScalamodeToolDefinition.Execute)
           assertEquals(output.exitCode, 1)
           assert(output.output.contains("error"))
           assertEquals(output.logs, Seq.empty)
@@ -194,7 +216,7 @@ final class AgentRunnerSuite extends FunSuite:
     runZIO {
       for
         turns <- Ref.make(0)
-        executions <- Ref.make(Chunk.empty[ExternalToolCall])
+        executions <- Ref.make(Chunk.empty[ExternalFunctionCall])
         agent = TestAgent[Any](
           CoordinatorId,
           (_, _, _) =>
@@ -202,28 +224,40 @@ final class AgentRunnerSuite extends FunSuite:
               case 1 =>
                 AgentDecision.Actions(
                   Chunk(
-                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}")),
-                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}", Some(suppliedId))),
-                    LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("missing"), "{}"))
+                    LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}")),
+                    LlmAction
+                      .CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}", Some(suppliedId))),
+                    LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("missing"), "{}"))
                   )
                 )
               case 2 =>
                 AgentDecision
-                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
+                  .Actions(
+                    Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}")))
+                  )
               case _ => AgentDecision.FinalAnswer("done")
             }
         )
-        tool = new AgentTool[Any] {
-          override val definition = AgentToolDefinition(ToolKey.unsafe("clock"), "Returns a fixed time")
-          override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            executions.update(_ :+ call).as(ExternalToolResult("12:00"))
+        tool = new AgentFunction[Any] {
+          override val definition = FunctionToolDefinition(
+            FunctionKey.unsafe("clock"),
+            "Returns a fixed time"
+          )
+          override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            executions.update(_ :+ call).as(ExternalFunctionResult("12:00"))
         }
-        run <- new AgentRunner[Any](Map(ToolKey.unsafe("clock") -> tool), Map.empty).runWithContext(
+        run <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool), Map.empty).runWithContext(
           agent,
           AgentTask("Check repeatedly"),
           StaticContext[Any](
             "System",
-            tools = Chunk(tool.definition, AgentToolDefinition(ToolKey.unsafe("missing"), "Not registered"))
+            functions = Chunk(
+              tool.definition,
+              FunctionToolDefinition(
+                FunctionKey.unsafe("missing"),
+                "Not registered"
+              )
+            )
           ),
           RunContext()
         )
@@ -244,7 +278,7 @@ final class AgentRunnerSuite extends FunSuite:
       assertEquals(outputs(3).output, "12:00")
       assertEquals(
         executed.map(_.callId),
-        requests.filter(_.name == ToolKey.unsafe("clock")).map(call => Some(call.id))
+        requests.filter(_.name == FunctionKey.unsafe("clock")).map(call => Some(call.id))
       )
       requests.zip(outputs).foreach { case (call, output) =>
         assert(transcript.indexOf(Message.ToolCall(call)) < transcript.indexOf(Message.ToolOutput(output)))
@@ -263,37 +297,40 @@ final class AgentRunnerSuite extends FunSuite:
             turns.updateAndGet(_ + 1).map {
               case 1 =>
                 AgentDecision
-                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("email"), "{}"))))
+                  .Actions(
+                    Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("email"), "{}")))
+                  )
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
                     .collectFirst {
-                      case Message.ToolOutput(output) if output.name == ToolKey.unsafe("email") => output.output
+                      case Message.ToolOutput(output) if output.name == FunctionKey.unsafe("email") => output.output
                     }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
             }
         )
-        tool = new AgentTool[Any] {
-          override val definition: AgentToolDefinition = AgentToolDefinition(ToolKey.unsafe("email"), "Sends an email")
+        tool = new AgentFunction[Any] {
+          override val definition: FunctionToolDefinition =
+            FunctionToolDefinition(FunctionKey.unsafe("email"), "Sends an email")
 
-          override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            executions.update(_ + 1).as(ExternalToolResult("sent"))
+          override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            executions.update(_ + 1).as(ExternalFunctionResult("sent"))
         }
-        approval = new ToolApproval[Any] {
+        approval = new FunctionApproval[Any] {
           override def approve(
-              definition: AgentToolDefinition,
-              call: ExternalToolCall
+              definition: FunctionToolDefinition,
+              call: ExternalFunctionCall
           ): IO[YallmoError, Unit] =
-            ZIO.fail(YallmoError.ToolApprovalDenied(definition.key, "recipient is not authorized"))
+            ZIO.fail(YallmoError.FunctionApprovalDenied(definition.name, "recipient is not authorized"))
         }
-        guarded = ToolApproval.guard(tool, approval)
-        runner = new AgentRunner[Any](Map(guarded.definition.key -> guarded), Map.empty)
+        guarded = FunctionApproval.guard(tool, approval)
+        runner = new AgentRunner[Any](Map(guarded.definition.name -> guarded), Map.empty)
         outcome <- runner.run(
           agent,
           AgentTask("Send an email"),
-          StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(tool.definition))
+          StaticContext[Any](systemPrompt = "Tool context", functions = Chunk(tool.definition))
         )
         count <- executions.get
       yield outcome -> count
@@ -302,7 +339,7 @@ final class AgentRunnerSuite extends FunSuite:
         result._1,
         AgentResult(
           CoordinatorId,
-          "{\"error\":{\"kind\":\"ToolApprovalDenied\",\"message\":\"Tool 'email' was not approved: recipient is not authorized\"}}"
+          "{\"error\":{\"kind\":\"FunctionApprovalDenied\",\"message\":\"Tool 'email' was not approved: recipient is not authorized\"}}"
         )
       )
       assertEquals(result._2, 0)
@@ -314,8 +351,8 @@ final class AgentRunnerSuite extends FunSuite:
       for
         executions <- Ref.make(0)
         turns <- Ref.make(0)
-        toolDefinition = AgentToolDefinition(
-          ToolKey.unsafe("clock"),
+        toolDefinition = FunctionToolDefinition(
+          FunctionKey.unsafe("clock"),
           "Returns a fixed time",
           fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(
             Map("timezone" -> fmgp.yallmo.model.llm.JsonSchema.StringSchema()),
@@ -323,10 +360,10 @@ final class AgentRunnerSuite extends FunSuite:
             additionalProperties = false
           )
         )
-        tool = new AgentTool[Any] {
-          override val definition: AgentToolDefinition = toolDefinition
-          override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            executions.update(_ + 1).as(ExternalToolResult("unexpected"))
+        tool = new AgentFunction[Any] {
+          override val definition: FunctionToolDefinition = toolDefinition
+          override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            executions.update(_ + 1).as(ExternalFunctionResult("unexpected"))
         }
         agent = TestAgent[Any](
           CoordinatorId,
@@ -334,22 +371,24 @@ final class AgentRunnerSuite extends FunSuite:
             turns.updateAndGet(_ + 1).map {
               case 1 =>
                 AgentDecision
-                  .Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))))
+                  .Actions(
+                    Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}")))
+                  )
               case 2 =>
                 AgentDecision.FinalAnswer(
                   runContext.messages
                     .collectFirst {
-                      case Message.ToolOutput(output) if output.name == ToolKey.unsafe("clock") => output.output
+                      case Message.ToolOutput(output) if output.name == FunctionKey.unsafe("clock") => output.output
                     }
                     .getOrElse("missing")
                 )
               case _ => throw new IllegalStateException("unexpected extra turn")
             }
         )
-        answer <- new AgentRunner[Any](Map(ToolKey.unsafe("clock") -> tool), Map.empty).run(
+        answer <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool), Map.empty).run(
           agent,
           AgentTask("What time is it?"),
-          StaticContext[Any](systemPrompt = "Tool context", tools = Chunk(toolDefinition))
+          StaticContext[Any](systemPrompt = "Tool context", functions = Chunk(toolDefinition))
         )
         count <- executions.get
       yield answer -> count
@@ -374,7 +413,7 @@ final class AgentRunnerSuite extends FunSuite:
         AgentDecision.Actions(
           Chunk(
             LlmAction.RetrieveRag("knowledge", RagQuery("Faro beaches")),
-            LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("clock"), "{}"))
+            LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}"))
           )
         )
       )

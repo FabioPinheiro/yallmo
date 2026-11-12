@@ -9,7 +9,7 @@ simplified models live in `.llm`.
 Configured server workspaces automatically register these tools alongside Bash,
 filesystem and Scala tools. No extra tool service or configuration entry is
 required for agents inheriting the available tool catalog. Explicit agent
-`capabilities.tools` allowlists still apply; add the desired keys there when needed.
+`capabilities.tools` allowlists still apply; add `sdlc` there when needed. Use `capabilities.functions` to restrict individual operations.
 
 The captured filesystem is the **server storage directory** supplied through
 `--storage`, shared across all authorized agents and sessions. The SDLC directory
@@ -35,7 +35,7 @@ agents:
   bob:
     # Keep the existing agentType, providerIds, config, etc.
     capabilities:
-      tools: [bash, sdlc_list, sdlc_set, sdlc_read_task, sdlc_set_intents, sdlc_read_intent]
+      tools: [bash, sdlc]
 ```
 
 Omitting `capabilities.tools` inherits available tools; an empty list disables
@@ -66,7 +66,7 @@ Use `includeArchived: true` to discover archived records.
 
 ## Set
 
-Tool key: `sdlc_set`.
+Tool key: `sdlc`. Function key: `sdlc_set`.
 
 Arguments (a JSON array, not a JSON-encoded string):
 

@@ -1,5 +1,9 @@
 package fmgp.yallmo.model
 
+import fmgp.yallmo.tool.FunctionKey
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import zio.json.*
 import zio.json.ast.Json
 
@@ -20,7 +24,7 @@ object FunctionCallId {
 /** A function invocation proposed by the model. It is data until the trusted runner validates and executes it. */
 final case class FunctionCall(
     id: FunctionCallId,
-    name: ToolKey,
+    name: FunctionKey,
     argumentsJson: String,
     providerItemId: Option[String] = None
 ) derives JsonCodec {
@@ -31,14 +35,15 @@ final case class FunctionCall(
 /** The trusted host's result for one [[FunctionCall]]. Providers project only [[output]]. */
 sealed trait FunctionCallOutput {
   def callId: FunctionCallId
-  def name: ToolKey
+  def name: FunctionKey
   def output: String
 
   def validate: Either[String, FunctionCallOutput] =
     Either.cond(name.value.trim.nonEmpty, this, "function call output name must not be blank")
 }
 
-final case class FunctionGenericOutput(callId: FunctionCallId, name: ToolKey, output: String) extends FunctionCallOutput
+final case class FunctionGenericOutput(callId: FunctionCallId, name: FunctionKey, output: String)
+    extends FunctionCallOutput
 
 /** CompilationError includes compiler setup/launch-stage diagnostics. TimedOut covers the shared compilation/execution
   * deadline. Executed is an attempt outcome, not a success guarantee: inspect exitCode.
@@ -68,17 +73,17 @@ final case class ScalaModeOutput(
     executionTime: Long = 0L,
     totalTime: Long = 0L
 ) extends FunctionCallOutput {
-  def name: ToolKey = ToolKey.Scalamode
+  def name: FunctionKey = ScalamodeToolDefinition.Execute
   def output: String = result.output
 }
 
 object FunctionGenericOutput {
-  private case class Fields(callId: FunctionCallId, name: ToolKey, output: String) derives JsonCodec
+  private case class Fields(callId: FunctionCallId, name: FunctionKey, output: String) derives JsonCodec
 
   given JsonCodec[FunctionGenericOutput] = summon[JsonCodec[Fields]].transformOrFail(
     fields =>
       Either.cond(
-        fields.name != ToolKey.Scalamode,
+        fields.name != ScalamodeToolDefinition.Execute,
         FunctionGenericOutput(fields.callId, fields.name, fields.output),
         "scalamode requires ScalaModeOutput"
       ),
@@ -89,7 +94,7 @@ object FunctionGenericOutput {
 object ScalaModeOutput {
   private case class Fields(
       callId: FunctionCallId,
-      name: ToolKey,
+      name: FunctionKey,
       result: ScalaModeResult,
       logs: Seq[String] = Seq.empty,
       exitCode: Int = 0,
@@ -104,7 +109,7 @@ object ScalaModeOutput {
   given JsonCodec[ScalaModeOutput] = summon[JsonCodec[Fields]].transformOrFail(
     fields =>
       Either.cond(
-        fields.name == ToolKey.Scalamode,
+        fields.name == ScalamodeToolDefinition.Execute,
         ScalaModeOutput(
           fields.callId,
           if fields.legacyTimedOut.contains(true) then ScalaModeResult.TimedOut(fields.result.output)
@@ -121,7 +126,7 @@ object ScalaModeOutput {
     output =>
       Fields(
         output.callId,
-        ToolKey.Scalamode,
+        ScalamodeToolDefinition.Execute,
         output.result,
         output.logs,
         output.exitCode,
@@ -135,13 +140,13 @@ object ScalaModeOutput {
 }
 
 object FunctionCallOutput {
-  private case class Discriminator(name: ToolKey) derives JsonCodec
+  private case class Discriminator(name: FunctionKey) derives JsonCodec
 
   // The existing tool key is the only discriminator. Reserved-key decoding never falls back to generic output.
   given JsonCodec[FunctionCallOutput] = summon[JsonCodec[Json]].transformOrFail(
     json =>
       json.as[Discriminator].flatMap { discriminator =>
-        if discriminator.name == ToolKey.Scalamode then json.as[ScalaModeOutput]
+        if discriminator.name == ScalamodeToolDefinition.Execute then json.as[ScalaModeOutput]
         else json.as[FunctionGenericOutput]
       },
     output =>

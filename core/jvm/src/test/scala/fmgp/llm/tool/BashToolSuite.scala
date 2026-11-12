@@ -1,7 +1,8 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.model.tool.BashToolDefinition
+
+import fmgp.yallmo.orchestration.ExternalFunctionCall
 import munit.FunSuite
 import zio.*
 
@@ -13,7 +14,7 @@ final class BashToolSuite extends FunSuite {
   test("bash tool returns the command exit code and combined output") {
     val result = run(
       tool
-        .execute(ExternalToolCall(ToolKey.Bash, """{"command":"printf hello; printf error >&2"}"""))
+        .execute(ExternalFunctionCall(BashToolDefinition.Execute, """{"command":"printf hello; printf error >&2"}"""))
         .provide(BashExecutor.live)
     )
     val output = ujson.read(result.text)
@@ -25,7 +26,8 @@ final class BashToolSuite extends FunSuite {
   }
 
   test("bash tool rejects malformed arguments") {
-    val result = run(tool.execute(ExternalToolCall(ToolKey.Bash, "{}")).either.provide(BashExecutor.live))
+    val result =
+      run(tool.execute(ExternalFunctionCall(BashToolDefinition.Execute, "{}")).either.provide(BashExecutor.live))
 
     assert(result.isLeft)
   }

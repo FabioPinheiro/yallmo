@@ -1,7 +1,5 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.model.Agent
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances}
 import java.net.{InetSocketAddress, Socket, URI}
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -15,9 +13,8 @@ final class OrchestratorWebHostSuite extends FunSuite {
 
   private def start: ZIO[Scope, Throwable, Int] =
     for {
-      registry <- RuntimeInstances.fromAgents(Chunk.empty[Agent[Any]])
-      master <- OrchestratorLive.inMemory(registry)
-      port <- new OrchestratorWSServer(master).start(0)
+      backend <- application.TestServerApplication.make()
+      port <- new OrchestratorWSServer(backend).start(0)
     } yield port
 
   test("the WebSocket host serves packaged SPA assets and security headers") {
@@ -134,15 +131,15 @@ final class OrchestratorWebHostSuite extends FunSuite {
 
   test("the new standalone entry point retains validated storage/port options") {
     assertEquals(
-      OrchestratorServerMain.parse(List("--storage", "sessions")),
-      Right(OrchestratorServerMain.Options(Path.of("sessions")))
+      OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions")),
+      Right(OrchestratorServerMain.Options(Path.of("sessions"), Path.of("config.json")))
     )
     assertEquals(
-      OrchestratorServerMain.parse(List("--storage", "sessions", "--port", "8081")),
-      Right(OrchestratorServerMain.Options(Path.of("sessions"), 8081))
+      OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions", "--port", "8081")),
+      Right(OrchestratorServerMain.Options(Path.of("sessions"), Path.of("config.json"), 8081))
     )
     List("0", "65536", "not-a-number").foreach { port =>
-      assert(OrchestratorServerMain.parse(List("--storage", "sessions", "--port", port)).isLeft)
+      assert(OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions", "--port", port)).isLeft)
     }
     assert(OrchestratorServerMain.parse(Nil).isLeft)
   }

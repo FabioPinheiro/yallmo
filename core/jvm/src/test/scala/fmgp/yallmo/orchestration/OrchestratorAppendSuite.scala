@@ -14,12 +14,12 @@ final class OrchestratorAppendSuite extends FunSuite {
   private val timestamp = Instant.parse("2026-01-01T00:00:00Z")
 
   for filesystem <- List(false, true) do {
-    def fixture[A](test: (OrchestratorLive[Any], RuntimeInstances[Any], Path) => IO[YallmoError, A]): A = {
+    def fixture[A](test: (OrchestratorLive[Any], AgentCatalog[Any], Path) => IO[YallmoError, A]): A = {
       val root = Files.createTempDirectory("yallmo-orchestrator-append-")
       try
         run {
           for {
-            instances <- RuntimeInstances.fromAgents[Any](Chunk.empty)
+            instances <- AgentCatalog.fromAgents[Any](Chunk.empty)
             _ <- instances.registerUser(author)
             _ <- instances.registerUser(other)
             live <-

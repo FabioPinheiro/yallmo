@@ -1,8 +1,11 @@
 package fmgp.yallmo.tool.sdlc
 
+import fmgp.yallmo.model.tool.SdlcToolDefinition
+
 import fmgp.yallmo.fs.FileSystem
-import fmgp.yallmo.model.{ToolKey, YallmoError}
-import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall}
+import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.tool.FunctionKey
+import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall}
 import fmgp.yallmo.tool.sdlc.llm.PlanTaskSimplifiedModel
 import java.nio.file.{Files, Path}
 import java.time.Instant
@@ -16,9 +19,9 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (root, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
-          read <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":[]}""")
-          saved <- invoke(tools, ToolKey.SdlcSet, """{"tasksJson":[]}""")
+          tools <- SdlcTools.makeFunctions(fs, fs)
+          read <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":[]}""")
+          saved <- invoke(tools, SdlcToolDefinition.SetTasks, """{"tasksJson":[]}""")
         } yield {
           assertEquals(read, "[]")
           assertEquals(saved, "[]")
@@ -32,15 +35,15 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (_, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
+          tools <- SdlcTools.makeFunctions(fs, fs)
           output <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"","title":"Investigate","description":"Authentication details"},{"id":"","title":"Check callers"}]}"""
           )
           tasks <- ZIO.fromEither(output.fromJson[List[PlanTaskSimplifiedModel]])
           history <- fs.read[List[PlanTask]](PlanTaskStorage.JournalPath).runCollect
-          read <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":["T-2","T-1"]}""")
+          read <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":["T-2","T-1"]}""")
         } yield {
           assertEquals(tasks.map(_.id.value), List("T-1", "T-2"))
           assert(!output.contains("createdAt"))
@@ -89,25 +92,25 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (_, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
+          tools <- SdlcTools.makeFunctions(fs, fs)
           _ <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"","title":"Investigate","description":"Details to clear","state":"doing","assumptions":["Internal callers"],"archived":true,"steps":[{"done":false,"title":"Check"}]}]}"""
           )
           _ <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"T-1","title":"Investigate","expectedRevision":1}]}"""
           )
           beforeRetry <- fs.readUtf8(PlanTaskStorage.JournalPath)
           _ <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"T-1","title":"Investigate","expectedRevision":2}]}"""
           )
           afterRetry <- fs.readUtf8(PlanTaskStorage.JournalPath)
-          read <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}""")
+          read <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}""")
         } yield {
           assertEquals(
             read.fromJson[List[PlanTaskSimplifiedModel]],
@@ -124,16 +127,16 @@ final class SdlcToolsSuite extends FunSuite {
       run {
         for {
           service <- SdlcService.make(fs, fs)
-          tools = SdlcTools.make(service)
+          tools = SdlcTools.makeFunctions(service)
           output <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"","title":"Authentication","description":"Reliable renewal.","steps":[{"done":true,"title":"Reproduce"},{"done":false,"title":"Renew tokens","description":"Add **regression coverage**."}]}]}"""
           )
           created <- ZIO.fromEither(output.fromJson[List[PlanTaskSimplifiedModel]])
-          read <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}""")
+          read <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}""")
           updated = created.head.copy(steps = created.head.steps.map(_.copy(done = true)))
-          saved <- invoke(tools, ToolKey.SdlcSet, s"""{"tasksJson":${List(updated).toJson}}""")
+          saved <- invoke(tools, SdlcToolDefinition.SetTasks, s"""{"tasksJson":${List(updated).toJson}}""")
           beforeRetry <- fs.readUtf8(PlanTaskStorage.JournalPath)
           current <- ZIO.fromEither(saved.fromJson[List[PlanTaskSimplifiedModel]])
           _ <- service.setTasks(current)
@@ -174,7 +177,7 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (root, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
+          tools <- SdlcTools.makeFunctions(fs, fs)
           _ <- ZIO.foreachDiscard(
             List(
               """{"title":"Missing done"}""",
@@ -185,9 +188,12 @@ final class SdlcToolsSuite extends FunSuite {
               """{"done":false,"title":"Unknown field","extra":true}"""
             )
           ) { step =>
-            invoke(tools, ToolKey.SdlcSet, s"""{"tasksJson":[{"id":"","title":"Task","steps":[$step]}]}""").either.map(
-              result => assert(result.swap.toOption.get.isInstanceOf[YallmoError.InvalidToolArguments])
-            )
+            invoke(
+              tools,
+              SdlcToolDefinition.SetTasks,
+              s"""{"tasksJson":[{"id":"","title":"Task","steps":[$step]}]}"""
+            ).either
+              .map(result => assert(result.swap.toOption.get.isInstanceOf[YallmoError.InvalidToolArguments]))
           }
         } yield assert(!Files.exists(root.resolve(PlanTaskStorage.Directory)))
       }
@@ -220,15 +226,15 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (_, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
+          tools <- SdlcTools.makeFunctions(fs, fs)
           output <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"","title":"Parent","refs":[["subtask","T-2"],["dependsOn","T-2"]]},{"id":"","title":"Child","refs":[["leftoverOf","T-1"]]}]}"""
           )
           saved <- ZIO.fromEither(output.fromJson[List[PlanTaskSimplifiedModel]])
-          reopened <- SdlcTools.make(fs, fs)
-          read <- invoke(reopened, ToolKey.SdlcReadTask, """{"taskIds":["T-1","T-2"]}""")
+          reopened <- SdlcTools.makeFunctions(fs, fs)
+          read <- invoke(reopened, SdlcToolDefinition.ReadTask, """{"taskIds":["T-1","T-2"]}""")
           before <- fs.readUtf8(PlanTaskStorage.JournalPath)
           _ <- ZIO.foreachDiscard(
             List(
@@ -242,13 +248,13 @@ final class SdlcToolsSuite extends FunSuite {
           ) { refs =>
             invoke(
               tools,
-              ToolKey.SdlcSet,
+              SdlcToolDefinition.SetTasks,
               s"""{"tasksJson":[{"id":"T-1","title":"Parent","expectedRevision":1,"refs":$refs}]}"""
             ).either.map(result => assert(result.isLeft, clues(refs)))
           }
           legacy <- invoke(
             tools,
-            ToolKey.SdlcSet,
+            SdlcToolDefinition.SetTasks,
             """{"tasksJson":[{"id":"T-1","title":"Parent","expectedRevision":1,"subtasks":[]}]}"""
           ).either
           after <- fs.readUtf8(PlanTaskStorage.JournalPath)
@@ -371,8 +377,8 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (root, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
-          set = tools.find(_.definition.key == ToolKey.SdlcSet).get
+          tools <- SdlcTools.makeFunctions(fs, fs)
+          set = tools.find(_.definition.name == SdlcToolDefinition.SetTasks).get
           _ <- ZIO.foreachDiscard(
             List(
               "not json",
@@ -387,12 +393,12 @@ final class SdlcToolsSuite extends FunSuite {
               " " * (SdlcTools.MaxArgumentBytes + 1)
             )
           ) { arguments =>
-            set.execute(ExternalToolCall(ToolKey.SdlcSet, arguments)).either.map { result =>
+            set.execute(ExternalFunctionCall(SdlcToolDefinition.SetTasks, arguments)).either.map { result =>
               assert(result.swap.toOption.get.isInstanceOf[YallmoError.InvalidToolArguments])
             }
           }
-          wrongKey <- set.execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"tasksJson":[]}""")).either
-          wrongRead <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":[42]}""").either
+          wrongKey <- set.execute(ExternalFunctionCall(SdlcToolDefinition.ReadTask, """{"tasksJson":[]}""")).either
+          wrongRead <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":[42]}""").either
         } yield {
           assert(wrongKey.isLeft)
           assert(wrongRead.isLeft)
@@ -445,9 +451,13 @@ final class SdlcToolsSuite extends FunSuite {
           _ <- ZIO.foreachDiscard(List("not json\n", "\n", "[] ignored\n", "[{}]\n", "[]", "[]\n")) { contents =>
             for {
               _ <- fs.writeUtf8(PlanTaskStorage.JournalPath, contents, fmgp.yallmo.fs.WriteMode.Replace)
-              tools <- SdlcTools.make(fs, fs)
-              read <- invoke(tools, ToolKey.SdlcReadTask, """{"taskIds":[]}""").either
-              saved <- invoke(tools, ToolKey.SdlcSet, """{"tasksJson":[{"id":"","title":"Do not reset"}]}""").either
+              tools <- SdlcTools.makeFunctions(fs, fs)
+              read <- invoke(tools, SdlcToolDefinition.ReadTask, """{"taskIds":[]}""").either
+              saved <- invoke(
+                tools,
+                SdlcToolDefinition.SetTasks,
+                """{"tasksJson":[{"id":"","title":"Do not reset"}]}"""
+              ).either
               after <- fs.readUtf8(PlanTaskStorage.JournalPath)
             } yield {
               assert(read.swap.toOption.get.isInstanceOf[YallmoError.ToolExecutionFailed])
@@ -507,13 +517,13 @@ final class SdlcToolsSuite extends FunSuite {
     withWorkspace { (root, fs) =>
       run {
         for {
-          tools <- SdlcTools.make(fs, fs)
+          tools <- SdlcTools.makeFunctions(fs, fs)
           _ <- ZIO.attempt(Files.writeString(root.resolve(PlanTaskStorage.Directory), "not a directory"))
-          failed <- invoke(tools, ToolKey.SdlcSet, """{"tasksJson":[{"id":"","title":"Task"}]}""").either
+          failed <- invoke(tools, SdlcToolDefinition.SetTasks, """{"tasksJson":[{"id":"","title":"Task"}]}""").either
           _ <- ZIO.attempt(Files.delete(root.resolve(PlanTaskStorage.Directory)))
           _ <- fs.createDirectories(PlanTaskStorage.Directory)
           _ <- ZIO.attempt(Files.createSymbolicLink(root.resolve(PlanTaskStorage.JournalPath), root.resolve("outside")))
-          linked <- invoke(tools, ToolKey.SdlcSet, """{"tasksJson":[{"id":"","title":"Task"}]}""").either
+          linked <- invoke(tools, SdlcToolDefinition.SetTasks, """{"tasksJson":[{"id":"","title":"Task"}]}""").either
         } yield {
           assert(failed.swap.toOption.get.isInstanceOf[YallmoError.ToolExecutionFailed])
           assert(linked.swap.toOption.get.isInstanceOf[YallmoError.ToolExecutionFailed])
@@ -523,8 +533,8 @@ final class SdlcToolsSuite extends FunSuite {
     }
   }
 
-  private def invoke(tools: Chunk[AgentTool[Any]], key: ToolKey, arguments: String): IO[YallmoError, String] =
-    tools.find(_.definition.key == key).get.execute(ExternalToolCall(key, arguments)).map(_.text)
+  private def invoke(tools: Chunk[AgentFunction[Any]], key: FunctionKey, arguments: String): IO[YallmoError, String] =
+    tools.find(_.definition.name == key).get.execute(ExternalFunctionCall(key, arguments)).map(_.text)
 
   private def withWorkspace(test: (Path, FileSystem) => Unit): Unit = {
     val root = Files.createTempDirectory("yallmo-sdlc-").toRealPath()

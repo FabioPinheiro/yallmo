@@ -1,6 +1,6 @@
 package fmgp.yallmo.provider.openai
 
-import fmgp.yallmo.model.FunctionToolDefinition
+import fmgp.yallmo.tool.FunctionToolDefinition
 import fmgp.yallmo.provider.JsonSchemaCharacterizationSuite
 
 final class OpenAiCodexJsonSchemaSuite extends JsonSchemaCharacterizationSuite:

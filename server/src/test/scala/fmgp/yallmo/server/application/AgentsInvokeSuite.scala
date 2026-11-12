@@ -1,5 +1,9 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
+import fmgp.yallmo.model.tool.{BashToolDefinition, ScalamodeToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{
@@ -32,7 +36,7 @@ final class AgentsInvokeSuite extends FunSuite {
     "OAIAgent",
     Seq(providerId),
     Json.Obj("model" -> Json.Str("test"), "systemPrompt" -> Json.Str("Configured instructions")),
-    capabilities = AgentCapabilities(tools = Some(Set.empty))
+    capabilities = AgentCapabilities(functions = Some(Set.empty))
   )
   private val config = Config(
     agents = Map(assistant -> definition),
@@ -60,7 +64,7 @@ final class AgentsInvokeSuite extends FunSuite {
           requests <- seen.get
           sessions <- fixture.live.listSessions
           reopened <- root.fold(fixture.live.listMessages)(path =>
-            OrchestratorLive.filesystem(path, fixture.runtime.instances).flatMap(_.listMessages)
+            OrchestratorLive.filesystem(path, fixture.runtime.catalog).flatMap(_.listMessages)
           )
           info <- initialize(fixture.rpc, fixture.connection, Some(human))
         } yield {
@@ -99,30 +103,16 @@ final class AgentsInvokeSuite extends FunSuite {
         viewer <- fixture.rpc.openConnection
         info <- initialize(fixture.rpc, viewer, None)
         forbidden <- call(fixture.rpc, viewer, AgentsInvoke.method, AgentsInvoke.Params(assistant, input, human))
-        readonly = new OrchestratorRpc(fixture.live)
-        readonlyConnection <- readonly.openConnection
-        readonlyInfo <- initialize(readonly, readonlyConnection, Some(human))
-        unavailable <- call(
-          readonly,
-          readonlyConnection,
-          AgentsInvoke.method,
-          AgentsInvoke.Params(assistant, input, human)
-        )
         spoof = Message(input.data.copy(agentId = assistant))
         spoofed <- invoke(fixture, spoof)
-        _ <- fixture.rpc.disconnect(uninitialized) *> fixture.rpc.disconnect(viewer) *> readonly.disconnect(
-          readonlyConnection
-        )
+        _ <- fixture.rpc.disconnect(uninitialized) *> fixture.rpc.disconnect(viewer)
         count <- calls.get
         stored <- fixture.live.listMessages
       } yield {
         assertEquals(decode[JsonRpc.Failure](unauthorized).error.code, ErrorCode.Unauthorized)
         assertEquals(decode[JsonRpc.Failure](forbidden).error.code, ErrorCode.Forbidden)
-        assertEquals(decode[JsonRpc.Failure](unavailable).error, JsonRpc.Error.MethodNotFound)
         assertEquals(decode[JsonRpc.Failure](spoofed).error.code, ErrorCode.Forbidden)
-        List(info, readonlyInfo).foreach(value =>
-          assert(!decode[JsonRpc.Success[Initialize.Result]](value).result.methods.contains(AgentsInvoke.method))
-        )
+        assert(!decode[JsonRpc.Success[Initialize.Result]](info).result.methods.contains(AgentsInvoke.method))
         assertEquals(count, 0)
         assertEquals(stored, Chunk.empty)
       }
@@ -194,13 +184,17 @@ final class AgentsInvokeSuite extends FunSuite {
       for {
         requests <- Ref.make(Vector.empty[String])
         executions <- Ref.make(0)
-        tool = new AgentTool[Any] {
-          val definition = AgentToolDefinition(ToolKey.unsafe("echo"), "Echo")
-          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-            executions.update(_ + 1).as(ExternalToolResult("tool output"))
+        tool = new AgentFunction[Any] {
+          val definition = FunctionToolDefinition(FunctionKey.unsafe("echo"), "Echo")
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            executions.update(_ + 1).as(ExternalFunctionResult("tool output"))
         }
         enabled = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("echo"))))))
+          Map(
+            assistant -> definition.copy(capabilities =
+              AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("echo"))))
+            )
+          )
         )
         fixture <- make(
           request =>
@@ -233,25 +227,33 @@ final class AgentsInvokeSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         providers <- Ref.make(0)
-        executions <- Ref.make(Chunk.empty[ExternalToolCall])
-        tool = new AgentTool[Any] {
+        executions <- Ref.make(Chunk.empty[ExternalFunctionCall])
+        tool = new AgentFunction[Any] {
           val definition = fmgp.yallmo.tool.ScalaTool.definition
-          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             executions
               .update(_ :+ call)
-              .as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("42\n")))
+              .as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("42\n")))
         }
         allowed = config.copy(agents =
-          Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))))
+          Map(
+            assistant -> definition.copy(capabilities =
+              AgentCapabilities(functions = Some(Set(ScalamodeToolDefinition.Execute)))
+            )
+          )
         )
         fixture <- make(_ => providers.update(_ + 1).as(answer), configuration = allowed, tools = Chunk(tool))
-        function = FunctionCall(FunctionCallId.unsafe("browser-call"), ToolKey.Scalamode, """{"code":"40 + 2"}""")
+        function = FunctionCall(
+          FunctionCallId.unsafe("browser-call"),
+          ScalamodeToolDefinition.Execute,
+          """{"code":"40 + 2"}"""
+        )
         request = Message(input.data.copy(payload = Message.ToolCall(function)))
         reply <- invoke(fixture, request)
         response = decode[JsonRpc.Success[Message]](reply).result
         invalid = function.copy(id = FunctionCallId.unsafe("bad-arguments"), argumentsJson = """{"code":42}""")
         badReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(invalid))))
-        unavailable = function.copy(id = FunctionCallId.unsafe("denied"), name = ToolKey.Bash)
+        unavailable = function.copy(id = FunctionCallId.unsafe("denied"), name = BashToolDefinition.Execute)
         deniedReply <- invoke(fixture, Message(input.data.copy(payload = Message.ToolCall(unavailable))))
         calls <- executions.get
         count <- providers.get
@@ -266,7 +268,7 @@ final class AgentsInvokeSuite extends FunSuite {
             ScalaModeOutput(function.id, ScalaModeResult.Executed("42\n"))
           )
         )
-        assertEquals(calls, Chunk(ExternalToolCall(function.name, function.argumentsJson, Some(function.id))))
+        assertEquals(calls, Chunk(ExternalFunctionCall(function.name, function.argumentsJson, Some(function.id))))
         assertEquals(count, 0)
         assert(stored.contains(request) && stored.contains(response))
         assertEquals(sessions, Chunk.empty)
@@ -287,25 +289,27 @@ final class AgentsInvokeSuite extends FunSuite {
       fmgp.yallmo.tool.sdlc.SdlcTools.ListDefinition -> "{}"
     )
   do
-    test(s"direct ${toolDefinition.key} retains configured denial and approval gates without inference") {
+    test(s"direct ${toolDefinition.name} retains configured denial and approval gates without inference") {
       run(ZIO.scoped {
         for {
           executions <- Ref.make(0)
           approvals <- Ref.make(0)
-          tool = new AgentTool[Any] {
+          tool = new AgentFunction[Any] {
             val definition = toolDefinition
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-              executions.update(_ + 1).as(ExternalToolResult("must not run"))
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+              executions.update(_ + 1).as(ExternalFunctionResult("must not run"))
           }
-          guarded = ToolApproval.guard(
+          guarded = FunctionApproval.guard(
             tool,
-            new ToolApproval[Any] {
-              def approve(definition: AgentToolDefinition, call: ExternalToolCall): IO[YallmoError, Unit] =
+            new FunctionApproval[Any] {
+              def approve(definition: FunctionToolDefinition, call: ExternalFunctionCall): IO[YallmoError, Unit] =
                 approvals.update(_ + 1) *> ZIO.fail(YallmoError.InvalidConfig("Approval denied"))
             }
           )
           allowed = config.copy(agents =
-            Map(assistant -> definition.copy(capabilities = AgentCapabilities(tools = Some(Set(toolDefinition.key)))))
+            Map(
+              assistant -> definition.copy(capabilities = AgentCapabilities(functions = Some(Set(toolDefinition.name))))
+            )
           )
           denied <- make(_ => ZIO.dieMessage("No provider inference"), tools = Chunk(guarded))
           permitted <- make(
@@ -315,7 +319,7 @@ final class AgentsInvokeSuite extends FunSuite {
           )
           request = Message(
             input.data.copy(payload =
-              Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), toolDefinition.key, arguments))
+              Message.ToolCall(FunctionCall(FunctionCallId.unsafe("gate"), toolDefinition.name, arguments))
             )
           )
           deniedReply <- invoke(denied, request)
@@ -342,7 +346,7 @@ final class AgentsInvokeSuite extends FunSuite {
             Message.Context("submitted", "data"),
             Message.Instructions("not a configured system prompt"),
             Message.ToolOutput(
-              FunctionGenericOutput(FunctionCallId.unsafe("forwarded"), ToolKey.unsafe("other"), "data")
+              FunctionGenericOutput(FunctionCallId.unsafe("forwarded"), FunctionKey.unsafe("other"), "data")
             )
           )
         ) { payload =>
@@ -516,7 +520,7 @@ final class AgentsInvokeSuite extends FunSuite {
         fixture <- make(request =>
           request.body.asString.flatMap(body => sent.succeed(body)) *> calls.update(_ + 1).as(answer)
         )
-        port <- new OrchestratorWSServer(fixture.live, Some(fixture.backend)).start(0)
+        port <- new OrchestratorWSServer(fixture.backend).start(0)
         connected <- Promise.make[Nothing, WebSocketChannel]
         replies <- Queue.unbounded[String]
         socket = Handler.webSocket { channel =>
@@ -592,23 +596,24 @@ final class AgentsInvokeSuite extends FunSuite {
   }
 
   private final case class Fixture(
-      runtime: ApplicationRuntime,
-      backend: ServerApplication.Configured,
+      runtime: ServerApplication,
+      backend: ServerExecutionService,
       rpc: OrchestratorRpc,
       connection: OrchestratorRpc.Connection
   ) {
-    def live: OrchestratorLive[Any] = backend.assembly.orchestrator
+    def live: OrchestratorLive[Any] = backend.application.master
   }
 
   private def make(
       respond: Request => Task[Response],
       root: Option[Path] = None,
       configuration: Config = config,
-      tools: Chunk[AgentTool[Any]] = Chunk.empty
+      tools: Chunk[AgentFunction[Any]] = Chunk.empty
   ): ZIO[Scope, YallmoError, Fixture] =
     for {
-      runtime <- ApplicationRuntime.make(configuration, Chunk.empty).provide(ZLayer.succeed(fakeClient(respond)))
-      assembly <- runtime.open[Any](root, tools)
+      runtime <- ServerApplication
+        .make(configuration, Chunk.empty, root, tools)
+        .provide(ZLayer.succeed(fakeClient(respond)))
       scope <- ZIO.service[Scope]
       inFlight <- Ref.make(Set.empty[SessionId])
       continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[fmgp.yallmo.model.llm.ProviderContinuation])])
@@ -618,9 +623,8 @@ final class AgentsInvokeSuite extends FunSuite {
         catalog,
         fmgp.yallmo.provider.openai.OpenAiCodexAuth.oauthFlow(fakeClient(respond))
       )
-      backend = new ServerApplication.Configured(
+      backend = new ServerExecutionService(
         runtime,
-        assembly,
         Path.of("."),
         providers,
         scope,
@@ -628,7 +632,7 @@ final class AgentsInvokeSuite extends FunSuite {
         continuations,
         captures
       )
-      rpc = new OrchestratorRpc(assembly.orchestrator, Some(backend))
+      rpc = new OrchestratorRpc(backend)
       connection <- rpc.openConnection
       _ <- initialize(rpc, connection, Some(human))
       _ <- ZIO.addFinalizer(rpc.disconnect(connection))
@@ -700,13 +704,14 @@ final class AgentsInvokeSuite extends FunSuite {
       .getOrThrowFiberFailure()
   }
   private def seed(
-      backend: ServerApplication.Configured,
+      backend: ServerExecutionService,
       author: AgentId,
       name: Option[SessionId]
   ): IO[YallmoError, SessionSnapshot] =
     for {
-      _ <- backend.runtime.registerUser(author)
-      session <- backend.assembly.submission(author, None).create(name.map(_.value))
+      _ <- backend.application.registerUser(author)
+      session <- backend.application.master
+        .createSession(name.getOrElse(SessionId.unsafe(s"main-${java.util.UUID.randomUUID()}")), Chunk(author))
     } yield SessionSnapshot.from(session)
 
 }

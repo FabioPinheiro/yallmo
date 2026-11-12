@@ -9,15 +9,15 @@ import zio.*
 /** Default [[Orchestrator]] implementation backed by an internal [[Storage]]. */
 final class OrchestratorLive[-R] private[orchestration] (
     val storage: Storage,
-    val instances: RuntimeInstances[R],
+    val catalog: AgentCatalog[R],
     val events: OrchestrationEvents
 ) extends Orchestrator[R] {
 
   override def getAgent(id: AgentId): IO[YallmoError, Agent[R]] =
-    instances.getAgent(id)
+    catalog.getAgent(id)
 
   def listAgentIds: IO[YallmoError, Chunk[AgentId]] =
-    instances.listAgentIds
+    catalog.listAgentIds
 
   def listMessages: IO[YallmoError, Chunk[Message]] =
     storage.listMessages.mapError(YallmoError.StorageFailed.apply)
@@ -68,7 +68,7 @@ final class OrchestratorLive[-R] private[orchestration] (
       source <- (for {
         _ <- ZIO.fail(YallmoError.InvalidMessage("Prompt must not be blank")).when(task.prompt.trim.isEmpty)
         _ <- getAgent(execution.agentId)
-        _ <- instances.validateAuthor(authorId)
+        _ <- catalog.validateAuthor(authorId)
         inventory <- storage.listMessages.mapError(YallmoError.StorageFailed.apply)
         history <- StoreageUtils.ancestry(inventory.map(message => message.id -> message).toMap, Some(parentId))
         _ <- validateToolExchanges(history)
@@ -279,7 +279,7 @@ final class OrchestratorLive[-R] private[orchestration] (
               objects = inventory.map(m => m.id -> m).toMap
               source <- StoreageUtils.ancestry(objects, Some(head))
               destination <- StoreageUtils.ancestry(objects, onto)
-              _ <- ZIO.foreachDiscard(source ++ destination)(m => instances.validateAuthor(m.agentId))
+              _ <- ZIO.foreachDiscard(source ++ destination)(m => catalog.validateAuthor(m.agentId))
               originals = source.drop(source.indexWhere(_.id == base) + 1)
               changed = destination ++ originals != current
               // Each side of the cut must stand alone; never repair or re-pair an exchange across a cut.
@@ -351,7 +351,7 @@ final class OrchestratorLive[-R] private[orchestration] (
   }
 
   private def persistMessage(message: Message): IO[YallmoError, Message] =
-    instances.validateAuthor(message.agentId) *>
+    catalog.validateAuthor(message.agentId) *>
       storage.putMessage(message).mapError(YallmoError.StorageFailed.apply)
 
   private def isReasoning(message: Message): Boolean = message.payload.isInstanceOf[MessagePayload.Reasoning]
@@ -427,7 +427,7 @@ final class OrchestratorLive[-R] private[orchestration] (
           _ <- ZIO
             .fail(YallmoError.InvalidMessage(s"Rebase message ${MessageId.value(id)} has an invalid hash"))
             .unless(message.id == MessageId.from(message.data))
-          _ <- instances.validateAuthor(message.agentId)
+          _ <- catalog.validateAuthor(message.agentId)
         } yield message
       ancestry = (id: MessageId) => {
         def loop(
@@ -492,14 +492,14 @@ final class OrchestratorLive[-R] private[orchestration] (
     storage.loadSessionParcial(id).mapError(YallmoError.StorageFailed.apply)
 
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
-    instances.validateAuthor(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
+    catalog.validateAuthor(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
 
   override def append(
       id: SessionId,
       agentId: AgentId,
       messages: Chunk[MessagePayload]
   ): IO[YallmoError, Session] =
-    instances.validateAuthor(agentId) *>
+    catalog.validateAuthor(agentId) *>
       (if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
        else appendToLatestSession(id, agentId, messages)).mapError(YallmoError.StorageFailed.apply)
 
@@ -537,7 +537,7 @@ final class OrchestratorLive[-R] private[orchestration] (
       produce: (Chunk[Byte] => IO[YallmoError, Unit]) => ZIO[R1, YallmoError, Unit]
   ): ZIO[R1, YallmoError, Session] =
     for {
-      _ <- instances.validateAuthor(agentId)
+      _ <- catalog.validateAuthor(agentId)
       session <- loadSession(id)
       _ <- ZIO.fail(YallmoError.AgentNotInSession(id, agentId)).unless(session.agentIds.contains(agentId))
       blobId <- message.blobIds.toList match {
@@ -567,33 +567,31 @@ final class OrchestratorLive[-R] private[orchestration] (
     storage.fork(source, target).mapError(YallmoError.StorageFailed.apply)
 
   private def validateAuthors(agentIds: Chunk[AgentId]): IO[YallmoError, Unit] =
-    ZIO.foreachDiscard(agentIds)(instances.validateAuthor)
+    ZIO.foreachDiscard(agentIds)(catalog.validateAuthor)
 }
 
 object OrchestratorLive {
 
-  private[orchestration] def make[R](storage: Storage, instances: RuntimeInstances[R]): UIO[OrchestratorLive[R]] =
-    OrchestrationEvents.make.map(updates =>
-      new OrchestratorLive(new StorageEvents(storage, updates), instances, updates)
-    )
+  private[orchestration] def make[R](storage: Storage, catalog: AgentCatalog[R]): UIO[OrchestratorLive[R]] =
+    OrchestrationEvents.make.map(updates => new OrchestratorLive(new StorageEvents(storage, updates), catalog, updates))
 
   /** Creates an orchestrator using a shared registry and ephemeral, process-local storage. */
   def inMemory[R](
-      instances: RuntimeInstances[R]
+      catalog: AgentCatalog[R]
   ): UIO[OrchestratorLive[R]] =
     for {
       storage <- StorageInMemory.make
-      orchestrator <- make(storage, instances)
+      orchestrator <- make(storage, catalog)
     } yield orchestrator
 
   /** Opens filesystem storage using a shared registry. */
   def filesystem[R](
       root: Path,
-      instances: RuntimeInstances[R]
+      catalog: AgentCatalog[R]
   ): IO[YallmoError, OrchestratorLive[R]] =
     for {
       storage <- StorageFS.open(root)
-      orchestrator <- make(storage, instances)
+      orchestrator <- make(storage, catalog)
     } yield orchestrator
 
 }

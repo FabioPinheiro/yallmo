@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.storage.{StorageFS, StorageInMemory}
@@ -25,7 +27,7 @@ final class OrchestratorBranchSuite extends FunSuite {
     )
   )
   private val context = StaticContext[Any]("Test")
-  private val key = ToolKey.unsafe("probe")
+  private val key = FunctionKey.unsafe("probe")
 
   for backend <- List("memory", "filesystem") do {
     for failure <- List("none", "execution", "defect", "timeout", "generated", "prompt-before", "prompt-after") do
@@ -45,11 +47,11 @@ final class OrchestratorBranchSuite extends FunSuite {
                 else base.putMessage(message)
             }
             orchestrator <- make(storage)
-            tool = new AgentTool[Any] {
-              val definition = AgentToolDefinition(key, "Synthetic test tool")
-              def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = {
+            tool = new AgentFunction[Any] {
+              val definition = FunctionToolDefinition(key, "Synthetic test tool")
+              def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = {
                 val _ = call
-                tools.update(_ + 1).as(ExternalToolResult("tool output"))
+                tools.update(_ + 1).as(ExternalFunctionResult("tool output"))
               }
             }
             agent = new AgentInstance[Any] {
@@ -85,7 +87,7 @@ final class OrchestratorBranchSuite extends FunSuite {
                           }
                         } yield AgentTurn(
                           Some(MessagePayload.Assistant("using tool")),
-                          AgentDecision.Actions(Chunk(LlmAction.CallExternalTool(ExternalToolCall(key, "{}"))))
+                          AgentDecision.Actions(Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(key, "{}"))))
                         ))
               }
             }
@@ -96,7 +98,7 @@ final class OrchestratorBranchSuite extends FunSuite {
                 AgentTask("branch prompt"),
                 new AgentRunner[Any](Map(key -> tool), Map.empty).execution(
                   agent,
-                  context.copy(tools = Chunk(tool.definition)),
+                  context.copy(functions = Chunk(tool.definition)),
                   AgentBudget.default.copy(timeout = 150.millis)
                 )
               )
@@ -200,7 +202,7 @@ final class OrchestratorBranchSuite extends FunSuite {
 
   private val problem = YallmoError.InvalidMessage("synthetic failure")
   private def make(storage: Storage): IO[YallmoError, OrchestratorLive[Any]] = for {
-    registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+    registry <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
       val id = assistant
       def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
         val _ = request

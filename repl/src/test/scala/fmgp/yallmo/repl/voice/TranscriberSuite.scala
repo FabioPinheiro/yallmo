@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.voice
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
@@ -38,7 +40,7 @@ final class TranscriberSuite extends FunSuite {
     val store = run(
       OrchestratorLive.inMemory(
         run(
-          RuntimeInstances.fromAgents(
+          AgentCatalog.fromAgents(
             Chunk(agent) ++ (if registerHuman then Chunk(user) else Chunk.empty)
           )
         )
@@ -61,7 +63,6 @@ final class TranscriberSuite extends FunSuite {
           settings.model,
           Chunk(value.input, MessagePayload.Instructions(settings.systemPrompt)),
           tools = Chunk.empty,
-          toolChoice = ToolChoice.None,
           parallelToolCalls = false,
           options = ProviderGenerateOptions(responseMimeType = None)
         )
@@ -87,7 +88,8 @@ final class TranscriberSuite extends FunSuite {
   }
 
   test("calls, blank, unsupported payloads and non-stop results fail without another turn or assistant transcript") {
-    val call = MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.unsafe("forbidden"), "{}"))
+    val call =
+      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), FunctionKey.unsafe("forbidden"), "{}"))
     val responses = List(
       AgentTurnResponse(Chunk(call), LlmStopReason.ToolUse),
       AgentTurnResponse(Chunk(MessagePayload.Assistant("text"), call), LlmStopReason.Stop),
@@ -100,7 +102,8 @@ final class TranscriberSuite extends FunSuite {
     )
     responses.foreach { response =>
       val fixture = new Fixture(response)
-      assert(run(fixture.voice.transcribe(audio).either).isLeft)
+      val result = run(fixture.voice.transcribe(audio).either)
+      assert(result.isLeft)
       assertEquals(fixture.requests.size, 1)
       val summaries = run(fixture.store.listSessions)
       assertEquals(summaries.size, 1)

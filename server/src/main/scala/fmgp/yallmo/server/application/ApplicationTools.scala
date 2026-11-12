@@ -1,9 +1,18 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.tool.{ToolDefinition, FunctionToolDefinition, FunctionKey, ToolKey}
+
 import fmgp.yallmo.fs.{FileSystem, FsRead}
-import fmgp.yallmo.model.{ToolKey, YallmoError}
-import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
+import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.tool.*
+import fmgp.yallmo.model.tool.{
+  FilesystemToolDefinition,
+  BashToolDefinition,
+  RepositoryChangesToolDefinition,
+  ScalamodeToolDefinition,
+  SdlcToolDefinition
+}
 import fmgp.yallmo.tool.sdlc.{SdlcService, SdlcTools}
 import zio.*
 
@@ -15,20 +24,58 @@ import java.nio.file.Path
   * display.
   */
 final case class StartupTools(
-    available: Chunk[AgentTool[ApplicationTools.Environment]],
+    functions: Chunk[AgentFunction[ApplicationTools.Environment]],
     availability: ToolAvailability,
     filesystem: Option[FsRead] = None
-)
+) {
+  def tools: Chunk[AgentTool[ApplicationTools.Environment]] =
+    AgentTool.group(ApplicationTools.ToolDefinitions, functions)
+}
 
-/** Client-neutral tool availability retained from application startup. */
+/** Client-neutral availability: individual functions retain their own failure reasons and explicit tool ownership. */
 final case class ToolAvailability(
-    available: Chunk[ToolKey],
-    unavailable: Chunk[(ToolKey, Chunk[String])]
-)
+    availableFunctions: Chunk[FunctionKey],
+    unavailableFunctions: Chunk[(FunctionKey, Chunk[String])],
+    ownership: Map[FunctionKey, ToolKey] = Map.empty
+) {
+  def availableTools: Chunk[(ToolKey, Chunk[FunctionKey])] =
+    availableFunctions.flatMap(ownership.get).distinct.map { toolKey =>
+      toolKey -> availableFunctions.filter(key => ownership.get(key).contains(toolKey))
+    }
+}
+
+object ToolAvailability {
+  def from(
+      available: Chunk[FunctionToolDefinition],
+      unavailable: Chunk[(FunctionKey, Chunk[String])],
+      catalog: Chunk[ToolDefinition] = Chunk.empty
+  ): ToolAvailability = ToolAvailability(
+    available.map(_.name),
+    unavailable,
+    catalog.flatMap(tool => tool.functions.map(function => function.name -> tool.name)).toMap
+  )
+}
 
 /** Core tool composition: process/read tools use the workspace; SDLC uses shared server storage. */
 object ApplicationTools {
   type Environment = BashExecutor & GitClient & ScalaCodeExecutor
+
+  val Definitions: Chunk[FunctionToolDefinition] =
+    Chunk(
+      ReadFileTool.definition,
+      ListFilesTool.definition,
+      BashTool.definition,
+      RepositoryChangesTool.definition,
+      ScalaTool.definition
+    ) ++ SdlcTools.Definitions
+
+  val ToolDefinitions: Chunk[ToolDefinition] = Chunk(
+    FilesystemToolDefinition,
+    BashToolDefinition,
+    RepositoryChangesToolDefinition,
+    ScalamodeToolDefinition,
+    SdlcToolDefinition
+  )
 
   val live: ULayer[Environment] =
     BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live
@@ -62,16 +109,22 @@ object ApplicationTools {
       hasScala <- ZIO.serviceWithZIO[ScalaCodeExecutor](_.isAvailable)
       unavailable = Chunk.fromIterable(
         List(
-          Option.unless(hasWorkspace)(ToolKey.ReadFile -> Chunk("workspace is not an accessible directory")),
-          Option.unless(hasWorkspace)(ToolKey.ListFiles -> Chunk("workspace is not an accessible directory")),
-          Option.unless(hasBash)(ToolKey.Bash -> Chunk("bash is not available on PATH")),
-          gitStatus.left.toOption.map(reason => ToolKey.RepositoryChanges -> Chunk(reason)),
-          Option.unless(hasScala)(ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")),
+          Option.unless(hasWorkspace)(
+            FilesystemToolDefinition.ReadFile -> Chunk("workspace is not an accessible directory")
+          ),
+          Option.unless(hasWorkspace)(
+            FilesystemToolDefinition.ListFiles -> Chunk("workspace is not an accessible directory")
+          ),
+          Option.unless(hasBash)(BashToolDefinition.Execute -> Chunk("bash is not available on PATH")),
+          gitStatus.left.toOption.map(reason => RepositoryChangesToolDefinition.Inspect -> Chunk(reason)),
+          Option.unless(hasScala)(
+            ScalamodeToolDefinition.Execute -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+          ),
         ).flatten
-      ) ++ (if service.isEmpty then SdlcTools.Definitions.map(definition => definition.key -> Chunk(storageReason))
+      ) ++ (if service.isEmpty then SdlcTools.Definitions.map(definition => definition.name -> Chunk(storageReason))
             else Chunk.empty)
       available = Chunk.fromIterable(
-        List[Option[AgentTool[Environment]]](
+        List[Option[AgentFunction[Environment]]](
           filesystem.map(fs => bindFilesystem(new ReadFileTool, fs)),
           filesystem.map(fs => bindFilesystem(new ListFilesTool, fs)),
           Option.when(hasBash)(new BashTool(workspace)),
@@ -79,23 +132,50 @@ object ApplicationTools {
           Option.when(hasScala)(new ScalaTool()),
         ).flatten
       )
-      allAvailable = available ++ sdlc.getOrElse(Chunk.empty)
+      allAvailable = available ++ sdlc.fold(Chunk.empty[AgentFunction[Any]])(_.functions)
       startupTools = StartupTools(
         allAvailable,
-        ToolAvailability(allAvailable.map(_.definition.key), unavailable),
+        ToolAvailability.from(allAvailable.map(_.definition), unavailable, ToolDefinitions),
         filesystem
       )
+      summary = startupTools.availability.availableTools
+        .map { case (key, functions) =>
+          s"${key.value}[${functions.map(_.value).mkString(", ")}]"
+        }
+        .mkString(", ")
       _ <- ZIO.logDebug(s"Startup tool availability: ${startupTools.availability}")
       _ <- ZIO.logInfo(
-        s"Available tools (${allAvailable.size}): ${allAvailable.map(_.definition.key).mkString(", ")}"
+        s"Available tools (${startupTools.tools.size}), functions (${allAvailable.size}): $summary"
       )
     } yield startupTools
 
+  /** Reads use the selected private root even without Scala RPC. Process tools retain the workspace. */
+  private[application] def selected(
+      tools: Chunk[AgentFunction[Any]],
+      filesystem: Option[FsRead],
+      scalaRpc: Option[(ZEnvironment[Environment & fmgp.rpc.RpcWebSocket.RpcRoute], String)]
+  ): Chunk[AgentFunction[Any]] = tools.map { tool =>
+    filesystem match {
+      case Some(fs) if tool.definition.name == FilesystemToolDefinition.ReadFile => bindFilesystem(new ReadFileTool, fs)
+      case Some(fs) if tool.definition.name == FilesystemToolDefinition.ListFiles =>
+        bindFilesystem(new ListFilesTool, fs)
+      case Some(fs) if tool.definition.name == ScalamodeToolDefinition.Execute && scalaRpc.nonEmpty =>
+        val (environment, endpoint) = scalaRpc.get
+        val selected = ScalaTool.filesystem(endpoint)
+        new AgentFunction[Any] {
+          val definition = selected.definition
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            selected.execute(call).provideEnvironment(environment.add[FsRead](fs))
+        }
+      case _ => tool
+    }
+  }
+
   /** Bind a read-only capability once; callers cannot substitute a different workspace at invocation time. */
-  private[application] def bindFilesystem(tool: AgentTool[FsRead], fs: FsRead): AgentTool[Any] =
-    new AgentTool[Any] {
-      override val definition: AgentToolDefinition = tool.definition
-      override def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+  private[application] def bindFilesystem(tool: AgentFunction[FsRead], fs: FsRead): AgentFunction[Any] =
+    new AgentFunction[Any] {
+      override val definition: FunctionToolDefinition = tool.definition
+      override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
         tool.execute(call).provideEnvironment(ZEnvironment[FsRead](fs))
     }
 }

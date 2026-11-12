@@ -1,5 +1,9 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, ProviderContinuation, ProviderId}
 import java.nio.file.{Files, Path}
@@ -163,9 +167,11 @@ final class OrchestratorInvokeSuite extends FunSuite {
             Message.Assistant(""),
             Message.Instructions("submitted instructions"),
             Message.Context("context", "forwarded data"),
-            Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.Scalamode, """{"code":"42"}""")),
+            Message.ToolCall(
+              FunctionCall(FunctionCallId.unsafe("call"), ScalamodeToolDefinition.Execute, """{"code":"42"}""")
+            ),
             Message.ToolOutput(
-              FunctionGenericOutput(FunctionCallId.unsafe("previous"), ToolKey.unsafe("other"), "previous output")
+              FunctionGenericOutput(FunctionCallId.unsafe("previous"), FunctionKey.unsafe("other"), "previous output")
             )
           )
           results <- ZIO.foreach(payloads) { payload =>
@@ -220,10 +226,13 @@ final class OrchestratorInvokeSuite extends FunSuite {
         run(for {
           live <- open(root, filesystem)
           calls <- Ref.make(0)
-          tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Must not execute")
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-              calls.update(_ + 1).as(ExternalToolResult("unexpected"))
+          tool = new AgentFunction[Any] {
+            val definition = FunctionToolDefinition(
+              FunctionKey.unsafe("probe"),
+              "Must not execute"
+            )
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+              calls.update(_ + 1).as(ExternalFunctionResult("unexpected"))
           }
           agent = new AgentInstance[Any] {
             val id = assistant
@@ -233,14 +242,14 @@ final class OrchestratorInvokeSuite extends FunSuite {
                   None,
                   AgentDecision.Actions(
                     Chunk(
-                      LlmAction.CallExternalTool(ExternalToolCall(tool.definition.key, "{}"))
+                      LlmAction.CallExternalFunction(ExternalFunctionCall(tool.definition.name, "{}"))
                     )
                   )
                 )
               )
           }
-          invocation = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-            .invocation(agent, StaticContext[Any]("Test", tools = Chunk(tool.definition)))
+          invocation = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+            .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
           result <- live.invoke(input, invocation).either
           executed <- calls.get
           stored <- live.listMessages
@@ -384,7 +393,7 @@ final class OrchestratorInvokeSuite extends FunSuite {
 
   private def open(root: Path, filesystem: Boolean): IO[YallmoError, OrchestratorLive[Any]] =
     for {
-      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+      registry <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
         val id = assistant
         def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
           ZIO.dieMessage("Use supplied execution")

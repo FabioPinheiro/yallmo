@@ -19,7 +19,7 @@ object ProviderId {
 
 /** A named connection/account configuration, shared independently of agent identity.
   *
-  * JSON uses a `providerType` discriminator. Decoding is inert; RuntimeInstances initializes the connection on first
+  * JSON uses a `providerType` discriminator. Decoding is inert; AgentCatalog initializes the connection on first
   * lookup.
   */
 @jsonDiscriminator("providerType")

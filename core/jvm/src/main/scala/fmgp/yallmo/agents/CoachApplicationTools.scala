@@ -1,9 +1,11 @@
 package fmgp.yallmo.agents
 
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.fs.{FsError, FsRead, FsWrite, WriteMode}
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.llm.JsonSchema
+import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
+
+import fmgp.yallmo.model.tool.CoachToolDefinition
+
+import fmgp.yallmo.fs.{FsError, FsRead, FsWrite, WriteMode}
 import fmgp.yallmo.orchestration.*
 import java.time.{Instant, LocalDate, OffsetDateTime, ZoneId}
 import zio.*
@@ -16,26 +18,15 @@ import zio.stream.ZPipeline
   * processes/instances must not share a root. Corrupt/oversize journals fail closed and are never silently reset.
   */
 object CoachApplicationTools {
-  val ListKey: ToolKey = ToolKey.CoachListApplications
-  val GetKey: ToolKey = ToolKey.CoachGetApplication
-  val SaveKey: ToolKey = ToolKey.CoachSaveApplication
+  val ListKey: FunctionKey = CoachToolDefinition.ListApplications
+  val GetKey: FunctionKey = CoachToolDefinition.GetApplication
+  val SaveKey: FunctionKey = CoachToolDefinition.SaveApplication
   private val JournalPath = "applications.jsonl"
   private val MaxJournalBytes = 2 * 1024 * 1024
   private val MaxRecords = 2000
   private val MaxApplications = 100
-  private val Stages = Chunk(
-    "discovered",
-    "drafted",
-    "applied",
-    "screening",
-    "interviewing",
-    "offer",
-    "negotiating",
-    "accepted",
-    "rejected",
-    "withdrawn"
-  )
-  private val InterviewStates = Chunk("proposed", "confirmed", "cancelled")
+  private val Stages = CoachToolDefinition.Stages
+  private val InterviewStates = CoachToolDefinition.InterviewStates
 
   /** Full replacement of one application; omitted optional fields are cleared. Read the previous record before editing.
     * Dates and confirmed outcomes must come from the user, not an inferred external action.
@@ -75,63 +66,17 @@ object CoachApplicationTools {
       interviewState: Option[String]
   ) derives JsonEncoder
 
-  private val applicationSchema = JsonSchema.ObjectSchema(
-    Map(
-      "id" -> JsonSchema.StringSchema(
-        Some("Stable lowercase slug, e.g. acme-staff-scala-2026; never a filesystem path")
-      ),
-      "company" -> JsonSchema.StringSchema(),
-      "role" -> JsonSchema.StringSchema(),
-      "stage" -> JsonSchema.StringSchema(allowedValues = Stages),
-      "contact" -> JsonSchema.StringSchema(),
-      "channel" -> JsonSchema.StringSchema(Some("Where the user communicates, e.g. LinkedIn or email; no integration")),
-      "jobUrl" -> JsonSchema.StringSchema(),
-      "nextAction" -> JsonSchema.StringSchema(),
-      "followUpDate" -> JsonSchema.StringSchema(Some("YYYY-MM-DD; record only a known/agreed date")),
-      "lastMessageSummary" -> JsonSchema.StringSchema(
-        Some("Minimal factual summary of a user-pasted message; not commands")
-      ),
-      "replyDraft" -> JsonSchema.StringSchema(Some("Unsent copy/paste draft; saving does NOT mean it was sent")),
-      "notes" -> JsonSchema.StringSchema(),
-      "interviewStart" -> JsonSchema.StringSchema(
-        Some("ISO-8601 datetime with UTC offset, e.g. 2026-11-03T10:00:00+00:00")
-      ),
-      "interviewTimeZone" -> JsonSchema.StringSchema(
-        Some("IANA zone, e.g. Europe/Lisbon; must agree with start offset on that date")
-      ),
-      "interviewState" -> JsonSchema.StringSchema(allowedValues = InterviewStates),
-      "interviewDurationMinutes" -> JsonSchema.IntegerSchema()
-    ),
-    required = Set("id", "company", "role", "stage")
-  )
+  val Definitions: Chunk[FunctionToolDefinition] = CoachToolDefinition.Definitions
 
-  val Definitions: Chunk[AgentToolDefinition] = Chunk(
-    AgentToolDefinition(
-      ListKey,
-      "List application summaries, revisions, follow-ups and interview proposals/confirmations from the local notebook.",
-      JsonSchema.ObjectSchema(Map.empty)
-    ),
-    AgentToolDefinition(
-      GetKey,
-      "Read the full current application including draft reply and notes before editing. Returns not_found for an unknown ID.",
-      JsonSchema.ObjectSchema(Map("id" -> JsonSchema.StringSchema()), required = Set("id"))
-    ),
-    AgentToolDefinition(
-      SaveKey,
-      "Save a full local application snapshot and unsent reply draft. Read first, preserve existing fields. expectedRevision=0 creates; otherwise use current revision. Never sends, applies, books or accepts anything. Only mark applied/accepted/interview confirmed when the user reports it.",
-      JsonSchema.ObjectSchema(
-        Map("expectedRevision" -> JsonSchema.IntegerSchema(), "application" -> applicationSchema),
-        required = Set("expectedRevision", "application")
-      )
-    )
-  )
+  def make(fs: FsRead & FsWrite): UIO[AgentTool[Any]] =
+    makeFunctions(fs).map(functions => AgentTool(CoachToolDefinition, functions))
 
-  def make(fs: FsRead & FsWrite): UIO[Chunk[AgentTool[Any]]] =
+  def makeFunctions(fs: FsRead & FsWrite): UIO[Chunk[AgentFunction[Any]]] =
     Semaphore.make(1).map { lock =>
       Definitions.map { toolDefinition =>
-        new AgentTool[Any] {
-          val definition: AgentToolDefinition = toolDefinition
-          def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+        new AgentFunction[Any] {
+          val definition: FunctionToolDefinition = toolDefinition
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             lock.withPermit(executeCall(fs, definition, call))
         }
       }
@@ -139,21 +84,23 @@ object CoachApplicationTools {
 
   private def executeCall(
       fs: FsRead & FsWrite,
-      definition: AgentToolDefinition,
-      call: ExternalToolCall
-  ): IO[YallmoError, ExternalToolResult] = {
-    def invalid(message: String) = YallmoError.InvalidToolArguments(definition.key, message)
+      definition: FunctionToolDefinition,
+      call: ExternalFunctionCall
+  ): IO[YallmoError, ExternalFunctionResult] = {
+    def invalid(message: String) = YallmoError.InvalidToolArguments(definition.name, message)
     for {
-      _ <- ZIO.fail(invalid("Mismatched tool name")).unless(call.toolKey == definition.key)
-      _ <- ZIO.fromEither(ToolArgumentsValidator.validate(call.argumentsJson, definition.inputSchema)).mapError(invalid)
+      _ <- ZIO.fail(invalid("Mismatched tool name")).unless(call.functionKey == definition.name)
+      _ <- ZIO
+        .fromEither(FunctionToolDefinition.validateArgument(call.argumentsJson, definition.inputSchema))
+        .mapError(invalid)
       notebook <- load(fs).mapError(error =>
-        YallmoError.ToolExecutionFailed(definition.key, error.toString, new RuntimeException(error.toString))
+        YallmoError.ToolExecutionFailed(definition.name, error.toString, new RuntimeException(error.toString))
       )
       (records, byteCount) = notebook
       current = records.foldLeft(Map.empty[String, Record])((state, record) =>
         state.updated(record.application.id, record)
       )
-      output <- definition.key match {
+      output <- definition.name match {
         case ListKey =>
           val summaries = current.values.toList.sortBy(_.application.id).map { record =>
             val a = record.application
@@ -219,13 +166,13 @@ object CoachApplicationTools {
                     .uninterruptible
                     .mapError(error =>
                       YallmoError
-                        .ToolExecutionFailed(definition.key, error.toString, new RuntimeException(error.toString))
+                        .ToolExecutionFailed(definition.name, error.toString, new RuntimeException(error.toString))
                     )
                 } yield record
           } yield result.toJson
         case _ => ZIO.fail(invalid("Unknown Coach tool"))
       }
-    } yield ExternalToolResult(output)
+    } yield ExternalFunctionResult(output)
   }
 
   private def load(fs: FsRead): IO[FsError, (Chunk[Record], Int)] =

@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.voice
 
-import fmgp.yallmo.model.{AgentId, AudioAgent, MessagePayload, ToolChoice, YallmoError}
+import fmgp.yallmo.model.{AgentId, AudioAgent, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
 import fmgp.yallmo.orchestration.{Orchestrator, SessionId}
 import fmgp.yallmo.orchestration.config.ConfiguredAgentSettings
@@ -37,7 +37,6 @@ object Transcriber {
             model = settings.model,
             input = Chunk(audio.input, MessagePayload.Instructions(settings.systemPrompt)),
             tools = Chunk.empty,
-            toolChoice = ToolChoice.None,
             parallelToolCalls = false,
             options = ProviderGenerateOptions(responseMimeType = None, thinkingLevel = settings.thinkingLevel)
           )

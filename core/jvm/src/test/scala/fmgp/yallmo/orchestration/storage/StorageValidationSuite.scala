@@ -75,7 +75,7 @@ final class StorageValidationSuite extends FunSuite {
   test("legacy tool results fail with explicit compatibility guidance without modifying storage or exposing content") {
     directory { root =>
       val legacyData =
-        """{"agentId":"author","timestamp":"2026-01-01T00:00:00Z","payload":{"ToolResult":{"toolKey":"clock","text":"PRIVATE_SECRET"}}}"""
+        """{"agentId":"author","timestamp":"2026-01-01T00:00:00Z","payload":{"ToolResult":{"functionKey":"clock","text":"PRIVATE_SECRET"}}}"""
       val legacyId = MessageId.sha256(legacyData)
       val contents = s"""{"id":"${MessageId.value(legacyId)}","kind":"msg","value":$legacyData}""" + "\n"
       Files.writeString(root.resolve("objects.jsonl"), contents)

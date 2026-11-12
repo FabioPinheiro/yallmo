@@ -1,8 +1,8 @@
 # Orchestrator WebSocket server and website
 
-`OrchestratorWSServer(master, configured = None)` hosts static assets and JSON-RPC `/rpc` on the same listener
-(fixed to `0.0.0.0`) using one supplied runtime/storage owner. A supplied master alone is read-only. Standalone `--config`
-provides the existing configured backend for server-owned prompt execution; no additional runner/service is created.
+`OrchestratorWSServer(configured)` hosts static assets and JSON-RPC `/rpc` on the same listener
+(fixed to `0.0.0.0`) using the configured backend's application master. Standalone startup requires `--config`;
+no additional runtime/storage owner or runner/service is created.
 HTTP serves static assets, WebSocket upgrades and read-only SDLC inspection;
 conversation/blob requests still use JSON-RPC, not REST endpoints.
 
@@ -15,7 +15,7 @@ reach the listener (including through a browser or proxy) can claim an author, e
 and replace provider credentials.
 User names are impersonable metadata/authorship, **not authenticated identities**. Never expose it publicly.
 
-## Connected terminal prompts or viewer
+## Connected terminal prompts
 
 ```sh
 # Private config contains a configured agent bob and its provider. Use separate storage ownership.
@@ -31,7 +31,6 @@ No selected configured agent means guidance with **zero prompt writes/session cr
 Initialize's optional `configuredAgentIds` supplies assistant choices, not the mixed human/presence `agents.list`.
 Remote provider/model metadata remains unknown; selection is per-client, never a global execution preference.
 
-Without server `--config`, the same client is a read-only viewer; prompts and `/new` are omitted from help/completions.
 Without client `--server`, the REPL connects to `ws://127.0.0.1:8080/rpc`. It is client-only; connection failure
 never starts a local application.
 `--transcriber-agent` is rejected before networking, with or without an endpoint override. `/tools`, `/debug print|export`,
@@ -94,9 +93,13 @@ endpoint or session is introduced. General execution cancellation remains separa
 
 ## Shared planning tools
 
-Configured workspace startup registers `sdlc_list`, `sdlc_set`, `sdlc_read_task`,
-`sdlc_set_intents` and `sdlc_read_intent`; agents inherit them unless an explicit
-`capabilities.tools` allowlist excludes them. Storage uses `FsRead`/`FsWrite` at
+Configured workspace startup registers the `sdlc` tool group with functions
+`sdlc_list`, `sdlc_set`, `sdlc_read_task`, `sdlc_set_intents` and `sdlc_read_intent`.
+Agents inherit them unless an explicit `capabilities.tools` allowlist excludes
+`sdlc` or a `capabilities.functions` allowlist excludes individual function IDs.
+Old per-operation `tools` entries must move to `functions`; both allowlists must
+permit a function for it to be available. See [capability migration](../docs/Capabilities_Architecture.md).
+Storage uses `FsRead`/`FsWrite` at
 `<--storage>/sdlc/tasks.jsonl` and `<--storage>/sdlc/intents.jsonl`. With
 `--storage ./server-storage`, both journals are in `./server-storage/sdlc`.
 
@@ -113,8 +116,7 @@ Open **SDLC** (`#/sdlc`) to inspect full stored task/intent JSON. The page uses
 timestamps and archived records. It does not use WebSocket/RPC for this data.
 HTTP requests invoke no agents, create no conversations, and cannot mutate plans.
 
-These endpoints are available in standalone viewer-only mode too, with no
-WebSocket identity/agent selection required. **Any trusted-host reader can read
+These endpoints require no WebSocket identity or agent selection. **Any trusted-host reader can read
 planning text; agent tool allowlists do not filter HTTP inspection.** Embedded
 hosts enable it by passing their shared service as `sdlc = Some(service)` to
 `OrchestratorWSServer`. Responses are noncacheable; journal errors return sanitized
@@ -151,7 +153,7 @@ Prerequisites: the repository's JDK/sbt, Node 22.12+ (or 20.19+) and npm.
 # Repository root:
 npm --prefix web-harness/vite ci
 sbt 'webHarness/fastLinkJS'
-sbt 'server/run --storage ./zzz'
+sbt 'server/run --storage ./zzz --config ./private/server.json'
 ```
 
 In another terminal:
@@ -176,7 +178,7 @@ launch sbt or compile Scala.
 
 ```sh
 sbt 'server/bundle'
-sbt 'server/run --storage ./zzz'
+sbt 'server/run --storage ./zzz --config ./private/server.json'
 ```
 
 Open **http://127.0.0.1:8080**. The bundle task full-links Scala.js, runs Vite from `web-harness/vite/`,
@@ -188,7 +190,7 @@ use sbt's runtime classpath or a normal JVM distribution.
 The entry point is `fmgp.yallmo.server.OrchestratorServerMain`:
 
 ```text
---storage <existing-directory> [--config <path> [--workspace <existing-directory>]]
+--storage <existing-directory> --config <path> [--workspace <existing-directory>]
   [--port <1-65535>] [--log-level <trace|debug|info|warning|error|fatal|off>]
 ```
 
@@ -202,13 +204,10 @@ Publish/map port 8080 only onto the trusted network and connect to `ws://<docker
 `http://<docker-host>:8080` for packaged assets). Do not publish it to the public internet. Embedded callers can use
 `start(port = 8080)`; it also binds to `0.0.0.0`. No Origin rewriting or stripping is needed. FIXME
 
-### Viewer and configured startup
+### Configured startup
 
-Without `--config`, the existing viewer mode opens storage with an empty agent registry. It does not load a config or
-probe tools. Historical authors remain visible in transcripts; the Agents tab is empty. In either mode, the storage
-root must already exist; opening storage can initialize missing storage files/subdirectories.
-
-Configured startup is optional:
+The storage root must already exist; opening storage can initialize missing storage files/subdirectories.
+Startup requires a configuration path:
 
 ```sh
 mkdir -p ./server-storage
@@ -234,27 +233,32 @@ provider creation/editing, voice and interactive human transport remain pending.
 commands use standalone server storage. Existing embedded adapters, audio/voice and debug implementations and their tests are retained for follow-up
 integration; none is entered by the client-only startup path.
 
-`--workspace` requires `--config` and defaults to the server process working directory. It must be an existing directory
-and is canonicalized once. It roots the core readFile/listFiles/bash/repositoryChanges tools; the Scala tool reuses
-the existing core implementation. Startup only probes directory access, Bash/Scala CLI availability and Git worktree
-membership, then validates configured capabilities against the available catalog. It does not execute tools or agents.
+`--workspace` defaults to the server process working directory. It must be an existing directory
+and is canonicalized once. Bash/Git use that workspace. `readFile`/`listFiles` instead use the configured agent's
+`FsRead` when present, otherwise workspace, independently of Scala RPC wiring. Startup probes directory access,
+Bash/Scala CLI availability and Git worktree membership, then validates configured capabilities against the available catalog. It does not execute tools or agents.
 Tool composition, availability models/probes and service layers live in server-module `ApplicationTools`.
-`ApplicationRuntime.openWorkspace` owns scoped tool services and execution assembly on the server. The REPL
+`ServerApplication` owns scoped services, one `AgentCatalog` and one orchestration master. The REPL
 connects over WebSocket and has no local tool probing or execution path. Tool implementations remain in core;
 read-only file tools now use the shared `filesystem` capabilities.
 
-File tools use one rooted `filesystem` instance opened at startup and receive only its `FsRead` capability.
-Paths must be workspace-relative (`.` lists the root); empty/absolute paths, `..` and symlinks are rejected.
+Agent read roots are opened lazily and cached; selected file tools receive only that root's `FsRead` capability.
+Filesystem-enabled Scala effects additionally require an explicit trusted RPC route/endpoint; ordinary read tools do not.
+SDLC remains bound to the shared server-storage service, not to an agent root.
+Paths must be relative to the selected read root (`.` lists the root); empty/absolute paths, `..` and symlinks are rejected.
 A listing fails if any direct entry is a symlink. Direct module callers must also supply a root with no symlink
-ancestors; server workspace configuration is canonicalized before opening. Missing or invalid
-roots omit the file tools from availability; filesystem failures become tool execution errors. Bash/Git behavior is unchanged.
+ancestors; server workspace configuration is canonicalized before opening. Inaccessible workspaces omit shared read
+tools from startup availability. An invalid explicit agent root fails selection rather than falling back; operation
+failures become tool execution errors.
 
 These workspace roots are **not a sandbox**. Configured agent filesystem roots retain core's existing cwd-relative
 semantics; `--workspace` does not silently rewrite them.
 
-Configured mode retains one `ApplicationRuntime` and its opened assembly, with exactly one filesystem master supplied
-to the same WebSocket host. Client and core tool-service layers surround the entire host scope, so captured HTTP
-services outlive application work. Configured connections with a claimed human ID can execute; anonymous connections remain viewers.
+Configured mode retains complete executable `ResolvedAgent` generations in `AgentCatalog`: program, effective static
+context and bound tools travel together. The WebSocket host derives its filesystem master from the required configured backend. Author/session,
+Busy/expected-head and continuation policy are applied directly by
+[`ServerExecutionService`](src/main/scala/fmgp/yallmo/server/application/ServerExecutionService.scala) before orchestration.
+Client and core tool-service layers surround the entire host scope, so captured HTTP services outlive application work. Configured connections with a claimed human ID can execute; anonymous connections remain viewers.
 Authentication is explicitly deferred; a claimed `UserId` selects server-owned actors, not an authenticated principal.
 
 ### Startup validation failures
@@ -272,7 +276,7 @@ not additional details exposed through RPC errors.
 
 ### Standalone storage ownership lease
 
-Both standalone modes canonicalize the existing storage root and hold a nonblocking OS `FileChannel.tryLock` on
+Standalone startup canonicalizes the existing storage root and hold a nonblocking OS `FileChannel.tryLock` on
 `.yallmo-server.lock` for the host scope. Concurrent standalone owners (including same-JVM owners and symlink root
 aliases) are rejected. Symlink lock files are rejected. Scope exit or failed startup releases the lock/channel, but
 **never deletes the lock file**, avoiding replacement-inode races.
@@ -287,8 +291,8 @@ file while an owner is running.
 The standalone server defaults to **INFO**. Choose a minimum level at startup:
 
 ```sh
-sbt 'server/run --storage ./zzz --log-level debug'
-sbt 'server/run --storage ./zzz --port 8080 --log-level=trace'
+sbt 'server/run --storage ./zzz --config ./private/server.json --log-level debug'
+sbt 'server/run --storage ./zzz --config ./private/server.json --port 8080 --log-level=trace'
 ```
 
 Levels are case-insensitive; both `--log-level debug` and `--log-level=debug` work, in any option order.
@@ -314,7 +318,7 @@ Embedded servers use their caller's ZIO logging configuration; configure the log
 
 ## Embed and connect
 
-With an already-created master:
+With an already-created `ServerExecutionService` backend:
 
 ```scala
 import fmgp.yallmo.server.{OrchestratorWSServer, OrchestratorWSClient}
@@ -322,7 +326,7 @@ import zio.*
 
 ZIO.scoped {
   for {
-    port <- new OrchestratorWSServer(master).start(0) // all interfaces, ephemeral port
+    port <- new OrchestratorWSServer(configured).start(0) // all interfaces, ephemeral port
     client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
     sessions <- client.listSessions
   } yield sessions

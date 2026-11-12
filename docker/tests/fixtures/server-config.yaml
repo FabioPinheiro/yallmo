@@ -10,7 +10,8 @@ agents:
     capabilities:
       # Tools execute as UID 1000 inside the container. Do not mount sensitive host directories.
       # scalamode is intentionally omitted until its offline compiler cache is provisioned/tested.
-      tools: [readFile, listFiles, bash]
+      tools: [filesystem, bash]
+      functions: [readFile, listFiles, bash]
     config:
       # Example only: choose a Codex model available to your ChatGPT subscription.
       model: gpt-6.1-sol

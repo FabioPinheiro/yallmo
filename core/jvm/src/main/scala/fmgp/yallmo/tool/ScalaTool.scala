@@ -1,9 +1,10 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.llm.JsonSchema
-import fmgp.yallmo.orchestration.{AgentTool, AgentToolDefinition, ExternalToolCall, ExternalToolResult}
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
+import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
 import zio.*
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.FsRead
@@ -18,15 +19,15 @@ final class ScalaTool(
     timeout: Duration = 45.seconds,
     maxOutputBytes: Int = 64 * 1024,
     dependencies: Seq[String] = ScalaTool.DefaultDependencies
-) extends AgentTool[ScalaCodeExecutor] {
+) extends AgentFunction[ScalaCodeExecutor] {
   require(timeout > Duration.Zero, "timeout must be positive")
   require(maxOutputBytes > 0, "maxOutputBytes must be positive")
 
-  override val definition: AgentToolDefinition = ScalaTool.definition
+  override val definition: FunctionToolDefinition = ScalaTool.definition
 
-  override def execute(call: ExternalToolCall): ZIO[ScalaCodeExecutor, YallmoError, ExternalToolResult] =
+  override def execute(call: ExternalFunctionCall): ZIO[ScalaCodeExecutor, YallmoError, ExternalFunctionResult] =
     ScalaTool
-      .executeWith(call, definition.key) { code =>
+      .executeWith(call, definition.name) { code =>
         ZIO.serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, maxOutputBytes, dependencies))
       }
 }
@@ -38,14 +39,14 @@ object ScalaTool {
       endpoint: String,
       timeout: Duration = 45.seconds,
       maxOutputBytes: Int = 64 * 1024
-  ): AgentTool[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] = {
+  ): AgentFunction[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] = {
     require(timeout > Duration.Zero, "timeout must be positive")
     require(maxOutputBytes > 0, "maxOutputBytes must be positive")
-    new AgentTool[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] {
+    new AgentFunction[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] {
       override val definition = filesystemDefinition
       override def execute(
-          call: ExternalToolCall
-      ): ZIO[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead, YallmoError, ExternalToolResult] =
+          call: ExternalFunctionCall
+      ): ZIO[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead, YallmoError, ExternalFunctionResult] =
         for {
           parsed <- ZIO
             .attempt {
@@ -58,10 +59,10 @@ object ScalaTool {
               require(mode == "pure" || mode == "filesystem", "Expected pure or filesystem mode")
               (args("code").str, mode)
             }
-            .mapError(error => YallmoError.InvalidToolArguments(call.toolKey, error.getMessage))
+            .mapError(error => YallmoError.InvalidToolArguments(call.functionKey, error.getMessage))
           result <- executeWith(
             call.copy(argumentsJson = ujson.write(ujson.Obj("code" -> parsed._1))),
-            definition.key
+            definition.name
           ) { code =>
             ZIO.serviceWithZIO[ScalaCodeExecutor] { executor =>
               if parsed._2 == "filesystem" then executor.executeFilesystem(code, endpoint, timeout, maxOutputBytes)
@@ -75,7 +76,7 @@ object ScalaTool {
   val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
   /** Shared argument/error boundary for the two Scala tools, independent of their execution backend. */
-  private[tool] def executeWith[R, A](call: ExternalToolCall, toolKey: ToolKey)(
+  private[tool] def executeWith[R, A](call: ExternalFunctionCall, functionKey: FunctionKey)(
       execute: String => RIO[R, A]
   ): ZIO[R, YallmoError, A] =
     for {
@@ -92,46 +93,13 @@ object ScalaTool {
             .map(_.getMessage)
         )
         .flatMap(value => ZIO.fromEither(validate(value)).as(value))
-        .mapError(YallmoError.InvalidToolArguments(call.toolKey, _))
+        .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
       result <- execute(code)
-        .mapError(error => YallmoError.ToolExecutionFailed(toolKey, error.getMessage, error))
+        .mapError(error => YallmoError.ToolExecutionFailed(functionKey, error.getMessage, error))
     } yield result
 
-  val definition: AgentToolDefinition = AgentToolDefinition(
-    key = ToolKey.Scalamode,
-    description = "Evaluate a Scala block with Scala 3.10.0, offline. The last expression is returned. " +
-      "Returned ZIO effects are executed by the host. Automatically imported restricted ZIO constructors: " +
-      "ZIO.succeed, fail, attempt, fromEither, foreach and unit (not the full zio.ZIO companion). " +
-      "Example: ZIO.succeed(1 + 1) returns 2. Trace is supplied; do not import zio.ZIO. " +
-      "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
-      "No direct file, network, process, environment access or println. " +
-      "No user-supplied dependencies, directives or annotations. " +
-      "Returns only the value on success, or actionable compiler/runtime diagnostics on failure. " +
-      "The host retains typed results, exitCode, timedOut, truncated and separate execution logs.",
-    inputSchema = JsonSchema.ObjectSchema(
-      Map("code" -> JsonSchema.StringSchema(Some("Scala block body; its last expression is the result"))),
-      required = Set("code"),
-      additionalProperties = false
-    )
-  )
-
-  val filesystemDefinition: AgentToolDefinition = definition.copy(
-    description = definition.description +
-      " Optional mode=filesystem: code must return ZIO[Any, FsError, A], with selected read-only fs: FsRead injected. " +
-      "Example: fs.readUtf8(\"notes.txt\").map(_.length). " +
-      "Supports fs.list and fs.readBytes; use fold for error recovery. Trace and CanFail are supplied. " +
-      "No runtime execution in code; trusted Main connects once and runs the effect. Default mode=pure is unchanged.",
-    inputSchema = JsonSchema.ObjectSchema(
-      Map(
-        "code" -> JsonSchema.StringSchema(
-          Some("Pure block, or filesystem-mode effect body returning ZIO[Any, FsError, A]")
-        ),
-        "mode" -> JsonSchema.StringSchema(Some("Explicit result mode; defaults to pure"), Chunk("pure", "filesystem"))
-      ),
-      required = Set("code"),
-      additionalProperties = false
-    )
-  )
+  val definition: FunctionToolDefinition = ScalamodeToolDefinition.Pure
+  val filesystemDefinition: FunctionToolDefinition = ScalamodeToolDefinition.Filesystem
 
   // Deliberately conservative, including inside literals/comments. These checks protect compiler configuration.
   // Restricted execution relies on compiler safe mode, not an API blacklist.

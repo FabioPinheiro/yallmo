@@ -14,7 +14,7 @@ final class OrchestratorLiveSuite extends FunSuite {
 
     val result = runZIO {
       for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
         result <- orchestrator.createSession(SessionId.unsafe("main"), Chunk(known, unknown)).either
       } yield result
@@ -26,7 +26,7 @@ final class OrchestratorLiveSuite extends FunSuite {
   test("persists messages through the application-facing orchestrator API") {
     val session = runZIO {
       for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
         _ <- orchestrator.createSession(SessionId.unsafe("main"), Chunk(agentId))
         appended <- orchestrator.append(SessionId.unsafe("main"), agentId, Chunk(Message.User("hello")))
@@ -40,7 +40,7 @@ final class OrchestratorLiveSuite extends FunSuite {
   test("public partial session reads delegate to memory storage and preserve error mapping") {
     runZIO {
       for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
         id = SessionId.unsafe("partial")
         _ <- orchestrator.createSession(id, Chunk(agentId))
@@ -60,7 +60,7 @@ final class OrchestratorLiveSuite extends FunSuite {
     try {
       runZIO {
         for {
-          instances <- RuntimeInstances.fromAgents(Chunk(agent))
+          instances <- AgentCatalog.fromAgents(Chunk(agent))
           orchestrator <- OrchestratorLive.filesystem(root, instances)
           id = SessionId.unsafe("broken")
           _ <- orchestrator.createSession(id, Chunk(agentId))
@@ -99,7 +99,7 @@ final class OrchestratorLiveSuite extends FunSuite {
     val bytes = Chunk[Byte](1, 2, 3)
     runZIO {
       for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
         _ <- instances.registerUser(user)
         orchestrator <- OrchestratorLive.inMemory(instances)
         _ <- orchestrator.createSession(id, Chunk(agentId))
@@ -129,7 +129,7 @@ final class OrchestratorLiveSuite extends FunSuite {
   test("explicit runtime registration rejects duplicate IDs before orchestrator creation") {
     val result = runZIO {
       (for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent, agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent, agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
       } yield orchestrator).either
     }
@@ -150,7 +150,7 @@ final class OrchestratorLiveSuite extends FunSuite {
         }
     }
     val result = runZIO(for {
-      instances <- RuntimeInstances.fromAgents(Chunk(readerAgent))
+      instances <- AgentCatalog.fromAgents(Chunk(readerAgent))
       orchestrator <- OrchestratorLive.inMemory(instances)
       id = SessionId.unsafe("blobs")
       _ <- orchestrator.createSession(id, Chunk(readerAgent.id))
@@ -172,7 +172,7 @@ final class OrchestratorLiveSuite extends FunSuite {
     val unknown = AgentId("unknown")
     val result = runZIO {
       for {
-        instances <- RuntimeInstances.fromAgents(Chunk(agent))
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
         result <- (orchestrator.turn(
           unknown,

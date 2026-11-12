@@ -13,7 +13,8 @@ should use ordinary named ZIO methods, not a second workflow interpreter.
 | `OAILlmProvider` / `OpenAiCodexClient` | Provider inference and HTTP completion; neither is an `Agent` |
 | `NativeFunctionAgent` | Assemble native requests, preserve continuations/call IDs, and propose decisions |
 | `AgentRunner` | Capability checks, schema validation, approval guards, execution, budgets, and repetition |
-| `RuntimeInstances` | Lazy named-agent/provider resolution and configured capability wrappers |
+| `AgentCatalog` | Lazy adapter/provider construction and complete executable-agent caching with configured policy |
+| `ResolvedAgent` | One immutable generation containing the bound program, effective context and executable tools |
 | `Orchestrator` | Public agent/session persistence API and blob ingestion/reads |
 | `Storage` | Internal session/message/blob persistence; no agent resolution or execution |
 
@@ -66,7 +67,7 @@ enum AgentDecision {
 
 enum LlmAction {
   case RetrieveRag(retrieverKey: String, query: RagQuery)
-  case CallExternalTool(call: ExternalToolCall)
+  case CallExternalFunction(call: ExternalFunctionCall)
 }
 ```
 
@@ -76,7 +77,10 @@ policies/tests; it need not construct a provider request.
 
 ## Context and capabilities
 
-- `StaticContext[R]` contains the system prompt, tool/retriever definitions, skills, and ordered context extensions.
+- `StaticContext[R]` contains the system prompt, function/retriever definitions, skills, and ordered context extensions.
+  `.functions` is the flat `FunctionToolDefinition` catalog; `.tools` contains `ToolDefinition`s exposing
+  `name: ToolKey` and `functions: Set[FunctionToolDefinition]`.
+  Each callable has a distinct `FunctionKey`. Tool-group and function allowlists are conjunctive.
 - `RunContext` contains ordered `MessagePayload` values, not persisted envelopes. Appends produce a new context.
 - `ContextExtension.apply(staticContext, runContext)` returns `ZIO[R, YallmoError, RunContext]`; it cannot change static
   capabilities after the run starts. Extensions may load memory, add RAG, redact context, or add request metadata.
@@ -84,7 +88,7 @@ policies/tests; it need not construct a provider request.
 - Native program and configured adapter restrictions intersect. Direct configured-adapter requests also filter tools.
 - The runner requires both an effective advertised definition and a registered implementation before execution.
 
-`ToolApproval.guard` can add human/policy approval around an authorized tool. Allowlists and approval are not a sandbox;
+`FunctionApproval.guard` can add human/policy approval around an authorized tool. Allowlists and approval are not a sandbox;
 trusted Scala implementations retain their own permissions and resource-safety responsibilities.
 
 ## Native requests and blob readers

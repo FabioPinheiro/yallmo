@@ -44,7 +44,7 @@ history/refresh before manual resend, never automatic replay. See [REPL](REPL.md
 Select either format explicitly with server `--config ./yallmo.yaml` (or `.yml`) or the existing
 `--config ./yallmo.json`. Both decode into the same typed `Config` and use the same reference/capability validation;
 there is no schema or runtime-composition change. The server does not discover or migrate files automatically.
-Existing embedded callers' `ApplicationRuntime.DefaultConfigPath` remains `yallmo.json` for compatibility.
+Embedded `ServerApplication.DefaultConfigPath` is `yallmo.json`.
 
 See the commented [YAML example](examples/yallmo.yaml) and existing [JSON example](examples/yallmo.json).
 YAML supports comments, nested mappings, flow lists and literal/folded multiline prompts under `agents.<id>.config.systemPrompt`.
@@ -110,20 +110,21 @@ The output still contains any literal credentials from the source: do not log, s
 ## Current implementation boundary
 
 - `core/.../orchestration/config/Config.scala` is data only: ID-keyed **maps** of agents and providers, and `browserAudioPort` (default 5180, valid 1–65535). Newly initialized config files serialize the port; older files missing it retain the default without being rewritten. JSON catalogs are objects, not arrays.
-- The native `AgentConfig.agentType` values `OAIAgent` and `ChatGPTAgent` each require exactly one matching provider. Server runtime selection decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback. The chat default system prompt lives in server `ApplicationRuntime`, not core. Generic `ConfiguredAgentSettings.decode` requires a configured prompt unless its caller supplies `defaultSystemPrompt = Some(...)`; the server supplies its fallback for chat, but not for transcription.
-- `FolderStructureAgent` is a provider-free configured agent requiring `filesystem.root`; its first lookup validates that existing directory and binds the filesystem once. Its turns need no extra environment. Server-side selection uses its direct execution binding, without decoding native model/prompt/generation settings or requiring a provider. The connected client displays no provider/model metadata.
-- `RuntimeInstances.make(config)` captures a shared HTTP client, but initializes connections and agents only on lookup. Caches and the initialization semaphore belong to this runtime registry, not to `Config`.
-- `RuntimeInstances.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.
-- `RuntimeInstances.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
-- `OrchestratorLive` delegates resolution to the registry. Its only factories are `inMemory(instances)` and `filesystem(root, instances)`; callers must construct `RuntimeInstances` explicitly. Already-created agents go through `RuntimeInstances.fromAgents(agents)` first.
+- The native `AgentConfig.agentType` values `OAIAgent` and `ChatGPTAgent` each require exactly one matching provider. Server runtime selection decodes `config.model` (required), optional `systemPrompt`, `thinkingLevel` and `parallelToolCalls`, then binds its native runner to the resolved adapter. The same settings drive requests and footer feedback. The chat default system prompt lives in server `ServerApplication`, not core. Generic `ConfiguredAgentSettings.decode` requires a configured prompt unless its caller supplies `defaultSystemPrompt = Some(...)`; the server supplies its fallback for chat, but not for transcription.
+- `FolderStructureAgent` is a provider-free configured agent requiring `filesystem.root`; its first lookup validates that existing directory and binds the filesystem once. Its turns need no extra environment. Server-side selection caches its provider-free executable program, without decoding native model/prompt/generation settings or requiring a provider. The connected client displays no provider/model metadata.
+- `AgentCatalog.make(config)` captures a shared HTTP client, but initializes connections and agents only on lookup. Caches and the initialization semaphore belong to this runtime registry, not to `Config`.
+- `AgentCatalog.make(config, agents)` also accepts already-created agents such as human input channels, retaining their environment requirements. Duplicate supplied IDs and collisions with configured IDs are rejected.
+- `AgentCatalog.fromAgents(agents)` needs no HTTP client and supports existing startup/test code.
+- `OrchestratorLive` delegates resolution to the registry. Its only factories are `inMemory(catalog)` and `filesystem(root, catalog)`; callers must construct `AgentCatalog` explicitly. Already-created agents go through `AgentCatalog.fromAgents(agents)` first.
+- `AgentCatalog.resolve` caches complete `ResolvedAgent` generations: bound program, effective static context, tools and read capability. Server tool selection binds agent read roots independently of Scala RPC wiring.
 - Lookups do not contact providers or authenticate. ChatGPT profiles use independent resolved credentials (literal or explicitly environment-referenced); refresh is deferred until inference, shared by agents using the same connection, and retained **only in memory**.
 - A registry uses a fixed configuration snapshot except for explicit `updateChatGptCredentials`: it publishes a fresh
-  provider connection and invalidates only that provider's configured dependent agents. Rooted filesystem capabilities
+  provider connection and invalidates that provider's dependent adapter and complete executable-agent entries atomically. Rooted filesystem capabilities
   are retained across rebinding. Existing callers keep the old connection; future lookups share the new generation.
   Creating another registry from the same Config still creates independent caches. No general config reload/save is implied.
 - `ReplMain` always connects to the selected/default endpoint and builds `ConnectedReplApplication`. It never calls
-  `ApplicationRuntime.load` or opens an embedded workspace. Existing embedded adapters remain for feature integration
-  and tests, but are not startup paths. `ReplStartup.fromRuntime` requires an explicitly supplied runtime.
+  `ServerApplication.load` or opens an embedded workspace. Existing embedded adapters remain for feature integration
+  and tests, but are not startup paths. `ReplStartup.fromApplication` requires an explicitly composed application.
 - The server retains core persist–run–persist and session storage. Client agent selection preserves session/history,
   with continuation reset intent sent on the next turn. General live configuration reload is not implemented.
 - The web harness exposes safe provider listing and ChatGPT OAuth over WebSocket, with private atomic saves followed
@@ -152,12 +153,12 @@ agents:
   bob:
     # Keep existing agentType, providerIds and config.
     capabilities:
-      tools: [bash, sdlc_list, sdlc_set, sdlc_read_task, sdlc_set_intents, sdlc_read_intent]
+      tools: [bash, sdlc]
 ```
 
-This list replaces the inherited tool set: retain `readFile`, `listFiles`,
+This list replaces the inherited tool set: retain `filesystem`,
 `scalamode`, etc. if the agent should also use them. An empty list disables tools.
-Restart the server after editing the configuration.
+For per-operation restrictions, use `functions: [sdlc_list, sdlc_read_task, sdlc_read_intent]` instead of (or in addition to) a tool-group allowlist. Old per-operation `tools` entries must move to `functions`. Restart the server after editing the configuration.
 
 SDLC data is shared by all authorized agents at `<--storage>/sdlc/tasks.jsonl`
 and `<--storage>/sdlc/intents.jsonl`.
@@ -187,7 +188,7 @@ storage do not expose these tools. See [SDLC tools](../plan-tool/README.md).
 Roots must be non-blank. Absolute paths are recommended; relative paths use the process working directory, matching
 `FileSystem.open`, not the configuration file's directory. Loading/validating configuration does not open a filesystem,
 check directory existence, or create directories. Runtime setup must validate an existing root before granting the
-instance to an agent. `RuntimeInstances.initializeAgent` resolves the trusted root with `Path.toRealPath()` on first
+instance to an agent. `AgentCatalog.initializeAgent` resolves the trusted root with `Path.toRealPath()` on first
 lookup, following links in the root itself or its ancestors, then opens the resulting absolute directory and caches
 `FolderStructureAgent.make(id, fs)`. Missing or dangling roots fail without creating directories. Retargeting a configured
 link does not redirect an already-initialized agent. Links inside the workspace remain forbidden; `FileSystem.open`
@@ -198,8 +199,8 @@ With the application's existing `Client` layer and a turn `request`:
 ```scala
 for {
   config <- ConfigFile.loadOrInitialize(configPath)
-  instances <- RuntimeInstances.make(config)
-  agent <- instances.getAgent(AgentId("folder-reviewer"))
+  catalog <- AgentCatalog.make(config)
+  agent <- catalog.getAgent(AgentId("folder-reviewer"))
   response <- agent.turn(request)
 } yield response
 ```

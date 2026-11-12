@@ -18,7 +18,7 @@ object SdlcMaintenanceMain extends ZIOAppDefault {
       _ <- ZIO
         .scoped {
           for {
-            _ <- ServerApplication.open(root)
+            _ <- ServerApplication.lease(root)
             filesystem <- FileSystem.open(root.toString).mapError(error => new java.io.IOException(error.toString))
             service <- SdlcService.make(filesystem, filesystem)
             _ <- service.checkpoint.mapError(error => new java.io.IOException(error.toString))
@@ -27,6 +27,5 @@ object SdlcMaintenanceMain extends ZIOAppDefault {
             )
           } yield ()
         }
-        .provideLayer(ServerApplication.live)
     } yield ()
 }

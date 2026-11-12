@@ -31,21 +31,18 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   private val agent = new Agent[Any] {
     val id: AgentId = author
     def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-      ZIO.dieMessage("Read-only server invoked an agent")
+      ZIO.dieMessage("Transport read invoked an agent")
   }
 
-  private def live: IO[YallmoError, OrchestratorLive[Any]] =
-    for {
-      registry <- RuntimeInstances.fromAgents(Chunk(agent))
-      master <- OrchestratorLive.inMemory(registry)
-    } yield master
+  private def live = application.TestServerApplication.make(Chunk(agent))
 
   test("viewer subscriptions multiplex pending and canonical updates with replies; legacy clients receive none") {
     run(ZIO.scoped {
       for {
-        master <- live
+        backend <- live
+        master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
-        port <- new OrchestratorWSServer(master).start(0)
+        port <- new OrchestratorWSServer(backend).start(0)
         first <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         second <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         legacy <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
@@ -89,8 +86,9 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("JVM scoped client waits before creation and ignores unrelated stream traffic without sequence gaps") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        master = backend.application.master
+        port <- new OrchestratorWSServer(backend).start(0)
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         scope = SubscriptionScope.Session(sessionId)
         baseline <- client.subscribeEvents("scoped", scope)
@@ -253,9 +251,10 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("WS client reads the supplied live master, including appends after connection") {
     run(ZIO.scoped {
       for {
-        master <- live
+        backend <- live
+        master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
-        port <- new OrchestratorWSServer(master).start(0)
+        port <- new OrchestratorWSServer(backend).start(0)
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         info <- client.initialize()
         sessions <- client.listSessions
@@ -292,8 +291,9 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        master = backend.application.master
+        port <- new OrchestratorWSServer(backend).start(0)
         endpoint = s"ws://127.0.0.1:$port/rpc"
         browser <- raw(port)
         _ <- initialize(browser)
@@ -329,7 +329,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           bound.identity,
           Identity(
             UserId(AgentId.value(bob).stripPrefix("user-")),
-            Role.Viewer,
+            Role.Operator,
             Chunk(bob, UserId.websiteAgent(UserId(AgentId.value(bob).stripPrefix("user-"))))
           )
         )
@@ -355,8 +355,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         _ <- ZIO.foreachDiscard(List(false, true)) { rejectFrame =>
           for {
@@ -398,8 +398,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("raw sockets retain their initialized human or anonymous identity on every reinitialize") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         human <- raw(port)
         alice = AgentId("user-alice")
         replies <- ZIO.foreach(List(Some(alice), Some(alice), Some(AgentId("user-bob")), None)) { id =>
@@ -433,7 +433,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           decode[JsonRpc.Success[Initialize.Result]](replies.head).result.identity,
           Identity(
             UserId(AgentId.value(alice).stripPrefix("user-")),
-            Role.Viewer,
+            Role.Operator,
             Chunk(alice, UserId.websiteAgent(UserId(AgentId.value(alice).stripPrefix("user-"))))
           )
         )
@@ -454,7 +454,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("WS results exclude private provider continuations and return typed remote errors") {
     run(ZIO.scoped {
       for {
-        master <- live
+        backend <- live
+        master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
         _ <- master.append(
           sessionId,
@@ -466,7 +467,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           )
         )
-        port <- new OrchestratorWSServer(master).start(0)
+        port <- new OrchestratorWSServer(backend).start(0)
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         messages <- client.listMessages
         missing <- client.loadSession(SessionId.unsafe("missing")).either
@@ -482,7 +483,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("blob chunks, offsets and limits use the existing master without a blob REST endpoint") {
     run(ZIO.scoped {
       for {
-        master <- live
+        backend <- live
+        master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
         blob = BlobId.fresh()
         _ <- master.appendWithBlobBytes(
@@ -491,7 +493,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           MessagePayload.AudioAttachment(blob, AudioFormat.Wav),
           Chunk[Byte](0, 1, -1)
         )
-        port <- new OrchestratorWSServer(master).start(0)
+        port <- new OrchestratorWSServer(backend).start(0)
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         listed <- client.listBlobIds
         first <- client.readBlob(blob, 0, 2)
@@ -516,8 +518,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("raw JSON-RPC requires per-connection initialization and rejects write methods") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         socket <- raw(port)
         _ <- socket.send("""{"jsonrpc":"2.0","id":"before","method":"sessions.list","params":{}}""")
         before <- socket.read
@@ -555,8 +557,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("raw protocol handles parse/validation errors, batches, null/numeric IDs and notifications") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         socket <- raw(port)
         _ <- initialize(socket)
         _ <- socket.send("{} {}")
@@ -587,8 +589,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("fragmented text is assembled and arbitrary browser origins are accepted") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         socket <- raw(port)
         _ <- socket.send(
           """{"jsonrpc":"2.0","id":"utf8","method":"initialize","params":{"clientName":"""",
@@ -853,8 +855,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
   test("scope exit closes clients and rejects invalid endpoints without opening connections") {
     run(ZIO.scoped {
       for {
-        master <- live
-        port <- new OrchestratorWSServer(master).start(0)
+        backend <- live
+        port <- new OrchestratorWSServer(backend).start(0)
         scope <- Scope.make
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc").provideEnvironment(ZEnvironment(scope))
         _ <- scope.close(Exit.unit)

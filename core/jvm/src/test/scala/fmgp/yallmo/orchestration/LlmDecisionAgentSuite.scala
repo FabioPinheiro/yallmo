@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import munit.FunSuite
@@ -51,7 +53,7 @@ final class LlmDecisionAgentSuite extends FunSuite {
         AgentTask("Continue"),
         StaticContext[Any](
           "System",
-          tools = Chunk(AgentToolDefinition(ToolKey.unsafe("clock"), "Time")),
+          functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("clock"), "Time")),
           retrievers = Chunk(RetrieverDefinition("notes", "Notes")),
           skills = Chunk(AgentSkill("guide", "Guidance", "Follow guide"))
         ),
@@ -62,7 +64,7 @@ final class LlmDecisionAgentSuite extends FunSuite {
     assertEquals(prompt.systemInstruction, "System\n\nFollow guide\n\nDecide")
     assertEquals(
       prompt.prompt,
-      "Tool: clock — Time\n\nRetriever: notes — Notes\n\nSkill: guide — Guidance\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
+      "Function: clock — Time\n\nRetriever: notes — Notes\n\nSkill: guide — Guidance\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
     )
   }
 }

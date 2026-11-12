@@ -1,5 +1,7 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.tool.{FilesystemToolDefinition, ScalamodeToolDefinition, SdlcToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
@@ -23,7 +25,7 @@ import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
 
-final class ApplicationRuntimeSuite extends FunSuite {
+final class ServerCompositionSuite extends FunSuite {
   private val human = new Agent[Any] {
     override val id: AgentId = AgentId("operator")
     override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
@@ -45,14 +47,13 @@ final class ApplicationRuntimeSuite extends FunSuite {
     providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
   )
 
-  test("workspace assembly registers the restricted Scala tool without executing snippets") {
+  test("workspace composition registers the restricted Scala tool without executing snippets") {
     run {
       ZIO.scoped {
         for {
           root <- temporaryRoot
           events <- Ref.make(Vector.empty[String])
           alive <- Ref.make(false)
-          runtime <- ApplicationRuntime.make(Config(), Chunk.empty)
           executor = new ScalaCodeExecutor {
             def isAvailable: UIO[Boolean] = ZIO.succeed(true)
             def execute(
@@ -60,22 +61,23 @@ final class ApplicationRuntimeSuite extends FunSuite {
                 timeout: Duration,
                 maxOutputBytes: Int,
                 dependencies: Seq[String]
-            ): Task[ExternalToolResult.ScalaMode] =
+            ): Task[ExternalFunctionResult.ScalaMode] =
               ZIO.dieMessage("Assembly must not execute snippets")
           }
           services = toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
-          opened <- runtime.openWorkspace(None, root, services)
+          runtime <- ServerApplication.workspace(Config(), Chunk.empty, None, root, services)
+          opened = (runtime, runtime.availability)
         } yield {
-          val definition = opened._1.context(None).tools.find(_.key == ToolKey.Scalamode).get
+          val definition = opened._1.context(None).functions.find(_.name == ScalamodeToolDefinition.Execute).get
           assertEquals(definition, ScalaTool.definition)
-          assert(opened._2.available.contains(ToolKey.Scalamode))
+          assert(opened._2.availableFunctions.contains(ScalamodeToolDefinition.Execute))
         }
       }
     }
   }
 
   test(
-    "RPC assembly binds selected private roots consistently for direct tools and session loops without duplicate keys"
+    "RPC composition binds selected private roots consistently for direct tools and session loops without duplicate keys"
   ) {
     run(ZIO.scoped {
       for {
@@ -98,28 +100,28 @@ final class ApplicationRuntimeSuite extends FunSuite {
               timeout: Duration,
               maxOutputBytes: Int,
               dependencies: Seq[String]
-          ): Task[ExternalToolResult.ScalaMode] =
+          ): Task[ExternalFunctionResult.ScalaMode] =
             ZIO.dieMessage("Expected explicit filesystem mode")
           override def executeFilesystem(
               code: String,
               endpoint: String,
               timeout: Duration,
               maxOutputBytes: Int
-          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
+          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
             for {
               fs <- ZIO.service[fmgp.yallmo.fs.FsRead]
               supplied <- ZIO.service[fmgp.rpc.RpcWebSocket.RpcRoute]
               _ <- ZIO.attempt { assert(supplied eq route); assertEquals(endpoint, "ws://127.0.0.1:1/rpc") }
               _ <- seen.update(_ :+ fs)
               text <- fs.readUtf8("notes.txt").mapError(error => new Exception(error.toString))
-            } yield ExternalToolResult.ScalaMode(ScalaModeResult.Executed(text))
+            } yield ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(text))
         }
         coachId = AgentId("coach-private")
         folderId = AgentId("folder-private")
         fallback = AgentId("workspace")
         invalid = AgentId("invalid")
-        runtime <- ApplicationRuntime
-          .make(
+        runtime <- ServerApplication
+          .workspace(
             config.copy(agents =
               Map(
                 first -> definition().copy(filesystem = Some(FileSystemConfig(oneRoot.toString))),
@@ -131,17 +133,14 @@ final class ApplicationRuntimeSuite extends FunSuite {
                 invalid -> definition().copy(filesystem = Some(FileSystemConfig(root.resolve("absent").toString)))
               )
             ),
-            Chunk(human)
-          )
-          .provideEnvironment(ZEnvironment(selectedFilesystemClient))
-        opened <- runtime
-          .openWorkspaceRpc(
+            Chunk(human),
             Some(root),
             root,
             toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor)),
-            "ws://127.0.0.1:1/rpc"
+            Some(route -> "ws://127.0.0.1:1/rpc")
           )
-          .provideSomeEnvironment[Scope](_.add[fmgp.rpc.RpcWebSocket.RpcRoute](route))
+          .provideSomeEnvironment[Scope](_.add[Client](selectedFilesystemClient))
+        opened = (runtime, runtime.availability)
         one <- runtime.resolve(first)
         two <- runtime.resolve(second)
         workspace <- runtime.resolve(fallback)
@@ -155,8 +154,8 @@ final class ApplicationRuntimeSuite extends FunSuite {
             MessagePayload.ToolCall(
               FunctionCall(
                 FunctionCallId.unsafe("shared-plan-set"),
-                ToolKey.SdlcSet,
-                """{"tasksJson":[{"id":"","text":"Shared by both agents"}]}"""
+                SdlcToolDefinition.SetTasks,
+                """{"tasksJson":[{"id":"","title":"Shared by both agents"}]}"""
               )
             )
           )
@@ -168,7 +167,11 @@ final class ApplicationRuntimeSuite extends FunSuite {
             None,
             java.time.Instant.EPOCH,
             MessagePayload.ToolCall(
-              FunctionCall(FunctionCallId.unsafe("shared-plan-read"), ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}""")
+              FunctionCall(
+                FunctionCallId.unsafe("shared-plan-read"),
+                SdlcToolDefinition.ReadTask,
+                """{"taskIds":["T-1"]}"""
+              )
             )
           )
         )
@@ -182,7 +185,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
               MessagePayload.ToolCall(
                 FunctionCall(
                   FunctionCallId.unsafe("read-private"),
-                  ToolKey.Scalamode,
+                  ScalamodeToolDefinition.Execute,
                   """{"code":"read notes","mode":"filesystem"}"""
                 )
               )
@@ -201,7 +204,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
         folderReply <- opened._1.invoke(input, folder)
         capabilities <- seen.get
       } yield {
-        assert(!coach.adapter.asInstanceOf[HasAgentCapabilities].capabilities.tools.get.contains(ToolKey.Scalamode))
+        assert(!coach.adapter.asInstanceOf[HasAgentCapabilities].capabilities.allowsTool(ToolKey.Scalamode))
         assert(folderReply.payload.contentStr.contains("notes.txt"))
         assertEquals(capabilities.size, 4, "Folder execution must not invoke scalamode")
         assertEquals(results.size, 3)
@@ -215,13 +218,87 @@ final class ApplicationRuntimeSuite extends FunSuite {
         assert(one.filesystem.get eq again.filesystem.get)
         assert(capabilities.exists(_ eq one.filesystem.get))
         assertEquals(capabilities.count(_ eq two.filesystem.get), 2)
-        val keys = opened._1.context(Some(one)).tools.map(_.key)
+        val keys = opened._1.context(Some(one)).functions.map(_.name)
         assertEquals(keys.distinct, keys)
         assertEquals(
-          opened._1.context(Some(one)).tools.find(_.key == ToolKey.Scalamode).get,
+          opened._1.context(Some(one)).functions.find(_.name == ScalamodeToolDefinition.Execute).get,
           ScalaTool.filesystemDefinition
         )
       }
+    })
+  }
+
+  test("without Scala RPC, direct invocation and managed submit use private read roots with workspace fallback") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        privateRoot <- ZIO.attempt(Files.createDirectory(root.resolve("private")))
+        _ <- ZIO.attempt {
+          Files.writeString(root.resolve("notes.txt"), "workspace")
+          Files.writeString(root.resolve("workspace-only.txt"), "workspace")
+          Files.writeString(privateRoot.resolve("notes.txt"), "private")
+          Files.writeString(privateRoot.resolve("private-only.txt"), "private")
+        }
+        events <- Ref.make(Vector.empty[String])
+        alive <- Ref.make(false)
+        executor = new ScalaCodeExecutor {
+          def isAvailable: UIO[Boolean] = ZIO.succeed(true)
+          def execute(
+              code: String,
+              timeout: Duration,
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
+          ): Task[ExternalFunctionResult.ScalaMode] = ZIO.dieMessage("No filesystem Scala without explicit RPC")
+        }
+        application <- ServerApplication
+          .workspace(
+            config.copy(agents =
+              Map(
+                first -> definition().copy(filesystem = Some(FileSystemConfig(privateRoot.toString))),
+                second -> definition()
+              )
+            ),
+            Chunk(human),
+            None,
+            root,
+            toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
+          )
+          .provideSomeEnvironment[Scope](_.add[Client](filesystemClient(rpc = false)))
+        _ <- ZIO.foreachDiscard(List((first, "private"), (second, "workspace"))) { (id, expected) =>
+          for {
+            selected <- application.resolve(id)
+            again <- application.resolve(id)
+            input = (key: FunctionKey, args: String) =>
+              Message(
+                MessageData(
+                  human.id,
+                  None,
+                  java.time.Instant.EPOCH,
+                  MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(s"direct-${id}-${key}"), key, args))
+                )
+              )
+            read <- application.invoke(input(FilesystemToolDefinition.ReadFile, """{"path":"notes.txt"}"""), selected)
+            listing <- application.invoke(input(FilesystemToolDefinition.ListFiles, """{"path":"."}"""), selected)
+            scalaDenied <- application.invoke(
+              input(ScalamodeToolDefinition.Execute, """{"code":"fs.list","mode":"filesystem"}"""),
+              selected
+            )
+            session <- application.master.createSession(SessionId.unsafe(s"no-rpc-$id"), Chunk(human.id, id))
+            turn <- application.master.submit(session.id, human.id, AgentTask("read"), AgentRunner.execution(selected))
+          } yield {
+            assert(selected eq again, "Complete executable selection, not just the adapter, is cached")
+            assertEquals(read.payload.contentStr, expected)
+            assertEquals(
+              selected.context.functions.find(_.name == ScalamodeToolDefinition.Execute).get,
+              ScalaTool.definition
+            )
+            assert(scalaDenied.payload.contentStr.contains("InvalidToolArguments"))
+            assert(listing.payload.contentStr.contains(s"$expected-only.txt"))
+            if id == first then assert(!listing.payload.contentStr.contains("workspace-only.txt"))
+            assertEquals(turn.result, AgentResult(id, expected))
+          }
+        }
+      } yield ()
     })
   }
 
@@ -237,7 +314,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           requests <- Ref.make(0)
           coach = definition().copy(agentType = "CoachAgent", filesystem = Some(FileSystemConfig(root.toString)))
           otherRoot <- ZIO.attempt(Files.createDirectory(root.resolve("other-coach")))
-          runtime <- ApplicationRuntime
+          runtime <- ServerApplication
             .make(
               config.copy(agents =
                 Map(first -> coach, second -> coach.copy(filesystem = Some(FileSystemConfig(otherRoot.toString))))
@@ -256,32 +333,32 @@ final class ApplicationRuntimeSuite extends FunSuite {
             )
           binding <- runtime.resolve(first)
           before <- requests.get
-          assembled <- runtime.open[Any](None, Chunk.empty)
+          assembled = runtime
           submission = assembled.submission(human.id, Some(binding))
           session <- submission.create(Some("coach-session"))
           result <- submission.submit(Some(session.id.value), "Help me plan my next career move")
           after <- requests.get
           other <- runtime.resolve(second)
-          otherTools = other.adapter.asInstanceOf[HasLocalAgentTools].localTools
+          otherTools = other.adapter.asInstanceOf[HasLocalAgentFunctions].localFunctions
           otherNotebook <- otherTools
-            .find(_.definition.key == fmgp.yallmo.agents.CoachApplicationTools.ListKey)
+            .find(_.definition.name == fmgp.yallmo.agents.CoachApplicationTools.ListKey)
             .get
-            .execute(ExternalToolCall(fmgp.yallmo.agents.CoachApplicationTools.ListKey, "{}"))
+            .execute(ExternalFunctionCall(fmgp.yallmo.agents.CoachApplicationTools.ListKey, "{}"))
         } yield {
           assertEquals(otherNotebook.text, "[]")
-          assert(binding.isInstanceOf[ConfiguredAgentBinding.Native])
+          assert(binding.settings.nonEmpty)
           assertEquals(before, 0)
           assertEquals(after, 2)
           assertEquals(result.result.agentId, first)
           assertEquals(
             binding.adapter.asInstanceOf[HasAgentCapabilities].capabilities.tools,
-            Some(fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.key).toSet)
+            Some(Set(ToolKey.Coach))
           )
           assert(Files.readString(root.resolve("applications.jsonl")).contains("Tuesday works."))
-          assert(assembled.context(None).tools.isEmpty)
+          assert(assembled.context(None).functions.isEmpty)
           assertEquals(
-            assembled.context(Some(binding)).tools.map(_.key).toSet,
-            fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.key).toSet
+            assembled.context(Some(binding)).functions.map(_.name).toSet,
+            fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.name).toSet
           )
           assert(!Files.exists(root.resolve("state.jsonl")))
         }
@@ -296,14 +373,14 @@ final class ApplicationRuntimeSuite extends FunSuite {
           root <- temporaryRoot
           requests <- Ref.make(0)
           coach = AgentConfig("CoachAgent", Seq(provider), filesystem = Some(FileSystemConfig(root.toString)))
-          runtime <- ApplicationRuntime
+          runtime <- ServerApplication
             .make(
               config.copy(agents = Map(first -> coach), providers = Map(provider -> ProviderConfig.ChatGPT())),
               Chunk.empty
             )
             .provideEnvironment(ZEnvironment(responseClient(requests)))
           selected <- runtime.resolve(first)
-          explicitRuntime <- ApplicationRuntime
+          explicitRuntime <- ServerApplication
             .make(
               config.copy(
                 agents = Map(first -> coach.copy(config = Json.Obj("model" -> Json.Str("explicit-model")))),
@@ -313,14 +390,11 @@ final class ApplicationRuntimeSuite extends FunSuite {
             )
             .provideEnvironment(ZEnvironment(responseClient(requests)))
           explicit <- explicitRuntime.resolve(first)
-          oaiRuntime <- ApplicationRuntime.make(config.copy(agents = Map(first -> coach)), Chunk.empty)
+          oaiRuntime <- ServerApplication.make(config.copy(agents = Map(first -> coach)), Chunk.empty)
           missing <- oaiRuntime.resolve(first).either
           calls <- requests.get
         } yield {
-          def model(binding: ConfiguredAgentBinding): String = binding match {
-            case ConfiguredAgentBinding.Native(_, _, program, _, _) => program.model
-            case _                                                  => fail("Coach must use a native program")
-          }
+          def model(binding: ResolvedAgent): String = binding.settings.get.model
           assertEquals(model(selected), fmgp.yallmo.provider.openai.OpenAiCodexConfig.Model)
           assertEquals(model(explicit), "explicit-model")
           assertEquals(runtime.agentSummaries.head.model, None)
@@ -337,7 +411,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
-        runtime <- ApplicationRuntime.make(config, Chunk(human))
+        runtime <- ServerApplication.make(config, Chunk(human))
         _ <- runtime.resolve(first)
         _ <- runtime.resolve(first)
         _ <- ZIO.succeed(assert(logs.isEmpty))
@@ -359,30 +433,30 @@ final class ApplicationRuntimeSuite extends FunSuite {
   test("selection reuses one lazy registry and opened storage without changing existing bindings") {
     run {
       for {
-        runtime <- ApplicationRuntime.make(
+        runtime <- ServerApplication.make(
           config.copy(agents = config.agents.updated(AgentId("unrelated"), AgentConfig("Unsupported"))),
           Chunk(human)
         )
         one <- runtime.resolve(first)
-        opened <- runtime.open[Any](None, Chunk.empty)
-        saved <- opened.orchestrator.createSession(SessionId.unsafe("shared"), Chunk(human.id, first))
+        opened = runtime
+        saved <- opened.master.createSession(SessionId.unsafe("shared"), Chunk(human.id, first))
         two <- runtime.resolve(second)
         again <- runtime.resolve(first)
-        loaded <- opened.orchestrator.loadSession(saved.id)
+        loaded <- opened.master.loadSession(saved.id)
         unknown <- runtime.resolve(AgentId("missing")).either
       } yield {
         assert(one.adapter eq again.adapter)
         assert(one.adapter.id != two.adapter.id)
         assertEquals(opened.context(Some(one)).systemPrompt, "First prompt")
-        assertEquals(opened.context(Some(two)).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
-        assertEquals(opened.context(None).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
+        assertEquals(opened.context(Some(two)).systemPrompt, ServerApplication.DefaultSystemPrompt)
+        assertEquals(opened.context(None).systemPrompt, ServerApplication.DefaultSystemPrompt)
         assertEquals(loaded, saved)
         assertEquals(unknown, Left(YallmoError.UnknownAgent(AgentId("missing"))))
       }
     }
   }
 
-  test("capability validation precedes filesystem creation; valid assembly opens the configured root") {
+  test("capability validation precedes filesystem creation; valid composition opens the configured root") {
     run {
       ZIO.scoped {
         for {
@@ -391,19 +465,17 @@ final class ApplicationRuntimeSuite extends FunSuite {
           restricted = config.copy(agents =
             Map(
               first -> definition().copy(
-                capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unavailable"))))
+                capabilities = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unavailable"))))
               )
             )
           )
-          invalid <- ApplicationRuntime.make(restricted, Chunk(human))
-          rejected <- invalid.open[Any](Some(target), Chunk.empty).either
+          rejected <- ServerApplication.make(restricted, Chunk(human), Some(target)).either
           _ = {
             assert(rejected.isLeft)
             assert(!Files.exists(target), "Invalid capability configuration must not create storage")
           }
-          runtime <- ApplicationRuntime.make(config, Chunk(human))
-          opened <- runtime.open[Any](Some(target), Chunk.empty)
-          session <- opened.orchestrator.createSession(SessionId.unsafe("persisted"), Chunk(human.id))
+          opened <- ServerApplication.make(config, Chunk(human), Some(target))
+          session <- opened.master.createSession(SessionId.unsafe("persisted"), Chunk(human.id))
         } yield {
           assertEquals(session.id, SessionId.unsafe("persisted"))
           assert(Files.exists(target.resolve("objects.jsonl")))
@@ -421,18 +493,16 @@ final class ApplicationRuntimeSuite extends FunSuite {
           overrideStorage = root.resolve("override")
           path = root.resolve("server.json")
           _ <- ZIO.attempt(Files.writeString(path, Config().toJson))
-          memory <- ApplicationRuntime.make(Config(), Chunk(human))
-          first <- memory.openWorkspace(root)
-          _ <- first._1.orchestrator.createSession(SessionId.unsafe("memory"), Chunk(human.id))
-          reopened <- memory.openWorkspace(root)
-          empty <- reopened._1.orchestrator.listSessions
-          loaded <- ApplicationRuntime.load(Chunk(human), path, storageRoot = Some(storage))
-          persisted <- loaded._1.openWorkspace(root)
-          _ <- persisted._1.orchestrator.createSession(SessionId.unsafe("persisted"), Chunk(human.id))
-          again <- loaded._1.openWorkspace(root)
-          saved <- again._1.orchestrator.loadSession(SessionId.unsafe("persisted"))
-          explicit <- loaded._1.openWorkspace(Some(overrideStorage), root)
-          separate <- explicit._1.orchestrator.listSessions
+          first <- ServerApplication.workspace(Config(), Chunk(human), None, root)
+          _ <- first.master.createSession(SessionId.unsafe("memory"), Chunk(human.id))
+          reopened <- ServerApplication.workspace(Config(), Chunk(human), None, root)
+          empty <- reopened.master.listSessions
+          persisted <- ServerApplication.workspace(Config(), Chunk(human), Some(storage), root)
+          _ <- persisted.master.createSession(SessionId.unsafe("persisted"), Chunk(human.id))
+          again <- ServerApplication.workspace(Config(), Chunk(human), Some(storage), root)
+          saved <- again.master.loadSession(SessionId.unsafe("persisted"))
+          explicit <- ServerApplication.workspace(Config(), Chunk(human), Some(overrideStorage), root)
+          separate <- explicit.master.listSessions
         } yield {
           assertEquals(empty, Chunk.empty)
           assertEquals(saved.id, SessionId.unsafe("persisted"))
@@ -458,9 +528,11 @@ final class ApplicationRuntimeSuite extends FunSuite {
             _ <- ZIO.attempt(Files.createDirectory(root.resolve("storage")))
             _ <- ZIO.attempt(Files.writeString(workspace.resolve("notes.txt"), "fake content"))
             client = toolClient(requests)
-            runtime <- ApplicationRuntime.make(config, Chunk(human)).provideEnvironment(ZEnvironment(client))
-            opened <- runtime.openWorkspace(Some(root.resolve("storage")), workspace, toolServices(events, alive))
-            (assembled, availability) = opened
+            runtime <- ServerApplication
+              .workspace(config, Chunk(human), Some(root.resolve("storage")), workspace, toolServices(events, alive))
+              .provideSomeEnvironment[Scope](_.add[Client](client))
+            assembled = runtime
+            availability = runtime.availability
             one <- runtime.resolve(first)
             selected = assembled.submission(human.id, Some(one))
             session <- selected.create(Some("shared-tools"))
@@ -480,19 +552,19 @@ final class ApplicationRuntimeSuite extends FunSuite {
           } yield {
             assert(running, "Tool services must remain open after workspace startup and both submissions")
             assertEquals(
-              availability.available,
+              availability.availableFunctions,
               Chunk(
-                ToolKey.ReadFile,
-                ToolKey.ListFiles,
-                ToolKey.SdlcSet,
-                ToolKey.SdlcReadTask,
-                ToolKey.SdlcSetIntents,
-                ToolKey.SdlcReadIntent,
-                ToolKey.SdlcList
+                FilesystemToolDefinition.ReadFile,
+                FilesystemToolDefinition.ListFiles,
+                SdlcToolDefinition.SetTasks,
+                SdlcToolDefinition.ReadTask,
+                SdlcToolDefinition.SetIntents,
+                SdlcToolDefinition.ReadIntent,
+                SdlcToolDefinition.List
               )
             )
             assertEquals(
-              assembled.context(None).tools,
+              assembled.context(None).functions,
               Chunk(ReadFileTool.definition, ListFilesTool.definition) ++ fmgp.yallmo.tool.sdlc.SdlcTools.Definitions
             )
             assertEquals(firstTurn.result, AgentResult(first, "read successfully"))
@@ -543,22 +615,22 @@ final class ApplicationRuntimeSuite extends FunSuite {
             browserAudioPort = 5123
           )
           path <- ZIO.attemptBlocking(Files.writeString(root.resolve("yallmo.json"), privateConfig.toJson))
-          startup <- ApplicationRuntime
-            .load(Chunk(human), path)
+          startup <- ServerApplication
+            .load(Chunk(human), path, Some(root.resolve("storage")))
             .provideEnvironment(ZEnvironment(responseClient(requests)))
           (runtime, catalog) = startup
-          ids <- runtime.instances.listAgentIds
-          registered <- runtime.instances.getAgent(human.id)
+          ids <- runtime.catalog.listAgentIds
+          registered <- runtime.catalog.getAgent(human.id)
           entries <- catalog.list
           binding <- runtime.resolve(first)
-          opened <- runtime.open[Any](Some(root.resolve("storage")), Chunk.empty)
+          opened = runtime
           before <- requests.get
           submission = opened.submission(human.id, Some(binding))
           session <- submission.create(Some("local-author"))
           turn <- submission.submit(Some(session.id.value), "supplied author")
           // Reopen the durable store to prove authorship is not just an in-memory UI value.
-          reloaded <- runtime.open[Any](Some(root.resolve("storage")), Chunk.empty)
-          stored <- reloaded.orchestrator.loadSession(session.id)
+          reloaded <- OrchestratorLive.filesystem(root.resolve("storage"), runtime.catalog)
+          stored <- reloaded.loadSession(session.id)
           after <- requests.get
         } yield {
           assertEquals(before, 0, "Loading, listing, resolving and opening must not invoke providers or authentication")
@@ -566,11 +638,11 @@ final class ApplicationRuntimeSuite extends FunSuite {
           assert(registered eq human)
           assert(ids.contains(human.id))
           assertEquals(runtime.browserAudioPort, 5123)
-          assertEquals(ApplicationRuntime.DefaultConfigPath, Path.of("yallmo.json"))
+          assertEquals(ServerApplication.DefaultConfigPath, Path.of("yallmo.json"))
           assertEquals(runtime.agentSummaries.map(_.id), Vector(AgentId("account-agent"), first, folder, second))
           assertEquals(
             runtime.agentSummaries.find(_.id == first).get,
-            ApplicationRuntime.AgentSummary(first, "OAIAgent", Vector("local"), Some("test-model"))
+            ServerApplication.AgentSummary(first, "OAIAgent", Vector("local"), Some("test-model"))
           )
           assertEquals(runtime.agentSummaries.find(_.id == folder).get.model, None)
           val display = runtime.agentSummaries.toString + entries.toString
@@ -594,16 +666,16 @@ final class ApplicationRuntimeSuite extends FunSuite {
         for {
           root <- temporaryRoot
           path = root.resolve("yallmo.json")
-          startup <- ApplicationRuntime.load(Chunk(human), path)
+          startup <- ServerApplication.load(Chunk(human), path)
           (runtime, _) = startup
-          ids <- runtime.instances.listAgentIds
+          ids <- runtime.catalog.listAgentIds
           initialized <- ZIO.attemptBlocking(Files.readString(path).fromJson[Config].toOption.get)
-          opened <- runtime.open[Any](None, Chunk.empty)
+          opened = runtime
           rejected <- opened.submission(human.id, None).submit(None, "no fallback").either
-          sessions <- opened.orchestrator.listSessions
-          duplicate <- ApplicationRuntime.load(Chunk(human, human), path).either
+          sessions <- opened.master.listSessions
+          duplicate <- ServerApplication.load(Chunk(human, human), path).either
           _ <- ZIO.attemptBlocking(Files.writeString(path, config.copy(agents = Map(human.id -> definition())).toJson))
-          collision <- ApplicationRuntime.load(Chunk(human), path).either
+          collision <- ServerApplication.load(Chunk(human), path).either
         } yield {
           assertEquals(initialized, Config())
           assertEquals(Files.readString(path).fromJson[Config].toOption.get.agents.keySet, Set(human.id))
@@ -628,10 +700,10 @@ final class ApplicationRuntimeSuite extends FunSuite {
           )
         )
       )
-      ApplicationRuntime.make(configured, Chunk.empty).map { runtime =>
+      ServerApplication.make(configured, Chunk.empty).map { runtime =>
         assertEquals(
           runtime.agentSummaries,
-          Vector(ApplicationRuntime.AgentSummary(first, "OAIAgent??", Vector("local"), Some("display?model")))
+          Vector(ServerApplication.AgentSummary(first, "OAIAgent??", Vector("local"), Some("display?model")))
         )
         assert(!runtime.agentSummaries.toString.contains("PRIVATE_SETTING"))
       }
@@ -653,7 +725,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
       } yield (AgentId(s"$kind-$label"), AgentConfig(kind, config = settings), expected)
       for {
         requests <- Ref.make(0)
-        runtime <- ApplicationRuntime
+        runtime <- ServerApplication
           .make(
             Config(agents = definitions.map { case (id, definition, _) => id -> definition }.toMap),
             Chunk.empty
@@ -677,7 +749,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
     run {
       for {
         requests <- Ref.make(0)
-        runtime <- ApplicationRuntime
+        runtime <- ServerApplication
           .make(config.copy(agents = Map(voiceId -> voiceDefinition)), Chunk(human))
           .provideEnvironment(ZEnvironment(responseClient(requests)))
         selected <- runtime.resolveTranscriber(voiceId, StaticContext[Any]("chat"))
@@ -709,13 +781,13 @@ final class ApplicationRuntimeSuite extends FunSuite {
         requests <- Ref.make(0)
         errors <- ZIO.foreach(invalid) { definition =>
           for {
-            runtime <- ApplicationRuntime
+            runtime <- ServerApplication
               .make(config.copy(agents = Map(unsafeId -> definition)), Chunk.empty)
               .provideEnvironment(ZEnvironment(responseClient(requests)))
             result <- runtime.resolveTranscriber(unsafeId, StaticContext[Any]("chat")).either
           } yield result.swap.toOption.get.getMessage
         }
-        runtime <- ApplicationRuntime.make(config, Chunk(human))
+        runtime <- ServerApplication.make(config, Chunk(human))
         missing <- runtime.resolveTranscriber(AgentId("missing"), StaticContext[Any]("chat")).either
         registeredOnly <- runtime.resolveTranscriber(human.id, StaticContext[Any]("chat")).either
         calls <- requests.get
@@ -733,7 +805,10 @@ final class ApplicationRuntimeSuite extends FunSuite {
 
   test("transcriber policy checks all four effective capability catalogs including partial inheritance") {
     run {
-      val tool = StaticContext[Any]("chat", tools = Chunk(AgentToolDefinition(ToolKey.unsafe("shell"), "commands")))
+      val tool = StaticContext[Any](
+        "chat",
+        functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
+      )
       val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
       val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
       val ext = StaticContext[Any](
@@ -747,16 +822,16 @@ final class ApplicationRuntimeSuite extends FunSuite {
         })
       )
       def check(policy: AgentCapabilities, context: StaticContext[Any]) =
-        ApplicationRuntime
+        ServerApplication
           .make(config.copy(agents = Map(voiceId -> voiceDefinition.copy(capabilities = policy))), Chunk.empty)
           .flatMap(_.resolveTranscriber(voiceId, context))
           .either
       for {
         inherited <- ZIO.foreach(List(tool, rag, skill, ext))(check(AgentCapabilities(), _))
-        partial <- check(AgentCapabilities(tools = Some(Set.empty)), skill)
-        allowed <- check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))), tool)
-        unknown <- check(AgentCapabilities(tools = Some(Set(ToolKey.unsafe("unknown")))), tool)
-        empty <- check(AgentCapabilities(tools = Some(Set.empty)), tool)
+        partial <- check(AgentCapabilities(functions = Some(Set.empty)), skill)
+        allowed <- check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell")))), tool)
+        unknown <- check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unknown")))), tool)
+        empty <- check(AgentCapabilities(functions = Some(Set.empty)), tool)
         noCatalog <- check(AgentCapabilities(), StaticContext[Any]("chat"))
       } yield {
         assert(inherited.forall(_.isLeft))
@@ -766,6 +841,29 @@ final class ApplicationRuntimeSuite extends FunSuite {
         assert(empty.isRight)
         assert(noCatalog.isRight)
       }
+    }
+  }
+
+  extension (application: ServerApplication)
+    private def submission(author: AgentId, selection: Option[ResolvedAgent]): TestSubmission =
+      new TestSubmission(application, author, selection)
+
+  private final class TestSubmission(application: ServerApplication, author: AgentId, selected: Option[ResolvedAgent]) {
+    def create(name: Option[String]): IO[YallmoError, Session] =
+      application.master.createSession(
+        SessionId.unsafe(name.get),
+        Chunk(author) ++ Chunk.fromIterable(selected.map(_.id))
+      )
+    def load(id: String): IO[YallmoError, Session] = application.master.loadSession(SessionId.unsafe(id))
+    def submit(previous: Option[String], prompt: String): IO[SessionSubmitFailure, SessionTurn] = selected match {
+      case None        => ZIO.fail(SessionSubmitFailure(YallmoError.InvalidConfig("No agent selected"), None))
+      case Some(agent) =>
+        application.master.submit(
+          SessionId.unsafe(previous.get),
+          author,
+          AgentTask(prompt),
+          AgentRunner.execution(agent)
+        )
     }
   }
 
@@ -797,7 +895,9 @@ final class ApplicationRuntimeSuite extends FunSuite {
       }
     })
 
-  private def selectedFilesystemClient: Client =
+  private def selectedFilesystemClient: Client = filesystemClient(rpc = true)
+
+  private def filesystemClient(rpc: Boolean): Client =
     Client.fromDriver(new ZClient.Driver[Any, Scope, Throwable] {
       override def request(
           version: Version,
@@ -814,17 +914,17 @@ final class ApplicationRuntimeSuite extends FunSuite {
           val messages = request("messages").arr
           val outputs = messages.filter(_("role").str == "tool").map(_("content").str)
           val response = if outputs.nonEmpty then {
-            assertEquals(outputs.size, 3)
+            assertEquals(outputs.size, if rpc then 3 else 2)
             val read = outputs(0)
             assert(outputs(1).contains("notes.txt"))
-            assertEquals(outputs(2), read)
+            if rpc then assertEquals(outputs(2), read)
             ujson.Obj("role" -> "assistant", "content" -> read)
           } else {
             val calls = List(
               ("readFile", ujson.Obj("path" -> "notes.txt")),
               ("listFiles", ujson.Obj("path" -> ".")),
               ("scalamode", ujson.Obj("code" -> "fs.readUtf8(\"notes.txt\")", "mode" -> "filesystem"))
-            ).zipWithIndex.map { case ((name, arguments), index) =>
+            ).take(if rpc then 3 else 2).zipWithIndex.map { case ((name, arguments), index) =>
               ujson.Obj(
                 "id" -> s"call-$index",
                 "type" -> "function",
@@ -877,7 +977,7 @@ final class ApplicationRuntimeSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[ExternalToolResult.ScalaMode] =
+      ): Task[ExternalFunctionResult.ScalaMode] =
         ZIO.dieMessage(s"Unexpected Scala: $code $timeout $maxOutputBytes")
     }
     val bashLayer: ULayer[BashExecutor] = ZLayer.scoped(

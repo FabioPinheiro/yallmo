@@ -39,8 +39,12 @@ private[terminal] object TerminalEventRenderer {
       case ReplEvent.Unavailable(message)    => Console.printLine(message).orDie
       case ReplEvent.ToolAvailability(value) =>
         printLines(
-          value.available.map(key => s"available[$key]") ++
-            value.unavailable.map { case (key, reasons) => s"unavailable[$key]: ${reasons.mkString("; ")}" }
+          value.availableTools.map { case (key, functions) =>
+            s"tool[$key]: available functions [${functions.mkString(", ")}]"
+          } ++ value.availableFunctions.filterNot(value.ownership.contains).map(key => s"available function[$key]") ++
+            value.unavailableFunctions.map { case (key, reasons) =>
+              s"unavailable function[$key]: ${reasons.mkString("; ")}"
+            }
         )
       case ReplEvent.LogLevelChanged(level)     => Console.printLine(s"Log level set to $level.").orDie
       case ReplEvent.SessionReset               => Console.printLine("Session reset.").orDie

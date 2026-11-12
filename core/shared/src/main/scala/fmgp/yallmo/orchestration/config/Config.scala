@@ -5,9 +5,9 @@ import zio.json.JsonCodec
 
 /** Immutable configuration data. Decoding, copying and serialization never initialize runtime resources.
   *
-  * RuntimeInstances owns agent/provider construction, caches and concurrency for a chosen configuration snapshot.
-  * Catalogs use IDs as JSON object keys; provider definitions do not repeat those IDs. JSON serialization includes
-  * configured credentials; never log the serialized configuration.
+  * AgentCatalog owns agent/provider construction, caches and concurrency for a chosen configuration snapshot. Catalogs
+  * use IDs as JSON object keys; provider definitions do not repeat those IDs. JSON serialization includes configured
+  * credentials; never log the serialized configuration.
   *
   * @param browserAudioPort
   *   browser microphone/TTS HTTP port (1–65535); missing fields in older files default to 5180

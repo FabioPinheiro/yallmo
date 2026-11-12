@@ -35,7 +35,7 @@ final class StorageAudioSuite extends FunSuite {
   for filesystem <- List(false, true) do {
     def fixture[A](body: Orchestrator[Any] => ZIO[Any, YallmoError, A]): A = directory { root =>
       run(for {
-        instances <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        instances <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
           val id = human
           def turn(
               request: fmgp.yallmo.model.llm.AgentTurnRequest
@@ -241,7 +241,7 @@ final class StorageAudioSuite extends FunSuite {
     directory { root =>
       val input = audio
       run(for {
-        instances <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        instances <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
           val id = human
           def turn(
               request: fmgp.yallmo.model.llm.AgentTurnRequest

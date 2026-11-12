@@ -1,8 +1,10 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import fmgp.yallmo.model.{UserId, YallmoError}
 import fmgp.rpc.RpcWebSocket
-import fmgp.yallmo.model.{AgentId, ToolKey}
+import fmgp.yallmo.model.AgentId
 import fmgp.yallmo.orchestration.{AgentTask, SessionId}
 import fmgp.yallmo.orchestration.config.{AgentConfig, Config, FileSystemConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.server.{OrchestratorClient, OrchestratorWSClient, OrchestratorWSServer}
@@ -116,12 +118,12 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
         services <- (Client.default ++ BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.layer(executable.get) ++
           ZLayer.succeed(route)).build
         application <- ServerApplication
-          .openRpc(storage, Some(configPath), Some(workspace), s"ws://127.0.0.1:$childPort/rpc")
+          .openRpc(storage, configPath, Some(workspace), s"ws://127.0.0.1:$childPort/rpc")
           .provideSomeEnvironment[Scope](_.union(services))
-        selected <- application.configured.get.runtime.resolve(agent)
+        selected <- application.application.resolve(agent)
         uiServer <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
         uiPort <- Server
-          .install(new OrchestratorWSServer(application.master, application.configured).routes)
+          .install(new OrchestratorWSServer(application).routes)
           .provideEnvironment(uiServer)
         endpoint = s"ws://127.0.0.1:$uiPort/rpc"
         viewer <- OrchestratorWSClient.connect(endpoint)
@@ -134,7 +136,7 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
         info <- client.capabilities
-        session <- seed(application.configured.get, human, Some(SessionId.unsafe("private-read")))
+        session <- seed(application, human, Some(SessionId.unsafe("private-read")))
         outcome <- client.submitTurn(
           TurnSubmit.Target.Existing(session.id),
           agent,
@@ -155,7 +157,7 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
         assertEquals(before, Vector.empty)
         assertEquals(info.get.identity.role, Role.Operator)
         assertEquals(
-          application.configured.get.assembly.context(Some(selected)).tools.find(_.key == ToolKey.Scalamode).get,
+          application.application.context(Some(selected)).functions.find(_.name == ScalamodeToolDefinition.Execute).get,
           ScalaTool.filesystemDefinition
         )
         val result = outcome.asInstanceOf[TurnOutcome.Succeeded]
@@ -175,13 +177,14 @@ final class ScalaFilesystemApplicationSuite extends FunSuite {
     }
   }
   private def seed(
-      backend: ServerApplication.Configured,
+      backend: ServerExecutionService,
       author: AgentId,
       name: Option[SessionId]
   ): IO[YallmoError, SessionSnapshot] =
     for {
-      _ <- backend.runtime.registerUser(author)
-      session <- backend.assembly.submission(author, None).create(name.map(_.value))
+      _ <- backend.application.registerUser(author)
+      session <- backend.application.master
+        .createSession(name.getOrElse(SessionId.unsafe(s"main-${java.util.UUID.randomUUID()}")), Chunk(author))
     } yield SessionSnapshot.from(session)
 
 }

@@ -80,7 +80,7 @@ final class FolderStructureAgentSuite extends FunSuite {
       run {
         (for {
           loaded <- ConfigFile.loadOrInitialize(path)
-          instances <- RuntimeInstances.make(loaded)
+          instances <- AgentCatalog.make(loaded)
           agent <- instances.getAgent(id)
           cached <- instances.getAgent(id)
           other <- instances.getAgent(otherId)
@@ -107,7 +107,7 @@ final class FolderStructureAgentSuite extends FunSuite {
         val config = Config(
           agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(path.toString))))
         )
-        val instances = run(RuntimeInstances.make(config).provide(Client.default))
+        val instances = run(AgentCatalog.make(config).provide(Client.default))
         val agent = run(instances.getAgent(id))
         assert(run(instances.getAgent(id)) eq agent)
         run(agent.turn(request))
@@ -124,7 +124,7 @@ final class FolderStructureAgentSuite extends FunSuite {
       val config = Config(
         agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(link.toString))))
       )
-      val instances = run(RuntimeInstances.make(config).provide(Client.default))
+      val instances = run(AgentCatalog.make(config).provide(Client.default))
       val agent = run(instances.getAgent(id))
       assert(!Files.exists(root.resolve("state.jsonl")))
       Files.delete(link)
@@ -145,7 +145,7 @@ final class FolderStructureAgentSuite extends FunSuite {
         agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = Some(FileSystemConfig(link.toString))))
       )
       val result = run {
-        RuntimeInstances.make(config).flatMap(_.getAgent(id)).flatMap(_.turn(request)).either.provide(Client.default)
+        AgentCatalog.make(config).flatMap(_.getAgent(id)).flatMap(_.turn(request)).either.provide(Client.default)
       }
       assert(result.swap.toOption.exists(_.isInstanceOf[YallmoError.AgentExecutionFailed]))
       assertEquals(Files.readString(target), "unchanged")
@@ -165,7 +165,7 @@ final class FolderStructureAgentSuite extends FunSuite {
           .foreach(None :: invalid.map(path => Some(FileSystemConfig(path)))) { filesystem =>
             val config =
               Config(agents = Map(id -> AgentConfig("FolderStructureAgent", filesystem = filesystem)))
-            RuntimeInstances.make(config).flatMap(_.getAgent(id).either)
+            AgentCatalog.make(config).flatMap(_.getAgent(id).either)
           }
           .provide(Client.default)
       }

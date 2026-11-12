@@ -2,7 +2,7 @@ package fmgp.yallmo.server
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.FunSuite
@@ -15,19 +15,16 @@ final class OrchestratorRpcSuite extends FunSuite {
   private val alice = AgentId("user-alice")
   private val bob = AgentId("user-bob")
 
-  private def master: IO[YallmoError, OrchestratorLive[Any]] =
-    RuntimeInstances
-      .fromAgents(Chunk(new Agent[Any] {
-        val id = executable
-        def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-          ZIO.dieMessage("Viewer presence must never execute an agent")
-      }))
-      .flatMap(OrchestratorLive.inMemory(_))
+  private def backend = application.TestServerApplication.make(Chunk(new Agent[Any] {
+    val id = executable
+    def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+      ZIO.dieMessage("Viewer presence must never execute an agent")
+  }))
 
   test("invalid params and registered-agent collisions never initialize or publish presence") {
-    run(for {
-      live <- master
-      rpc = new OrchestratorRpc(live)
+    run(ZIO.scoped(for {
+      configured <- backend
+      rpc = new OrchestratorRpc(configured)
       observer <- rpc.openConnection
       _ <- init(rpc, observer, None)
       connection <- rpc.openConnection
@@ -53,13 +50,13 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(error(collision).code, ErrorCode.Conflict)
       assertEquals(error(unauthorized).code, ErrorCode.Unauthorized)
       assertEquals(ids, Chunk(executable))
-    })
+    }))
   }
 
   test("initialized identity is stable across same, changed, removed and anonymous repeated initialize") {
-    run(for {
-      live <- master
-      rpc = new OrchestratorRpc(live)
+    run(ZIO.scoped(for {
+      configured <- backend
+      rpc = new OrchestratorRpc(configured)
       connection <- rpc.openConnection
       first <- init(rpc, connection, Some(alice))
       same <- init(rpc, connection, Some(alice))
@@ -79,7 +76,7 @@ final class OrchestratorRpcSuite extends FunSuite {
         result.identity,
         Identity(
           UserId(AgentId.value(alice).stripPrefix("user-")),
-          Role.Viewer,
+          Role.Operator,
           Chunk(alice, UserId.websiteAgent(UserId(AgentId.value(alice).stripPrefix("user-"))))
         )
       )
@@ -94,10 +91,19 @@ final class OrchestratorRpcSuite extends FunSuite {
           "blobs.list",
           "blobs.read",
           "events.subscribe",
-          "events.unsubscribe"
+          "events.unsubscribe",
+          "turn.submit",
+          "branches.submit",
+          "diagnostics.request",
+          "blobs.upload",
+          "agents.invoke",
+          "providers.list",
+          "providers.login.start",
+          "providers.login.complete",
+          "providers.login.cancel"
         )
       )
-      assertEquals(result.methods.size, 9)
+      assertEquals(result.methods.size, 18)
       assertEquals(result.notifications, List(EventsUpdate.method))
       assertEquals(error(changed).code, ErrorCode.Conflict)
       assertEquals(error(removed).code, ErrorCode.Conflict)
@@ -108,13 +114,14 @@ final class OrchestratorRpcSuite extends FunSuite {
       )
       assertEquals(success[Initialize.Result](anonAgain), success[Initialize.Result](anonFirst))
       assertEquals(error(added).code, ErrorCode.Conflict)
-    })
+    }))
   }
 
   test("concurrent initialization binds one identity and disconnect cannot be followed by re-publication") {
-    run(for {
-      live <- master
-      rpc = new OrchestratorRpc(live)
+    run(ZIO.scoped(for {
+      configured <- backend
+      live = configured.application.master
+      rpc = new OrchestratorRpc(configured)
       observer <- rpc.openConnection
       _ <- init(rpc, observer, None)
       connection <- rpc.openConnection
@@ -132,13 +139,13 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(error(closed).code, ErrorCode.Unauthorized)
       assertEquals(after, Chunk(executable))
       assertEquals(registered, Chunk(executable))
-    })
+    }))
   }
 
   test("graph reads require initialization; unsubscribe is scoped, idempotent and releases registry capacity") {
-    run(for {
-      live <- master
-      rpc = new OrchestratorRpc(live)
+    run(ZIO.scoped(for {
+      configured <- backend
+      rpc = new OrchestratorRpc(configured)
       connection <- rpc.openConnection
       unauthorized <- rpc
         .handle(
@@ -187,16 +194,17 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(error(unauthorized).code, ErrorCode.Unauthorized)
       assertEquals(error(bad), JsonRpc.Error.InvalidParams)
       assertEquals(error(closed).code, ErrorCode.Unauthorized)
-    })
+    }))
   }
 
   test("session subscriptions can wait before creation and bootstrap only shared canonical ancestry") {
     val waiting = SessionId.unsafe("waiting")
     val unrelated = SessionId.unsafe("unrelated")
     val forked = SessionId.unsafe("forked")
-    run(for {
-      live <- master
-      rpc = new OrchestratorRpc(live)
+    run(ZIO.scoped(for {
+      configured <- backend
+      live = configured.application.master
+      rpc = new OrchestratorRpc(configured)
       connection <- rpc.openConnection
       _ <- init(rpc, connection, None)
       reply <- rpc.handle(
@@ -246,7 +254,7 @@ final class OrchestratorRpcSuite extends FunSuite {
       assertEquals(forkBaseline.sessions.map(_.id), Chunk(forked))
       assertEquals(forkBaseline.sessions.head.head, accepted.messages.lastOption.map(_.id))
       assert(pending.isEmpty)
-    })
+    }))
   }
 
   test("eventSessionSnapshot retains unreadable inventory metadata with an unknown head and sanitized error") {

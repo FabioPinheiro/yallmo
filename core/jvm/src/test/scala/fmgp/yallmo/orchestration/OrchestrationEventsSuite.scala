@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.storage.{StorageEvents, StorageInMemory}
 import java.time.Instant
@@ -267,7 +269,7 @@ final class OrchestrationEventsSuite extends FunSuite {
       subscriber <- updates.subscribe
       message = Message(
         root.data.copy(payload =
-          MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.unsafe("t" * 800000), "{}"))
+          MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), FunctionKey.unsafe("t" * 800000), "{}"))
         )
       )
       pending <- updates.begin(Chunk(message))
@@ -434,7 +436,7 @@ final class OrchestrationEventsSuite extends FunSuite {
     "managed writer fibers stream real prompt, call, output and reply before terminal completion with isolated origins"
   ) {
     val other = SessionId.unsafe("second-turn")
-    val key = ToolKey.unsafe("event-probe")
+    val key = FunctionKey.unsafe("event-probe")
     def throughReply(subscription: OrchestrationEvents.Subscription): IO[String, List[SequencedEventUpdate]] = {
       def loop(events: List[SequencedEventUpdate]): IO[String, List[SequencedEventUpdate]] = subscription.take.flatMap {
         next =>
@@ -449,7 +451,7 @@ final class OrchestrationEventsSuite extends FunSuite {
       loop(Nil)
     }
     run(for {
-      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+      registry <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
         val id = author
         def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) =
           ZIO.dieMessage("No provider calls in event tests")
@@ -535,7 +537,7 @@ final class OrchestrationEventsSuite extends FunSuite {
 
   test("a diverged managed turn confirms stored side branches without claiming they are canonical") {
     run(for {
-      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+      registry <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
         val id = author
         def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) = ZIO.dieMessage("No providers")
       }))
@@ -582,7 +584,7 @@ final class OrchestrationEventsSuite extends FunSuite {
   test("scoped rebase publication carries previously unseen copied ancestors and missing targets never become heads") {
     run(for {
       base <- StorageInMemory.make
-      registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+      registry <- AgentCatalog.fromAgents(Chunk(new Agent[Any] {
         val id = author
         def turn(request: fmgp.yallmo.model.llm.AgentTurnRequest) = ZIO.dieMessage("No providers")
       }))

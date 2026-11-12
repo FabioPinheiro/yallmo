@@ -48,7 +48,11 @@ I'm still exploring the trade-offs, but this experience has made me less certain
 
 ## Documentation
 
+`ServerApplication` owns composition/lifetime; `AgentCatalog` caches complete executable agent generations. File reads/listings
+use the selected agent read root when configured, otherwise workspace, independently of Scala RPC; Bash/Git stay workspace-bound.
+
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
+- [Service wiring and component boundaries](docs/SERVICE_WIRING.md) — startup composition, agent selection, execution/persistence diagrams, tool authorization and resource ownership.
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.
 - [Setup and running](docs/HOW_TO_RUN.md)
 - [Docker and Sandbox — quick start](docker/README-DOCKER.md)
@@ -61,7 +65,6 @@ I'm still exploring the trade-offs, but this experience has made me less certain
 - [Attachments and blob storage](lixo/completed/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
 - [Orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
 - [Shared SDLC planning tools](plan-tool/README.md) — agent tools, task/intent journals and the HTTP-backed web inspector.
-- [Local RAG demo](RAG.md)
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation graph](docs/CONVERSATION_GRAPH.md) — interactive session/message DAG inspector with live 2-second snapshot polling and unnamed branch composer.
 

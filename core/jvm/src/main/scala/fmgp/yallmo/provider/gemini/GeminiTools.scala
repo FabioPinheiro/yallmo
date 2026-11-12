@@ -1,6 +1,6 @@
 package fmgp.yallmo.provider.gemini
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.tool.FunctionKey
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.genai.Client as GoogleGenAiClient
 import com.google.genai.types.{Content, FunctionCall, GenerateContentResponse, GenerateContentConfig, Part}
@@ -143,7 +143,7 @@ object GenAiTools {
       tools: Chunk[GeminiTool[R]]
   ): ZIO[R, Throwable, ToolCallResult] = {
     val rawName = call.name().orElse("")
-    ZIO.fromEither(ToolKey.from(rawName).left.map(GenAiError.JsonDecodeFailure(rawName, _))).flatMap { name =>
+    ZIO.fromEither(FunctionKey.from(rawName).left.map(GenAiError.JsonDecodeFailure(rawName, _))).flatMap { name =>
       val args = call.args().orElse(Map.empty.asJava)
 
       tools.find(_.definition.name == name) match {

@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.tool.FunctionKey
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason, ProviderGenerateOptions}
@@ -14,7 +14,7 @@ import zio.http.*
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-final class RuntimeInstancesSuite extends FunSuite {
+final class AgentCatalogSuite extends FunSuite {
   private val oaiId = ProviderId.unsafe("local")
   private val chatId = ProviderId.unsafe("account-1")
   private val otherChatId = ProviderId.unsafe("account-2")
@@ -66,7 +66,7 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
     val invalid = AgentId("uninitialized")
     val result = run(for {
-      registry <- RuntimeInstances
+      registry <- AgentCatalog
         .make(
           config.copy(agents = config.agents.updated(invalid, AgentConfig("IntentionallyUnsupported"))),
           Chunk(supplied)
@@ -114,7 +114,7 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
     run {
       for {
-        current <- RuntimeInstances.make(config, Chunk(supplied)).provideEnvironment(ZEnvironment(noNetwork))
+        current <- AgentCatalog.make(config, Chunk(supplied)).provideEnvironment(ZEnvironment(noNetwork))
         before <- current.getAgent(bob)
         collisions <- ZIO.foreachPar(Chunk(bob, eve, supplied.id))(current.registerUser(_).either)
         after <- current.getAgent(bob)
@@ -166,8 +166,8 @@ final class RuntimeInstancesSuite extends FunSuite {
     ) + "\n\n"
   )
 
-  private def runtime(definition: Config = config, client: Client = noNetwork): RuntimeInstances[Any] =
-    run(RuntimeInstances.make(definition).provideEnvironment(ZEnvironment(client)))
+  private def runtime(definition: Config = config, client: Client = noNetwork): AgentCatalog[Any] =
+    run(AgentCatalog.make(definition).provideEnvironment(ZEnvironment(client)))
 
   test("both agents and providers initialize lazily and repeated effects reuse cached instances") {
     val definition = config.copy(providers =
@@ -219,7 +219,7 @@ final class RuntimeInstancesSuite extends FunSuite {
               .service[String]
               .map(text => AgentTurnResponse(Chunk(MessagePayload.Assistant(text)), LlmStopReason.Stop))
         }
-        registered <- RuntimeInstances.fromAgents(Chunk(custom))
+        registered <- AgentCatalog.fromAgents(Chunk(custom))
         resolved <- registered.getAudioAgent(custom.id)
         result <- resolved.turn(request).provideEnvironment(ZEnvironment("from environment"))
       } yield {
@@ -468,7 +468,7 @@ final class RuntimeInstancesSuite extends FunSuite {
               .as(subscriptionResponse)
           }
         )
-        current <- RuntimeInstances.make(definition).provideEnvironment(ZEnvironment(client))
+        current <- AgentCatalog.make(definition).provideEnvironment(ZEnvironment(client))
         agents <- current.getAgent(eve).zip(current.getAgent(charlie))
         _ <- agents._1.turn(request).zipPar(agents._2.turn(request))
         sent <- seen.get
@@ -498,7 +498,7 @@ final class RuntimeInstancesSuite extends FunSuite {
            else ZIO.unit)
             .as(subscriptionResponse)
       })
-      current <- RuntimeInstances.make(config).provideEnvironment(ZEnvironment(client))
+      current <- AgentCatalog.make(config).provideEnvironment(ZEnvironment(client))
       _ <- current.registerUser(AgentId("human"))
       old <- current.getAgent(eve)
       oldSibling <- current.getAgent(charlie)
@@ -579,7 +579,7 @@ final class RuntimeInstancesSuite extends FunSuite {
           )
         else seen.update(_ :+ incoming.headers.get("Authorization").getOrElse("")).as(subscriptionResponse)
       )
-      current <- RuntimeInstances
+      current <- AgentCatalog
         .make(
           config
             .copy(providers = config.providers.updated(chatId, ProviderConfig.ChatGPT(Some(credentials("first", 0L)))))
@@ -607,6 +607,56 @@ final class RuntimeInstancesSuite extends FunSuite {
     }).timeoutFail(new Exception("Login must not wait on an old refresh"))(5.seconds))
   }
 
+  test("complete selections bind once per generation and replacement preserves old executable selections") {
+    val binds = new java.util.concurrent.atomic.AtomicInteger(0)
+    val definition = config.copy(agents =
+      config.agents.view
+        .mapValues(_.copy(config = zio.json.ast.Json.Obj("model" -> zio.json.ast.Json.Str("test"))))
+        .toMap
+    )
+    run(for {
+      seen <- Ref.make(Vector.empty[String])
+      client = fakeClient(incoming =>
+        seen
+          .update(_ :+ incoming.headers.get("Authorization").getOrElse(""))
+          .as(subscriptionResponse)
+      )
+      catalog <- AgentCatalog
+        .make(
+          definition,
+          Chunk.empty[Agent[Any]],
+          StaticContext[Any]("System"),
+          _ => {
+            binds.incrementAndGet()
+            Chunk.empty
+          }
+        )
+        .provideEnvironment(ZEnvironment(client))
+      concurrent <- ZIO.foreachPar(1 to 8)(_ => catalog.resolve(eve))
+      old = concurrent.head
+      _ <- catalog.updateChatGptCredentials(chatId, credentials("new-login"))
+      fresh <- catalog.resolve(eve)
+      again <- catalog.resolve(eve)
+      _ <- old.program.next(AgentTask("old"), old.context, RunContext(Chunk(MessagePayload.User("old"))))
+      _ <- fresh.program.next(AgentTask("new"), fresh.context, RunContext(Chunk(MessagePayload.User("new"))))
+      invalid <- catalog.updateChatGptCredentials(chatId, credentials("bad").copy(accessToken = "bad token")).either
+      preserved <- catalog.resolve(eve)
+      sent <- seen.get
+    } yield {
+      assert(concurrent.forall(_ eq old))
+      assert(!(old eq fresh))
+      assert(!(old.program eq fresh.program))
+      assert(fresh eq again)
+      assert(fresh eq preserved)
+      assert(invalid.isLeft)
+      assertEquals(binds.get(), 2)
+      assertEquals(
+        sent,
+        Vector(s"Bearer ${credentials("first").accessToken}", s"Bearer ${credentials("new-login").accessToken}")
+      )
+    })
+  }
+
   test("credential replacement preserves a dependent agent's already-rooted filesystem capability") {
     val root = java.nio.file.Files.createTempDirectory("runtime-login-fs-")
     try {
@@ -616,19 +666,22 @@ final class RuntimeInstancesSuite extends FunSuite {
           AgentConfig(
             "ChatGPTAgent",
             Seq(chatId),
+            config = zio.json.ast.Json
+              .Obj("model" -> zio.json.ast.Json.Str("test"), "systemPrompt" -> zio.json.ast.Json.Str("System")),
             filesystem = Some(fmgp.yallmo.orchestration.config.FileSystemConfig(root.toString))
           )
         )
       )
       val current = runtime(definition)
       run(for {
-        before <- current.getAgentWithFilesystem(eve)
+        before <- current.resolve(eve)
         _ <- ZIO.attemptBlocking(java.nio.file.Files.delete(root))
         _ <- current.updateChatGptCredentials(chatId, credentials("new-login"))
-        after <- current.getAgentWithFilesystem(eve)
+        after <- current.resolve(eve)
       } yield {
-        assert(!(before._1 eq after._1))
-        assert(before._2.get eq after._2.get)
+        assert(!(before eq after))
+        assert(!(before.program eq after.program))
+        assert(before.filesystem.get eq after.filesystem.get)
       })
     } finally java.nio.file.Files.deleteIfExists(root)
   }
@@ -664,7 +717,7 @@ final class RuntimeInstancesSuite extends FunSuite {
               assertEquals(incoming.headers.get("Authorization"), Some(s"Bearer ${fresh.accessToken}"))
             } *> turns.update(_ + 1).as(subscriptionResponse)
         )
-        current <- RuntimeInstances.make(definition).provideEnvironment(ZEnvironment(client))
+        current <- AgentCatalog.make(definition).provideEnvironment(ZEnvironment(client))
         agents <- current.getAgent(eve).zipPar(current.getAgent(charlie))
         before <- refreshes.get
         _ <- ZIO.foreachPar(1 to 20)(i => (if i % 2 == 0 then agents._1 else agents._2).turn(request))
@@ -687,10 +740,10 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
     run {
       for {
-        current <- RuntimeInstances.fromAgents(Chunk(custom))
+        current <- AgentCatalog.fromAgents(Chunk(custom))
         resolved <- current.getAgent(custom.id)
         result <- resolved.turn(request).provideEnvironment(ZEnvironment("from environment"))
-        mixed <- RuntimeInstances.make(config, Chunk(custom)).provideEnvironment(ZEnvironment(noNetwork))
+        mixed <- AgentCatalog.make(config, Chunk(custom)).provideEnvironment(ZEnvironment(noNetwork))
         mixedCustom <- mixed.getAgent(custom.id)
         native <- mixed.getAgent(bob)
         mixedResult <- mixedCustom.turn(request).provideEnvironment(ZEnvironment("mixed environment"))
@@ -714,8 +767,8 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
     run {
       for {
-        duplicate <- RuntimeInstances.fromAgents(Chunk(custom, custom)).either
-        collision <- RuntimeInstances.make(config, Chunk(custom)).provideEnvironment(ZEnvironment(noNetwork)).either
+        duplicate <- AgentCatalog.fromAgents(Chunk(custom, custom)).either
+        collision <- AgentCatalog.make(config, Chunk(custom)).provideEnvironment(ZEnvironment(noNetwork)).either
       } yield {
         assert(duplicate.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
         assert(collision.swap.toOption.exists(_.isInstanceOf[YallmoError.InvalidConfig]))
@@ -731,7 +784,7 @@ final class RuntimeInstancesSuite extends FunSuite {
     }
     run {
       for {
-        current <- RuntimeInstances.make(config, Chunk(human)).provideEnvironment(ZEnvironment(noNetwork))
+        current <- AgentCatalog.make(config, Chunk(human)).provideEnvironment(ZEnvironment(noNetwork))
         first <- OrchestratorLive.inMemory(current)
         second <- OrchestratorLive.inMemory(current)
         assistant <- first.getAgent(eve)
@@ -756,7 +809,7 @@ final class RuntimeInstancesSuite extends FunSuite {
       incoming.body.asString.map { body =>
         val json = ujson.read(body)
         assert(json.obj.get("tools").forall(_.arr.isEmpty))
-        assertEquals(json("tool_choice").str, "none")
+        assert(!json.obj.contains("tool_choice"))
         assertEquals(json("parallel_tool_calls").bool, false)
         Response.text(
           """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call","type":"function","function":{"name":"shell","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"""
@@ -764,18 +817,17 @@ final class RuntimeInstancesSuite extends FunSuite {
       }
     )
     val c = config.copy(agents =
-      Map(bob -> AgentConfig("OAIAgent", Seq(oaiId), capabilities = AgentCapabilities(tools = Some(Set.empty))))
+      Map(bob -> AgentConfig("OAIAgent", Seq(oaiId), capabilities = AgentCapabilities(functions = Some(Set.empty))))
     )
     val r = request.copy(
       tools = Chunk(
-        fmgp.yallmo.model
+        fmgp.yallmo.tool
           .FunctionToolDefinition(
-            ToolKey.unsafe("shell"),
+            FunctionKey.unsafe("shell"),
             "commands",
             fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty)
           )
       ),
-      toolChoice = fmgp.yallmo.model.ToolChoice.Required,
       parallelToolCalls = true
     )
     val outcome = run(runtime(c, client).getAgent(bob).flatMap(_.turn(r)).either)

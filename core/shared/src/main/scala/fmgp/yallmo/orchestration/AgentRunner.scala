@@ -1,5 +1,9 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import fmgp.yallmo.model.YallmoError
 import java.util.UUID
 import zio.*
@@ -9,7 +13,7 @@ import fmgp.yallmo.orchestration.{
   AgentResult,
   AgentTask,
   AgentTurnResult,
-  ExternalToolCall,
+  ExternalFunctionCall,
   LlmAction,
   RunContext,
   StaticContext
@@ -22,7 +26,7 @@ import fmgp.yallmo.orchestration.{
   *   - The orchestrator persists messages and session (pointer to messages); the runner itself does not.
   */
 final class AgentRunner[R](
-    tools: Map[ToolKey, AgentTool[R]],
+    functions: Map[FunctionKey, AgentFunction[R]],
     retrievers: Map[String, KnowledgeRetriever[R]],
     val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
@@ -32,6 +36,13 @@ final class AgentRunner[R](
       agent: AgentInstance[R],
       staticContext: StaticContext[R],
       budget: AgentBudget = AgentBudget.default
+  ): AgentExecution[R] = executionWithContext(agent, staticContext, budget, resolved = false)
+
+  private def executionWithContext(
+      agent: AgentInstance[R],
+      staticContext: StaticContext[R],
+      budget: AgentBudget,
+      resolved: Boolean
   ): AgentExecution[R] =
     new AgentExecution[R] {
       override val agentId: AgentId = agent.id
@@ -39,7 +50,7 @@ final class AgentRunner[R](
           task: AgentTask,
           history: ManagedHistory
       ): ZIO[R, YallmoError, AgentTurnResult] =
-        runAccepted(agent, task, staticContext, budget, history)
+        runAccepted(agent, task, staticContext, budget, history, resolved)
     }
 
   /** Builds a single-message recipient for Orchestrator.invoke, never a model/tool loop.
@@ -51,6 +62,13 @@ final class AgentRunner[R](
       agent: AgentInstance[R],
       staticContext: StaticContext[R],
       budget: AgentBudget = AgentBudget.default
+  ): AgentInvocation[R] = invocationWithContext(agent, staticContext, budget, resolved = false)
+
+  private def invocationWithContext(
+      agent: AgentInstance[R],
+      staticContext: StaticContext[R],
+      budget: AgentBudget,
+      resolved: Boolean
   ): AgentInvocation[R] =
     new AgentInvocation[R] {
       override val agentId: AgentId = agent.id
@@ -61,8 +79,8 @@ final class AgentRunner[R](
             case MessagePayload.ToolCall(call) =>
               for {
                 _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
-                context <- agent.configuredContext(staticContext)
-                result <- executeAction(agent, PreparedAction.CallExternalTool(call), context)
+                context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
+                result <- executeAction(agent, PreparedAction.CallExternalFunction(call), context)
               } yield result
             case _: MessagePayload.Reasoning =>
               ZIO.fail(
@@ -70,7 +88,7 @@ final class AgentRunner[R](
               )
             case _ =>
               for {
-                context <- agent.configuredContext(staticContext)
+                context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
                 prepared <- applyExtensions(context, RunContext(Chunk(input)))
                 turn <- agent.next(AgentTask(input.contentStr), context, prepared)
                 result <- turn.decision match {
@@ -91,7 +109,8 @@ final class AgentRunner[R](
       task: AgentTask,
       staticContext: StaticContext[R],
       budget: AgentBudget,
-      history: ManagedHistory
+      history: ManagedHistory,
+      resolved: Boolean
   ): ZIO[R, YallmoError, AgentTurnResult] =
     ZIO.logAnnotate(AgentRunner.LogAnnotationKey, runnerId.toString) {
       val execute =
@@ -99,7 +118,8 @@ final class AgentRunner[R](
           .fromEither(budget.validate)
           .flatMap { _ =>
             for
-              effectiveContext <- agent.configuredContext(staticContext)
+              effectiveContext <-
+                if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
               turnCount <- Ref.make(0)
               actionCount <- Ref.make(0)
               agentRun <- runLoop(
@@ -177,7 +197,7 @@ final class AgentRunner[R](
           else
             for
               preparedActions <- prepareActions(actions)
-              calls = preparedActions.collect { case PreparedAction.CallExternalTool(call) =>
+              calls = preparedActions.collect { case PreparedAction.CallExternalFunction(call) =>
                 MessagePayload.ToolCall(call)
               }
               actionHead <- history.appendAt(generated ++ calls, fence)
@@ -197,18 +217,18 @@ final class AgentRunner[R](
   /** Runner-internal actions cannot contain an uncorrelated tool invocation. */
   private enum PreparedAction {
     case RetrieveRag(retrieverKey: String, query: RagQuery)
-    case CallExternalTool(call: FunctionCall)
+    case CallExternalFunction(call: FunctionCall)
   }
 
   private def prepareActions(actions: Chunk[LlmAction]): UIO[Chunk[PreparedAction]] =
     ZIO.foreach(actions) {
-      case LlmAction.RetrieveRag(key, query) => ZIO.succeed(PreparedAction.RetrieveRag(key, query))
-      case LlmAction.CallExternalTool(call)  =>
+      case LlmAction.RetrieveRag(key, query)    => ZIO.succeed(PreparedAction.RetrieveRag(key, query))
+      case LlmAction.CallExternalFunction(call) =>
         val callId = call.callId match {
           case Some(id) => ZIO.succeed(id)
           case None     => Random.nextUUID.map(uuid => FunctionCallId.unsafe(s"call-$uuid"))
         }
-        callId.map(id => PreparedAction.CallExternalTool(FunctionCall(id, call.toolKey, call.argumentsJson)))
+        callId.map(id => PreparedAction.CallExternalFunction(FunctionCall(id, call.functionKey, call.argumentsJson)))
     }
 
   private def executeActions(
@@ -257,37 +277,36 @@ final class AgentRunner[R](
             .flatMap(_.retrieve(query))
             .map(MessagePayload.RagResult(retrieverKey, _))
 
-      // case PreparedAction.CallExternalTool(functionCall) => ??? // TODO scalamode
-      case PreparedAction.CallExternalTool(functionCall) =>
-        val call = ExternalToolCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
+      case PreparedAction.CallExternalFunction(functionCall) =>
+        val call = ExternalFunctionCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
         val execute =
-          if !staticContext.tools.exists(_.key == call.toolKey) then
-            ZIO.fail(YallmoError.ToolUnavailableToAgent(agent.id, call.toolKey))
+          if !staticContext.functions.exists(_.name == call.functionKey) then
+            ZIO.fail(YallmoError.ToolUnavailableToAgent(agent.id, call.functionKey))
           else
             ZIO
-              .fromOption(staticContext.tools.find(_.key == call.toolKey))
-              .orElseFail(YallmoError.ToolUnavailableToAgent(agent.id, call.toolKey))
+              .fromOption(staticContext.functions.find(_.name == call.functionKey))
+              .orElseFail(YallmoError.ToolUnavailableToAgent(agent.id, call.functionKey))
               .flatMap { definition =>
                 ZIO
-                  .fromEither(ToolArgumentsValidator.validate(call.argumentsJson, definition.inputSchema))
-                  .mapError(YallmoError.InvalidToolArguments(call.toolKey, _))
+                  .fromEither(FunctionToolDefinition.validateArgument(call.argumentsJson, definition.inputSchema))
+                  .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
               }
               .zipRight(
                 ZIO
-                  .fromOption(tools.get(call.toolKey))
-                  .orElseFail(YallmoError.UnknownTool(call.toolKey))
+                  .fromOption(functions.get(call.functionKey))
+                  .orElseFail(YallmoError.UnknownTool(call.functionKey))
                   .flatMap(_.execute(call))
               )
 
         execute.fold(
-          error => toolMessage(functionCall, ExternalToolResult(toolErrorOutput(error))),
+          error => toolMessage(functionCall, ExternalFunctionResult(toolErrorOutput(error))),
           output => toolMessage(functionCall, output)
         )
 
-  private def toolMessage(call: FunctionCall, result: ExternalToolResult): MessagePayload = {
-    val output = if call.name == ToolKey.Scalamode then
+  private def toolMessage(call: FunctionCall, result: ExternalFunctionResult): MessagePayload = {
+    val output = if call.name == ScalamodeToolDefinition.Execute then
       result match {
-        case value: ExternalToolResult.ScalaMode =>
+        case value: ExternalFunctionResult.ScalaMode =>
           ScalaModeOutput(
             call.id,
             value.result,
@@ -298,7 +317,7 @@ final class AgentRunner[R](
             value.executionTime,
             value.totalTime
           )
-        case ExternalToolResult.Generic(text) =>
+        case ExternalFunctionResult.Generic(text) =>
           ScalaModeOutput(call.id, ScalaModeResult.Executed(text), exitCode = 1)
       }
     else FunctionGenericOutput(call.id, call.name, result.text)
@@ -317,5 +336,18 @@ final class AgentRunner[R](
 }
 
 object AgentRunner {
+
+  /** Configured execution consumes a single complete generation, never separately selected tools/context/program. */
+  def execution(
+      agent: ResolvedAgent,
+      requestProgram: AgentInstance[Any] => AgentInstance[Any] = identity
+  ): AgentExecution[Any] =
+    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+      .executionWithContext(requestProgram(agent.program), agent.context, AgentBudget.default, resolved = true)
+
+  def invocation(agent: ResolvedAgent): AgentInvocation[Any] =
+    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+      .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true)
+
   val LogAnnotationKey = "agentRunnerId"
 }

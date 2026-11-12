@@ -1,11 +1,20 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Blob, BlobId, YallmoError}
+import fmgp.yallmo.tool.ToolDefinition
+
 import fmgp.yallmo.agents.{CoachAgent, FolderStructureAgent}
 import fmgp.yallmo.fs.{FileSystem, FsRead}
-import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, YallmoError}
-import fmgp.yallmo.model.llm.LlmProvider
+import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import fmgp.yallmo.model.som.SOMProvider
-import fmgp.yallmo.orchestration.config.{AgentConfig, Config, OAuthCredentialsConfig, ProviderConfig, ProviderId}
+import fmgp.yallmo.orchestration.config.{
+  AgentConfig,
+  Config,
+  OAuthCredentialsConfig,
+  ProviderConfig,
+  ProviderId,
+  ConfiguredAgentSettings
+}
 import fmgp.yallmo.provider.oai.{OAIAgent, OAIConfig, OAILlmProvider}
 import fmgp.yallmo.provider.openai.{ChatGPTAgent, OpenAiCodexClient}
 import zio.*
@@ -38,12 +47,17 @@ import java.nio.file.Path
   * @param initializationLock
   *   registry-local semaphore protecting cache lookups, construction and insertion against concurrent initialization
   */
-final class RuntimeInstances[-R] private (
+final class AgentCatalog[-R] private (
     config: Config,
     httpClient: Option[Client],
     registeredAgents: Map[AgentId, Agent[R]],
-    initializationLock: Semaphore
+    initializationLock: Semaphore,
+    context: StaticContext[Any],
+    functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]],
+    readBlob: BlobId => IO[YallmoError, Blob]
 ) {
+
+  private var resolvedAgents = Map.empty[AgentId, ResolvedAgent]
 
   /** Environment-bound agents constructed lazily from config.agents; supplied agents retain R in registeredAgents. */
   private var initializedAgents = Map.empty[AgentId, (Agent[Any], Option[FsRead])]
@@ -123,6 +137,9 @@ final class RuntimeInstances[-R] private (
         _ <- ZIO.succeed {
           providerDefinitions = providerDefinitions.updated(id, definition)
           initializedProviders = initializedProviders.updated(id, replacement)
+          resolvedAgents = resolvedAgents.filterNot { case (agentId, _) =>
+            config.agents.get(agentId).exists(_.providerIds.contains(id))
+          }
           initializedAgents = initializedAgents.filterNot { case (agentId, _) =>
             config.agents.get(agentId).exists(_.providerIds.contains(id))
           }
@@ -142,27 +159,114 @@ final class RuntimeInstances[-R] private (
 
   /** Retains the exact configured capability; None means no private root, not a failed open. */
   def getAgentWithFilesystem(id: AgentId): IO[YallmoError, (Agent[R], Option[FsRead])] =
+    initializationLock.withPermit(getAgentWithFilesystemNow(id))
+
+  private def getAgentWithFilesystemNow(id: AgentId): IO[YallmoError, (Agent[R], Option[FsRead])] =
+    ZIO.suspendSucceed {
+      registeredAgents.get(id).map(agent => (agent, None)).orElse(initializedAgents.get(id)) match {
+        case Some(entry) => ZIO.succeed(entry)
+        case None        =>
+          for {
+            definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
+            fs <-
+              if definition.filesystem.nonEmpty || Set("CoachAgent", "FolderStructureAgent").contains(
+                  definition.agentType
+                )
+              then openAgentFileSystem(id, definition).map(Some(_))
+              else ZIO.none
+            underlying <- initializeAgent(id, definition, fs)
+            policy =
+              if definition.agentType == "CoachAgent" then CoachAgent.Capabilities.intersect(definition.capabilities)
+              else definition.capabilities
+            agent = ConfiguredAgent(underlying, policy)
+            entry = (agent, fs)
+            _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, entry) }
+          } yield entry
+      }
+    }
+
+  /** Complete executable selections are cached under the same generation lock as adapters/providers. */
+  def resolve(id: AgentId): IO[YallmoError, ResolvedAgent] =
     initializationLock.withPermit {
       ZIO.suspendSucceed {
-        registeredAgents.get(id).map(agent => (agent, None)).orElse(initializedAgents.get(id)) match {
-          case Some(entry) => ZIO.succeed(entry)
+        resolvedAgents.get(id) match {
+          case Some(agent) => ZIO.succeed(agent)
           case None        =>
             for {
               definition <- ZIO.fromOption(config.agents.get(id)).orElseFail(YallmoError.UnknownAgent(id))
-              fs <-
-                if definition.filesystem.nonEmpty || Set("CoachAgent", "FolderStructureAgent").contains(
-                    definition.agentType
-                  )
-                then openAgentFileSystem(id, definition).map(Some(_))
-                else ZIO.none
-              underlying <- initializeAgent(id, definition, fs)
-              policy =
-                if definition.agentType == "CoachAgent" then CoachAgent.Capabilities.intersect(definition.capabilities)
-                else definition.capabilities
-              agent = ConfiguredAgent(underlying, policy)
-              entry = (agent, fs)
-              _ <- ZIO.succeed { initializedAgents = initializedAgents.updated(id, entry) }
-            } yield entry
+              entry <- getAgentWithFilesystemNow(id)
+              // Only configured adapters are environment-free; supplied agents remain on the generic core seam.
+              adapter = entry._1.asInstanceOf[Agent[Any]]
+              filesystem = entry._2
+              base = functionsFor(filesystem)
+              local = adapter match {
+                case scoped: HasLocalAgentFunctions => scoped.localFunctions
+                case _                              => Chunk.empty
+              }
+              localDefinitions = adapter match {
+                case scoped: HasLocalAgentFunctions => scoped.localTools
+                case _                              => Chunk.empty
+              }
+              toolDefinitions = context.tools.filterNot(tool =>
+                localDefinitions.exists(_.name == tool.name)
+              ) ++ localDefinitions
+              tools = base.filterNot(tool => local.exists(_.definition.name == tool.definition.name)) ++ local
+              settings <-
+                if definition.agentType == "FolderStructureAgent" then ZIO.none
+                else
+                  for {
+                    defaultModel <-
+                      if definition.agentType == "CoachAgent" && !definition.config.fields.exists(_._1 == "model") then
+                        definition.providerIds.toList match {
+                          case providerId :: Nil =>
+                            getProviderNow(providerId).flatMap {
+                              case provider: LlmProvider =>
+                                ZIO.succeed(Option(provider.defaultModel).filter(_.trim.nonEmpty))
+                              case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires an LLM provider"))
+                            }
+                          case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires exactly one provider id"))
+                        }
+                      else ZIO.none
+                    decoded <- ZIO
+                      .fromEither(
+                        ConfiguredAgentSettings.decode(
+                          definition,
+                          defaultSystemPrompt = Some(context.systemPrompt),
+                          defaultModel = defaultModel
+                        )
+                      )
+                      .mapError(error =>
+                        YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}")
+                      )
+                  } yield Some(decoded)
+              program = settings match {
+                case Some(value) =>
+                  NativeFunctionAgent[Agent[Any]](
+                    id,
+                    value.model,
+                    ProviderGenerateOptions(responseMimeType = None, thinkingLevel = value.thinkingLevel),
+                    value.parallelToolCalls
+                  ).bind[Any](adapter, readBlob)
+                case None => FolderAgentProgram(adapter, definition.capabilities, readBlob)
+              }
+              effective <- program.configuredContext(
+                context.copy(
+                  systemPrompt = settings.fold("")(_.systemPrompt),
+                  functions = tools.map(_.definition),
+                  tools = ToolDefinition.available(toolDefinitions, tools.map(_.definition))
+                )
+              )
+              resolved = ResolvedAgent(
+                program,
+                effective,
+                tools.filter(function => effective.functions.exists(_.name == function.definition.name)),
+                adapter,
+                filesystem,
+                definition.providerIds.headOption,
+                settings
+              )
+              _ <- ZIO.succeed { resolvedAgents = resolvedAgents.updated(id, resolved) }
+            } yield resolved
         }
       }
     }
@@ -329,14 +433,14 @@ final class RuntimeInstances[-R] private (
     }
 }
 
-object RuntimeInstances {
+object AgentCatalog {
 
   /** Captures the shared HTTP client without eagerly initializing configured agents or providers.
     *
     * @param config
     *   immutable agent/provider definitions; this overload supplies no already-initialized agents
     */
-  def make(config: Config): ZIO[Client, YallmoError, RuntimeInstances[Any]] =
+  def make(config: Config): ZIO[Client, YallmoError, AgentCatalog[Any]] =
     make(config, Chunk.empty[Agent[Any]])
 
   /** Adds already-created agents (e.g. a human input channel) alongside configured agents.
@@ -351,10 +455,16 @@ object RuntimeInstances {
     *   already-initialized instances to register as-is, not configuration definitions; their IDs must be unique and
     *   absent from config.agents
     */
-  def make[R](config: Config, agents: Chunk[Agent[R]]): ZIO[Client, YallmoError, RuntimeInstances[R]] =
+  def make[R](
+      config: Config,
+      agents: Chunk[Agent[R]],
+      context: StaticContext[Any] = StaticContext[Any](""),
+      functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
+  ): ZIO[Client, YallmoError, AgentCatalog[R]] =
     for {
       client <- ZIO.service[Client]
-      instances <- create(config, Some(client), agents)
+      instances <- create(config, Some(client), agents, context, functionsFor, readBlob)
     } yield instances
 
   /** Builds a registry containing only already-created agents, without requiring an HTTP client.
@@ -366,18 +476,29 @@ object RuntimeInstances {
     * @param agents
     *   already-initialized instances to register as-is; duplicate IDs are rejected
     */
-  def fromAgents[R](agents: Chunk[Agent[R]]): IO[YallmoError, RuntimeInstances[R]] =
+  def fromAgents[R](agents: Chunk[Agent[R]]): IO[YallmoError, AgentCatalog[R]] =
     create(Config(), None, agents)
 
   private def create[R](
       config: Config,
       client: Option[Client],
-      agents: Chunk[Agent[R]]
-  ): IO[YallmoError, RuntimeInstances[R]] =
+      agents: Chunk[Agent[R]],
+      context: StaticContext[Any] = StaticContext[Any](""),
+      functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
+  ): IO[YallmoError, AgentCatalog[R]] =
     for {
       _ <- ZIO.fromEither(validateAgentIds(config, agents))
       lock <- Semaphore.make(1)
-    } yield new RuntimeInstances(config, client, agents.map(agent => agent.id -> agent).toMap, lock)
+    } yield new AgentCatalog(
+      config,
+      client,
+      agents.map(agent => agent.id -> agent).toMap,
+      lock,
+      context,
+      functionsFor,
+      readBlob
+    )
 
   private def validateAgentIds[R](config: Config, agents: Chunk[Agent[R]]): Either[YallmoError, Unit] = {
     val ids = agents.map(_.id)

@@ -1,7 +1,15 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.tool.{
+  BashToolDefinition,
+  FilesystemToolDefinition,
+  RepositoryChangesToolDefinition,
+  ScalamodeToolDefinition,
+  SdlcToolDefinition
+}
+
 import fmgp.yallmo.model.*
-import fmgp.yallmo.orchestration.{SessionId, ExternalToolResult}
+import fmgp.yallmo.orchestration.{SessionId, ExternalFunctionResult}
 import fmgp.yallmo.orchestration.config.{
   AgentCapabilities,
   AgentConfig,
@@ -33,12 +41,12 @@ final class ServerApplicationSuite extends FunSuite {
     agents = Map(first -> AgentConfig("Unsupported"), second -> AgentConfig("Unsupported"))
   )
 
-  test("configured options append to legacy positional defaults and accept reordered/equal syntax") {
+  test("startup requires config and accepts reordered/equal syntax") {
     import OrchestratorServerMain.{Options, parse}
-    assertEquals(parse(List("--storage", "sessions")), Right(Options(Path.of("sessions"))))
+    assert(parse(List("--storage", "sessions")).isLeft)
     assertEquals(
       parse(List("--workspace=work", "--log-level", "debug", "--config", "private.json", "--storage=sessions")),
-      Right(Options(Path.of("sessions"), 8080, LogLevel.Debug, Some(Path.of("private.json")), Some(Path.of("work"))))
+      Right(Options(Path.of("sessions"), Path.of("private.json"), 8080, LogLevel.Debug, Some(Path.of("work"))))
     )
     assertEquals(
       parse(List("--storage=sessions", "--config=private.json")).map(_.workspace),
@@ -62,26 +70,8 @@ final class ServerApplicationSuite extends FunSuite {
     }
   }
 
-  test("viewer mode keeps an empty registry without loading configuration or probing tools") {
-    run(ZIO.scoped {
-      for {
-        root <- temporaryRoot
-        services <- probes()
-        application <- ServerApplication.open(root).provideSomeLayer[Scope](services.layer)
-        ids <- application.master.listAgentIds
-        calls <- services.calls.get
-      } yield {
-        assertEquals(ids, Chunk.empty)
-        assertEquals(application.configured, None)
-        assertEquals(calls, Vector.empty)
-        assert(Files.exists(root.resolve(".yallmo-server.lock")))
-        assert(!Files.exists(root.resolve("config.json")))
-      }
-    })
-  }
-
   test(
-    "configured startup retains the same assembly master without a startup human or running anything"
+    "configured startup retains the same application master without a startup human or running anything"
   ) {
     run(ZIO.scoped {
       for {
@@ -94,32 +84,32 @@ final class ServerApplicationSuite extends FunSuite {
           )
         )
         services <- probes()
-        application <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](services.layer)
-        configured = application.configured.get
-        ids <- application.master.listAgentIds
-        session <- application.master.createSession(SessionId.unsafe("shared"), Chunk(first))
-        loaded <- configured.assembly.orchestrator.loadSession(session.id)
-        _ <- application.master.append(session.id, first, Chunk(MessagePayload.User("local author")))
+        application <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
+        configured = application
+        ids <- application.application.master.listAgentIds
+        session <- application.application.master.createSession(SessionId.unsafe("shared"), Chunk(first))
+        loaded <- configured.application.master.loadSession(session.id)
+        _ <- application.application.master.append(session.id, first, Chunk(MessagePayload.User("local author")))
         calls <- services.calls.get
       } yield {
-        assert(application.master eq configured.assembly.orchestrator)
+        assert(application.application.master eq configured.application.master)
         assertEquals(ids.toSet, Set(first, second))
         assertEquals(configured.workspace, Path.of("").toRealPath())
         assertEquals(loaded, session)
-        assertEquals(configured.assembly.context(None).systemPrompt, ApplicationRuntime.DefaultSystemPrompt)
+        assertEquals(configured.application.context(None).systemPrompt, ServerApplication.DefaultSystemPrompt)
         assertEquals(
-          configured.assembly.context(None).tools.map(_.key).toSet,
+          configured.application.context(None).functions.map(_.name).toSet,
           Set(
-            ToolKey.ReadFile,
-            ToolKey.ListFiles,
-            ToolKey.Bash,
-            ToolKey.RepositoryChanges,
-            ToolKey.Scalamode,
-            ToolKey.SdlcSet,
-            ToolKey.SdlcReadTask,
-            ToolKey.SdlcSetIntents,
-            ToolKey.SdlcReadIntent,
-            ToolKey.SdlcList
+            FilesystemToolDefinition.ReadFile,
+            FilesystemToolDefinition.ListFiles,
+            BashToolDefinition.Execute,
+            RepositoryChangesToolDefinition.Inspect,
+            ScalamodeToolDefinition.Execute,
+            SdlcToolDefinition.SetTasks,
+            SdlcToolDefinition.ReadTask,
+            SdlcToolDefinition.SetIntents,
+            SdlcToolDefinition.ReadIntent,
+            SdlcToolDefinition.List
           )
         )
         assertEquals(
@@ -143,22 +133,22 @@ final class ServerApplicationSuite extends FunSuite {
         path <- writeConfig(root, config)
         services <- probes(bash = false, git = false, scala = false)
         application <- ServerApplication
-          .open(root, Some(path), Some(workspace.resolve("..").resolve("workspace")))
+          .open(root, path, Some(workspace.resolve("..").resolve("workspace")))
           .provideSomeLayer[Scope](services.layer)
-        configured = application.configured.get
+        configured = application
         calls <- services.calls.get
       } yield {
         assertEquals(configured.workspace, workspace.toRealPath())
         assertEquals(
-          configured.assembly.context(None).tools.map(_.key).toSet,
+          configured.application.context(None).functions.map(_.name).toSet,
           Set(
-            ToolKey.ReadFile,
-            ToolKey.ListFiles,
-            ToolKey.SdlcSet,
-            ToolKey.SdlcReadTask,
-            ToolKey.SdlcSetIntents,
-            ToolKey.SdlcReadIntent,
-            ToolKey.SdlcList
+            FilesystemToolDefinition.ReadFile,
+            FilesystemToolDefinition.ListFiles,
+            SdlcToolDefinition.SetTasks,
+            SdlcToolDefinition.ReadTask,
+            SdlcToolDefinition.SetIntents,
+            SdlcToolDefinition.ReadIntent,
+            SdlcToolDefinition.List
           )
         )
         assertEquals(
@@ -175,19 +165,19 @@ final class ServerApplicationSuite extends FunSuite {
         root <- temporaryRoot
         path <- writeConfig(root, config)
         services <- probes(worktree = false)
-        application <- ServerApplication.open(root, Some(path), Some(root)).provideSomeLayer[Scope](services.layer)
+        application <- ServerApplication.open(root, path, Some(root)).provideSomeLayer[Scope](services.layer)
       } yield assertEquals(
-        application.configured.get.assembly.context(None).tools.map(_.key).toSet,
+        application.application.context(None).functions.map(_.name).toSet,
         Set(
-          ToolKey.ReadFile,
-          ToolKey.ListFiles,
-          ToolKey.Bash,
-          ToolKey.Scalamode,
-          ToolKey.SdlcSet,
-          ToolKey.SdlcReadTask,
-          ToolKey.SdlcSetIntents,
-          ToolKey.SdlcReadIntent,
-          ToolKey.SdlcList
+          FilesystemToolDefinition.ReadFile,
+          FilesystemToolDefinition.ListFiles,
+          BashToolDefinition.Execute,
+          ScalamodeToolDefinition.Execute,
+          SdlcToolDefinition.SetTasks,
+          SdlcToolDefinition.ReadTask,
+          SdlcToolDefinition.SetIntents,
+          SdlcToolDefinition.ReadIntent,
+          SdlcToolDefinition.List
         )
       )
     })
@@ -208,11 +198,11 @@ final class ServerApplicationSuite extends FunSuite {
         )
         services <- probes()
         _ <- (for {
-          application <- ServerApplication.open(root, Some(path), Some(workspace))
-          binding <- application.configured.get.runtime.resolve(first)
+          application <- ServerApplication.open(root, path, Some(workspace))
+          binding <- application.application.resolve(first)
         } yield {
           assertEquals(binding.adapter.id, first)
-          assertEquals(application.configured.get.workspace, workspace.toRealPath())
+          assertEquals(application.workspace, workspace.toRealPath())
           assert(!Files.exists(workspace.resolve(relative).normalize()))
         }).provideSomeLayer[Scope](services.layer)
       } yield ()
@@ -225,8 +215,8 @@ final class ServerApplicationSuite extends FunSuite {
         root <- temporaryRoot
         path = root.resolve("private/config.json")
         services <- probes()
-        application <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](services.layer)
-        ids <- application.master.listAgentIds
+        application <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
+        ids <- application.application.master.listAgentIds
       } yield {
         assertEquals(ids, Chunk.empty)
         assert(Files.readString(path).fromJson[Config].isRight)
@@ -243,18 +233,17 @@ final class ServerApplicationSuite extends FunSuite {
         services <- probes()
         _ <- (for {
           path <- ZIO.attemptBlocking(Files.writeString(root.resolve("config.json"), "PRIVATE_SECRET invalid json"))
-          invalid <- ServerApplication.open(root, Some(path)).either
+          invalid <- ServerApplication.open(root, path).either
           _ = assertSafeFailure(invalid)
           _ <- writeConfig(root, config)
-          absent <- ServerApplication.open(root, Some(path), Some(root.resolve("PRIVATE_SECRET-missing"))).either
-          file <- ServerApplication.open(root, Some(path), Some(path)).either
-          withoutConfig <- ServerApplication.open(root, workspace = Some(root)).either
-          missingStorage <- ServerApplication.open(root.resolve("PRIVATE_SECRET-missing")).either
-          _ = List(absent, file, withoutConfig, missingStorage).foreach(assertSafeFailure)
+          absent <- ServerApplication.open(root, path, Some(root.resolve("PRIVATE_SECRET-missing"))).either
+          file <- ServerApplication.open(root, path, Some(path)).either
+          missingStorage <- ServerApplication.open(root.resolve("PRIVATE_SECRET-missing"), path).either
+          _ = List(absent, file, missingStorage).foreach(assertSafeFailure)
           // All failed opens above occurred in this same still-open outer scope.
-          recovered <- ServerApplication.open(root)
-          ids <- recovered.master.listAgentIds
-        } yield assertEquals(ids, Chunk.empty)).provideSomeLayer[Scope](services.layer)
+          recovered <- ServerApplication.open(root, path)
+          ids <- recovered.application.master.listAgentIds
+        } yield assertEquals(ids.toSet, Set(first, second))).provideSomeLayer[Scope](services.layer)
       } yield ()
     })
   }
@@ -265,18 +254,21 @@ final class ServerApplicationSuite extends FunSuite {
         root <- temporaryRoot
         restricted = config.copy(agents =
           Map(
-            first -> AgentConfig("Unsupported", capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode))))
+            first -> AgentConfig(
+              "Unsupported",
+              capabilities = AgentCapabilities(functions = Some(Set(ScalamodeToolDefinition.Execute)))
+            )
           )
         )
         path <- writeConfig(root, restricted)
         services <- probes(scala = false)
         _ <- (for {
-          rejected <- ServerApplication.open(root, Some(path)).either
+          rejected <- ServerApplication.open(root, path).either
           _ = {
             val error = rejected.swap.toOption.get
             assert(error.isInstanceOf[IllegalStateException])
             assert(error.getCause.isInstanceOf[YallmoError.InvalidConfig])
-            assert(error.getCause.getMessage.contains("capabilities.tools contains unknown IDs: scala"))
+            assert(error.getCause.getMessage.contains("capabilities.functions contains unknown IDs: scala"))
             assert(error.getCause.getMessage.contains("Agent 'first'"))
           }
           _ = assert(!Files.exists(root.resolve("objects.jsonl")))
@@ -286,70 +278,69 @@ final class ServerApplicationSuite extends FunSuite {
               Map(
                 first -> AgentConfig(
                   "Unsupported",
-                  capabilities = AgentCapabilities(tools = Some(Set(ToolKey.ReadFile)))
+                  capabilities = AgentCapabilities(functions = Some(Set(FilesystemToolDefinition.ReadFile)))
                 )
               )
             )
           )
-          application <- ServerApplication.open(root, Some(path))
-        } yield assert(application.configured.nonEmpty)).provideSomeLayer[Scope](services.layer)
+          application <- ServerApplication.open(root, path)
+        } yield assertEquals(application.application.agentSummaries.map(_.id), Vector(first)))
+          .provideSomeLayer[Scope](services.layer)
       } yield ()
     })
   }
 
-  test("configured and viewer startup retain exact storage validation causes without exposing message content") {
-    run(ZIO.scoped {
-      ZIO.foreachDiscard(List(false, true)) { configured =>
-        for {
-          root <- temporaryRoot
-          path <- writeConfig(root, config)
-          services <- probes()
-          original = MessageData(
-            first,
-            None,
-            java.time.Instant.parse("2026-01-01T00:00:00Z"),
-            MessagePayload.User("original")
-          )
-          storedId = MessageId.from(original)
-          changed = original.copy(payload = MessagePayload.User("PRIVATE_SECRET"))
-          contents = s"""{"id":"${MessageId.value(storedId)}","kind":"msg","value":${changed.toJson}}\n"""
-          objects = root.resolve("objects.jsonl")
-          _ <- ZIO.attemptBlocking(Files.writeString(objects, contents))
-          rejected <- ServerApplication
-            .open(root, Option.when(configured)(path))
-            .either
-            .provideSomeLayer[Scope](services.layer)
-          _ = {
-            val error = rejected.swap.toOption.get
-            assert(error.isInstanceOf[IllegalStateException])
-            assert(error.getCause.isInstanceOf[YallmoError.StorageFailure])
-            val details = error.getCause.getMessage
-            assert(details.contains("objects.jsonl record 1"))
-            assert(details.contains(s"stored ID ${MessageId.value(storedId)}"))
-            assert(details.contains(s"computed ID ${MessageId.value(MessageId.from(changed))}"))
-            assert(details.contains("hash mismatch"))
-            assert(!error.toString.contains("PRIVATE_SECRET"))
-            assert(!error.getCause.toString.contains("PRIVATE_SECRET"))
-            assert(!error.getCause.getCause.toString.contains("PRIVATE_SECRET"))
-            assertEquals(Files.readString(objects), contents)
-          }
-          // A failed open must release the standalone lease even when the caller retains its outer scope.
-          _ <- ZIO.attemptBlocking(Files.writeString(objects, ""))
-          reopened <- ServerApplication.open(root).provideSomeLayer[Scope](services.layer)
-          messages <- reopened.master.listMessages
-        } yield assertEquals(messages, Chunk.empty)
-      }
-    })
-  }
-
-  test("configured master advertises only seven read methods and rejects every reserved execution/diagnostic method") {
+  test("startup retains exact storage validation causes without exposing message content") {
     run(ZIO.scoped {
       for {
         root <- temporaryRoot
         path <- writeConfig(root, config)
         services <- probes()
-        application <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](services.layer)
-        rpc = new OrchestratorRpc(application.master)
+        original = MessageData(
+          first,
+          None,
+          java.time.Instant.parse("2026-01-01T00:00:00Z"),
+          MessagePayload.User("original")
+        )
+        storedId = MessageId.from(original)
+        changed = original.copy(payload = MessagePayload.User("PRIVATE_SECRET"))
+        contents = s"""{"id":"${MessageId.value(storedId)}","kind":"msg","value":${changed.toJson}}\n"""
+        objects = root.resolve("objects.jsonl")
+        _ <- ZIO.attemptBlocking(Files.writeString(objects, contents))
+        rejected <- ServerApplication
+          .open(root, path)
+          .either
+          .provideSomeLayer[Scope](services.layer)
+        _ = {
+          val error = rejected.swap.toOption.get
+          assert(error.isInstanceOf[IllegalStateException])
+          assert(error.getCause.isInstanceOf[YallmoError.StorageFailure])
+          val details = error.getCause.getMessage
+          assert(details.contains("objects.jsonl record 1"))
+          assert(details.contains(s"stored ID ${MessageId.value(storedId)}"))
+          assert(details.contains(s"computed ID ${MessageId.value(MessageId.from(changed))}"))
+          assert(details.contains("hash mismatch"))
+          assert(!error.toString.contains("PRIVATE_SECRET"))
+          assert(!error.getCause.toString.contains("PRIVATE_SECRET"))
+          assert(!error.getCause.getCause.toString.contains("PRIVATE_SECRET"))
+          assertEquals(Files.readString(objects), contents)
+        }
+        // A failed open must release the standalone lease even when the caller retains its outer scope.
+        _ <- ZIO.attemptBlocking(Files.writeString(objects, ""))
+        reopened <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
+        messages <- reopened.application.master.listMessages
+      } yield assertEquals(messages, Chunk.empty)
+    })
+  }
+
+  test("anonymous connections advertise read methods and cannot execute") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        path <- writeConfig(root, config)
+        services <- probes()
+        application <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
+        rpc = new OrchestratorRpc(application)
         connection <- rpc.openConnection
         _ <- ZIO.addFinalizer(rpc.disconnect(connection))
         response <- rpc.handle(
@@ -357,11 +348,11 @@ final class ServerApplicationSuite extends FunSuite {
           connection
         )
         result = response.get.fromJson[JsonRpc.Success[Initialize.Result]].toOption.get.result
-        failures <- ZIO.foreach(List("turn.submit", "sessions.create", "runs.cancel", "commands.get")) { method =>
+        failures <- ZIO.foreach(List("sessions.create", "runs.cancel", "commands.get")) { method =>
           rpc.handle(JsonRpc.Request(Json.Str(method), method, Empty()).toJson, connection)
         }
-        sessions <- application.master.listSessions
-        messages <- application.master.listMessages
+        sessions <- application.application.master.listSessions
+        messages <- application.application.master.listMessages
         calls <- services.calls.get
       } yield {
         assertEquals(
@@ -404,8 +395,8 @@ final class ServerApplicationSuite extends FunSuite {
               })
             )
             services <- probes()
-            application <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](services.layer)
-            port <- new OrchestratorWSServer(application.master).start(0)
+            application <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
+            port <- new OrchestratorWSServer(application).start(0)
             endpoint = s"ws://127.0.0.1:$port/rpc"
             failures <- ZIO.foreach(List(first, second))(id =>
               OrchestratorWSClient
@@ -414,7 +405,7 @@ final class ServerApplicationSuite extends FunSuite {
             )
             observer <- OrchestratorWSClient.connect(endpoint)
             ids <- observer.listAgentIds
-            registered <- application.master.listAgentIds
+            registered <- application.application.master.listAgentIds
             calls <- services.calls.get
           } yield {
             failures.foreach(result =>
@@ -464,10 +455,10 @@ final class ServerApplicationSuite extends FunSuite {
               _ <- ZIO.addFinalizer(alive.get.zip(toolsAlive.get).flatMap { case (http, tools) =>
                 hostClosedWithServices.set(http && tools)
               })
-              application <- ServerApplication.open(root, Some(path))
-              port <- new OrchestratorWSServer(application.master).start(0)
+              application <- ServerApplication.open(root, path)
+              port <- new OrchestratorWSServer(application).start(0)
               // Resolve lazily after open, without contacting the configured endpoint.
-              _ <- application.configured.get.runtime.resolve(first)
+              _ <- application.application.resolve(first)
               connection <- OrchestratorWSClient
                 .connect(s"ws://127.0.0.1:$port/rpc")
                 .mapError(error => new AssertionError(error.toString))
@@ -502,12 +493,11 @@ final class ServerApplicationSuite extends FunSuite {
         _ <- (for {
           _ <- ZIO.scoped {
             for {
-              owner <- ServerApplication.open(root)
+              _ <- ServerApplication.lease(root)
               _ <- ZIO.scoped {
-                ServerApplication.open(root).either.map(result => assert(result.isLeft))
+                ServerApplication.lease(root).either.map(result => assert(result.isLeft))
               }
-              ids <- owner.master.listAgentIds
-            } yield assertEquals(ids, Chunk.empty)
+            } yield ()
           }
           _ = assert(Files.exists(root.resolve(".yallmo-server.lock")))
           inode <- ZIO.attemptBlocking(
@@ -515,7 +505,7 @@ final class ServerApplicationSuite extends FunSuite {
               .readAttributes(root.resolve(".yallmo-server.lock"), classOf[java.nio.file.attribute.BasicFileAttributes])
               .fileKey()
           )
-          _ <- ZIO.scoped(ServerApplication.open(root))
+          _ <- ZIO.scoped(ServerApplication.lease(root))
           after <- ZIO.attemptBlocking(
             Files
               .readAttributes(root.resolve(".yallmo-server.lock"), classOf[java.nio.file.attribute.BasicFileAttributes])
@@ -541,17 +531,17 @@ final class ServerApplicationSuite extends FunSuite {
                 )
               )(c => ZIO.attemptBlocking(c.close()).orDie)
               _ <- ZIO.acquireRelease(ZIO.attemptBlocking(channel.lock()))(l => ZIO.attemptBlocking(l.release()).orDie)
-              denied <- ServerApplication.open(root).either
+              denied <- ServerApplication.lease(root).either
             } yield assert(denied.isLeft)
           }
           path <- writeConfig(root, config)
           started <- Promise.make[Nothing, Unit]
           blocking <- probes(beforeBash = started.succeed(()).unit *> ZIO.never)
-          // Interrupt inside startup, after ownership but before assembly creation, in this same parent scope.
-          fiber <- ServerApplication.open(root, Some(path)).provideSomeLayer[Scope](blocking.layer).fork
+          // Interrupt inside startup, after ownership but before application composition, in this same parent scope.
+          fiber <- ServerApplication.open(root, path).provideSomeLayer[Scope](blocking.layer).fork
           _ <- started.await
           _ <- fiber.interrupt
-          _ <- ZIO.scoped(ServerApplication.open(root))
+          _ <- ZIO.scoped(ServerApplication.lease(root))
         } yield ()).provideSomeLayer[Scope](services.layer)
       } yield ()
     })
@@ -569,14 +559,14 @@ final class ServerApplicationSuite extends FunSuite {
             path <- writeConfig(root, config)
             _ <- ZIO.scoped {
               for {
-                _ <- ServerApplication.open(root)
-                denied <- ServerApplication.open(link).either
+                _ <- ServerApplication.lease(root)
+                denied <- ServerApplication.lease(link.toRealPath()).either
               } yield assert(denied.isLeft)
             }
             _ <- ZIO.scoped {
               ServerApplication
-                .open(link, Some(path), Some(link))
-                .map(application => assertEquals(application.configured.get.workspace, root.toRealPath()))
+                .open(link, path, Some(link))
+                .map(application => assertEquals(application.workspace, root.toRealPath()))
             }
           } yield ()).provideSomeLayer[Scope](services.layer)
         }
@@ -592,7 +582,7 @@ final class ServerApplicationSuite extends FunSuite {
         link <- symlink(root.resolve(".yallmo-server.lock"), target)
         services <- probes()
         _ <- ZIO.foreachDiscard(link) { lock =>
-          ServerApplication.open(root).either.provideSomeLayer[Scope](services.layer).map { denied =>
+          ServerApplication.lease(root).either.provideSomeLayer[Scope](services.layer).map { denied =>
             assert(denied.isLeft)
             assert(Files.isSymbolicLink(lock))
             assertEquals(Files.readString(target), "untouched")
@@ -631,7 +621,7 @@ final class ServerApplicationSuite extends FunSuite {
     val compiler = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(scala)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
-          : Task[ExternalToolResult.ScalaMode] = unexpected
+          : Task[ExternalFunctionResult.ScalaMode] = unexpected
     }
     Probes(
       calls,
@@ -640,7 +630,7 @@ final class ServerApplicationSuite extends FunSuite {
     )
   }
 
-  private def assertSafeFailure(result: Either[Throwable, ServerApplication]): Unit = {
+  private def assertSafeFailure(result: Either[Throwable, ServerExecutionService]): Unit = {
     assert(result.isLeft)
     assert(!result.swap.toOption.get.toString.contains("PRIVATE_SECRET"))
     assertEquals(result.swap.toOption.get.getCause, null)

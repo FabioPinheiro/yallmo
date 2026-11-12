@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.provider.JsonSchemaEncoder
@@ -32,8 +34,7 @@ private[openai] object OpenAiCodexTurnMapper {
               "include" -> ujson.Arr("reasoning.encrypted_content"),
               "instructions" -> instructions,
               "input" -> input,
-              "tool_choice" -> toolChoiceJson(validated.toolChoice),
-              "parallel_tool_calls" -> validated.parallelToolCalls
+              "parallel_tool_calls" -> (validated.parallelToolCalls && validated.tools.nonEmpty)
             )
             validated.options.thinkingLevel
               .foreach(level => body("reasoning") = ujson.Obj("effort" -> OpenAiCodexClient.thinkingEffort(level)))
@@ -44,13 +45,6 @@ private[openai] object OpenAiCodexTurnMapper {
         case _ => Left("the final input item must be instructions")
       }
     }
-
-  private def toolChoiceJson(choice: ToolChoice): ujson.Value =
-    choice match
-      case ToolChoice.Auto           => ujson.Str("auto")
-      case ToolChoice.None           => ujson.Str("none")
-      case ToolChoice.Required       => ujson.Str("required")
-      case ToolChoice.Function(name) => ujson.Obj("type" -> "function", "name" -> name.value)
 
   /** Unsupported modalities are mapping errors, not thrown exceptions or omitted input. */
   def input(items: Chunk[MessagePayload]): Either[String, ujson.Arr] =
@@ -171,7 +165,7 @@ private[openai] object OpenAiCodexTurnMapper {
         case "function_call" =>
           for {
             callId <- requiredString(item, "call_id")
-            name <- requiredString(item, "name").flatMap(ToolKey.from)
+            name <- requiredString(item, "name").flatMap(FunctionKey.from)
             arguments = item.get("arguments").flatMap(_.strOpt).getOrElse("{}")
             id <- FunctionCallId.from(callId)
           } yield Some(

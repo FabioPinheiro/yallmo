@@ -1,9 +1,13 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
+import fmgp.yallmo.model.tool.{FilesystemToolDefinition, ScalamodeToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities, ProviderId}
+import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
 import fmgp.yallmo.tool.{ReadFileTool, ScalaCodeExecutor, ScalaTool}
@@ -12,7 +16,7 @@ import zio.*
 
 import scala.concurrent.Future
 
-final class ConfiguredAgentBindingSuite extends FunSuite {
+final class ConfiguredProgramSuite extends FunSuite {
   private val agentId = AgentId("configured")
   private val blob = Blob(BlobId.fresh(), Chunk[Byte](1, 2, 3))
   private val input = Chunk[MessagePayload](
@@ -21,7 +25,8 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
   )
   private val context = StaticContext[Any](
     "System",
-    tools = Chunk("shared", "program-only", "adapter-only").map(key => AgentToolDefinition(ToolKey.unsafe(key), key))
+    functions =
+      Chunk("shared", "program-only", "adapter-only").map(key => FunctionToolDefinition(FunctionKey.unsafe(key), key))
   )
   private val readBlob: BlobId => IO[YallmoError, Blob] = id =>
     if id == blob.id then ZIO.succeed(blob) else ZIO.fail(YallmoError.BlobMissing(id))
@@ -33,7 +38,7 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         adapter = new Agent[Any] with HasAgentCapabilities {
           override val id: AgentId = agentId
           override val capabilities: AgentCapabilities =
-            AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shared"), ToolKey.unsafe("adapter-only"))))
+            AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("adapter-only"))))
           override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
             requests
               .update(_ :+ request)
@@ -44,21 +49,19 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
         program = NativeFunctionAgent[Agent[Any]](
           agentId,
           "native-model",
-          capabilities = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shared"), ToolKey.unsafe("program-only"))))
+          capabilities =
+            AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("program-only"))))
         )
-        binding = ConfiguredAgentBinding.Native(adapter, ProviderId.unsafe("local"), program, "System")
-        bound = binding.bind[Any](readBlob)
+        bound = program.bind[Any](adapter, readBlob)
         configured <- bound.configuredContext(context)
         turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
         request <- requests.get.map(_.head)
         stored <- request.readBlob(blob.id)
       } yield {
-        assertEquals(binding.adapter, adapter)
-        assertEquals(binding.systemPrompt, "System")
         assertEquals(bound.id, agentId)
-        assertEquals(bound.capabilities.tools, Some(Set(ToolKey.unsafe("shared"))))
-        assertEquals(configured.tools.map(_.key), Chunk(ToolKey.unsafe("shared")))
-        assertEquals(request.tools.map(_.name), Chunk(ToolKey.unsafe("shared")))
+        assertEquals(bound.capabilities.functions, Some(Set(FunctionKey.unsafe("shared"))))
+        assertEquals(configured.functions.map(_.name), Chunk(FunctionKey.unsafe("shared")))
+        assertEquals(request.tools.map(_.name), Chunk(FunctionKey.unsafe("shared")))
         assertEquals(request.model, "native-model")
         assertEquals(request.input, input :+ MessagePayload.Instructions("System"))
         assertEquals(stored, blob)
@@ -84,19 +87,16 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
               )
         }
         policy = AgentCapabilities()
-        binding = ConfiguredAgentBinding.Folder(adapter, policy)
-        bound = binding.bind[Any](readBlob)
+        bound = FolderAgentProgram(adapter, policy, readBlob)
         configured <- bound.configuredContext(context)
         turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
         request <- requests.get.map(_.head)
         stored <- request.readBlob(blob.id)
       } yield {
-        assertEquals(binding.systemPrompt, "")
         assertEquals(bound.id, agentId)
         assertEquals(bound.capabilities, policy.copy(tools = Some(Set.empty)))
-        assertEquals(configured.tools, Chunk.empty)
+        assertEquals(configured.functions, Chunk.empty)
         assertEquals(request.model, "")
-        assertEquals(request.toolChoice, ToolChoice.None)
         assertEquals(request.tools, Chunk.empty)
         assertEquals(request.input, input)
         assertEquals(stored, blob)
@@ -122,23 +122,23 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
               timeout: Duration,
               maxOutputBytes: Int,
               dependencies: Seq[String]
-          ): Task[ExternalToolResult.ScalaMode] =
-            used.set(true).as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
+          ): Task[ExternalFunctionResult.ScalaMode] =
+            used.set(true).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
           override def executeFilesystem(
               code: String,
               endpoint: String,
               timeout: Duration,
               maxOutputBytes: Int
-          ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
-            used.set(true).as(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
+          ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
+            used.set(true).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
         }
         route <- RpcWebSocket.route()
         scalaTool = ScalaTool.filesystem("ws://127.0.0.1:1/rpc")
-        tools = Chunk[AgentTool[Any]](
+        tools = Chunk[AgentFunction[Any]](
           ApplicationTools.bindFilesystem(new ReadFileTool, fs),
-          new AgentTool[Any] {
+          new AgentFunction[Any] {
             val definition = scalaTool.definition
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
               scalaTool
                 .execute(call)
                 .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
@@ -150,13 +150,16 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
             ZIO.succeed(AgentTurnResponse(Chunk(MessagePayload.Assistant("folder answer")), LlmStopReason.Stop))
         }
         _ <- ZIO.foreachDiscard(
-          List(AgentCapabilities(), AgentCapabilities(tools = Some(Set(ToolKey.Scalamode, ToolKey.ReadFile))))
+          List(
+            AgentCapabilities(),
+            AgentCapabilities(functions = Some(Set(ScalamodeToolDefinition.Execute, FilesystemToolDefinition.ReadFile)))
+          )
         ) { policy =>
-          val binding = ConfiguredAgentBinding.Folder(adapter, policy, Some(fs)).bind[Any](readBlob)
-          val execution = new AgentRunner[Any](tools.map(tool => tool.definition.key -> tool).toMap, Map.empty)
-            .invocation(binding, context.copy(tools = tools.map(_.definition)))
+          val binding = FolderAgentProgram(adapter, policy, readBlob)
+          val execution = new AgentRunner[Any](tools.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+            .invocation(binding, context.copy(functions = tools.map(_.definition)))
           for {
-            registry <- RuntimeInstances.fromAgents(Chunk(adapter))
+            registry <- AgentCatalog.fromAgents(Chunk(adapter))
             orchestrator <- OrchestratorLive.inMemory(registry)
             invoke = (payload: MessagePayload) =>
               orchestrator
@@ -167,8 +170,8 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
                 .map(_.payload)
             _ <- ZIO.foreachDiscard(
               List(
-                ToolKey.Scalamode -> """{"code":"fs.readUtf8(\"notes.txt\")","mode":"filesystem"}""",
-                ToolKey.ReadFile -> """{"path":"notes.txt"}"""
+                ScalamodeToolDefinition.Execute -> """{"code":"fs.readUtf8(\"notes.txt\")","mode":"filesystem"}""",
+                FilesystemToolDefinition.ReadFile -> """{"path":"notes.txt"}"""
               )
             ) { (key, arguments) =>
               invoke(MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("denied"), key, arguments)))
@@ -202,9 +205,7 @@ final class ConfiguredAgentBindingSuite extends FunSuite {
           override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
             ZIO.succeed(AgentTurnResponse(output, LlmStopReason.Stop))
         }
-        ConfiguredAgentBinding
-          .Folder(adapter, AgentCapabilities())
-          .bind[Any](readBlob)
+        FolderAgentProgram(adapter, AgentCapabilities(), readBlob)
           .next(AgentTask("Review this"), context, RunContext(input))
           .either
           .map(result =>

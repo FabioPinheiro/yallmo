@@ -1,7 +1,9 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.{FunctionCallId, ScalaModeOutput, ToolKey, ScalaModeResult}
-import fmgp.yallmo.orchestration.{ExternalToolCall, ExternalToolResult}
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
+import fmgp.yallmo.model.{FunctionCallId, ScalaModeOutput, ScalaModeResult}
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import munit.FunSuite
 import zio.*
 import zio.json.*
@@ -17,21 +19,23 @@ final class ScalaToolSuite extends FunSuite {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String]
-    ): Task[ExternalToolResult.ScalaMode] = {
+    ): Task[ExternalFunctionResult.ScalaMode] = {
       assertEquals(code, "(1 to 10).sum")
       assertEquals(timeout, 45.seconds)
       assertEquals(dependencies, Seq("dev.zio::zio:2.1.27"))
       assert(timeout < fmgp.yallmo.orchestration.AgentBudget.default.timeout && maxOutputBytes > 0)
-      ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("55\n"), Seq("connected", "disconnected")))
+      ZIO.succeed(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("55\n"), Seq("connected", "disconnected")))
     }
   })
 
   test("pure code is forwarded and its result is returned") {
     val result =
       run(
-        new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}""")).provide(executor)
+        new ScalaTool()
+          .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"(1 to 10).sum"}"""))
+          .provide(executor)
       )
-    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
     assertEquals(typed.logs, Seq("connected", "disconnected"))
     assertEquals(typed.result, ScalaModeResult.Executed("55\n"))
     assertEquals(typed.exitCode, 0)
@@ -111,7 +115,12 @@ final class ScalaToolSuite extends FunSuite {
       )
     do
       assert(
-        run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, arguments)).either.provide(executor)).isLeft
+        run(
+          new ScalaTool()
+            .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, arguments))
+            .either
+            .provide(executor)
+        ).isLeft
       )
   }
 
@@ -178,10 +187,10 @@ final class ScalaToolSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[ExternalToolResult.ScalaMode] = {
+      ): Task[ExternalFunctionResult.ScalaMode] = {
         val _ = (code, timeout, maxOutputBytes, dependencies)
         ZIO.succeed(
-          ExternalToolResult.ScalaMode(
+          ExternalFunctionResult.ScalaMode(
             ScalaModeResult.CompilationError("Compilation failed"),
             Seq.empty,
             exitCode = 1
@@ -190,8 +199,12 @@ final class ScalaToolSuite extends FunSuite {
       }
     })
     val result =
-      run(new ScalaTool().execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"unknown"}""")).provide(errors))
-    val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+      run(
+        new ScalaTool()
+          .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"unknown"}"""))
+          .provide(errors)
+      )
+    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
     assertEquals(typed.exitCode, 1)
     assertEquals(typed.result, ScalaModeResult.CompilationError("Compilation failed"))
     assertEquals(typed.logs, Seq.empty[String])

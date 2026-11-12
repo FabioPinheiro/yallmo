@@ -1,4 +1,6 @@
-package fmgp.yallmo.server.application
+package fmgp.yallmo.repl
+
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, ProviderContinuation, ProviderId}
@@ -8,7 +10,7 @@ import munit.FunSuite
 import scala.concurrent.Future
 import zio.*
 
-final class SessionSubmissionSuite extends FunSuite {
+final class ReplSessionSubmissionSuite extends FunSuite {
   private val userId = AgentId("operator")
   private val assistantId = AgentId("assistant")
   private val runner = new AgentRunner[Any](Map.empty, Map.empty)
@@ -20,11 +22,10 @@ final class SessionSubmissionSuite extends FunSuite {
         master <- orchestrator
         configured <- Ref.make(false)
         agent = program(_ => ZIO.dieMessage("Rejected submissions must not run"), configured.set(true))
-        selected = SessionSubmission.configured(master, userId, runner, Some(agent), context)
-        unselected = SessionSubmission.configured(master, userId, runner, None, context)
+        selected = configuredSessions(master, userId, runner, Some(agent), context)
+        unselected = configuredSessions(master, userId, runner, None, context)
         missing <- unselected.submit(None, "no selection").either
-        mismatch <- SessionSubmission
-          .make(master, userId, None)
+        mismatch <- sessionFixture(master, userId, None)
           .submitExecution(None, "mismatch", runner.execution(agent, context))
           .either
         invalid <- selected.submit(Some("invalid/session"), "invalid").either
@@ -46,7 +47,7 @@ final class SessionSubmissionSuite extends FunSuite {
       for {
         master <- orchestrator
         agent = program(current => ZIO.succeed(answer(s"messages=${current.messages.size}")))
-        sessions = SessionSubmission.configured(master, userId, runner, Some(agent), context)
+        sessions = configuredSessions(master, userId, runner, Some(agent), context)
         first <- sessions.submit(None, "first")
         second <- sessions.submit(Some(first.session.id.value), "second")
         loaded <- sessions.load(first.session.id.value)
@@ -67,19 +68,17 @@ final class SessionSubmissionSuite extends FunSuite {
       for {
         master <- orchestrator
         failing = program(_ => ZIO.dieMessage("Configuration fails first"), ZIO.fail(YallmoError.InvalidConfig("bad")))
-        failed <- SessionSubmission
-          .configured(master, userId, runner, Some(failing), context)
+        failed <- configuredSessions(master, userId, runner, Some(failing), context)
           .submit(None, "keep")
           .either
         accepted <- ZIO.fromOption(failed.swap.toOption.flatMap(_.acceptedSession))
-        recovered <- SessionSubmission
-          .configured(
-            master,
-            userId,
-            runner,
-            Some(program(_ => ZIO.succeed(answer("ok")))),
-            context
-          )
+        recovered <- configuredSessions(
+          master,
+          userId,
+          runner,
+          Some(program(_ => ZIO.succeed(answer("ok")))),
+          context
+        )
           .submit(Some(accepted.id.value), "retry")
       } yield {
         assertEquals(failed.swap.toOption.map(_.error), Some(YallmoError.InvalidConfig("bad")))
@@ -102,7 +101,7 @@ final class SessionSubmissionSuite extends FunSuite {
         master <- orchestrator
         started <- Promise.make[Nothing, Unit]
         agent = program(_ => started.succeed(()) *> ZIO.never)
-        sessions = SessionSubmission.configured(master, userId, runner, Some(agent), context)
+        sessions = configuredSessions(master, userId, runner, Some(agent), context)
         fiber <- sessions.submit(None, "keep on cancellation").fork
         _ <- started.await
         exit <- fiber.interrupt
@@ -125,7 +124,7 @@ final class SessionSubmissionSuite extends FunSuite {
         configured <- Ref.make(0)
         agent = new AgentInstance[Any] {
           override val id: AgentId = assistantId
-          override val capabilities: AgentCapabilities = AgentCapabilities(tools = Some(Set.empty))
+          override val capabilities: AgentCapabilities = AgentCapabilities(functions = Some(Set.empty))
           override def configuredContext(available: StaticContext[Any]): IO[YallmoError, StaticContext[Any]] =
             configured.update(_ + 1) *> super.configuredContext(available)
           override def next(
@@ -142,19 +141,24 @@ final class SessionSubmissionSuite extends FunSuite {
           ): IO[YallmoError, AgentTurn] =
             history.messages.flatMap(messages => canonical.update(_ :+ messages)) *>
               seen.updateAndGet(_ :+ current).map { history =>
-                assertEquals(available.tools, Chunk.empty)
+                assertEquals(available.functions, Chunk.empty)
                 val continuation =
                   ProviderContinuation(ProviderId.unsafe("test"), None, s"continuation-${history.size}")
                 answer("ok").copy(additionalMessages = Chunk(MessagePayload.Reasoning(None, continuation)))
               }
         }
-        sessions = SessionSubmission.configured(
+        sessions = configuredSessions(
           master,
           userId,
           runner,
           Some(agent),
           context.copy(
-            tools = Chunk(AgentToolDefinition(ToolKey.unsafe("unavailable"), "Must be filtered"))
+            functions = Chunk(
+              FunctionToolDefinition(
+                FunctionKey.unsafe("unavailable"),
+                "Must be filtered"
+              )
+            )
           )
         )
         first <- sessions.submit(None, "first")
@@ -183,7 +187,7 @@ final class SessionSubmissionSuite extends FunSuite {
 
   test("reused concurrent reset execution preserves fresh continuations after shortening rebase and tool loop") {
     run {
-      val key = ToolKey.unsafe("probe")
+      val key = FunctionKey.unsafe("probe")
       def continuation(value: String) = ProviderContinuation(ProviderId.unsafe("test"), None, value)
       def old(prompt: String) = continuation(s"old-$prompt")
       // For A, the fresh continuation is B's excluded value: reset state must not leak between submissions.
@@ -223,7 +227,7 @@ final class SessionSubmissionSuite extends FunSuite {
         native = NativeFunctionAgent[Agent[Any]](
           assistantId,
           "recording",
-          capabilities = AgentCapabilities(tools = Some(Set(key)))
+          capabilities = AgentCapabilities(functions = Some(Set(key)))
         ).bind[Any](provider)
         agent = new AgentInstance[Any] {
           val id = assistantId
@@ -250,7 +254,7 @@ final class SessionSubmissionSuite extends FunSuite {
                   )
                   assertEquals(initial.size, 11)
                   assertEquals(initial(1).payload, reasoning(old(task.prompt), "old"))
-                  assertEquals(context.tools.map(_.key), Chunk(key))
+                  assertEquals(context.functions.map(_.name), Chunk(key))
                 }
                 _ <- (if task.prompt == "A" then enteredA.succeed(()) else enteredB.succeed(())).unit
                 _ <- release.await
@@ -260,20 +264,26 @@ final class SessionSubmissionSuite extends FunSuite {
               } yield turn
         }
         effects <- Ref.make(0)
-        tool = new AgentTool[Any] {
-          val definition = AgentToolDefinition(key, "Synthetic probe")
-          def execute(call: ExternalToolCall) = effects.update(_ + 1).as(ExternalToolResult("tool-result"))
+        tool = new AgentFunction[Any] {
+          val definition = FunctionToolDefinition(key, "Synthetic probe")
+          def execute(call: ExternalFunctionCall) = effects.update(_ + 1).as(ExternalFunctionResult("tool-result"))
         }
-        available = context.copy(tools =
-          Chunk(tool.definition, AgentToolDefinition(ToolKey.unsafe("unavailable"), "Excluded"))
+        available = context.copy(functions =
+          Chunk(
+            tool.definition,
+            FunctionToolDefinition(
+              FunctionKey.unsafe("unavailable"),
+              "Excluded"
+            )
+          )
         )
-        configured = SessionSubmission.configuredExecution(
+        configured = configuredExecution(
           new AgentRunner[Any](Map(key -> tool), Map.empty),
           agent,
           available,
           10
         )
-        submissions = SessionSubmission.make(master, userId, Some(assistantId))
+        submissions = sessionFixture(master, userId, Some(assistantId))
         seeds <- ZIO
           .foreach(List("A", "B", "C")) { prompt =>
             for {
@@ -339,13 +349,66 @@ final class SessionSubmissionSuite extends FunSuite {
     }
   }
 
+  // Adapt the retained local APIs to concise assertions; session/execution policy is implemented only in production REPL/core.
+  private final class SessionFixture(
+      master: Orchestrator[Any],
+      author: AgentId,
+      selected: Option[AgentId],
+      configured: Option[(AgentRunner[Any], Option[AgentInstance[Any]], StaticContext[Any])] = None
+  ) {
+    private val local = ReplOrchestratorLive.make(master, participant(author), selected.map(participant))
+    def create(name: Option[String]): IO[YallmoError, Session] =
+      local.newReplSession(name).flatMap(state => load(state.sessionId.get))
+    def load(id: String): IO[YallmoError, Session] =
+      ZIO.fromEither(SessionId.from(id).left.map(YallmoError.InvalidSessionId(id, _))).flatMap(master.loadSession)
+    def submit(previous: Option[String], prompt: String, start: Int = 0): IO[SessionSubmitFailure, SessionTurn] =
+      configured match {
+        case Some((runner, agent, context)) =>
+          new ReplSession(runner, agent, context)
+            .submit(ReplState(sessionId = previous, continuationStart = start), prompt, local)
+            .flatMap(saved)
+        case None => ZIO.fail(SessionSubmitFailure(YallmoError.InvalidConfig("No agent selected"), None))
+      }
+    def submitExecution(
+        previous: Option[String],
+        prompt: String,
+        execution: AgentExecution[Any]
+    ): IO[SessionSubmitFailure, SessionTurn] =
+      local.submitPrompt(ReplState(sessionId = previous), prompt, execution).flatMap(saved)
+    private def saved(turn: ReplTurn): IO[SessionSubmitFailure, SessionTurn] =
+      load(turn.state.sessionId.get)
+        .map(session => SessionTurn(session, turn.result, turn.newMessages))
+        .mapError(SessionSubmitFailure(_, None))
+  }
+  private def participant(agentId: AgentId): Agent[Any] = new Agent[Any] {
+    val id = agentId
+    def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = ZIO.dieMessage("Program only")
+  }
+  private def configuredSessions(
+      master: Orchestrator[Any],
+      author: AgentId,
+      runner: AgentRunner[Any],
+      agent: Option[AgentInstance[Any]],
+      context: StaticContext[Any]
+  ): SessionFixture =
+    new SessionFixture(master, author, agent.map(_.id), Some((runner, agent, context)))
+  private def sessionFixture(master: Orchestrator[Any], author: AgentId, selected: Option[AgentId]): SessionFixture =
+    new SessionFixture(master, author, selected)
+  private def configuredExecution(
+      runner: AgentRunner[Any],
+      agent: AgentInstance[Any],
+      context: StaticContext[Any],
+      start: Int
+  ): AgentExecution[Any] =
+    runner.execution(AgentContinuations.withCurrentContinuations(agent, start), context)
+
   private def orchestrator: IO[YallmoError, OrchestratorLive[Any]] = {
     def participant(agentId: AgentId): Agent[Any] = new Agent[Any] {
       override val id: AgentId = agentId
       override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
         ZIO.dieMessage("Only the configured program should run")
     }
-    RuntimeInstances
+    AgentCatalog
       .fromAgents(Chunk(participant(userId), participant(assistantId)))
       .flatMap(OrchestratorLive.inMemory(_))
   }

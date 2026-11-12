@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.provider.JsonSchemaEncoder
@@ -112,7 +114,6 @@ private[oai] object OAIChatCompletionsMapper {
       "messages" -> messages(Chunk(audio, MessagePayload.Instructions(prompt)), audioData),
       "stream" -> false,
       "temperature" -> 0,
-      "tool_choice" -> "none",
       "parallel_tool_calls" -> false
     )
 
@@ -132,18 +133,9 @@ private[oai] object OAIChatCompletionsMapper {
     request.options.seed.foreach(value => body("seed") = value)
     if request.options.stopSequences.nonEmpty then body("stop") = ujson.Arr.from(request.options.stopSequences)
     if request.tools.nonEmpty then body("tools") = ujson.Arr.from(request.tools.map(turnTool))
-    body("tool_choice") = toolChoiceJson(request.toolChoice)
-    body("parallel_tool_calls") = request.parallelToolCalls
+    body("parallel_tool_calls") = request.parallelToolCalls && request.tools.nonEmpty
     body
   }
-
-  private[oai] def toolChoiceJson(choice: ToolChoice): ujson.Value =
-    choice match
-      case ToolChoice.Auto           => ujson.Str("auto")
-      case ToolChoice.None           => ujson.Str("none")
-      case ToolChoice.Required       => ujson.Str("required")
-      case ToolChoice.Function(name) =>
-        ujson.Obj("type" -> "function", "function" -> ujson.Obj("name" -> name.value))
 
   private[oai] def requestBody[R](
       model: String,
@@ -228,7 +220,7 @@ private[oai] object OAIChatCompletionsMapper {
       function
         .get("name")
         .flatMap(_.strOpt)
-        .flatMap(name => ToolKey.from(name).toOption)
+        .flatMap(name => FunctionKey.from(name).toOption)
         .getOrElse(throw IllegalArgumentException("tool call is missing function.name")),
       arguments
     )

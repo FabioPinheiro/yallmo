@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.openai
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
@@ -70,7 +72,12 @@ final class OpenAiCodexSuite extends FunSuite:
 
   test("maps native Responses items while preserving call IDs and OpenAI continuations") {
     val call =
-      FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{\"path\":\"README.md\"}", Some("fc-1"))
+      FunctionCall(
+        FunctionCallId.unsafe("call-1"),
+        FunctionKey.unsafe("read"),
+        "{\"path\":\"README.md\"}",
+        Some("fc-1")
+      )
     val response = OpenAiCodexResponse(
       output = Vector(
         ujson.read(
@@ -176,7 +183,7 @@ final class OpenAiCodexSuite extends FunSuite:
     assertEquals(body("input").arr.map(_("role").str).toVector, Vector("user", "developer", "assistant"))
     assertEquals(body("input")(1)("content")(0)("text").str, "earlier instructions")
     assertEquals(body("parallel_tool_calls").bool, false)
-    assertEquals(body("tool_choice").str, "auto")
+    assert(!body.obj.contains("tool_choice"))
     assert(
       OpenAiCodexTurnMapper.requestBody(request.copy(input = Chunk(MessagePayload.User("no instructions")))).isLeft
     )
@@ -184,11 +191,23 @@ final class OpenAiCodexSuite extends FunSuite:
     assert(OpenAiCodexTurnMapper.requestBody(request.copy(model = " ")).isLeft)
   }
 
+  test("native requests without functions omit tool definitions and disable parallel calls") {
+    val request = AgentTurnRequest(
+      model = "selected-model",
+      input = Chunk(MessagePayload.Instructions("Answer directly")),
+      parallelToolCalls = true
+    )
+    val body = OpenAiCodexTurnMapper.requestBody(request).toOption.get
+    assert(!body.obj.contains("tools"))
+    assert(!body.obj.contains("tool_choice"))
+    assertEquals(body("parallel_tool_calls").bool, false)
+  }
+
   test("native request preserves tool calls, results and only same-provider encrypted reasoning") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{}", Some("fc-1"))
+    val call = FunctionCall(FunctionCallId.unsafe("call-1"), FunctionKey.unsafe("read"), "{}", Some("fc-1"))
     val continuation = ProviderContinuation(OpenAiCodexTurnMapper.providerId, Some("rs-1"), "encrypted")
     val definition = FunctionToolDefinition(
-      ToolKey.unsafe("read"),
+      FunctionKey.unsafe("read"),
       "Read a file",
       JsonSchema.ObjectSchema(Map("path" -> JsonSchema.StringSchema()), Set("path"), false)
     )
@@ -203,7 +222,6 @@ final class OpenAiCodexSuite extends FunSuite:
         MessagePayload.Instructions("Use the tools")
       ),
       tools = Chunk(definition),
-      toolChoice = ToolChoice.Function(ToolKey.unsafe("read")),
       parallelToolCalls = true
     )
     val body = OpenAiCodexTurnMapper.requestBody(request).toOption.get
@@ -222,15 +240,9 @@ final class OpenAiCodexSuite extends FunSuite:
     assertEquals(input(3)("output").str, "file contents")
     assertEquals(body("tools")(0)("name").str, "read")
     assertEquals(body("tools")(0)("parameters")("required")(0).str, "path")
-    assertEquals(body("tool_choice"), ujson.Obj("type" -> "function", "name" -> "read"))
+    assert(!body.obj.contains("tool_choice"))
     assert(body("parallel_tool_calls").bool)
-    Seq(ToolChoice.Auto -> "auto", ToolChoice.None -> "none", ToolChoice.Required -> "required").foreach {
-      case (choice, expected) =>
-        assertEquals(
-          OpenAiCodexTurnMapper.requestBody(request.copy(toolChoice = choice)).map(_("tool_choice").str),
-          Right(expected)
-        )
-    }
+
   }
 
   test("legacy request honors explicit models and always includes nonblank instructions and reasoning replay") {
@@ -348,7 +360,7 @@ final class OpenAiCodexSuite extends FunSuite:
             .Reasoning(None, ProviderContinuation(OpenAiCodexTurnMapper.providerId, Some("rs-1"), "encrypted")),
           MessagePayload.Assistant("streamed text"),
           MessagePayload.ToolCall(
-            FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("read"), "{}", Some("fc-1"))
+            FunctionCall(FunctionCallId.unsafe("call-1"), FunctionKey.unsafe("read"), "{}", Some("fc-1"))
           )
         )
       )

@@ -2,7 +2,7 @@ package fmgp.yallmo.tool
 
 import fmgp.yallmo.scalacode.ScalaToolApi
 import fmgp.yallmo.model.ScalaModeResult
-import fmgp.yallmo.orchestration.ExternalToolResult
+import fmgp.yallmo.orchestration.ExternalFunctionResult
 import zio.*
 import fmgp.rpc.*
 import fmgp.yallmo.fs.FsRead
@@ -42,7 +42,7 @@ trait ScalaCodeExecutor {
       timeout: Duration,
       maxOutputBytes: Int,
       dependencies: Seq[String] = ScalaTool.DefaultDependencies
-  ): Task[ExternalToolResult.ScalaMode]
+  ): Task[ExternalFunctionResult.ScalaMode]
 
   /** Explicit effect mode; pure/custom executors need not support a capability listener. */
   @scala.annotation.nowarn("msg=unused explicit parameter")
@@ -51,7 +51,7 @@ trait ScalaCodeExecutor {
       endpoint: String,
       timeout: Duration,
       maxOutputBytes: Int
-  ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] =
+  ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
     ZIO.fail(new UnsupportedOperationException("Filesystem Scala execution is not enabled"))
 }
 
@@ -73,14 +73,14 @@ object ScalaCodeExecutor {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String]
-    ): Task[ExternalToolResult.ScalaMode] = run(code, timeout, maxOutputBytes, dependencies, None)
+    ): Task[ExternalFunctionResult.ScalaMode] = run(code, timeout, maxOutputBytes, dependencies, None)
 
     override def executeFilesystem(
         code: String,
         endpoint: String,
         timeout: Duration,
         maxOutputBytes: Int
-    ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalToolResult.ScalaMode] = ZIO.scoped {
+    ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] = ZIO.scoped {
       for {
         fs <- ZIO.service[FsRead]
         route <- ZIO.service[RpcWebSocket.RpcRoute]
@@ -96,7 +96,7 @@ object ScalaCodeExecutor {
         maxOutputBytes: Int,
         dependencies: Seq[String],
         bootstrap: Option[(String, RpcToken)]
-    ): Task[ExternalToolResult.ScalaMode] =
+    ): Task[ExternalFunctionResult.ScalaMode] =
       (ZIO
         .fail(new IllegalArgumentException("Offline mode requires an exact Scala release or full nightly version"))
         .when(
@@ -271,7 +271,7 @@ object ScalaCodeExecutor {
       }
     }
 
-  private[tool] def result(command: CommandOutput, compiled: Boolean): ExternalToolResult.ScalaMode = {
+  private[tool] def result(command: CommandOutput, compiled: Boolean): ExternalFunctionResult.ScalaMode = {
     val failed = command.exitCode != 0 || command.timedOut
     val diagnostics = (Seq(command.output).filter(_.nonEmpty) ++ command.logs).mkString("\n")
     val outcome =
@@ -295,7 +295,7 @@ object ScalaCodeExecutor {
       else ScalaModeResult.Executed(command.output)
     // Failure diagnostics own the captured logs; successful execution logs stay separate from the returned value.
     val logs = if failed then Seq.empty else command.logs
-    ExternalToolResult.ScalaMode(outcome, logs, command.exitCode, command.truncated)
+    ExternalFunctionResult.ScalaMode(outcome, logs, command.exitCode, command.truncated)
   }
 
   private def validateFilesystemEndpoint(endpoint: String): Unit = {

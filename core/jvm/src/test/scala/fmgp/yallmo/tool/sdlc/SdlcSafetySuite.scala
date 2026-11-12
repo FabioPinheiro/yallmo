@@ -1,8 +1,9 @@
 package fmgp.yallmo.tool.sdlc
 
+import fmgp.yallmo.model.tool.SdlcToolDefinition
+
 import fmgp.yallmo.fs.*
-import fmgp.yallmo.model.ToolKey
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.orchestration.ExternalFunctionCall
 import fmgp.yallmo.tool.sdlc.llm.{PlanIntentSimplifiedModel, PlanTaskSimplifiedModel}
 import java.nio.file.{Files, Path}
 import java.time.Instant
@@ -177,11 +178,11 @@ final class SdlcSafetySuite extends FunSuite {
           next <- service.discover(limit = 2, afterId = first.nextAfterId)
           searched <- service.discover(query = "SEARCHABLE")
           archived <- service.discover(query = "T-2", includeArchived = true)
-          tools = SdlcTools.make(service)
+          tools = SdlcTools.makeFunctions(service)
           result <- tools
-            .find(_.definition.key == ToolKey.SdlcList)
+            .find(_.definition.name == SdlcToolDefinition.List)
             .get
-            .execute(ExternalToolCall(ToolKey.SdlcList, "{}"))
+            .execute(ExternalFunctionCall(SdlcToolDefinition.List, "{}"))
           _ <- ZIO.foreachDiscard(
             List(
               service.discover(limit = 0),

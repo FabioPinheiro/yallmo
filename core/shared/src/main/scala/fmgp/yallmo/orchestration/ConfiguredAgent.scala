@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.ToolDefinition
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
@@ -11,21 +13,27 @@ private[orchestration] class ConfiguredAgent(
     val capabilities: AgentCapabilities
 ) extends Agent[Any]
     with HasAgentCapabilities
-    with HasLocalAgentTools {
-  override val localTools: Chunk[AgentTool[Any]] = delegate match {
-    case scoped: HasLocalAgentTools => scoped.localTools.filter(tool => capabilities.allowsTool(tool.definition.key))
-    case _                          => Chunk.empty
+    with HasLocalAgentFunctions {
+  override val localFunctions: Chunk[AgentFunction[Any]] = delegate match {
+    // Keep the complete private catalog until policy validation; filtering here would hide valid-but-denied IDs.
+    case scoped: HasLocalAgentFunctions => scoped.localFunctions
+    case _                              => Chunk.empty
+  }
+  override val localTools: Chunk[ToolDefinition] = delegate match {
+    case scoped: HasLocalAgentFunctions => scoped.localTools
+    case _                              => Chunk.empty
   }
   override val id: AgentId = delegate.id
 
   override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
-    val filtered = capabilities.filterRequest(request)
+    val catalog = request.toolGroups.filterNot(tool => localTools.exists(_.name == tool.name)) ++ localTools
+    val filtered = capabilities.filterRequest(request.copy(toolGroups = catalog))
     delegate.turn(filtered).flatMap { response =>
       val forbidden = response.output.exists {
         case MessagePayload.ToolCall(call) =>
-          capabilities.tools.isDefined && (!capabilities.allowsTool(call.name) || !filtered.tools.exists(
+          (capabilities.tools.isDefined || capabilities.functions.isDefined) && !filtered.tools.exists(
             _.name == call.name
-          ) || filtered.toolChoice == ToolChoice.None)
+          )
         case _ => false
       }
       if forbidden then

@@ -1,19 +1,21 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
+
+import fmgp.yallmo.model.tool.RepositoryChangesToolDefinition
+
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.model.llm.JsonSchema
 import zio.*
 
 import java.nio.file.Path
-import fmgp.yallmo.orchestration.{AgentToolDefinition, ExternalToolCall, ExternalToolResult}
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 
 /** Inspects a Git work tree without accepting arbitrary Git arguments or mutating repository state. */
-final class RepositoryChangesTool(workspace: Path = Path.of("").toAbsolutePath.normalize) extends AgentTool[GitClient] {
-  override val definition: AgentToolDefinition = RepositoryChangesTool.definition
+final class RepositoryChangesTool(workspace: Path = Path.of("").toAbsolutePath.normalize)
+    extends AgentFunction[GitClient] {
+  override val definition: FunctionToolDefinition = RepositoryChangesTool.definition
 
-  override def execute(call: ExternalToolCall): ZIO[GitClient, YallmoError, ExternalToolResult] =
+  override def execute(call: ExternalFunctionCall): ZIO[GitClient, YallmoError, ExternalFunctionResult] =
     view(call).flatMap { selectedView =>
       val operation = selectedView match
         case RepositoryChangesTool.View.Status   => ZIO.serviceWithZIO[GitClient](_.status(workspace))
@@ -21,12 +23,12 @@ final class RepositoryChangesTool(workspace: Path = Path.of("").toAbsolutePath.n
         case RepositoryChangesTool.View.Staged   => ZIO.serviceWithZIO[GitClient](_.stagedDiff(workspace))
 
       operation
-        .mapError(error => RepositoryChangesTool.toYallmoError(definition.key, error))
+        .mapError(error => RepositoryChangesTool.toYallmoError(definition.name, error))
         .map(RepositoryChangesTool.render(selectedView, _))
-        .map(text => ExternalToolResult(text))
+        .map(text => ExternalFunctionResult(text))
     }
 
-  private def view(call: ExternalToolCall): IO[YallmoError, RepositoryChangesTool.View] =
+  private def view(call: ExternalFunctionCall): IO[YallmoError, RepositoryChangesTool.View] =
     ZIO
       .fromEither(
         scala.util
@@ -36,7 +38,7 @@ final class RepositoryChangesTool(workspace: Path = Path.of("").toAbsolutePath.n
           .map(_.getMessage)
           .flatMap(RepositoryChangesTool.View.parse)
       )
-      .mapError(YallmoError.InvalidToolArguments(call.toolKey, _))
+      .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
 }
 
 object RepositoryChangesTool {
@@ -51,21 +53,7 @@ object RepositoryChangesTool {
       View.values.find(_.value == value).toRight(s"view must be one of ${View.values.map(_.value).mkString(", ")}")
   }
 
-  val definition: AgentToolDefinition = AgentToolDefinition(
-    key = ToolKey.RepositoryChanges,
-    description =
-      "Inspect Git repository status, unstaged changes, or staged changes without modifying the repository.",
-    inputSchema = JsonSchema.ObjectSchema(
-      Map(
-        "view" -> JsonSchema.StringSchema(
-          Some("Repository view: status, unstaged (working tree), or staged (index ready to commit)"),
-          Chunk(View.Status.value, View.Unstaged.value, View.Staged.value)
-        )
-      ),
-      required = Set("view"),
-      additionalProperties = false
-    )
-  )
+  val definition: FunctionToolDefinition = RepositoryChangesToolDefinition.InspectDefinition
 
   private[tool] def render(view: View, result: CommandOutput): String =
     ujson.write(
@@ -77,8 +65,8 @@ object RepositoryChangesTool {
       )
     )
 
-  private def toYallmoError(toolKey: ToolKey, error: GitError): YallmoError =
+  private def toYallmoError(functionKey: FunctionKey, error: GitError): YallmoError =
     error match
-      case GitError.Unavailable(_)   => YallmoError.ToolUnavailable(toolKey, error.getMessage)
-      case GitError.CommandFailed(_) => YallmoError.ToolExecutionFailed(toolKey, error.getMessage, error)
+      case GitError.Unavailable(_)   => YallmoError.ToolUnavailable(functionKey, error.getMessage)
+      case GitError.CommandFailed(_) => YallmoError.ToolExecutionFailed(functionKey, error.getMessage, error)
 }

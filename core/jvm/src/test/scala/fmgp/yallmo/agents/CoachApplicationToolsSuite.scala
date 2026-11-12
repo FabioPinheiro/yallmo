@@ -1,9 +1,9 @@
 package fmgp.yallmo.agents
 
-import fmgp.yallmo.model.ToolKey
+import fmgp.yallmo.tool.FunctionKey
 import fmgp.yallmo.agents.CoachApplicationTools.{Application, Record}
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
-import fmgp.yallmo.orchestration.{AgentTool, ExternalToolCall}
+import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall}
 import java.nio.file.Files
 import munit.FunSuite
 import scala.jdk.CollectionConverters.*
@@ -24,7 +24,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
 
   test("persists application stages and unsent replies across reconstruction with an append-only history") {
     withWorkspace { fs =>
-      val tools = run(CoachApplicationTools.make(fs))
+      val tools = run(CoachApplicationTools.makeFunctions(fs))
       val first = save(tools, application, 0)
       assertEquals(first.revision, 1)
       assertEquals(first.application.replyDraft, application.replyDraft)
@@ -37,7 +37,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
       )
       val next = save(tools, updated, 1)
       assertEquals(next.revision, 2)
-      val fresh = run(CoachApplicationTools.make(fs))
+      val fresh = run(CoachApplicationTools.makeFunctions(fs))
       assertEquals(get(fresh, application.id), next)
       val summaries = invoke(fresh, CoachApplicationTools.ListKey, "{}")
       assert(summaries.contains("proposed"))
@@ -48,7 +48,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
 
   test("identical retries are idempotent and stale edits fail without changing history") {
     withWorkspace { fs =>
-      val tools = run(CoachApplicationTools.make(fs))
+      val tools = run(CoachApplicationTools.makeFunctions(fs))
       val first = save(tools, application, 0)
       assertEquals(save(tools, application, 0), first)
       assertEquals(run(fs.readUtf8("applications.jsonl")).linesIterator.size, 1)
@@ -59,11 +59,11 @@ final class CoachApplicationToolsSuite extends FunSuite {
 
   test("concurrent different edits serialize and one must reload after a revision conflict") {
     withWorkspace { fs =>
-      val tools = run(CoachApplicationTools.make(fs))
+      val tools = run(CoachApplicationTools.makeFunctions(fs))
       save(tools, application, 0)
       val results = run(ZIO.foreachPar(List("offer", "rejected")) { stage =>
         tool(tools, CoachApplicationTools.SaveKey)
-          .execute(ExternalToolCall(CoachApplicationTools.SaveKey, saveJson(application.copy(stage = stage), 1)))
+          .execute(ExternalFunctionCall(CoachApplicationTools.SaveKey, saveJson(application.copy(stage = stage), 1)))
           .either
       })
       assertEquals(results.count(_.isRight), 1)
@@ -74,7 +74,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
 
   test("validates scheduling timezone/DST, dates, fields, stages and arguments before writing") {
     withWorkspace { fs =>
-      val tools = run(CoachApplicationTools.make(fs))
+      val tools = run(CoachApplicationTools.makeFunctions(fs))
       val scheduled = application.copy(
         interviewStart = Some("2026-07-03T10:00:00+01:00"),
         interviewTimeZone = Some("Europe/Lisbon"),
@@ -97,7 +97,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
       assert(
         run(
           tool(tools, CoachApplicationTools.SaveKey)
-            .execute(ExternalToolCall(CoachApplicationTools.SaveKey, "{\"extra\":true}"))
+            .execute(ExternalFunctionCall(CoachApplicationTools.SaveKey, "{\"extra\":true}"))
             .either
         ).isLeft
       )
@@ -108,7 +108,7 @@ final class CoachApplicationToolsSuite extends FunSuite {
 
   test("corrupt or incomplete journals fail closed instead of resetting or concatenating records") {
     withWorkspace { fs =>
-      val tools = run(CoachApplicationTools.make(fs))
+      val tools = run(CoachApplicationTools.makeFunctions(fs))
       val record = save(tools, application, 0)
       for broken <- List(
           "not JSON\n",
@@ -128,8 +128,8 @@ final class CoachApplicationToolsSuite extends FunSuite {
   test("separate tool instances stay rooted and cannot read another coach's records") {
     withWorkspace { one =>
       withWorkspace { two =>
-        val first = run(CoachApplicationTools.make(one))
-        val second = run(CoachApplicationTools.make(two))
+        val first = run(CoachApplicationTools.makeFunctions(one))
+        val second = run(CoachApplicationTools.makeFunctions(two))
         save(first, application, 0)
         assertEquals(invoke(second, CoachApplicationTools.ListKey, "{}"), "[]")
         assertEquals(invoke(second, CoachApplicationTools.GetKey, "{\"id\":\"acme-scala\"}"), "{\"not_found\":true}")
@@ -137,20 +137,21 @@ final class CoachApplicationToolsSuite extends FunSuite {
     }
   }
 
-  private def tool(tools: Chunk[AgentTool[Any]], key: ToolKey): AgentTool[Any] = tools.find(_.definition.key == key).get
-  private def invoke(tools: Chunk[AgentTool[Any]], key: ToolKey, json: String): String =
-    run(tool(tools, key).execute(ExternalToolCall(key, json))).text
+  private def tool(tools: Chunk[AgentFunction[Any]], key: FunctionKey): AgentFunction[Any] =
+    tools.find(_.definition.name == key).get
+  private def invoke(tools: Chunk[AgentFunction[Any]], key: FunctionKey, json: String): String =
+    run(tool(tools, key).execute(ExternalFunctionCall(key, json))).text
   private def saveJson(a: Application, revision: Int): String =
     s"{\"expectedRevision\":$revision,\"application\":${a.toJson}}"
-  private def saveResult(tools: Chunk[AgentTool[Any]], a: Application, revision: Int) =
+  private def saveResult(tools: Chunk[AgentFunction[Any]], a: Application, revision: Int) =
     run(
       tool(tools, CoachApplicationTools.SaveKey)
-        .execute(ExternalToolCall(CoachApplicationTools.SaveKey, saveJson(a, revision)))
+        .execute(ExternalFunctionCall(CoachApplicationTools.SaveKey, saveJson(a, revision)))
         .either
     )
-  private def save(tools: Chunk[AgentTool[Any]], a: Application, revision: Int): Record =
+  private def save(tools: Chunk[AgentFunction[Any]], a: Application, revision: Int): Record =
     invoke(tools, CoachApplicationTools.SaveKey, saveJson(a, revision)).fromJson[Record].toOption.get
-  private def get(tools: Chunk[AgentTool[Any]], id: String): Record =
+  private def get(tools: Chunk[AgentFunction[Any]], id: String): Record =
     invoke(tools, CoachApplicationTools.GetKey, s"{\"id\":\"$id\"}").fromJson[Record].toOption.get
 
   private def withWorkspace(test: FileSystem => Unit): Unit = {

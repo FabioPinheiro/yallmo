@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
@@ -426,9 +428,9 @@ final class ReplSuite extends FunSuite {
     val rendered = ReplDebug.renderJsonLines(
       Chunk(
         Message.User("hello"),
-        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "{}")),
+        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("call-clock"), FunctionKey.unsafe("clock"), "{}")),
         Message.ToolOutput(
-          FunctionGenericOutput(FunctionCallId.unsafe("call-clock"), ToolKey.unsafe("clock"), "12:00")
+          FunctionGenericOutput(FunctionCallId.unsafe("call-clock"), FunctionKey.unsafe("clock"), "12:00")
         ),
         Message.Context("request-metadata", "request-id=42")
       ),
@@ -482,7 +484,7 @@ final class ReplSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage(s"Agent '${AgentId.value(assistantId)}' must not run in this test")
     }
-    val instances = runZIO(RuntimeInstances.fromAgents(Chunk(user, assistant)))
+    val instances = runZIO(AgentCatalog.fromAgents(Chunk(user, assistant)))
     val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
     ReplOrchestratorLive.make(orchestrator, user, Some(assistant))
   }

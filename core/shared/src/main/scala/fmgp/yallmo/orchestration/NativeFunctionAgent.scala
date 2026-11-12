@@ -5,7 +5,7 @@ import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities
 import zio.*
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
-import fmgp.yallmo.orchestration.{AgentTask, AgentTurn, ExternalToolCall, RunContext, StaticContext}
+import fmgp.yallmo.orchestration.{AgentTask, AgentTurn, ExternalFunctionCall, RunContext, StaticContext}
 
 /** An agent that uses provider-native function calls while leaving execution to [[AgentRunner]]. Ordinary submissions
   * enter through inherited nextManaged; provider rendering still consumes the temporary per-turn RunContext payload
@@ -80,12 +80,13 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
       send: AgentTurnRequest => ZIO[R1, YallmoError, AgentTurnResponse],
       policy: AgentCapabilities
   ): ZIO[R1, YallmoError, AgentTurn] =
-    ZIO.fromEither(policy.resolve(id, staticContext)).flatMap { context =>
+    ZIO.suspendSucceed {
+      val context = policy.restrict(staticContext)
       val request = AgentTurnRequest(
         model = model,
         input = NativeFunctionAgent.input(runContext, context),
-        tools = context.tools
-          .map(definition => FunctionToolDefinition(definition.key, definition.description, definition.inputSchema)),
+        tools = context.functions,
+        toolGroups = context.tools,
         parallelToolCalls = parallelToolCalls,
         options = options
       )
@@ -101,7 +102,7 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
                 assistant,
                 AgentDecision.Actions(
                   toolCalls.map(call =>
-                    LlmAction.CallExternalTool(ExternalToolCall(call.name, call.argumentsJson, Some(call.id)))
+                    LlmAction.CallExternalFunction(ExternalFunctionCall(call.name, call.argumentsJson, Some(call.id)))
                   )
                 ),
                 NativeFunctionAgent.reasoningMessages(response.output)

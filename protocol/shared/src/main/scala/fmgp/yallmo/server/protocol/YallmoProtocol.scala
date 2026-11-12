@@ -1,12 +1,12 @@
 package fmgp.yallmo.server.protocol
 
-import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, UserId}
+import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
+
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{
   AgentResult,
   AgentTask,
-  AgentToolDefinition,
   EventMessage,
   EventOrigin,
   EventScope,
@@ -35,7 +35,7 @@ object YallmoProtocol {
   given JsonCodec[AgentTask] = DeriveJsonCodec.gen[AgentTask]
   given JsonCodec[AgentResult] = DeriveJsonCodec.gen[AgentResult]
   given JsonCodec[JsonSchema] = DeriveJsonCodec.gen[JsonSchema]
-  given JsonCodec[AgentToolDefinition] = DeriveJsonCodec.gen[AgentToolDefinition]
+  given JsonCodec[FunctionToolDefinition] = DeriveJsonCodec.gen[FunctionToolDefinition]
 
   /** Public projection of a domain message: opaque provider continuation data is deliberately not a wire field. */
   final case class MessageSnapshot(
@@ -46,7 +46,7 @@ object YallmoProtocol {
       role: String,
       content: String,
       blobIds: Chunk[BlobId],
-      toolName: Option[ToolKey] = None
+      toolName: Option[FunctionKey] = None
   ) derives JsonCodec
 
   object MessageSnapshot {
@@ -288,7 +288,7 @@ object YallmoProtocol {
   object ToolsList {
     val method: String = "tools.list"
     final case class Params(agentId: AgentId) derives JsonCodec
-    type Result = Chunk[AgentToolDefinition]
+    type Result = Chunk[FunctionToolDefinition]
   }
 
   object BlobsList {

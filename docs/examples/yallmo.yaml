@@ -8,7 +8,9 @@ agents:
     filesystem:
       root: ./workspace
     capabilities:
-      tools: [readFile, listFiles, scalamode]
+      # Tool groups and individual functions are separate, conjunctive allowlists.
+      tools: [filesystem, scalamode]
+      functions: [readFile, listFiles, scalamode]
     config:
       model: chat-model
       systemPrompt: |-

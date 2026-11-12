@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
 import fmgp.yallmo.orchestration.storage.{StorageFS, StorageInMemory}
@@ -17,7 +19,7 @@ final class OrchestratorRebaseSuite extends FunSuite {
   private val missing = MessageId.sha256("missing")
   private val blob = Blob(BlobId.fresh(), Chunk[Byte](0, 1, -1, 42))
   private val callId = FunctionCallId.unsafe("original-call-id")
-  private val tool = ToolKey.unsafe("never-execute")
+  private val tool = FunctionKey.unsafe("never-execute")
   private val payloads = Chunk[MessagePayload](
     MessagePayload.User("unicode π\n  unchanged"),
     MessagePayload.Reasoning(
@@ -373,7 +375,7 @@ final class OrchestratorRebaseSuite extends FunSuite {
 
   private def make(storage: Storage): IO[YallmoError, Orchestrator[Any]] =
     for {
-      instances <- RuntimeInstances.fromAgents[Any](Chunk.empty)
+      instances <- AgentCatalog.fromAgents[Any](Chunk.empty)
       _ <- instances.registerUser(human)
       _ <- instances.registerUser(assistant)
       orchestrator <- OrchestratorLive.make(storage, instances)

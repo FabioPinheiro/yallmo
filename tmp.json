@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "recordType": "message",
+  "source": "async",
+  "runId": "3bc4ec7e-c91a-455e-96c6-4456da1244f2",
+  "agent": "worker",
+  "childIndex": 0,
+  "cwd": "/home/agent/workspace",
+  "ts": 1794267546516,
+  "timestamp": "2026-11-09T23:39:06.516Z",
+  "sourceEventType": "message_end",
+  "role": "assistant",
+  "model": "gpt-6.1-sol",
+  "stopReason": "toolUse",
+  "usage": {
+    "input": 2360,
+    "output": 22,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": 0
+  },
+  "message": {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "toolCall",
+        "id": "call_49fb3b8abea74c8189ba345096cf5b65|fc_0be5d022ded8e585016af2599a4ef087d29d39c0a2ee511094",
+        "name": "bash",
+        "arguments": {
+          "command": "pwd",
+          "timeout": 10
+        }
+      }
+    ],
+    "api": "openai-responses",
+    "provider": "sbx-openai",
+    "model": "gpt-6.1-sol",
+    "usage": {
+      "input": 2360,
+      "output": 22,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0,
+      "totalTokens": 2382,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0,
+        "totalFromProvider": false
+      }
+    },
+    "stopReason": "toolUse",
+    "timestamp": 1794267544227,
+    "responseId": "resp_0be5d022ded8e585016af25998b6dc87d29ffba9b7992401c0",
+    "rawStopReason": "completed",
+    "durationMs": 2289,
+    "thinkingLevel": "high"
+  }
+}

@@ -2,7 +2,7 @@ package fmgp.yallmo.server
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
-import fmgp.yallmo.orchestration.{OrchestratorLive, RuntimeInstances, SessionId}
+import fmgp.yallmo.orchestration.SessionId
 import java.nio.file.{Files, Path}
 import java.util.Comparator
 import fmgp.yallmo.server.jsonrpc.JsonRpc
@@ -18,14 +18,17 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
   import OrchestratorServerMain.{Options, parse}
 
   test("startup defaults to INFO and accepts reordered/equal-syntax options") {
-    assertEquals(parse(List("--storage", "sessions")), Right(Options(Path.of("sessions"))))
     assertEquals(
-      parse(List("--log-level=DeBuG", "--port", "8081", "--storage=sessions")),
-      Right(Options(Path.of("sessions"), 8081, LogLevel.Debug))
+      parse(List("--config=config.json", "--storage", "sessions")),
+      Right(Options(Path.of("sessions"), Path.of("config.json")))
     )
     assertEquals(
-      parse(List("--log-level", "trace", "--storage", "sessions")),
-      Right(Options(Path.of("sessions"), 8080, LogLevel.Trace))
+      parse(List("--config=config.json", "--log-level=DeBuG", "--port", "8081", "--storage=sessions")),
+      Right(Options(Path.of("sessions"), Path.of("config.json"), 8081, LogLevel.Debug))
+    )
+    assertEquals(
+      parse(List("--config=config.json", "--log-level", "trace", "--storage", "sessions")),
+      Right(Options(Path.of("sessions"), Path.of("config.json"), 8080, LogLevel.Trace))
     )
   }
 
@@ -40,9 +43,14 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
       "off" -> LogLevel.None
     )
     levels.foreach { case (name, level) =>
-      assertEquals(parse(List("--storage", "sessions", s"--log-level=$name")).map(_.logLevel), Right(level))
       assertEquals(
-        parse(List("--log-level", name.toUpperCase(java.util.Locale.ROOT), "--storage", "sessions")).map(_.logLevel),
+        parse(List("--config=config.json", "--storage", "sessions", s"--log-level=$name")).map(_.logLevel),
+        Right(level)
+      )
+      assertEquals(
+        parse(
+          List("--config=config.json", "--log-level", name.toUpperCase(java.util.Locale.ROOT), "--storage", "sessions")
+        ).map(_.logLevel),
         Right(level)
       )
     }
@@ -63,7 +71,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
       List("--storage="),
       List("--log-level=debug"),
       Nil
-    ).foreach(args => assert(parse(args).isLeft, args.toString))
+    ).foreach(args => assert(parse("--config=config.json" :: args).isLeft, args.toString))
   }
 
   test("minimum levels filter real severities rather than relabeling statements") {
@@ -153,12 +161,15 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
           }.orDie
         }
         author = AgentId("author")
-        registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
-          val id = author
-          def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-            ZIO.dieMessage("Reading a broken session must not execute an agent")
-        }))
-        master <- OrchestratorLive.filesystem(root, registry)
+        backend <- application.TestServerApplication.make(
+          Chunk(new Agent[Any] {
+            val id = author
+            def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+              ZIO.dieMessage("Reading a broken session must not execute an agent")
+          }),
+          Some(root)
+        )
+        master = backend.application.master
         session = SessionId.unsafe("broken")
         _ <- master.createSession(session, Chunk(author))
         _ <- master.append(session, author, Chunk(MessagePayload.User("PRIVATE_TRANSCRIPT")))
@@ -168,7 +179,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
             s"""{"agentIds":["author"],"head":"${MessageId.value(missing)}"}"""
           )
         )
-        rpc = new OrchestratorRpc(master)
+        rpc = new OrchestratorRpc(backend)
         connection <- rpc.openConnection
         _ <- rpc.handle(
           JsonRpc
@@ -257,11 +268,11 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         _ <- OrchestratorServerMain.configureLogging(level, capture).build
-        registry <- RuntimeInstances.fromAgents(Chunk(new Agent[Any] {
+        backend <- application.TestServerApplication.make(Chunk(new Agent[Any] {
           val id = AgentId("human")
           def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = ZIO.dieMessage("No agent execution")
         }))
-        master <- OrchestratorLive.inMemory(registry)
+        master = backend.application.master
         session = SessionId.unsafe("logging-test")
         _ <- master.createSession(session, Chunk(AgentId("human")))
         _ <- master.append(session, AgentId("human"), Chunk(MessagePayload.User("PRIVATE_TRANSCRIPT")))
@@ -272,7 +283,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
           MessagePayload.AudioAttachment(blob, AudioFormat.Wav),
           Chunk[Byte](0, 1, -1)
         )
-        port <- new OrchestratorWSServer(master).start(0)
+        port <- new OrchestratorWSServer(backend).start(0)
         client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
         _ <- client.loadSession(session)
         _ <- client.readBlob(blob)

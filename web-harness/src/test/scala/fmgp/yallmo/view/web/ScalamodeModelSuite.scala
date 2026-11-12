@@ -1,5 +1,9 @@
 package fmgp.yallmo.view.web
 
+import fmgp.yallmo.tool.FunctionKey
+
+import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import java.time.Instant
@@ -76,7 +80,7 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(params.agentId, agent)
     assertEquals(params.input.agentId, human)
     assertEquals(params.input.parentId, None)
-    assertEquals(call.name, ToolKey.Scalamode)
+    assertEquals(call.name, ScalamodeToolDefinition.Execute)
     assertEquals(
       call.argumentsJson.fromJson[Json],
       Right(Json.Obj("code" -> Json.Str("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)"), "mode" -> Json.Str("filesystem")))
@@ -267,7 +271,7 @@ final class ScalamodeModelSuite extends FunSuite {
             Message.ToolOutput(
               FunctionGenericOutput(
                 message.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId,
-                ToolKey.unsafe("wrong"),
+                FunctionKey.unsafe("wrong"),
                 "12"
               )
             )

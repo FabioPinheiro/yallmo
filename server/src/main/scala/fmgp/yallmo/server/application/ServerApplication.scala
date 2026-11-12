@@ -1,375 +1,277 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, YallmoError}
+import fmgp.yallmo.tool.ToolDefinition
+
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
-import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.tool.sdlc.SdlcService
-import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
-import fmgp.yallmo.orchestration.{BranchAcceptance, OrchestratorLive, RuntimeInstances, SessionId}
+import fmgp.yallmo.orchestration.*
+import fmgp.yallmo.orchestration.config.{Config, ConfiguredAgentSettings, ProviderId}
+import fmgp.yallmo.fs.FsRead
+import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.model.llm.ProviderContinuation
-import fmgp.yallmo.server.jsonrpc.JsonRpc
-import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.orchestration.config.ConfigFile
-import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.channels.{FileChannel, OverlappingFileLockException}
-import java.nio.file.{Files, LinkOption, NoSuchFileException, Path, StandardOpenOption}
+import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
 import scala.collection.immutable.VectorMap
-import zio.json.*
 import zio.json.ast.Json
 import java.util.concurrent.ConcurrentHashMap
 import zio.*
 import zio.http.Client
 
-/** One standalone storage owner. Configured composition is retained without selecting or executing an agent. */
+/** Shared application composition: one agent catalog, orchestration master and bound tool environment.
+  *
+  * This is the trusted in-process API for resolving agents and using core execution. The standalone factories
+  * [[ServerApplication.open]] and [[ServerApplication.openRpc]] return [[ServerExecutionService]], which adds server
+  * request policy and application-owned execution lifetime around this same composition. Neither construction nor agent
+  * selection runs inference. Embedded factories do not acquire the standalone storage lease.
+  */
 final class ServerApplication private (
     val master: OrchestratorLive[Any],
-    val configured: Option[ServerApplication.Configured]
-)
+    val catalog: AgentCatalog[Any],
+    config: Config,
+    availableContext: StaticContext[Any],
+    val availability: ToolAvailability
+) {
+  import ServerApplication.*
+
+  def registerUser(id: AgentId): IO[YallmoError, Unit] = catalog.registerUser(id)
+  def isUser(id: AgentId): UIO[Boolean] = catalog.isUser(id)
+
+  val browserAudioPort: Int = config.browserAudioPort
+
+  /** Display projection only: no provider definitions, credentials, prompts or filesystem roots. */
+  def agentSummaries: Vector[AgentSummary] =
+    config.agents.toVector.sortBy(pair => AgentId.value(pair._1)).map { case (id, definition) =>
+      AgentSummary(
+        id,
+        displayText(definition.agentType),
+        definition.providerIds.map(value => displayText(ProviderId.value(value))).toVector,
+        definition.config.fields.collectFirst {
+          case ("model", Json.Str(value)) if value.trim.nonEmpty => displayText(value.trim)
+        }
+      )
+    }
+
+  /** Trusted in-process audio adapter only; this is not a wire value or remote execution API. */
+  def resolveTranscriber[R](
+      id: AgentId,
+      available: StaticContext[R]
+  ): IO[YallmoError, (AudioAgent[Any], ConfiguredAgentSettings)] = {
+    val checked = for {
+      definition <- ZIO
+        .fromOption(config.agents.get(id))
+        .orElseFail(YallmoError.InvalidConfig("Transcriber must reference a configured agent"))
+      settings <- ZIO.fromEither(ConfiguredAgentSettings.decode(definition))
+      context <- ZIO.fromEither(definition.capabilities.resolve(id, available))
+      _ <- ZIO
+        .fail(
+          YallmoError.InvalidConfig(
+            "Transcription requires effectively empty capabilities.tools/retrievers/skills/extensions; explicitly set each allowlist to [] to disable inherited capabilities"
+          )
+        )
+        .unless(
+          context.functions.isEmpty && context.retrievers.isEmpty && context.skills.isEmpty && context.extensions.isEmpty
+        )
+      agent <- catalog
+        .getAudioAgent(id)
+        .mapError(_ => YallmoError.InvalidConfig("Selected agent requires an audio-capable agent and provider"))
+    } yield (agent, settings)
+    checked.mapError(error =>
+      YallmoError.InvalidConfig(s"Transcriber '${displayText(AgentId.value(id))}': ${displayText(error.getMessage)}")
+    )
+  }
+
+  def context(selection: Option[ResolvedAgent]): StaticContext[Any] = selection.fold(availableContext)(_.context)
+
+  def resolve(id: AgentId): IO[YallmoError, ResolvedAgent] =
+    catalog
+      .resolve(id)
+      .tapError(error =>
+        ZIO.logError(s"Unable to load agent '${displayText(AgentId.value(id))}': ${displayText(error.getMessage)}")
+      )
+
+  def invoke(input: Message, selection: ResolvedAgent): IO[YallmoError, Message] =
+    master.invoke(input, AgentRunner.invocation(selection))
+
+  def submitBranch(
+      author: AgentId,
+      parent: MessageId,
+      prompt: String,
+      selection: ResolvedAgent
+  ): IO[BranchSubmitFailure, BranchTurn] =
+    master.submitBranch(
+      parent,
+      author,
+      AgentTask(prompt),
+      AgentRunner.execution(selection, program => AgentContinuations.withCurrentContinuations(program, Int.MaxValue))
+    )
+}
 
 object ServerApplication {
+  val DefaultConfigPath: Path = Path.of("yallmo.json")
+
+  /** IDs retain lookup identity; callers must sanitize IDs when rendering, as with catalog entries. Model reports only
+    * a non-blank explicit setting; None does not imply a default, validation result or applicability.
+    */
+  final case class AgentSummary(id: AgentId, agentType: String, providerIds: Vector[String], model: Option[String])
+
+  private def displayText(value: String): String = value.map { char =>
+    if Character.isISOControl(char) || Set(
+        Character.FORMAT.toInt,
+        Character.LINE_SEPARATOR.toInt,
+        Character.PARAGRAPH_SEPARATOR.toInt
+      ).contains(Character.getType(char))
+    then '?'
+    else char
+  }
+
+  val DefaultSystemPrompt =
+    "You are Yallmo, a concise terminal assistant. Answer the user's request concisely. Use an advertised tool only when it is needed."
+
+  /** Trusted embedded construction. Opens one storage owner; selection stays lazy. No standalone lease is claimed. */
+  def make(
+      config: Config,
+      registeredAgents: Chunk[Agent[Any]],
+      storageRoot: Option[Path] = None,
+      availableFunctions: Chunk[AgentFunction[Any]] = Chunk.empty,
+      workspaceFilesystem: Option[FsRead] = None,
+      selectedFunctions: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
+      toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions
+  ): ZIO[Client, YallmoError, ServerApplication] =
+    for {
+      context = StaticContext[Any](
+        DefaultSystemPrompt,
+        functions = availableFunctions.map(_.definition),
+        tools = ToolDefinition
+          .available(toolDefinitions, availableFunctions.map(_.definition))
+      )
+      _ <- ZIO.foreachDiscard(config.agents.toList) { case (id, definition) =>
+        val available = if definition.agentType == "CoachAgent" then
+          context.copy(
+            functions = context.functions ++ fmgp.yallmo.agents.CoachApplicationTools.Definitions,
+            tools = context.tools :+ fmgp.yallmo.model.tool.CoachToolDefinition
+          )
+        else context
+        ZIO.fromEither(definition.capabilities.resolve(id, available))
+      }
+      reader <- Promise.make[Nothing, OrchestratorLive[Any]]
+      catalog <- AgentCatalog.make(
+        config,
+        registeredAgents,
+        context,
+        fs => {
+          val rebound = selectedFunctions(fs.orElse(workspaceFilesystem))
+          if rebound.isEmpty then ApplicationTools.selected(availableFunctions, fs.orElse(workspaceFilesystem), None)
+          else rebound
+        },
+        id => reader.await.flatMap(_.readBlob(id))
+      )
+      master <- storageRoot match {
+        case None       => OrchestratorLive.inMemory(catalog)
+        case Some(root) => OrchestratorLive.filesystem(root, catalog)
+      }
+      _ <- reader.succeed(master)
+    } yield new ServerApplication(
+      master,
+      catalog,
+      config,
+      context,
+      ToolAvailability.from(availableFunctions.map(_.definition), Chunk.empty, toolDefinitions)
+    )
+
+  /** Configuration file boundary for retained embedded callers; the captured client must outlive the application. */
+  def load(
+      registeredAgents: Chunk[Agent[Any]],
+      configPath: Path = DefaultConfigPath,
+      storageRoot: Option[Path] = None
+  ): ZIO[Client, YallmoError, (ServerApplication, ProviderCatalog)] =
+    for {
+      config <- ConfigFile.loadOrInitialize(configPath)
+      application <- make(config, registeredAgents, storageRoot)
+      providers <- ProviderCatalog.make(configPath)
+    } yield (application, providers)
+
+  /** Bind startup services and selection-specific read tools once per cached agent generation. */
+  def workspace(
+      config: Config,
+      registeredAgents: Chunk[Agent[Any]],
+      storageRoot: Option[Path],
+      workspace: Path,
+      services: ULayer[ApplicationTools.Environment] = ApplicationTools.live,
+      rpc: Option[(RpcWebSocket.RpcRoute, String)] = None,
+      sharedSdlc: Option[SdlcService] = None
+  ): ZIO[Scope & Client, YallmoError, ServerApplication] =
+    for {
+      environment <- services.build
+      startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc).provideEnvironment(environment)
+      tools = startup.functions.map { tool =>
+        new AgentFunction[Any] {
+          val definition = tool.definition
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+            tool.execute(call).provideEnvironment(environment)
+        }
+      }
+      selected = (fs: Option[FsRead]) =>
+        ApplicationTools.selected(
+          tools,
+          fs,
+          rpc.map { case (route, endpoint) =>
+            (environment.add[RpcWebSocket.RpcRoute](route), endpoint)
+          }
+        )
+      application <- make(config, registeredAgents, storageRoot, tools, startup.filesystem, selected)
+    } yield new ServerApplication(
+      application.master,
+      application.catalog,
+      config,
+      application.context(None),
+      startup.availability
+    )
+
   type ToolEnvironment = ApplicationTools.Environment
   type Environment = Client & ToolEnvironment
 
   private val ownedRoots = ConcurrentHashMap.newKeySet[Path]()
-  private val MaxCapturedSessions = 128
-
-  /** Process-lifetime trusted user registration is separate from ephemeral connection presence. The scope owns
-    * execution; callers own only interruptible waits. No results or run IDs are retained here.
-    */
-  final class Configured private[application] (
-      val runtime: ApplicationRuntime,
-      val assembly: ApplicationRuntime.Assembly[Any],
-      val workspace: Path,
-      val providers: ProviderAdministration,
-      scope: Scope,
-      inFlight: Ref[Set[SessionId]],
-      continuations: Ref[Map[SessionId, (AgentId, Set[ProviderContinuation])]],
-      requestCaptures: Ref[VectorMap[SessionId, Path]]
-  ) {
-    def submit(
-        author: AgentId,
-        target: TurnSubmit.Target,
-        agentId: AgentId,
-        prompt: String,
-        expectedHead: Option[MessageId] = None,
-        resetContinuation: Boolean = false
-    ): IO[JsonRpc.Error, TurnOutcome] = ZIO.suspendSucceed {
-      val sessionId = target match {
-        case TurnSubmit.Target.Existing(id) => id
-        case TurnSubmit.Target.New(name)    => name.getOrElse(SessionId.unsafe(s"main-${java.util.UUID.randomUUID()}"))
-      }
-      owned {
-        ZIO.uninterruptibleMask { restore =>
-          for {
-            admitted <- inFlight.modify(ids => (!ids.contains(sessionId), ids + sessionId))
-            _ <- ZIO.fail(JsonRpc.Error(ErrorCode.Busy, "Session is busy")).unless(admitted)
-            outcome <- restore((for {
-              binding <- checked(runtime.resolve(agentId))
-              _ <- ZIO
-                .fail(JsonRpc.Error.InvalidParams)
-                .when(target.isInstanceOf[TurnSubmit.Target.New] && expectedHead.nonEmpty)
-              _ <- checked(runtime.registerUser(author))
-              previous <- target match {
-                case _: TurnSubmit.Target.Existing => checked(assembly.orchestrator.loadSession(sessionId))
-                case _: TurnSubmit.Target.New      =>
-                  checked(assembly.orchestrator.createSession(sessionId, Chunk(author, agentId)))
-              }
-              _ <- ZIO
-                .fail(JsonRpc.Error(ErrorCode.Conflict, "Session head changed"))
-                .when(expectedHead.exists(head => !previous.messages.lastOption.exists(_.id == head)))
-              policies <- continuations.get
-              excluded = policies.get(sessionId) match {
-                case Some((id, values)) if id == agentId && !resetContinuation => values
-                case _ => SessionSubmission.continuations(previous.messages.map(_.payload))
-              }
-              _ <- continuations.update(_.updated(sessionId, (agentId, excluded)))
-              outcome <- captureRequest(sessionId)(
-                assembly
-                  .submission(author, Some(binding))
-                  .submitExcludingContinuations(Some(sessionId.value), prompt, excluded)
-                  .tapError(failure => ZIO.logErrorCause("Session execution failed", Cause.fail(failure.error)))
-                  .fold(
-                    failure =>
-                      TurnOutcome.Failed(
-                        if failure.acceptedSession.nonEmpty then PromptAcceptance.Accepted
-                        else PromptAcceptance.Unknown,
-                        Some(SessionSnapshot.from(failure.acceptedSession.getOrElse(previous))),
-                        ApplicationError("execution_failed", "Execution failed; refresh session before continuing")
-                      ),
-                    turn =>
-                      TurnOutcome.Succeeded(
-                        SessionSnapshot.from(turn.session),
-                        turn.result,
-                        turn.session.messages.drop(previous.messages.size).map(MessageSnapshot.from)
-                      )
-                  )
-              )
-            } yield outcome)).ensuring(inFlight.update(_ - sessionId))
-          } yield outcome
-        }
-      } { cause =>
-        cause.failureOption match {
-          case Some(error) if cause.defects.isEmpty && !cause.isInterrupted => ZIO.fail(error)
-          case _                                                            =>
-            assembly.orchestrator.loadSession(sessionId).exit.map { snapshot =>
-              TurnOutcome.Failed(
-                PromptAcceptance.Unknown,
-                snapshot.toEither.toOption.map(SessionSnapshot.from),
-                ApplicationError("execution_unknown", "Execution outcome unknown; refresh session before continuing")
-              )
-            }
-        }
-      }
-
-    }
-
-    /** A configured, application-owned managed loop with immutable ancestry and no session publication at all. */
-    def submitBranch(
-        author: AgentId,
-        parent: MessageId,
-        agentId: AgentId,
-        prompt: String
-    ): IO[JsonRpc.Error, BranchOutcome] =
-      owned {
-        for {
-          binding <- checked(runtime.resolve(agentId))
-          _ <- ZIO.fail(JsonRpc.Error.InvalidParams).when(prompt.trim.isEmpty)
-          _ <- checked(runtime.registerUser(author))
-          result <- assembly
-            .submitBranch(author, parent, prompt, binding)
-            .tapError(failure => ZIO.logErrorCause("Branch execution failed", Cause.fail(failure.error)))
-            .foldZIO(
-              failure =>
-                if failure.acceptance == BranchAcceptance.NotAccepted then
-                  failure.error match {
-                    case _: YallmoError.InvalidMessage =>
-                      ZIO.fail(JsonRpc.Error(ErrorCode.Rejected, "Invalid or incomplete branch ancestry"))
-                    case error => checked(ZIO.fail(error))
-                  }
-                else
-                  ZIO.succeed(
-                    BranchOutcome.Failed(
-                      parent,
-                      if failure.acceptance == BranchAcceptance.Accepted then PromptAcceptance.Accepted
-                      else PromptAcceptance.Unknown,
-                      failure.promptId,
-                      failure.head,
-                      failure.newMessages.map(MessageSnapshot.from),
-                      ApplicationError(
-                        "execution_failed",
-                        "Branch execution failed; inspect saved messages before continuing"
-                      )
-                    )
-                  )
-              ,
-              turn =>
-                ZIO.succeed(
-                  BranchOutcome.Succeeded(
-                    parent,
-                    turn.promptId,
-                    turn.head,
-                    turn.result,
-                    turn.newMessages.map(MessageSnapshot.from)
-                  )
-                )
-            )
-        } yield result
-      } { cause =>
-        cause.failureOption match {
-          case Some(error) if cause.defects.isEmpty && !cause.isInterrupted => ZIO.fail(error)
-          case _                                                            =>
-            ZIO.succeed(
-              BranchOutcome.Failed(
-                parent,
-                PromptAcceptance.Unknown,
-                None,
-                None,
-                Chunk.empty,
-                ApplicationError(
-                  "execution_unknown",
-                  "Branch outcome unknown; refresh and inspect messages; do not automatically retry"
-                )
-              )
-            )
-        }
-      }
-
-    /** Single-message configured invocation, never a model/tool loop. The application owns work and the caller owns
-      * only its wait. No session, continuation policy or session diagnostic capture is created. Accepted input survives
-      * execution failure. Model-requested actions require submit instead.
-      */
-    def invoke(author: AgentId, agentId: AgentId, input: Message): IO[JsonRpc.Error, Message] =
-      owned {
-        for {
-          _ <- ZIO
-            .fail(JsonRpc.Error(ErrorCode.Forbidden, "Message author must match the acting agent"))
-            .unless(input.agentId == author)
-          binding <- checked(runtime.resolve(agentId))
-          _ <- ZIO
-            .fail(JsonRpc.Error(ErrorCode.Rejected, "Selected agent does not support audio input"))
-            .when(
-              input.payload.isInstanceOf[MessagePayload.AudioAttachment] &&
-                !binding.adapter.isInstanceOf[AudioAgent[?]]
-            )
-          _ <- checked(runtime.registerUser(author))
-          result <- checked(assembly.invoke(input, binding))
-        } yield result
-      }()
-
-    /** Explicit read-only diagnostic; session lookup prevents unknown IDs from becoming a path lookup. */
-    def providerRequest(sessionId: SessionId): IO[JsonRpc.Error, DiagnosticsRequest.Result] =
-      for {
-        _ <- checked(assembly.orchestrator.loadSession(sessionId))
-        captures <- requestCaptures.get
-        document <- ZIO.foreach(captures.get(sessionId))(readCapture)
-      } yield DiagnosticsRequest.Result(document.flatten)
-
-    /** Runs inside application-owned work, so capture association survives loss of the caller's connection/wait. Clear
-      * before a new execution: a turn without a capture must never present a stale earlier request as its own.
-      */
-    private def captureRequest[A](sessionId: SessionId)(effect: UIO[A]): UIO[A] =
-      ZIO.uninterruptibleMask { restore =>
-        for {
-          _ <- requestCaptures.update(_ - sessionId)
-          captured <- LlmProviderPayloadDebug.withRequestCapture(restore(effect).exit)
-          (outcome, path) = captured
-          _ <- ZIO.foreachDiscard(path)(value =>
-            requestCaptures.update { previous =>
-              val updated = previous.updated(sessionId, value.toAbsolutePath.normalize)
-              if updated.size > MaxCapturedSessions then updated.tail else updated
-            }
-          )
-          value <- ZIO.suspendSucceed(outcome)
-        } yield value
-      }
-
-    private def readCapture(path: Path): IO[JsonRpc.Error, Option[Json.Obj]] =
-      ZIO
-        .attemptBlocking[Either[JsonRpc.Error, Option[Json.Obj]]] {
-          val stream = Files.newInputStream(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
-          val bytes = try stream.readNBytes(DiagnosticsRequest.MaxCaptureBytes + 1)
-          finally stream.close()
-          if bytes.length > DiagnosticsRequest.MaxCaptureBytes then
-            Left(JsonRpc.Error(ErrorCode.Rejected, "Provider request capture exceeds the diagnostic limit"))
-          else {
-            val text = UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString
-            text
-              .fromJson[Json.Obj]
-              .left
-              .map(_ => JsonRpc.Error(ErrorCode.Rejected, "Provider request capture is unavailable"))
-              .flatMap { document =>
-                if document.toJson.getBytes(UTF_8).length > DiagnosticsRequest.MaxCaptureBytes then
-                  Left(JsonRpc.Error(ErrorCode.Rejected, "Provider request capture exceeds the diagnostic limit"))
-                else Right(Some(document))
-              }
-          }
-        }
-        .catchSome { case _: NoSuchFileException => ZIO.succeed(Right(None)) }
-        .mapError(_ => JsonRpc.Error(ErrorCode.Rejected, "Provider request capture is unavailable"))
-        .flatMap(ZIO.fromEither(_))
-
-    private def owned[A](effect: IO[JsonRpc.Error, A])(
-        onFailure: Cause[JsonRpc.Error] => IO[JsonRpc.Error, A] = cause =>
-          ZIO.fail(cause.failureOption.getOrElse(JsonRpc.Error.InternalError))
-    ): IO[JsonRpc.Error, A] =
-      ZIO.uninterruptibleMask { restore =>
-        for {
-          terminal <- Promise.make[JsonRpc.Error, A]
-          // Terminal mapping/delivery stays masked after interruptible work and its finalizers have stopped.
-          fiber <- ZIO
-            .uninterruptibleMask { _ =>
-              effect.interruptible.exit.flatMap {
-                case Exit.Success(value) => terminal.succeed(value).unit
-                case Exit.Failure(cause) =>
-                  (ZIO
-                    .logErrorCause("Configured operation failed unexpectedly", cause)
-                    .when(cause.defects.nonEmpty) *>
-                    ZIO
-                      .logWarning("Configured operation interrupted before terminal delivery")
-                      .when(cause.isInterrupted) *>
-                    onFailure(cause)).exit.flatMap {
-                    case Exit.Success(value) => terminal.succeed(value).unit
-                    case Exit.Failure(error) =>
-                      terminal.fail(error.failureOption.getOrElse(JsonRpc.Error.InternalError)).unit
-                  }
-              }
-            }
-            .forkIn(scope)
-          // A closed scope may interrupt forkIn before its body starts; no wait may be left hanging.
-          _ <- fiber.poll.flatMap {
-            case Some(exit) =>
-              terminal.fail(JsonRpc.Error.InternalError).flatMap { delivered =>
-                val log = exit match {
-                  case Exit.Failure(cause) =>
-                    ZIO.logErrorCause("Configured operation stopped before terminal delivery", cause)
-                  case Exit.Success(_) => ZIO.logError("Configured operation stopped without a terminal result")
-                }
-                log.when(delivered).unit
-              }
-            case None => ZIO.unit
-          }
-          result <- restore(terminal.await)
-        } yield result
-      }
-
-    private def checked[A](effect: IO[YallmoError, A]): IO[JsonRpc.Error, A] =
-      effect.catchAll { error =>
-        val response = checkedError(error)
-        ZIO
-          .logErrorCause("Configured domain operation failed", Cause.fail(error))
-          .when(response == JsonRpc.Error.InternalError) *> ZIO.fail(response)
-      }
-
-    private def checkedError(error: YallmoError): JsonRpc.Error = error match {
-      case YallmoError.StorageFailed(error)                            => checkedError(error)
-      case _: YallmoError.SessionNotFound | _: YallmoError.BlobMissing =>
-        JsonRpc.Error(ErrorCode.NotFound, "Not found")
-      case _: YallmoError.SessionAlreadyExists =>
-        JsonRpc.Error(ErrorCode.Conflict, "Session already exists")
-      case _: YallmoError.InvalidMessage =>
-        JsonRpc.Error(ErrorCode.Rejected, "Invalid message for this invocation")
-      case _: YallmoError.InvalidAgentDecision =>
-        JsonRpc.Error(ErrorCode.Rejected, "Invocation requires a final answer; use turn.submit for agent actions")
-      case YallmoError.BlobUploadFailed(reason) =>
-        JsonRpc.Error(ErrorCode.Rejected, reason.message)
-      case _: YallmoError.UnknownAgent | _: YallmoError.InvalidConfig =>
-        JsonRpc.Error(ErrorCode.Rejected, "Invalid author or assistant configuration")
-      case _ => JsonRpc.Error.InternalError
-    }
-  }
 
   /** Provide around the entire open/listen/serve lifetime, not just registry construction: it captures the client. */
   val live: ZLayer[Any, Throwable, Environment] =
     Client.default ++ ApplicationTools.live
 
-  /** The caller owns the loopback listener, route lifetime and trusted endpoint. */
+  /** Opens the scoped standalone execution service with explicit filesystem-enabled Scala RPC wiring. The caller owns
+    * the loopback listener, route lifetime and trusted endpoint; the returned service must not outlive this scope or
+    * its HTTP/tool services.
+    */
   def openRpc(
       storage: Path,
-      configPath: Option[Path],
+      configPath: Path,
       workspace: Option[Path],
       endpoint: String,
       sharedSdlc: Option[SdlcService] = None
-  ): ZIO[Scope & Environment & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ServerApplication] =
+  ): ZIO[Scope & Environment & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ServerExecutionService] =
     ZIO.serviceWithZIO[fmgp.rpc.RpcWebSocket.RpcRoute] { route =>
       openConfigured(storage, configPath, workspace, Some(route -> endpoint), sharedSdlc)
     }
 
-  /** Viewer mode never loads configuration or probes tools. All standalone modes acquire the same scoped lease. */
+  /** Opens the standalone execution service and its shared application under a scoped storage lease. The returned
+    * service owns admitted work beyond individual caller waits, but must not escape this scope or the lifetime of the
+    * supplied HTTP/tool services. No agent is selected or executed at startup.
+    */
   def open(
       storage: Path,
-      configPath: Option[Path] = None,
+      configPath: Path,
       workspace: Option[Path] = None,
       sharedSdlc: Option[SdlcService] = None
-  ): ZIO[Scope & Environment, Throwable, ServerApplication] =
+  ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     openConfigured(storage, configPath, workspace, None, sharedSdlc)
 
   private def openConfigured(
       storage: Path,
-      configPath: Option[Path],
+      configPath: Path,
       workspace: Option[Path],
       rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
       sharedSdlc: Option[SdlcService]
-  ): ZIO[Scope & Environment, Throwable, ServerApplication] =
+  ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     ZIO.uninterruptibleMask { restore =>
       for {
         parent <- ZIO.service[Scope]
@@ -386,79 +288,49 @@ object ServerApplication {
 
   private def compose(
       storage: Path,
-      configPath: Option[Path],
+      configPath: Path,
       workspace: Option[Path],
       rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
       sharedSdlc: Option[SdlcService]
-  ): ZIO[Scope & Environment, Throwable, ServerApplication] =
+  ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     for {
-      _ <- ZIO
-        .fail(new IllegalArgumentException("--workspace requires --config"))
-        .when(
-          workspace.nonEmpty && configPath.isEmpty
-        )
       root <- existingDirectory(storage, "Storage directory must already exist and be accessible")
       _ <- lease(root)
-      application <- configPath match {
-        case None =>
-          for {
-            registry <- RuntimeInstances.fromAgents(Chunk.empty[Agent[Any]])
-            master <- OrchestratorLive
-              .filesystem(root, registry)
-              .mapError(error =>
-                new IllegalStateException("Unable to open server storage; see cause for details", error)
-              )
-          } yield new ServerApplication(master, None)
-        case Some(path) =>
-          for {
-            selectedWorkspace <- existingDirectory(
-              workspace.getOrElse(Path.of("")),
-              "Workspace directory must already exist and be accessible"
-            )
-            config <- ConfigFile.loadOrInitialize(path)
-            runtime <- ApplicationRuntime.make(config, Chunk.empty)
-            environment <- ZIO.environment[ToolEnvironment]
-            opened <- (rpc match {
-              case None =>
-                runtime.openWorkspace(Some(root), selectedWorkspace, ZLayer.succeedEnvironment(environment), sharedSdlc)
-              case Some((route, endpoint)) =>
-                runtime
-                  .openWorkspaceRpc(
-                    Some(root),
-                    selectedWorkspace,
-                    ZLayer.succeedEnvironment(environment),
-                    endpoint,
-                    sharedSdlc
-                  )
-                  .provideSomeEnvironment[Scope](_.add[fmgp.rpc.RpcWebSocket.RpcRoute](route))
-            }).mapError(error =>
-              new IllegalStateException(
-                "Unable to initialize configured application; see cause for storage or capability validation details",
-                error
-              )
-            )
-            (assembly, _) = opened
-            // Registered after storage/tools: all application work finalizes before their ownership is released.
-            scope <- ZIO.service[Scope].flatMap(_.fork)
-            inFlight <- Ref.make(Set.empty[SessionId])
-            continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[ProviderContinuation])])
-            captures <- Ref.make(VectorMap.empty[SessionId, Path])
-            catalog <- ProviderCatalog.make(path)
-            client <- ZIO.service[Client]
-            providers <- ProviderAdministration.make(
-              catalog,
-              OpenAiCodexAuth.oauthFlow(client),
-              (id, credentials) =>
-                runtime.instances.updateChatGptCredentials(id, credentials).fold(_ => false, _ => true)
-            )
-          } yield new ServerApplication(
-            assembly.orchestrator,
-            Some(
-              new Configured(runtime, assembly, selectedWorkspace, providers, scope, inFlight, continuations, captures)
-            )
+      selectedWorkspace <- existingDirectory(
+        workspace.getOrElse(Path.of("")),
+        "Workspace directory must already exist and be accessible"
+      )
+      config <- ConfigFile.loadOrInitialize(configPath)
+      environment <- ZIO.environment[ToolEnvironment]
+      opened <- ServerApplication
+        .workspace(
+          config,
+          Chunk.empty,
+          Some(root),
+          selectedWorkspace,
+          ZLayer.succeedEnvironment(environment),
+          rpc,
+          sharedSdlc
+        )
+        .mapError(error =>
+          new IllegalStateException(
+            s"Unable to initialize configured application: ${error.getMessage}",
+            error
           )
-      }
-    } yield application
+        )
+      // Registered after storage/tools: all application work finalizes before their ownership is released.
+      scope <- ZIO.service[Scope].flatMap(_.fork)
+      inFlight <- Ref.make(Set.empty[SessionId])
+      continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[ProviderContinuation])])
+      captures <- Ref.make(VectorMap.empty[SessionId, Path])
+      catalog <- ProviderCatalog.make(configPath)
+      client <- ZIO.service[Client]
+      providers <- ProviderAdministration.make(
+        catalog,
+        OpenAiCodexAuth.oauthFlow(client),
+        (id, credentials) => opened.catalog.updateChatGptCredentials(id, credentials).fold(_ => false, _ => true)
+      )
+    } yield new ServerExecutionService(opened, selectedWorkspace, providers, scope, inFlight, continuations, captures)
 
   private def existingDirectory(path: Path, message: String): Task[Path] =
     ZIO
@@ -472,7 +344,7 @@ object ServerApplication {
   /** Cooperative standalone ownership only, not a storage mutation mutex or an external-writer/auth boundary. Never
     * unlink the persistent lock file: another owner could otherwise lock a different inode at the same path.
     */
-  private def lease(root: Path): ZIO[Scope, Throwable, Unit] =
+  private[server] def lease(root: Path): ZIO[Scope, Throwable, Unit] =
     for {
       // On some systems closing a second channel can release this JVM's existing OS lock. Reject before opening it.
       _ <- ZIO.acquireRelease(

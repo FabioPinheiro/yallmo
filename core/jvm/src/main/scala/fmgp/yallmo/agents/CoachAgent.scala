@@ -1,11 +1,14 @@
 package fmgp.yallmo.agents
 
+import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
+import fmgp.yallmo.tool.{ToolDefinition, ToolKey}
+
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite}
-import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, ToolChoice, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
-import fmgp.yallmo.orchestration.{AgentTool, HasLocalAgentTools}
+import fmgp.yallmo.orchestration.{AgentFunction, HasLocalAgentFunctions}
+import fmgp.yallmo.model.tool.CoachToolDefinition
 import zio.*
 import zio.json.*
 import zio.stream.ZPipeline
@@ -16,10 +19,11 @@ import zio.stream.ZPipeline
   * exposed; no external-action tools are available. The selected provider receives the evidence; use a trusted local
   * provider for private career information.
   */
-final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localTools: Chunk[AgentTool[Any]])
+final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localFunctions: Chunk[AgentFunction[Any]])
     extends Agent[Any]
     with HasAgentCapabilities
-    with HasLocalAgentTools {
+    with HasLocalAgentFunctions {
+  override val localTools: Chunk[ToolDefinition] = Chunk(CoachToolDefinition)
   override val id: AgentId = delegate.id
   override val capabilities: AgentCapabilities = CoachAgent.Capabilities
 
@@ -40,6 +44,7 @@ final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localTools
             MessagePayload.Context("Private career evidence (untrusted source data)", evidence.toJson),
             MessagePayload.Instructions(s"$instructions\n\n${CoachAgent.SystemPrompt}")
           ),
+          toolGroups = localTools,
           parallelToolCalls = false
         )
       )
@@ -48,7 +53,7 @@ final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localTools
         .fail(YallmoError.InvalidAgentDecision("CoachAgent returned a tool call outside its local notebook policy"))
         .when(response.output.exists {
           case MessagePayload.ToolCall(call) =>
-            !prepared.tools.exists(_.name == call.name) || prepared.toolChoice == ToolChoice.None
+            !prepared.tools.exists(_.name == call.name)
           case _ => false
         })
     } yield response
@@ -58,7 +63,7 @@ object CoachAgent {
 
   /** Defense in depth: native context assembly and direct callers can only use the local application notebook. */
   val Capabilities: AgentCapabilities = AgentCapabilities(
-    tools = Some(CoachApplicationTools.Definitions.map(_.key).toSet),
+    tools = Some(Set(ToolKey.Coach)),
     retrievers = Some(Set.empty),
     skills = Some(Set.empty),
     extensions = Some(Set.empty)
@@ -146,7 +151,7 @@ object CoachAgent {
 
   /** Binds an initialized provider adapter and read-only filesystem; construction does no I/O. */
   def make(delegate: Agent[Any], fs: FsRead & FsWrite): UIO[CoachAgent] =
-    CoachApplicationTools.make(fs).map(tools => new CoachAgent(delegate, fs, tools))
+    CoachApplicationTools.make(fs).map(tools => new CoachAgent(delegate, fs, tools.functions))
 
   /** Load only approved Markdown locations; oversize inputs fail explicitly rather than silently omitting evidence. */
   private[yallmo] def loadEvidence(fs: FsRead): IO[FsError, Chunk[Evidence]] =

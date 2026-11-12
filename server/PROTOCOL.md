@@ -22,9 +22,9 @@ backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
 Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
-A server constructed with just a supplied master, or standalone without `--config`, remains viewer-only.
+The server requires a configured backend; standalone startup requires `--config`. There is no viewer-only server mode.
 
-Operator requires a configured backend and a nonempty initialized claimed `userId`, irrespective of Origin or peer
+Operator requires a nonempty initialized claimed `userId`, irrespective of Origin or peer
 address. Anonymous connections remain Viewer. `clientName` is never authority; a browser uses its real Origin and
 claims a human ID in the existing `initialize` params. No permission opt-in or Origin allowlist is required. Anyone
 with network access can claim an author and execute configured agents/tools, so public deployment is unsupported.
@@ -529,6 +529,8 @@ For `turn.submit`, pre-execution rejections are JSON-RPC errors and execution fa
 `agents.invoke` uses ordinary JSON-RPC errors at every failure phase. Provider causes/stacks are not sent.
 Unconfigured mutation endpoints return MethodNotFound. Malformed unidentifiable requests use null ID; notifications
 receive no reply. Connection overload is a close, not a run-capacity/ledger API.
+
+Tools are now capability groups (`ToolKey`), while invocation `name`/summary `toolName` fields still identify individual functions (`FunctionKey`). Existing call/result JSON and function names are unchanged. The disabled `ToolsList` draft still returns flat function schemas without ownership fields; it is not an active discovery endpoint. Each `ToolDefinition` exposes its name and a set of complete `FunctionToolDefinition`s. The disabled draft uses `name`, rather than the former orchestration DTO's `key`, for each function.
 
 Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
 `TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.

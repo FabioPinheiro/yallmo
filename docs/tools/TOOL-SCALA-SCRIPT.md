@@ -209,7 +209,7 @@ At the Phase-1 checkpoint production generation was unchanged (pure returned val
 
 ### Phase 2: configured server filesystem effects
 
-The configured standalone server owns a **separate loopback, ephemeral-port capability listener** (not the UI `/rpc` listener). It supplies its exact `RpcWebSocket.RpcRoute` and trusted endpoint to application assembly. Viewer mode creates no capability listener. Existing `new ScalaTool()`, executor `execute`, `ServerApplication.open`, and embedded `ReplStartup` remain pure-only and start no listener. A connected terminal uses its configured server's tools; a real connected interactive prompt was not exercised in this phase.
+The configured standalone server owns a **separate loopback, ephemeral-port capability listener** (not the UI `/rpc` listener). It supplies its exact `RpcWebSocket.RpcRoute` and trusted endpoint to application assembly. Existing `new ScalaTool()`, executor `execute`, `ServerApplication.open`, and embedded `ReplStartup` remain pure-only and start no listener. A connected terminal uses its configured server's tools; a real connected interactive prompt was not exercised in this phase.
 
 Filesystem-enabled `scalamode` keeps existing `{ "code": "..." }` callers unchanged. Select the effect boundary explicitly:
 
@@ -231,7 +231,13 @@ The trusted endpoint must be a single-line `ws`/`wss` URI with a host, at most 2
 
 The invocation scope owns `registerScoped` authority, including authenticated socket/work cleanup on completion, timeout, cancellation, compilation or launch failure. Pending-ticket TTL equals the compilation/execution deadline (45 seconds by default); the route rejects deadlines above its configured maximum (five minutes by default). Existing process-tree cleanup, heap/output/source bounds remain. Cooperative host finalization may wait on uninterruptible work; these compiler restrictions are **not OS isolation**.
 
-Assembly retains the workspace capability and the exact per-agent filesystem opened during lazy initialization. Native OAIAgent/ChatGPTAgent **explicit filesystem configuration is now activated and validated at selection**; invalid private roots fail rather than falling back. In RPC-enabled assembly native readFile/listFiles/filesystem-scala all use that selected capability; native agents without private roots use the already-open workspace. Coach/Folder retain their exact private capability too, without gaining scalamode: Coach allowlists remain unchanged; Folder binding enforces an empty tool allowlist for both normal turns and direct ToolCall invocation. Bash/Git remain workspace-bound. Tool definitions and execution share the same selection binding without duplicate keys.
+`ServerApplication` retains the workspace read capability; `AgentCatalog` retains each configured agent's exact
+rooted filesystem and caches complete executable generations. Explicit native agent roots are validated at first
+selection; invalid roots fail instead of falling back. `readFile`/`listFiles` always use the selected agent capability,
+else workspace, including without Scala RPC. Filesystem-enabled Scala effects require both that capability and an
+explicit trusted RPC route/endpoint. Coach/Folder keep private capabilities without gaining scalamode: Coach restrictions
+remain unchanged; Folder programs deny tools for normal turns and direct invocation. Bash/Git remain workspace-bound.
+Selected definitions and implementations travel together without duplicate keys.
 
 Domain `FsError`s retain their JSON representation. Infrastructure failures use the integration policy `FsError.IoFailure("<rpc>", "RPC " + error.code.toString)`; `<rpc>` is a sentinel, not a relative filesystem path. This total mapper is identical in host derivation and trusted child source; raw transport exceptions/messages are not exposed. The child classpath includes only compiled scalacode-api/filesystem/RPC artifacts and pinned ZIO/streams/JSON/HTTP dependencies, not core/model/server or the whole application classpath.
 
@@ -241,7 +247,7 @@ Focused checks (seven tests, including real children and thirteen expanded-class
 sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli");core/testOnly fmgp.yallmo.tool.ScalaFilesystemRpcSuite'
 ```
 
-`ApplicationRuntimeSuite` additionally checks concurrent selected roots, invoke/session parity, retained identity, workspace fallback, invalid-root rejection, consistent read/list/scala binding and Coach/Folder restrictions. These concurrent-root checks use a mocked executor/provider, not the full real stack.
+`ServerCompositionSuite` additionally checks concurrent selected roots, invoke/session parity, retained identity, workspace fallback, invalid-root rejection, consistent read/list/scala binding and Coach/Folder restrictions. These concurrent-root checks use a mocked executor/provider, not the full real stack.
 
 `ScalaFilesystemApplicationSuite` is an opt-in configured-application acceptance test: the existing UI WebSocket turn path, `ServerApplication.openRpc`, real compiler/child and authenticated filesystem RPC use loopback listeners; a deterministic local HTTP fake provider requests the tool and returns its result. It checks advertised filesystem mode, a private root different from workspace, traversal/no-fallback errors, viewer denial and persisted response. No external provider, credentials or interactive terminal are exercised.
 

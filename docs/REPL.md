@@ -43,7 +43,7 @@ Configured server + initialized claimed human enables Operator with `turn.submit
 an impersonable claimed author, **not an authenticated identity**. Host/Origin are unrestricted; anonymous clients stay
 read-only. Keep all access paths trusted and never expose/proxy publicly. The listener always binds to `0.0.0.0`
 for trusted Docker/multi-machine access (see [server deployment](../server/README.md#production)).
-A server started without `--config` remains read-only; the client notice/help/completions reflect negotiated capabilities.
+Server startup requires `--config`; the client notice/help/completions reflect negotiated connection capabilities.
 
 An override endpoint must be a `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local
 fallback or automatic reconnect/replay exists. Connection failure exits, including at the default endpoint.
@@ -380,14 +380,14 @@ frontend installation or external encoder. See [browser audio details and manual
 At REPL startup, `ReplMain` builds these components:
 
 1. For the retained embedded adapter, tests/callers supply a human and runtime to `ReplStartup.fromRuntime`. The server-owned
-   `ApplicationRuntime.load(Chunk(human))`; no config or credentials are returned. The runtime owns lazy connections
+   `ServerApplication.load(Chunk(human))`; no config or credentials are returned. The application owns its catalog/master and lazy connections
    and agent registration. Only explicit chat/transcriber flags are resolved. Safe summaries and `browserAudioPort`
    reach the UI, not the raw config.
 2. `ReplStartup.application` validates all capability IDs against the available catalogs and checks that the
    transcriber's effective capabilities are empty. Core `ConfiguredAgentSettings` provides shared model/prompt decoding.
 3. `AudioRecorder`, a local Java Sound implementation, does **not** open the microphone at startup.
 4. `Transcriber` makes exactly one shared `AgentTurnRequest` per invocation: only the current `MessagePayload.AudioAttachment`
-   followed by configured `Instructions`, no history/continuation/context features/tool definitions, `ToolChoice.None`,
+   followed by configured `Instructions`, no history/continuation/context features/tool definitions,
    `parallelToolCalls = false`. It does not use the conversational runner or execute tools. Calls, unsupported results,
    blank text or incomplete/non-stop responses fail without follow-up turns.
 5. `TerminalRepl` invokes the same configured voice service for editable JVM/browser voice insertion; its browser server
@@ -434,7 +434,7 @@ For a server-owned filesystem store with legacy `AudioInput` records, stop all w
 sbt "core/runMain fmgp.yallmo.orchestration.storage.RecoverLegacyAudio ./zzz ./zzz-recovered"
 ```
 
-Open the recovered store with standalone `server/run --storage ./zzz-recovered` (viewer unless also configured). Connect the REPL with explicit `--server` for history.
+Open the recovered store with standalone `server/run --storage ./zzz-recovered --config ./private/server.json`. Connect the REPL with explicit `--server` for history.
 Recovery leaves the source unchanged and preserves sessions,
 transcripts, forks and existing blobs. Previously redacted recordings become explicit unavailable-audio context
 notices: the old format discarded their bytes, so playback/transcription cannot be restored. Message IDs and

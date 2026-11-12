@@ -21,7 +21,7 @@ final class OrchestratorListingSuite extends FunSuite {
     test(s"${if filesystem then "filesystem" else "memory"}: lists unique messages, registry IDs and stored blobs") {
       directory { root =>
         run(for {
-          registry <- RuntimeInstances.fromAgents(Chunk(agent("human"), agent("unused")))
+          registry <- AgentCatalog.fromAgents(Chunk(agent("human"), agent("unused")))
           orchestrator <-
             if filesystem then OrchestratorLive.filesystem(root, registry) else OrchestratorLive.inMemory(registry)
           main = SessionId.unsafe("main")
@@ -68,7 +68,7 @@ final class OrchestratorListingSuite extends FunSuite {
           Files.writeString(root.resolve("blobs/not-a-blob"), "unrelated")
           Files.createDirectory(root.resolve("blobs").resolve(BlobId.fresh().value))
         }
-        registry <- RuntimeInstances.fromAgents(Chunk.empty[Agent[Any]])
+        registry <- AgentCatalog.fromAgents(Chunk.empty[Agent[Any]])
         orchestrator <- OrchestratorLive.filesystem(root, registry)
         sessions <- orchestrator.listSessions
         messages <- orchestrator.listMessages

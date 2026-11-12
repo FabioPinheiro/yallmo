@@ -144,7 +144,9 @@ object LlmDecisionAgent {
         case MessagePayload.Instructions(text)   => ZIO.succeed(s"Instructions: $text")
       }
       capabilities = Chunk(
-        staticContext.tools.map(tool => s"Tool: ${tool.key} — ${tool.description}").mkString("\n"),
+        staticContext.functions
+          .map(function => s"Function: ${function.name} — ${function.description}")
+          .mkString("\n"),
         staticContext.retrievers
           .map(retriever => s"Retriever: ${retriever.key} — ${retriever.description}")
           .mkString("\n"),

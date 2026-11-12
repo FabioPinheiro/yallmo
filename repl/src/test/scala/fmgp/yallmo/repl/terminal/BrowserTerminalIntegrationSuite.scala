@@ -1,5 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
+import fmgp.yallmo.tool.FunctionKey
+
 import fmgp.yallmo.clientharness.ControlAction
 
 import fmgp.yallmo.server.application.ToolAvailability
@@ -74,7 +76,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage("The user must not call a provider")
     }
-    val storage = run(OrchestratorLive.inMemory(run(RuntimeInstances.fromAgents(Chunk(agent, user, voiceAgent)))))
+    val storage = run(OrchestratorLive.inMemory(run(AgentCatalog.fromAgents(Chunk(agent, user, voiceAgent)))))
     val orchestrator = ReplOrchestratorLive.make(storage, user, Some(agent))
     private val voice = Transcriber.make(
       voiceAgent,
@@ -356,7 +358,6 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
           assertEquals(request.input.last, MessagePayload.Instructions("transcribe"))
           assertEquals(request.model, "voice-model")
           assertEquals(request.tools, Chunk.empty)
-          assertEquals(request.toolChoice, ToolChoice.None)
           assertEquals(request.parallelToolCalls, false)
           val audio = request.input.head.asInstanceOf[fmgp.yallmo.model.MessagePayload.AudioAttachment]
           val blob = run(request.readBlob(audio.blobId))
@@ -415,7 +416,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
             MessagePayload.Assistant("initial reply"),
             MessagePayload.User("private user"),
             MessagePayload.ToolOutput(
-              FunctionGenericOutput(FunctionCallId.unsafe("call-x"), ToolKey.unsafe("x"), "private tool")
+              FunctionGenericOutput(FunctionCallId.unsafe("call-x"), FunctionKey.unsafe("x"), "private tool")
             )
           )
         )

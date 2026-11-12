@@ -1,8 +1,10 @@
 package fmgp.yallmo.tool
 
+import fmgp.yallmo.model.tool.FilesystemToolDefinition
+
 import fmgp.yallmo.fs.{FileSystem, FsRead}
-import fmgp.yallmo.model.{ToolKey, YallmoError}
-import fmgp.yallmo.orchestration.ExternalToolCall
+import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.orchestration.ExternalFunctionCall
 import java.nio.file.{Files, Path}
 import java.util.Comparator
 import munit.FunSuite
@@ -39,14 +41,14 @@ final class FileSystemToolsSuite extends FunSuite {
       for arguments <- List("{}", "{\"path\":42}", "not json") do {
         val result = run(
           new ReadFileTool()
-            .execute(ExternalToolCall(ToolKey.ReadFile, arguments))
+            .execute(ExternalFunctionCall(FilesystemToolDefinition.ReadFile, arguments))
             .provideEnvironment(ZEnvironment[FsRead](fs))
             .either
         )
         assert(result.swap.toOption.get.isInstanceOf[YallmoError.InvalidToolArguments])
         val listing = run(
           new ListFilesTool()
-            .execute(ExternalToolCall(ToolKey.ListFiles, arguments))
+            .execute(ExternalFunctionCall(FilesystemToolDefinition.ListFiles, arguments))
             .provideEnvironment(ZEnvironment[FsRead](fs))
             .either
         )
@@ -65,12 +67,12 @@ final class FileSystemToolsSuite extends FunSuite {
 
   private def read(fs: FsRead, path: String) =
     new ReadFileTool()
-      .execute(ExternalToolCall(ToolKey.ReadFile, ujson.Obj("path" -> path).render()))
+      .execute(ExternalFunctionCall(FilesystemToolDefinition.ReadFile, ujson.Obj("path" -> path).render()))
       .provideEnvironment(ZEnvironment[FsRead](fs))
 
   private def list(fs: FsRead, path: String) =
     new ListFilesTool()
-      .execute(ExternalToolCall(ToolKey.ListFiles, ujson.Obj("path" -> path).render()))
+      .execute(ExternalFunctionCall(FilesystemToolDefinition.ListFiles, ujson.Obj("path" -> path).render()))
       .provideEnvironment(ZEnvironment[FsRead](fs))
 
   private def withWorkspace(test: (Path, FsRead) => Unit): Unit = {

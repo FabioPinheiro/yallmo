@@ -1,5 +1,7 @@
 package fmgp.yallmo.model.llm
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import zio.Chunk
 import munit.FunSuite
 import fmgp.yallmo.model.*
@@ -11,7 +13,7 @@ final class LlmProtocolSuite extends FunSuite:
   }
 
   test("turn response preserves ordered function calls in output") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-42"), ToolKey.unsafe("read"), "{\"path\":\"README.md\"}")
+    val call = FunctionCall(FunctionCallId.unsafe("call-42"), FunctionKey.unsafe("read"), "{\"path\":\"README.md\"}")
     val response = AgentTurnResponse(
       output = Chunk(MessagePayload.Assistant("I will inspect the file."), MessagePayload.ToolCall(call)),
       stopReason = LlmStopReason.ToolUse
@@ -28,7 +30,8 @@ final class LlmProtocolSuite extends FunSuite:
       ),
       required = Set("path")
     )
-    val read = FunctionToolDefinition(ToolKey.unsafe("read"), "Reads a file", schema)
+    val read =
+      FunctionToolDefinition(FunctionKey.unsafe("read"), "Reads a file", schema)
     val duplicate = AgentTurnRequest(
       model = "test-model",
       input = Chunk(MessagePayload.User("Read README.md"), MessagePayload.Instructions("Use tools safely.")),
@@ -39,7 +42,7 @@ final class LlmProtocolSuite extends FunSuite:
     assertEquals(duplicate.validate, Left("duplicate function tools: read"))
     assertEquals(
       FunctionToolDefinition(
-        ToolKey.unsafe("broken"),
+        FunctionKey.unsafe("broken"),
         "Broken schema",
         JsonSchema.ObjectSchema(properties = Map.empty, required = Set("missing"))
       ).validate,

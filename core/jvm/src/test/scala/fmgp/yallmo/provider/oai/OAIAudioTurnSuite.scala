@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.model.*
@@ -20,8 +22,13 @@ final class OAIAudioTurnSuite extends FunSuite {
   private val request = AgentTurnRequest(
     "explicit-audio-model",
     Chunk(MessagePayload.User("Describe the sound"), audio, MessagePayload.Instructions("Be helpful")),
-    tools = Chunk(FunctionToolDefinition(ToolKey.unsafe("inspect"), "Inspect", JsonSchema.ObjectSchema(Map.empty))),
-    toolChoice = ToolChoice.Required,
+    tools = Chunk(
+      FunctionToolDefinition(
+        FunctionKey.unsafe("inspect"),
+        "Inspect",
+        JsonSchema.ObjectSchema(Map.empty)
+      )
+    ),
     parallelToolCalls = true,
     options = ProviderGenerateOptions(temperature = Some(0.3), maxOutputTokens = Some(50)),
     readBlob = reader
@@ -70,7 +77,7 @@ final class OAIAudioTurnSuite extends FunSuite {
           assertEquals(wire("messages")(1)("content")(0)("input_audio")("format").str, "wav")
           assertEquals(wire("messages")(0)("content").str, "Describe the sound")
           assertEquals(wire("tools")(0)("function")("name").str, "inspect")
-          assertEquals(wire("tool_choice").str, "required")
+          assert(!wire.obj.contains("tool_choice"))
           assertEquals(wire("parallel_tool_calls").bool, true)
           assertEquals(wire("temperature").num, 0.3)
           assertEquals(wire("max_tokens").num, 50.0)
@@ -111,7 +118,7 @@ final class OAIAudioTurnSuite extends FunSuite {
         ZIO.attempt {
           val wire = ujson.read(body)
           assertEquals(wire("model").str, "chosen-model")
-          assertEquals(wire("tool_choice").str, "none")
+          assert(!wire.obj.contains("tool_choice"))
           assertEquals(wire("parallel_tool_calls").bool, false)
           assert(!wire.obj.contains("tools"))
           assertEquals(wire("messages")(1)("content").str, "Describe")

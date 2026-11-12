@@ -1,12 +1,11 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.server.{OrchestratorWSClient, OrchestratorWSServer}
 import fmgp.yallmo.repl.terminal.TerminalRepl
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, AgentConfig, Config, ProviderConfig, ProviderId}
-import fmgp.yallmo.server.application.ServerApplication
+import fmgp.yallmo.server.application.{ServerApplication, ServerExecutionService}
 import fmgp.yallmo.tool.*
 import java.nio.file.{Files, Path}
 import java.util.Comparator
@@ -22,17 +21,17 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
   private val agentId = AgentId("server-agent")
   private val human = AgentId("user-claimed-human")
   private val id = SessionId.unsafe("server-session")
-  private val agent = new Agent[Any] {
-    val id = agentId
-    def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-      ZIO.dieMessage("read-only REPL executed an agent")
-  }
-  private def master = RuntimeInstances.fromAgents(Chunk(agent)).flatMap(OrchestratorLive.inMemory(_))
+  private def backend = configured(
+    _ => ZIO.dieMessage("Read requests must not call providers"),
+    configuration =>
+      configuration.copy(agents = configuration.agents.map { case (_, definition) => agentId -> definition })
+  )
 
   test("actual launch reads a separate WS master freshly, publishes human metadata and cleans presence on scope exit") {
     run(ZIO.scoped {
       for {
-        service <- master
+        configured <- backend
+        service = configured.application.master
         _ <- service.createSession(id, Chunk(agentId))
         _ <- service.append(id, agentId, Chunk(MessagePayload.Assistant("before")))
         removed <- Promise.make[Nothing, Unit]
@@ -46,7 +45,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             ()
           })
           .build
-        port <- new OrchestratorWSServer(service).start(0)
+        port <- new OrchestratorWSServer(configured).start(0)
         options <- ZIO
           .fromEither(
             ReplLaunchOptions.parse(
@@ -67,8 +66,9 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             app =>
               for {
                 _ <- ZIO.succeed {
-                  assert(!app.canSubmit)
-                  assert(app.agentChoices.exists(_.id == human))
+                  assert(app.canSubmit)
+                  assert(app.agentChoices.exists(_.id == agentId))
+                  assert(!app.agentChoices.exists(_.id == human))
                   assertEquals(app.userId, human)
                   assertEquals(app.initialState.logLevel, LogLevel.Debug)
                 }
@@ -156,8 +156,8 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
   test("absent --server connects to the default server rather than bootstrapping locally") {
     run(ZIO.scoped {
       for {
-        service <- master
-        port <- new OrchestratorWSServer(service).start(0)
+        configured <- backend
+        port <- new OrchestratorWSServer(configured).start(0)
         options <- ZIO
           .fromEither(ReplLaunchOptions.parse(Chunk("--user-name=claimed-human")))
           .mapError(new IllegalArgumentException(_))
@@ -166,7 +166,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           options,
           app =>
             ZIO.succeed {
-              assert(!app.canSubmit)
+              assert(app.canSubmit)
               assertEquals(app.userId, human)
             } *> entered.set(true),
           connect = (endpoint, user) => {
@@ -186,14 +186,14 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
   test("connected launch drives the existing terminal byte seam with no recorder, browser or provider login") {
     run(ZIO.scoped {
       for {
-        service <- master
-        port <- new OrchestratorWSServer(service).start(0)
+        configured <- backend
+        port <- new OrchestratorWSServer(configured).start(0)
         output = new ByteArrayOutputStream
         terminal <- ZIO.acquireRelease(ZIO.attempt {
           val terminal = new DumbTerminal(
             "connected-test",
             "xterm",
-            new ByteArrayInputStream("i/help\n/session list\nhello\n/exit\n".getBytes(UTF_8)),
+            new ByteArrayInputStream("i/help\n/session list\n/exit\n".getBytes(UTF_8)),
             output,
             UTF_8
           )
@@ -217,7 +217,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
       for {
         calls <- Ref.make(0)
         app <- configured(_ => calls.update(_ + 1).as(providerAnswer))
-        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        port <- new OrchestratorWSServer(app).start(0)
         output = new ByteArrayOutputStream
         terminal <- ZIO.acquireRelease(ZIO.attempt {
           val terminal = new DumbTerminal(
@@ -245,8 +245,8 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             TerminalRepl.runConnectedWithTerminal(connected, terminal)
           }
         )
-        sessions <- app.master.listSessions
-        stored <- app.master.loadSession(sessions.head.id)
+        sessions <- app.application.master.listSessions
+        stored <- app.application.master.loadSession(sessions.head.id)
         count <- calls.get
       } yield {
         assertEquals(count, 1); assertEquals(sessions.size, 1)
@@ -269,7 +269,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         release <- Promise.make[Nothing, Unit]
         calls <- Ref.make(0)
         app <- configured(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(providerAnswer))
-        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        port <- new OrchestratorWSServer(app).start(0)
         client <- OrchestratorWSClient
           .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
           .mapError(error => new Exception(error.toString))
@@ -377,14 +377,14 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
                   "ChatGPTAgent",
                   Seq(account),
                   zio.json.ast.Json.Obj("model" -> zio.json.ast.Json.Str("test")),
-                  capabilities = AgentCapabilities(tools = Some(Set.empty))
+                  capabilities = AgentCapabilities(functions = Some(Set.empty))
                 )
               ),
               providers = Map(account -> ProviderConfig.ChatGPT())
             )
         )
-        cached <- app.configured.get.runtime.resolve(AgentId("bob"))
-        port <- new OrchestratorWSServer(app.master, app.configured).start(0)
+        cached <- app.application.resolve(AgentId("bob"))
+        port <- new OrchestratorWSServer(app).start(0)
         client <- OrchestratorWSClient
           .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
           .mapError(error => new Exception(error.toString))
@@ -400,10 +400,10 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           def awaitCancellation: Task[Unit] = ZIO.never
         }
         result <- providers.run(account, LoginMethod.Browser, interaction)
-        sessionsBeforePrompt <- app.master.listSessions
+        sessionsBeforePrompt <- app.application.master.listSessions
         after <- providers.list.mapError(_ => new Exception("Provider list failed"))
         turn <- connected.submit(connected.initialState, "hello after login")
-        active <- app.configured.get.runtime.resolve(AgentId("bob"))
+        active <- app.application.resolve(AgentId("bob"))
         sent <- generations.get
         next <- client
           .startProviderLogin(fmgp.yallmo.server.protocol.YallmoProtocol.ProvidersLoginStart.Params("account"))
@@ -462,7 +462,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
   private def configured(
       respond: Request => Task[Response],
       configuration: Config => Config = identity
-  ): ZIO[Scope, Throwable, ServerApplication] =
+  ): ZIO[Scope, Throwable, ServerExecutionService] =
     for {
       root <- ZIO.acquireRelease(ZIO.attemptBlocking(Files.createTempDirectory("yallmo-repl-server-"))) { root =>
         ZIO.attemptBlocking {
@@ -478,14 +478,14 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             "OAIAgent",
             Seq(provider),
             zio.json.ast.Json.Obj("model" -> zio.json.ast.Json.Str("fake-model")),
-            capabilities = AgentCapabilities(tools = Some(Set.empty))
+            capabilities = AgentCapabilities(functions = Some(Set.empty))
           )
         ),
         providers = Map(provider -> ProviderConfig.OAI("http://fake.invalid/v1"))
       )
       path <- ZIO.attemptBlocking(Files.writeString(root.resolve("private-config.json"), configuration(config).toJson))
       service <- ServerApplication
-        .open(root, Some(path), Some(root))
+        .open(root, path, Some(root))
         .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(respond)) ++ tools)
     } yield service
 
@@ -511,7 +511,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           timeout: Duration,
           maxOutputBytes: Int,
           dependencies: Seq[String]
-      ): Task[ExternalToolResult.ScalaMode] = unexpected
+      ): Task[ExternalFunctionResult.ScalaMode] = unexpected
     }
     ZLayer.succeed[BashExecutor](bash) ++
       ZLayer.succeed[GitClient](git) ++ ZLayer.succeed[ScalaCodeExecutor](scala)

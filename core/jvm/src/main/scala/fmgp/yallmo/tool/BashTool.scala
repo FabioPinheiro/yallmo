@@ -1,13 +1,14 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.ToolKey
 import fmgp.yallmo.model.YallmoError
+
+import fmgp.yallmo.model.tool.BashToolDefinition
+
 import fmgp.yallmo.orchestration.*
-import fmgp.yallmo.model.llm.JsonSchema
 import zio.*
 
 import java.nio.file.Path
-import fmgp.yallmo.orchestration.{AgentToolDefinition, ExternalToolCall, ExternalToolResult}
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 
 /** Executes a Bash command in one configured workspace directory.
   *
@@ -19,41 +20,33 @@ final class BashTool(
     workspace: Path = Path.of("").toAbsolutePath.normalize,
     timeout: Duration = 30.seconds,
     maxOutputBytes: Int = BashTool.DefaultMaxOutputBytes
-) extends AgentTool[BashExecutor] {
+) extends AgentFunction[BashExecutor] {
   require(timeout > Duration.Zero, "timeout must be positive")
   require(maxOutputBytes > 0, "maxOutputBytes must be positive")
 
-  override val definition: AgentToolDefinition = BashTool.definition
+  override val definition: FunctionToolDefinition = BashTool.definition
 
-  override def execute(call: ExternalToolCall): ZIO[BashExecutor, YallmoError, ExternalToolResult] =
+  override def execute(call: ExternalFunctionCall): ZIO[BashExecutor, YallmoError, ExternalFunctionResult] =
     command(call).flatMap { value =>
       BashExecutor
         .execute(value, workspace, timeout, maxOutputBytes)
-        .mapError(error => YallmoError.ToolExecutionFailed(definition.key, error.getMessage, error))
+        .mapError(error => YallmoError.ToolExecutionFailed(definition.name, error.getMessage, error))
         .map(BashTool.render)
-        .map(text => ExternalToolResult(text))
+        .map(text => ExternalFunctionResult(text))
     }
 
-  private def command(call: ExternalToolCall): IO[YallmoError, String] =
+  private def command(call: ExternalFunctionCall): IO[YallmoError, String] =
     ZIO
       .fromEither(
         scala.util.Try(ujson.read(call.argumentsJson)("command").str).toEither.left.map(_.getMessage)
       )
-      .mapError(YallmoError.InvalidToolArguments(call.toolKey, _))
+      .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
 }
 
 object BashTool {
   val DefaultMaxOutputBytes: Int = 64 * 1024
 
-  val definition: AgentToolDefinition = AgentToolDefinition(
-    key = ToolKey.Bash,
-    description = "Run a Bash command in the workspace and return its exit code, combined output, and timeout status.",
-    inputSchema = JsonSchema.ObjectSchema(
-      Map("command" -> JsonSchema.StringSchema(Some("Bash command to execute in the workspace"))),
-      required = Set("command"),
-      additionalProperties = false
-    )
-  )
+  val definition: FunctionToolDefinition = BashToolDefinition.ExecuteDefinition
 
   private[tool] def render(result: CommandOutput): String =
     ujson.write(

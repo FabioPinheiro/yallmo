@@ -83,7 +83,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage("The user must not invoke a provider")
     }
-    val instances = run(RuntimeInstances.fromAgents(Chunk(user, agent)))
+    val instances = run(AgentCatalog.fromAgents(Chunk(user, agent)))
     val orchestrator = run(OrchestratorLive.inMemory(instances))
     new ReplApplication[Any](
       new ReplSession[Any](
@@ -338,8 +338,8 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
       val startup = run((for {
         channel <- HumanTurnChannel.make
         human = HumanAgent.make(AgentId("synthetic-user"), channel)
-        loaded <- fmgp.yallmo.server.application.ApplicationRuntime.load(Chunk(human), path)
-        current <- ReplStartup.fromRuntime(loaded._1, loaded._2, human, ReplLaunchOptions("synthetic-user"))
+        loaded <- fmgp.yallmo.server.application.ServerApplication.load(Chunk(human), path)
+        current <- ReplStartup.fromApplication(loaded._1, loaded._2, human, ReplLaunchOptions("synthetic-user"))
       } yield current).provideLayer(Client.default))
       val scope = run(Scope.make)
       try {
@@ -350,7 +350,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
         assertEquals(result.history, List("draXft", "/exit"))
         assertEquals(startup.selected, None)
         assertEquals(app.activeAgent, None)
-        assert(run(startup.instances.getProvider(ProviderId.unsafe("new-account")).either).isLeft)
+        assert(run(startup.catalog.getProvider(ProviderId.unsafe("new-account")).either).isLeft)
         assertEquals(
           Files.readString(path).fromJson[Config].toOption.get.providers(ProviderId.unsafe("new-account")),
           ProviderConfig.ChatGPT()

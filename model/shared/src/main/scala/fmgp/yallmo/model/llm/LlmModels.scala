@@ -1,6 +1,7 @@
 package fmgp.yallmo.model.llm
 
-import fmgp.yallmo.model.{ToolKey, YallmoError}
+import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.tool.FunctionKey
 import zio.*
 
 /** Provider-neutral schema for a function tool exposed to a language model. */
@@ -21,7 +22,7 @@ final case class LlmToolParameter(
 )
 
 final case class LlmToolDefinition(
-    name: ToolKey,
+    name: FunctionKey,
     description: String,
     parameters: Chunk[LlmToolParameter] = Chunk.empty
 ) {
@@ -34,12 +35,12 @@ final case class LlmToolDefinition(
 
 final case class LlmToolCall(
     id: Option[String],
-    name: ToolKey,
+    name: FunctionKey,
     argsJson: String
 )
 
 final case class LlmToolResult(
-    name: ToolKey,
+    name: FunctionKey,
     responseJson: String
 )
 

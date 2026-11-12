@@ -170,7 +170,7 @@ final class ReplPromptPersistenceSuite extends FunSuite {
         respond(current)
     }
     for {
-      instances <- RuntimeInstances.fromAgents(Chunk(human, assistant))
+      instances <- AgentCatalog.fromAgents(Chunk(human, assistant))
       storage <- OrchestratorLive.filesystem(root, instances)
       repl = ReplOrchestratorLive.make(storage, human, Some(assistant))
     } yield new ReplApplication[Any](

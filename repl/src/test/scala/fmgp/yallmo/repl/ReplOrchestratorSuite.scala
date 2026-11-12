@@ -48,7 +48,7 @@ final class ReplOrchestratorSuite extends FunSuite {
           bob = agent(bobId)
           gamma = agent(gammaId)
           other = agent(otherAgent)
-          instances <- RuntimeInstances.fromAgents(Chunk(bob, gamma, other))
+          instances <- AgentCatalog.fromAgents(Chunk(bob, gamma, other))
           orchestrator <- OrchestratorLive.filesystem(root, instances)
           _ <- orchestrator.createSession(SessionId.unsafe("research"), Chunk(otherAgent))
           replOrchestrator = ReplOrchestratorLive.make(orchestrator, bob, Some(gamma))
@@ -77,7 +77,7 @@ final class ReplOrchestratorSuite extends FunSuite {
         human = agent(bobId)
         first = agent(gammaId)
         next = agent(otherAgent)
-        instances <- RuntimeInstances.fromAgents(Chunk(human, first, next))
+        instances <- AgentCatalog.fromAgents(Chunk(human, first, next))
         orchestrator <- OrchestratorLive.inMemory(instances)
         original = ReplOrchestratorLive.make(orchestrator, human, Some(first))
         created <- original.newReplSession(Some("shared"))
@@ -101,7 +101,7 @@ final class ReplOrchestratorSuite extends FunSuite {
     val bob = agent(bobId)
     val gamma = agent(gammaId)
     for {
-      instances <- RuntimeInstances.fromAgents(Chunk(bob, gamma))
+      instances <- AgentCatalog.fromAgents(Chunk(bob, gamma))
       orchestrator <- OrchestratorLive.filesystem(root, instances)
     } yield ReplOrchestratorLive.make(orchestrator, bob, Some(gamma))
   }

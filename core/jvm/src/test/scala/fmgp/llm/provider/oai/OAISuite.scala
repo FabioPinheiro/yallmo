@@ -1,5 +1,7 @@
 package fmgp.yallmo.provider.oai
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.ProviderGenerateOptions
@@ -11,7 +13,7 @@ final class OAISuite extends FunSuite:
   test("builds an OpenAI-compatible chat-completions request") {
     val tool = LlmTool[Any](
       LlmToolDefinition(
-        ToolKey.unsafe("current_time"),
+        FunctionKey.unsafe("current_time"),
         "Get the current time",
         Chunk(LlmToolParameter("timezone", "IANA timezone", ToolSchemaType.String, required = true))
       ),
@@ -69,7 +71,7 @@ final class OAISuite extends FunSuite:
     )
     assertEquals(
       response.map(_.functionCalls),
-      Right(Vector(OAIFunctionCall("call-1", ToolKey.unsafe("current_time"), "{}")))
+      Right(Vector(OAIFunctionCall("call-1", FunctionKey.unsafe("current_time"), "{}")))
     )
   }
 
@@ -97,8 +99,9 @@ final class OAISuite extends FunSuite:
     }
   }
 
-  test("maps native calls, outputs, tool choice, and schemas to chat completions") {
-    val call = FunctionCall(FunctionCallId.unsafe("call-1"), ToolKey.unsafe("current_time"), "{\"timezone\":\"UTC\"}")
+  test("maps native calls, outputs, and schemas to chat completions") {
+    val call =
+      FunctionCall(FunctionCallId.unsafe("call-1"), FunctionKey.unsafe("current_time"), "{\"timezone\":\"UTC\"}")
     val output = FunctionGenericOutput(call.id, call.name, "12:00")
     val request = AgentTurnRequest(
       "test",
@@ -110,12 +113,11 @@ final class OAISuite extends FunSuite:
       ),
       tools = Chunk(
         FunctionToolDefinition(
-          ToolKey.unsafe("current_time"),
+          FunctionKey.unsafe("current_time"),
           "Get time",
           JsonSchema.ObjectSchema(Map("timezone" -> JsonSchema.StringSchema()), required = Set("timezone"))
         )
       ),
-      toolChoice = ToolChoice.Function(ToolKey.unsafe("current_time")),
       parallelToolCalls = true
     )
 
@@ -126,9 +128,21 @@ final class OAISuite extends FunSuite:
     assertEquals(messages(1)("role").str, "tool")
     assertEquals(messages(1)("tool_call_id").str, "call-1")
     assertEquals(messages(2)("role").str, "system")
-    assertEquals(body("tool_choice")("function")("name").str, "current_time")
+    assert(!body.obj.contains("tool_choice"))
     assertEquals(body("parallel_tool_calls").bool, true)
     assertEquals(body("tools")(0)("function")("parameters")("required")(0).str, "timezone")
+  }
+
+  test("requests without functions omit tool definitions and disable parallel calls") {
+    val request = AgentTurnRequest(
+      "test",
+      Chunk(MessagePayload.Instructions("Answer directly")),
+      parallelToolCalls = true
+    )
+    val body = OAIChatCompletionsMapper.turnRequestBody(request.model, request)
+    assert(!body.obj.contains("tools"))
+    assert(!body.obj.contains("tool_choice"))
+    assertEquals(body("parallel_tool_calls").bool, false)
   }
 
   test("maps audio in ordered shared turns without sending local metadata") {
@@ -140,7 +154,6 @@ final class OAISuite extends FunSuite:
         audio,
         MessagePayload.Instructions("Describe it.")
       ),
-      toolChoice = ToolChoice.None
     )
     val body = OAIChatCompletionsMapper.turnRequestBody(request.model, request, Map(audio.blobId -> "AQID"))
     val content = body("messages")(1)("content").arr
@@ -148,7 +161,7 @@ final class OAISuite extends FunSuite:
     assertEquals(body("model").str, "audio-model")
     assertEquals(body("messages")(0)("content").str, "Identify the sound")
     assertEquals(body("messages")(2)("content").str, "Describe it.")
-    assertEquals(body("tool_choice").str, "none")
+    assert(!body.obj.contains("tool_choice"))
     val serialized = ujson.write(body)
     Seq("LOCAL_ONLY", "999", "12.5", "sizeBytes", "durationSeconds", "description").foreach(value =>
       assert(!serialized.contains(value))

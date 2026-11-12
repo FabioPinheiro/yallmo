@@ -6,19 +6,19 @@
  ┌────────────────────────┬─────────────────────────────────────────────────────────────────┐
  │ Component              │ Responsibility                                                  │
  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
- │ ApplicationRuntime     │ Wires configuration, storage and execution together.            │
+ │ ServerApplication      │ Owns composition, storage lease and execution lifetime.         │
  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
- │ RuntimeInstances       │ Lazily constructs and caches agents/providers.                  │
+ │ AgentCatalog           │ Lazily caches complete agents, adapters and providers.          │
  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
  │ ApplicationTools       │ Finds available tools and binds their dependencies.             │
- ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
- │ ConfiguredAgentBinding │ Converts the selected adapter into an executable agent program. │
  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
  │ AgentRunner            │ Runs the loop, validates tool requests and executes tools.      │
  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
  │ OrchestratorLive       │ Persists messages and manages sessions.                         │
  └────────────────────────┴─────────────────────────────────────────────────────────────────┘
 
+Complete agent generations bundle a bound program, effective context and executable tools.
+See [Service wiring](docs/SERVICE_WIRING.md) for construction, execution and lifetime details.
 
 
 {

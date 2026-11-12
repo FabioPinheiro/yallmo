@@ -1,7 +1,16 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.{ToolKey, ScalaModeResult}
-import fmgp.yallmo.orchestration.{ExternalToolCall, ExternalToolResult}
+import fmgp.yallmo.model.tool.{
+  BashToolDefinition,
+  FilesystemToolDefinition,
+  RepositoryChangesToolDefinition,
+  ScalamodeToolDefinition,
+  SdlcToolDefinition
+}
+
+import fmgp.yallmo.model.ScalaModeResult
+import fmgp.yallmo.tool.ToolKey
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.tool.*
 import java.nio.file.{Files, Path}
 import java.util.Comparator
@@ -9,17 +18,19 @@ import munit.FunSuite
 import zio.*
 
 final class ApplicationToolsSuite extends FunSuite {
+  private val ownership =
+    ApplicationTools.ToolDefinitions.flatMap(tool => tool.functions.map(function => function.name -> tool.name)).toMap
   private val allKeys = Chunk(
-    ToolKey.ReadFile,
-    ToolKey.ListFiles,
-    ToolKey.Bash,
-    ToolKey.RepositoryChanges,
-    ToolKey.Scalamode,
-    ToolKey.SdlcSet,
-    ToolKey.SdlcReadTask,
-    ToolKey.SdlcSetIntents,
-    ToolKey.SdlcReadIntent,
-    ToolKey.SdlcList
+    FilesystemToolDefinition.ReadFile,
+    FilesystemToolDefinition.ListFiles,
+    BashToolDefinition.Execute,
+    RepositoryChangesToolDefinition.Inspect,
+    ScalamodeToolDefinition.Execute,
+    SdlcToolDefinition.SetTasks,
+    SdlcToolDefinition.ReadTask,
+    SdlcToolDefinition.SetIntents,
+    SdlcToolDefinition.ReadIntent,
+    SdlcToolDefinition.List
   )
 
   test("startup selects only tools whose requirements pass without executing tools") {
@@ -32,20 +43,30 @@ final class ApplicationToolsSuite extends FunSuite {
         } yield (tools, calls)
       }
       val expected = Chunk(
-        ToolKey.ReadFile,
-        ToolKey.ListFiles,
-        ToolKey.Bash,
-        ToolKey.Scalamode,
-        ToolKey.SdlcSet,
-        ToolKey.SdlcReadTask,
-        ToolKey.SdlcSetIntents,
-        ToolKey.SdlcReadIntent,
-        ToolKey.SdlcList
+        FilesystemToolDefinition.ReadFile,
+        FilesystemToolDefinition.ListFiles,
+        BashToolDefinition.Execute,
+        ScalamodeToolDefinition.Execute,
+        SdlcToolDefinition.SetTasks,
+        SdlcToolDefinition.ReadTask,
+        SdlcToolDefinition.SetIntents,
+        SdlcToolDefinition.ReadIntent,
+        SdlcToolDefinition.List
       )
-      assertEquals(tools.available.map(_.definition.key), expected)
+      assertEquals(tools.functions.map(_.definition.name), expected)
+      assertEquals(tools.tools.map(_.name), Chunk(ToolKey.Filesystem, ToolKey.Bash, ToolKey.Scalamode, ToolKey.Sdlc))
+      assertEquals(tools.tools.find(_.name == ToolKey.Sdlc).get.functions.size, 5)
+      assertEquals(
+        tools.availability.availableTools.find(_._1 == ToolKey.Filesystem).get._2,
+        Chunk(FilesystemToolDefinition.ReadFile, FilesystemToolDefinition.ListFiles)
+      )
       assertEquals(
         tools.availability,
-        ToolAvailability(expected, Chunk(ToolKey.RepositoryChanges -> Chunk("git is not available on PATH")))
+        ToolAvailability(
+          expected,
+          Chunk(RepositoryChangesToolDefinition.Inspect -> Chunk("git is not available on PATH")),
+          ownership
+        )
       )
       assertEquals(calls, Vector("bash.available", "git.available", "scala.available"))
       assert(
@@ -53,6 +74,18 @@ final class ApplicationToolsSuite extends FunSuite {
         "Startup must not create planning storage"
       )
     }
+  }
+
+  test("partial tool availability preserves per-function diagnostics and explicit ownership") {
+    val reasons = Chunk("listing is disabled")
+    val availability = ToolAvailability.from(
+      Chunk(ReadFileTool.definition),
+      Chunk(FilesystemToolDefinition.ListFiles -> reasons),
+      Chunk(FilesystemToolDefinition)
+    )
+    assertEquals(availability.availableTools, Chunk(ToolKey.Filesystem -> Chunk(FilesystemToolDefinition.ReadFile)))
+    assertEquals(availability.unavailableFunctions, Chunk(FilesystemToolDefinition.ListFiles -> reasons))
+    assertEquals(availability.ownership(FilesystemToolDefinition.ListFiles), ToolKey.Filesystem)
   }
 
   test("explicit workspaces reach work-tree probes in startup order") {
@@ -66,7 +99,7 @@ final class ApplicationToolsSuite extends FunSuite {
             calls <- services.calls.get
           } yield (first, second, calls)
         }
-        assertEquals(first.availability, ToolAvailability(allKeys, Chunk.empty))
+        assertEquals(first.availability, ToolAvailability(allKeys, Chunk.empty, ownership))
         assertEquals(second.availability, first.availability)
         assertEquals(
           calls,
@@ -95,17 +128,23 @@ final class ApplicationToolsSuite extends FunSuite {
           } yield tools
         }
         assertEquals(
-          tools.available.map(_.definition.key),
-          Chunk(ToolKey.SdlcSet, ToolKey.SdlcReadTask, ToolKey.SdlcSetIntents, ToolKey.SdlcReadIntent, ToolKey.SdlcList)
+          tools.functions.map(_.definition.name),
+          Chunk(
+            SdlcToolDefinition.SetTasks,
+            SdlcToolDefinition.ReadTask,
+            SdlcToolDefinition.SetIntents,
+            SdlcToolDefinition.ReadIntent,
+            SdlcToolDefinition.List
+          )
         )
         assertEquals(
-          tools.availability.unavailable,
+          tools.availability.unavailableFunctions,
           Chunk(
-            ToolKey.ReadFile -> Chunk("workspace is not an accessible directory"),
-            ToolKey.ListFiles -> Chunk("workspace is not an accessible directory"),
-            ToolKey.Bash -> Chunk("bash is not available on PATH"),
-            ToolKey.RepositoryChanges -> Chunk("git is not available on PATH"),
-            ToolKey.Scalamode -> Chunk("Scala CLI (scala-cli) is not available on PATH")
+            FilesystemToolDefinition.ReadFile -> Chunk("workspace is not an accessible directory"),
+            FilesystemToolDefinition.ListFiles -> Chunk("workspace is not an accessible directory"),
+            BashToolDefinition.Execute -> Chunk("bash is not available on PATH"),
+            RepositoryChangesToolDefinition.Inspect -> Chunk("git is not available on PATH"),
+            ScalamodeToolDefinition.Execute -> Chunk("Scala CLI (scala-cli) is not available on PATH")
           )
         )
       }
@@ -121,22 +160,22 @@ final class ApplicationToolsSuite extends FunSuite {
         } yield tools
       }
       assertEquals(
-        tools.available.map(_.definition.key),
+        tools.functions.map(_.definition.name),
         Chunk(
-          ToolKey.ReadFile,
-          ToolKey.ListFiles,
-          ToolKey.Bash,
-          ToolKey.Scalamode,
-          ToolKey.SdlcSet,
-          ToolKey.SdlcReadTask,
-          ToolKey.SdlcSetIntents,
-          ToolKey.SdlcReadIntent,
-          ToolKey.SdlcList
+          FilesystemToolDefinition.ReadFile,
+          FilesystemToolDefinition.ListFiles,
+          BashToolDefinition.Execute,
+          ScalamodeToolDefinition.Execute,
+          SdlcToolDefinition.SetTasks,
+          SdlcToolDefinition.ReadTask,
+          SdlcToolDefinition.SetIntents,
+          SdlcToolDefinition.ReadIntent,
+          SdlcToolDefinition.List
         )
       )
       assertEquals(
-        tools.availability.unavailable,
-        Chunk(ToolKey.RepositoryChanges -> Chunk("workspace is not a Git work tree"))
+        tools.availability.unavailableFunctions,
+        Chunk(RepositoryChangesToolDefinition.Inspect -> Chunk("workspace is not a Git work tree"))
       )
     }
   }
@@ -151,12 +190,12 @@ final class ApplicationToolsSuite extends FunSuite {
           results <- ZIO
             .foreach(
               Chunk(
-                ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""),
-                ExternalToolCall(ToolKey.ListFiles, """{"path":"src"}"""),
-                ExternalToolCall(ToolKey.Bash, """{"command":"echo fake"}"""),
-                ExternalToolCall(ToolKey.RepositoryChanges, """{"view":"status"}""")
+                ExternalFunctionCall(FilesystemToolDefinition.ReadFile, """{"path":"notes.txt"}"""),
+                ExternalFunctionCall(FilesystemToolDefinition.ListFiles, """{"path":"src"}"""),
+                ExternalFunctionCall(BashToolDefinition.Execute, """{"command":"echo fake"}"""),
+                ExternalFunctionCall(RepositoryChangesToolDefinition.Inspect, """{"view":"status"}""")
               )
-            )(call => tools.available.find(_.definition.key == call.toolKey).get.execute(call))
+            )(call => tools.functions.find(_.definition.name == call.functionKey).get.execute(call))
             .provideLayer(services.layer)
           calls <- services.calls.get
         } yield (results, calls)
@@ -177,10 +216,10 @@ final class ApplicationToolsSuite extends FunSuite {
             one <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
             two <- ApplicationTools.evaluate(second, Some(second)).provideLayer(services.layer)
             results <- ZIO.foreach(Chunk(one, two)) { tools =>
-              tools.available
-                .find(_.definition.key == ToolKey.ReadFile)
+              tools.functions
+                .find(_.definition.name == FilesystemToolDefinition.ReadFile)
                 .get
-                .execute(ExternalToolCall(ToolKey.ReadFile, """{"path":"notes.txt"}"""))
+                .execute(ExternalFunctionCall(FilesystemToolDefinition.ReadFile, """{"path":"notes.txt"}"""))
                 .provideLayer(services.layer)
             }
           } yield results.map(_.text)
@@ -196,9 +235,9 @@ final class ApplicationToolsSuite extends FunSuite {
         for {
           services <- probes(allowExecution = true)
           tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
-          scala = tools.available.find(_.definition.key == ToolKey.Scalamode).get
+          scala = tools.functions.find(_.definition.name == ScalamodeToolDefinition.Execute).get
           result <- scala
-            .execute(ExternalToolCall(ToolKey.Scalamode, """{"code":"(1 to 10).sum"}"""))
+            .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"(1 to 10).sum"}"""))
             .provideLayer(services.layer)
           calls <- services.calls.get
         } yield (scala.definition, result, calls)
@@ -215,15 +254,20 @@ final class ApplicationToolsSuite extends FunSuite {
         for {
           services <- probes(bash = false, git = false, scala = false)
           tools <- ApplicationTools.evaluate(workspace, Some(workspace)).provideLayer(services.layer)
-          created <- tools.available
-            .find(_.definition.key == ToolKey.SdlcSet)
+          created <- tools.functions
+            .find(_.definition.name == SdlcToolDefinition.SetTasks)
             .get
-            .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"Plan the change"}]}"""))
+            .execute(
+              ExternalFunctionCall(
+                SdlcToolDefinition.SetTasks,
+                """{"tasksJson":[{"id":"","title":"Plan the change"}]}"""
+              )
+            )
             .provideLayer(services.layer)
-          read <- tools.available
-            .find(_.definition.key == ToolKey.SdlcReadTask)
+          read <- tools.functions
+            .find(_.definition.name == SdlcToolDefinition.ReadTask)
             .get
-            .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+            .execute(ExternalFunctionCall(SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}"""))
             .provideLayer(services.layer)
           calls <- services.calls.get
         } yield (created, read, calls)
@@ -242,27 +286,32 @@ final class ApplicationToolsSuite extends FunSuite {
           for {
             services <- probes()
             one <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
-            _ <- one.available
-              .find(_.definition.key == ToolKey.SdlcSet)
+            _ <- one.functions
+              .find(_.definition.name == SdlcToolDefinition.SetTasks)
               .get
-              .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"First workspace"}]}"""))
+              .execute(
+                ExternalFunctionCall(
+                  SdlcToolDefinition.SetTasks,
+                  """{"tasksJson":[{"id":"","title":"First workspace"}]}"""
+                )
+              )
               .provideLayer(services.layer)
             reopened <- ApplicationTools.evaluate(first, Some(first)).provideLayer(services.layer)
             two <- ApplicationTools.evaluate(second, Some(second)).provideLayer(services.layer)
-            read <- reopened.available
-              .find(_.definition.key == ToolKey.SdlcReadTask)
+            read <- reopened.functions
+              .find(_.definition.name == SdlcToolDefinition.ReadTask)
               .get
-              .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+              .execute(ExternalFunctionCall(SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}"""))
               .provideLayer(services.layer)
-            isolated <- two.available
-              .find(_.definition.key == ToolKey.SdlcReadTask)
+            isolated <- two.functions
+              .find(_.definition.name == SdlcToolDefinition.ReadTask)
               .get
-              .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+              .execute(ExternalFunctionCall(SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}"""))
               .provideLayer(services.layer)
               .either
           } yield (read, isolated)
         }
-        assertEquals(ujson.read(read.text)(0)("text").str, "First workspace")
+        assertEquals(ujson.read(read.text)(0)("title").str, "First workspace")
         assert(isolated.isLeft)
         assert(!Files.exists(second.resolve(fmgp.yallmo.tool.sdlc.PlanTaskStorage.Directory)))
       }
@@ -277,21 +326,26 @@ final class ApplicationToolsSuite extends FunSuite {
             for {
               services <- probes()
               first <- ApplicationTools.evaluate(firstWorkspace, Some(storage)).provideLayer(services.layer)
-              _ <- first.available
-                .find(_.definition.key == ToolKey.SdlcSet)
+              _ <- first.functions
+                .find(_.definition.name == SdlcToolDefinition.SetTasks)
                 .get
-                .execute(ExternalToolCall(ToolKey.SdlcSet, """{"tasksJson":[{"id":"","text":"Shared plan"}]}"""))
+                .execute(
+                  ExternalFunctionCall(
+                    SdlcToolDefinition.SetTasks,
+                    """{"tasksJson":[{"id":"","title":"Shared plan"}]}"""
+                  )
+                )
                 .provideLayer(services.layer)
               // The earlier owner is no longer used; reopening uses the same journal with a different workspace.
               second <- ApplicationTools.evaluate(secondWorkspace, Some(storage)).provideLayer(services.layer)
-              read <- second.available
-                .find(_.definition.key == ToolKey.SdlcReadTask)
+              read <- second.functions
+                .find(_.definition.name == SdlcToolDefinition.ReadTask)
                 .get
-                .execute(ExternalToolCall(ToolKey.SdlcReadTask, """{"taskIds":["T-1"]}"""))
+                .execute(ExternalFunctionCall(SdlcToolDefinition.ReadTask, """{"taskIds":["T-1"]}"""))
                 .provideLayer(services.layer)
             } yield read
           }
-          assertEquals(ujson.read(read.text)(0)("text").str, "Shared plan")
+          assertEquals(ujson.read(read.text)(0)("title").str, "Shared plan")
           assert(Files.exists(storage.resolve("sdlc/tasks.jsonl")))
           assert(!Files.exists(firstWorkspace.resolve("sdlc")))
           assert(!Files.exists(secondWorkspace.resolve("sdlc")))
@@ -317,17 +371,17 @@ final class ApplicationToolsSuite extends FunSuite {
             } yield tools
           }
           assertEquals(
-            tools.available.map(_.definition.key),
-            allKeys.filterNot(key => fmgp.yallmo.tool.sdlc.SdlcTools.Definitions.exists(_.key == key))
+            tools.functions.map(_.definition.name),
+            allKeys.filterNot(key => fmgp.yallmo.tool.sdlc.SdlcTools.Definitions.exists(_.name == key))
           )
           assertEquals(
-            tools.availability.unavailable.map(_._1),
+            tools.availability.unavailableFunctions.map(_._1),
             Chunk(
-              ToolKey.SdlcSet,
-              ToolKey.SdlcReadTask,
-              ToolKey.SdlcSetIntents,
-              ToolKey.SdlcReadIntent,
-              ToolKey.SdlcList
+              SdlcToolDefinition.SetTasks,
+              SdlcToolDefinition.ReadTask,
+              SdlcToolDefinition.SetIntents,
+              SdlcToolDefinition.ReadIntent,
+              SdlcToolDefinition.List
             )
           )
         }
@@ -378,9 +432,10 @@ final class ApplicationToolsSuite extends FunSuite {
     val compiler = new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = record("scala.available").as(scala)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
-          : Task[ExternalToolResult.ScalaMode] = {
+          : Task[ExternalFunctionResult.ScalaMode] = {
         val _ = (code, timeout, maxOutputBytes)
-        execution(s"scala:$code").map(command => ExternalToolResult.ScalaMode(ScalaModeResult.Executed(command.output)))
+        execution(s"scala:$code")
+          .map(command => ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(command.output)))
       }
     }
     Probes(

@@ -1,5 +1,9 @@
 package fmgp.yallmo.model
 
+import fmgp.yallmo.tool.FunctionKey
+
+import fmgp.yallmo.model.tool.BashToolDefinition
+
 import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
 import munit.FunSuite
 import zio.Chunk
@@ -17,16 +21,16 @@ final class MessagePayloadSuite extends FunSuite {
       """{"RagResult":{"retrieverKey":"docs","documents":[{"id":"id","source":"source","text":"text"}]}}""",
     MessagePayload.Reasoning(Some("summary"), ProviderContinuation(ProviderId.unsafe("provider"), None, "opaque")) ->
       """{"Reasoning":{"summary":"summary","continuation":{"provider":"provider","encryptedContent":"opaque"}}}""",
-    MessagePayload.ToolCall(FunctionCall(callId, ToolKey.unsafe("tool"), "{}")) ->
+    MessagePayload.ToolCall(FunctionCall(callId, FunctionKey.unsafe("tool"), "{}")) ->
       """{"ToolCall":{"call":{"id":"call-1","name":"tool","argumentsJson":"{}"}}}""",
-    MessagePayload.ToolOutput(FunctionGenericOutput(callId, ToolKey.unsafe("tool"), "result")) ->
+    MessagePayload.ToolOutput(FunctionGenericOutput(callId, FunctionKey.unsafe("tool"), "result")) ->
       """{"ToolOutput":{"output":{"callId":"call-1","name":"tool","output":"result"}}}""",
     MessagePayload.Instructions("system") -> """{"Instructions":{"text":"system"}}"""
   )
 
   test("tool message exports retain their roles and content projections") {
-    val call = FunctionCall(callId, ToolKey.unsafe("tool"), "{}")
-    val output = FunctionGenericOutput(callId, ToolKey.unsafe("tool"), "result")
+    val call = FunctionCall(callId, FunctionKey.unsafe("tool"), "{}")
+    val output = FunctionGenericOutput(callId, FunctionKey.unsafe("tool"), "result")
     assertEquals(Message.ToolCall(call), MessagePayload.ToolCall(call))
     assertEquals(Message.ToolOutput(output), MessagePayload.ToolOutput(output))
     assertEquals(Message.ToolCall(call).role, "tool_call")
@@ -70,7 +74,7 @@ final class MessagePayloadSuite extends FunSuite {
   }
 
   test("name exclusively dispatches subtypes and malformed scalamode never falls back") {
-    val generic = FunctionGenericOutput(callId, ToolKey.Bash, "42")
+    val generic = FunctionGenericOutput(callId, BashToolDefinition.Execute, "42")
     assertEquals(generic.toJson.fromJson[FunctionCallOutput], Right(generic))
     assert(!generic.toJson.contains("logs"))
     val reserved = """{"callId":"call-1","name":"scalamode","output":"42"}"""
@@ -107,7 +111,7 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(output.toJson.fromJson[ScalaModeOutput], Right(output))
     assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
       fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
-      name = fmgp.yallmo.model.ToolKey.Bash)"""))
+      name = fmgp.yallmo.model.tool.BashToolDefinition.Execute)"""))
   }
 
   test("saved timeout flags decode into the typed result but are never emitted") {
@@ -129,11 +133,11 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(Message.ToolOutput(output).contentStr, diagnostics)
     assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
     assert(output.validate.isRight)
-    assert(FunctionGenericOutput(callId, ToolKey.unsafe(" "), "").validate.isLeft)
+    assert(FunctionGenericOutput(callId, FunctionKey.unsafe(" "), "").validate.isLeft)
   }
 
   test("removed ToolResult JSON is rejected rather than silently reinterpreted") {
-    assert("""{"ToolResult":{"toolKey":"tool","text":"result"}}""".fromJson[MessagePayload].isLeft)
+    assert("""{"ToolResult":{"functionKey":"tool","text":"result"}}""".fromJson[MessagePayload].isLeft)
   }
 
   fixtures.foreach { case (payload, json) =>

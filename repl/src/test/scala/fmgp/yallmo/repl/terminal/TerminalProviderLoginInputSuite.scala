@@ -602,7 +602,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
       ): IO[YallmoError, fmgp.yallmo.model.llm.AgentTurnResponse] =
         ZIO.dieMessage("The user must not invoke a provider")
     }
-    val instances = runZIO(RuntimeInstances.fromAgents(Chunk(user, agent)))
+    val instances = runZIO(AgentCatalog.fromAgents(Chunk(user, agent)))
     val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
     new ReplApplication(
       new ReplSession[Any](

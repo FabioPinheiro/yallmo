@@ -1,7 +1,9 @@
 package fmgp.yallmo.model.llm
 
-import fmgp.yallmo.model.{Blob, BlobId, FunctionToolDefinition, MessagePayload, ToolChoice, YallmoError}
+import fmgp.yallmo.model.{Blob, BlobId, MessagePayload, YallmoError}
+import fmgp.yallmo.tool.FunctionToolDefinition
 import zio.*
+import fmgp.yallmo.tool.ToolDefinition
 
 /** Provider-neutral stop reason for a completed model turn. */
 enum LlmStopReason {
@@ -15,16 +17,20 @@ enum LlmStopReason {
 /** One fully assembled model request. Adapters may read referenced blobs but do not execute tools. `readBlob` is a
   * request-local read-only dependency, not serialized content. Orchestrator supplies its Storage reader.
   *
+  * [[tools]] lists the functions the model may call; an empty list requests a text-only response. When functions are
+  * exposed, the model may either answer directly or call an exposed function.
+  *
   * TODO REVIEW the readBlob should be a ZStream
   */
 final case class AgentTurnRequest(
     model: String,
     input: Chunk[MessagePayload],
     tools: Chunk[FunctionToolDefinition] = Chunk.empty,
-    toolChoice: ToolChoice = ToolChoice.Auto,
     parallelToolCalls: Boolean = false,
     options: ProviderGenerateOptions = ProviderGenerateOptions(),
-    readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
+    readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
+    // Host-only membership catalog, never projected into provider JSON.
+    toolGroups: Chunk[ToolDefinition] = Chunk.empty
 ) {
   def validate: Either[String, AgentTurnRequest] =
     val duplicateToolNames =

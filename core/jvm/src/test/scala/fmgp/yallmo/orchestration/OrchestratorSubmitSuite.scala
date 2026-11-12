@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import java.nio.file.{Files, Path}
@@ -213,18 +215,21 @@ final class OrchestratorSubmitSuite extends FunSuite {
         for {
           orchestrator <- open(root)
           _ <- orchestrator.createSession(sessionId, Chunk(userId))
-          tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Check persistence")
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
+          tool = new AgentFunction[Any] {
+            val definition = FunctionToolDefinition(
+              FunctionKey.unsafe("probe"),
+              "Check persistence"
+            )
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
               awaitStored(orchestrator) { messages =>
                 val calls = messages.count(_.isInstanceOf[MessagePayload.ToolCall])
                 val outputs = messages.count(_.isInstanceOf[MessagePayload.ToolOutput])
                 calls == 2 && outputs == (if call.argumentsJson == "{}" then 0 else 1)
-              }.as(ExternalToolResult("saved"))
+              }.as(ExternalFunctionResult("saved"))
           }
-          configuredRunner = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-          configuredContext = context.copy(tools = Chunk(tool.definition))
-          execution = configuredRunner.execution(twoCalls(tool.definition.key), configuredContext)
+          configuredRunner = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+          configuredContext = context.copy(functions = Chunk(tool.definition))
+          execution = configuredRunner.execution(twoCalls(tool.definition.name), configuredContext)
           turn <- orchestrator.submit(sessionId, userId, AgentTask("tools"), execution)
           reopened <- open(root)
           stored <- reopened.loadSession(sessionId)
@@ -253,14 +258,15 @@ final class OrchestratorSubmitSuite extends FunSuite {
           orchestrator <- open(root)
           _ <- orchestrator.createSession(sessionId, Chunk(userId))
           started <- Promise.make[Nothing, Unit]
-          tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Two tools")
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-              if call.argumentsJson == "{}" then ZIO.succeed(ExternalToolResult("first result"))
+          tool = new AgentFunction[Any] {
+            val definition =
+              FunctionToolDefinition(FunctionKey.unsafe("probe"), "Two tools")
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+              if call.argumentsJson == "{}" then ZIO.succeed(ExternalFunctionResult("first result"))
               else started.succeed(()) *> ZIO.never
           }
-          execution = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-            .execution(twoCalls(tool.definition.key), context.copy(tools = Chunk(tool.definition)))
+          execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+            .execution(twoCalls(tool.definition.name), context.copy(functions = Chunk(tool.definition)))
           fiber <- orchestrator.submit(sessionId, userId, AgentTask("cancel tools"), execution).fork
           _ <- started.await
           _ <- fiber.interrupt
@@ -281,19 +287,20 @@ final class OrchestratorSubmitSuite extends FunSuite {
         for {
           orchestrator <- open(root)
           _ <- orchestrator.createSession(sessionId, Chunk(userId))
-          tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Successful tool")
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-              ZIO.succeed(ExternalToolResult(call.argumentsJson))
+          tool = new AgentFunction[Any] {
+            val definition =
+              FunctionToolDefinition(FunctionKey.unsafe("probe"), "Successful tool")
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+              ZIO.succeed(ExternalFunctionResult(call.argumentsJson))
           }
-          base = twoCalls(tool.definition.key)
+          base = twoCalls(tool.definition.name)
           failing = program { current =>
             if current.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
               ZIO.fail(YallmoError.InvalidConfig("inference failed"))
             else base.next(AgentTask("fail"), context, current)
           }
-          execution = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-            .execution(failing, context.copy(tools = Chunk(tool.definition)))
+          execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+            .execution(failing, context.copy(functions = Chunk(tool.definition)))
           failed <- orchestrator.submit(sessionId, userId, AgentTask("fail"), execution).either
           stored <- orchestrator.loadSession(sessionId)
         } yield {
@@ -358,10 +365,13 @@ final class OrchestratorSubmitSuite extends FunSuite {
           for {
             orchestrator <- open(root)
             _ <- orchestrator.createSession(sessionId, Chunk(userId))
-            tool = new AgentTool[Any] {
-              val definition = AgentToolDefinition(ToolKey.unsafe("probe"), "Recover storage")
-              def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] =
-                if call.argumentsJson != "{}" then ZIO.succeed(ExternalToolResult("second"))
+            tool = new AgentFunction[Any] {
+              val definition = FunctionToolDefinition(
+                FunctionKey.unsafe("probe"),
+                "Recover storage"
+              )
+              def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
+                if call.argumentsJson != "{}" then ZIO.succeed(ExternalFunctionResult("second"))
                 else
                   (ZIO.yieldNow *> ZIO.succeed(logs.asScala.exists(_.contains("checkpoint persistence failed"))))
                     .repeatUntil(identity)
@@ -369,10 +379,10 @@ final class OrchestratorSubmitSuite extends FunSuite {
                     ZIO.succeed {
                       Files.delete(root.resolve("objects.jsonl"))
                       Files.move(root.resolve("objects.backup"), root.resolve("objects.jsonl"))
-                      ExternalToolResult("recovered")
+                      ExternalFunctionResult("recovered")
                     }
             }
-            base = twoCalls(tool.definition.key)
+            base = twoCalls(tool.definition.name)
             recovering = program { current =>
               if !current.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
                 ZIO.succeed {
@@ -381,8 +391,8 @@ final class OrchestratorSubmitSuite extends FunSuite {
                 } *> base.next(AgentTask("recover"), context, current)
               else ZIO.succeed(answer)
             }
-            execution = new AgentRunner[Any](Map(tool.definition.key -> tool), Map.empty)
-              .execution(recovering, context.copy(tools = Chunk(tool.definition)))
+            execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+              .execution(recovering, context.copy(functions = Chunk(tool.definition)))
             turn <- orchestrator.submit(sessionId, userId, AgentTask("recover"), execution)
             reopened <- open(root)
             stored <- reopened.loadSession(sessionId)
@@ -398,7 +408,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
     }
   }
 
-  private def twoCalls(key: ToolKey): AgentInstance[Any] =
+  private def twoCalls(key: FunctionKey): AgentInstance[Any] =
     program { current =>
       if current.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then ZIO.succeed(answer)
       else
@@ -407,8 +417,8 @@ final class OrchestratorSubmitSuite extends FunSuite {
             Some(MessagePayload.Assistant("using tools")),
             AgentDecision.Actions(
               Chunk(
-                LlmAction.CallExternalTool(ExternalToolCall(key, "{}")),
-                LlmAction.CallExternalTool(ExternalToolCall(key, """{"second":true}"""))
+                LlmAction.CallExternalFunction(ExternalFunctionCall(key, "{}")),
+                LlmAction.CallExternalFunction(ExternalFunctionCall(key, """{"second":true}"""))
               )
             )
           )
@@ -449,7 +459,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
         ZIO.dieMessage("Only the supplied execution should be invoked")
     }
     for {
-      instances <- RuntimeInstances.fromAgents(Chunk(participant(assistantId)))
+      instances <- AgentCatalog.fromAgents(Chunk(participant(assistantId)))
       _ <- instances.registerUser(userId)
       orchestrator <- OrchestratorLive.filesystem(root, instances)
     } yield orchestrator

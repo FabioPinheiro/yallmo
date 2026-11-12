@@ -2,7 +2,7 @@ package fmgp.yallmo.tool
 
 import fmgp.rpc.*
 import fmgp.yallmo.model.ScalaModeResult
-import fmgp.yallmo.orchestration.ExternalToolResult
+import fmgp.yallmo.orchestration.ExternalFunctionResult
 import fmgp.yallmo.fs.*
 import java.nio.file.{Files, Path}
 import munit.FunSuite
@@ -33,12 +33,14 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         executor = new ScalaCodeExecutor {
           def isAvailable = ZIO.succeed(true)
           def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
-            ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("pure:" + code)))
+            ZIO.succeed(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("pure:" + code)))
           override def executeFilesystem(code: String, endpoint: String, timeout: Duration, maxOutputBytes: Int) = {
             assertEquals(endpoint, "ws://127.0.0.1:1/rpc")
             assertEquals(timeout, 45.seconds)
             assertEquals(maxOutputBytes, 64 * 1024)
-            ZIO.succeed(ExternalToolResult.ScalaMode(ScalaModeResult.Executed("filesystem:" + code), Seq("connected")))
+            ZIO.succeed(
+              ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("filesystem:" + code), Seq("connected"))
+            )
           }
         }
         fs = new FsRead {
@@ -48,13 +50,16 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         tool = ScalaTool.filesystem("ws://127.0.0.1:1/rpc")
         results <- ZIO.foreach(List("""{"code":"42"}""", """{"code":"42","mode":"pure"}""")) { arguments =>
           tool
-            .execute(fmgp.yallmo.orchestration.ExternalToolCall(fmgp.yallmo.model.ToolKey.Scalamode, arguments))
+            .execute(
+              fmgp.yallmo.orchestration
+                .ExternalFunctionCall(fmgp.yallmo.model.tool.ScalamodeToolDefinition.Execute, arguments)
+            )
             .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
         }
         filesystem <- tool
           .execute(
-            fmgp.yallmo.orchestration.ExternalToolCall(
-              fmgp.yallmo.model.ToolKey.Scalamode,
+            fmgp.yallmo.orchestration.ExternalFunctionCall(
+              fmgp.yallmo.model.tool.ScalamodeToolDefinition.Execute,
               """{"code":"42","mode":"filesystem"}"""
             )
           )
@@ -67,7 +72,10 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           )
         ) { arguments =>
           tool
-            .execute(fmgp.yallmo.orchestration.ExternalToolCall(fmgp.yallmo.model.ToolKey.Scalamode, arguments))
+            .execute(
+              fmgp.yallmo.orchestration
+                .ExternalFunctionCall(fmgp.yallmo.model.tool.ScalamodeToolDefinition.Execute, arguments)
+            )
             .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
             .either
         }
@@ -75,7 +83,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         results.foreach(result => assertEquals(result.text, "pure:42"))
         assertEquals(
           filesystem,
-          ExternalToolResult.ScalaMode(ScalaModeResult.Executed("filesystem:42"), Seq("connected"))
+          ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("filesystem:42"), Seq("connected"))
         )
         assert(invalid.forall(_.isLeft))
       }
@@ -188,14 +196,14 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
       ScalaTool
         .filesystem(endpoint, timeout = 120.seconds)
         .execute(
-          fmgp.yallmo.orchestration.ExternalToolCall(
-            fmgp.yallmo.model.ToolKey.Scalamode,
+          fmgp.yallmo.orchestration.ExternalFunctionCall(
+            fmgp.yallmo.model.tool.ScalamodeToolDefinition.Execute,
             """{"code":"fs.readUtf8(\"missing\")","mode":"filesystem"}"""
           )
         )
         .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
         .map { result =>
-          val typed = result.asInstanceOf[ExternalToolResult.ScalaMode]
+          val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
           assert(typed.result.isInstanceOf[ScalaModeResult.Executed])
           assertEquals(typed.exitCode, 1)
           assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut])

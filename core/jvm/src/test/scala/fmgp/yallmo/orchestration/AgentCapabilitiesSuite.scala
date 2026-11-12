@@ -1,5 +1,7 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolKey}
+
 import RunnerTestSupport.*
 
 import fmgp.yallmo.model.*
@@ -23,9 +25,9 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
   private val available = StaticContext[Any](
     "system",
-    tools = Chunk(
-      AgentToolDefinition(ToolKey.unsafe("clock"), "time"),
-      AgentToolDefinition(ToolKey.unsafe("shell"), "commands")
+    functions = Chunk(
+      FunctionToolDefinition(FunctionKey.unsafe("clock"), "time"),
+      FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
     ),
     retrievers = Chunk(RetrieverDefinition("docs", "documents")),
     skills = Chunk(AgentSkill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS")),
@@ -35,14 +37,17 @@ final class AgentCapabilitiesSuite extends FunSuite {
     "model",
     Chunk(MessagePayload.Instructions("system")),
     tools = Chunk(
-      FunctionToolDefinition(ToolKey.unsafe("clock"), "time", JsonSchema.ObjectSchema(Map.empty)),
       FunctionToolDefinition(
-        ToolKey.unsafe("shell"),
+        FunctionKey.unsafe("clock"),
+        "time",
+        JsonSchema.ObjectSchema(Map.empty)
+      ),
+      FunctionToolDefinition(
+        FunctionKey.unsafe("shell"),
         "commands",
         fmgp.yallmo.model.llm.JsonSchema.ObjectSchema(Map.empty)
       )
     ),
-    toolChoice = ToolChoice.Function(ToolKey.unsafe("shell")),
     parallelToolCalls = true
   )
 
@@ -64,8 +69,8 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
 
   test("tool allowlists retain string JSON, support custom tools, and reject blank keys") {
-    val json = """{"tools":["clock"]}"""
-    val policy = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock"))))
+    val json = """{"functions":["clock"]}"""
+    val policy = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("clock"))))
     assertEquals(json.fromJson[AgentCapabilities], Right(policy))
     assertEquals(policy.toJson, json)
     assert("""{"tools":[" "]}""".fromJson[AgentCapabilities].isLeft)
@@ -73,13 +78,14 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
 
   test("nonempty allowlists restrict each catalog and preserve ordering") {
-    val context = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("shell")))).resolve(id, available).toOption.get
-    assertEquals(context.tools.map(_.key), Chunk(ToolKey.unsafe("shell")))
+    val context =
+      AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell")))).resolve(id, available).toOption.get
+    assertEquals(context.functions.map(_.name), Chunk(FunctionKey.unsafe("shell")))
     assertEquals(context.skills, available.skills)
   }
 
   for (kind, policy) <- List(
-      "tools" -> AgentCapabilities(tools = Some(Set(ToolKey.unsafe("typo")))),
+      "functions" -> AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("typo")))),
       "retrievers" -> AgentCapabilities(retrievers = Some(Set("typo"))),
       "skills" -> AgentCapabilities(skills = Some(Set("typo"))),
       "extensions" -> AgentCapabilities(extensions = Some(Set("typo")))
@@ -91,13 +97,12 @@ final class AgentCapabilitiesSuite extends FunSuite {
       assert(!error.contains("SECRET_SKILL_INSTRUCTIONS"))
     }
 
-  test("assembled request filtering removes forbidden definitions and forced choice; empty disables parallel calls") {
-    val filtered = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock")))).filterRequest(request)
-    assertEquals(filtered.tools.map(_.name), Chunk(ToolKey.unsafe("clock")))
-    assertEquals(filtered.toolChoice, ToolChoice.None)
+  test("assembled request filtering removes forbidden definitions; empty disables parallel calls") {
+    val filtered = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("clock")))).filterRequest(request)
+    assertEquals(filtered.tools.map(_.name), Chunk(FunctionKey.unsafe("clock")))
+    assert(filtered.parallelToolCalls)
     val empty = disabled.filterRequest(request)
     assert(empty.tools.isEmpty)
-    assertEquals(empty.toolChoice, ToolChoice.None)
     assert(!empty.parallelToolCalls)
     assertEquals(AgentCapabilities().filterRequest(request), request)
   }
@@ -114,7 +119,8 @@ final class AgentCapabilitiesSuite extends FunSuite {
               .as(
                 AgentTurnResponse(
                   Chunk(
-                    MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("call"), ToolKey.unsafe("shell"), "{}"))
+                    MessagePayload
+                      .ToolCall(FunctionCall(FunctionCallId.unsafe("call"), FunctionKey.unsafe("shell"), "{}"))
                   ),
                   LlmStopReason.ToolUse
                 )
@@ -128,7 +134,6 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assert(result._1.isInstanceOf[AudioAgent[?]])
     assert(result._2.isLeft)
     assert(result._3.tools.isEmpty)
-    assertEquals(result._3.toolChoice, ToolChoice.None)
     assert(!result._3.parallelToolCalls)
   }
 
@@ -199,18 +204,19 @@ final class AgentCapabilitiesSuite extends FunSuite {
                     AgentDecision.Actions(
                       Chunk(
                         if retrieve then LlmAction.RetrieveRag("docs", RagQuery("query"))
-                        else LlmAction.CallExternalTool(ExternalToolCall(ToolKey.unsafe("shell"), "{}"))
+                        else LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("shell"), "{}"))
                       )
                     )
                   )
                 )
             }
           }
-          tool = new AgentTool[Any] {
-            val definition = AgentToolDefinition(ToolKey.unsafe("shell"), "commands")
-            def execute(call: ExternalToolCall): IO[YallmoError, ExternalToolResult] = {
+          tool = new AgentFunction[Any] {
+            val definition =
+              FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
+            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = {
               val _ = call
-              executed.set(true).as(ExternalToolResult("unsafe"))
+              executed.set(true).as(ExternalFunctionResult("unsafe"))
             }
           }
           retriever = new KnowledgeRetriever[Any] {
@@ -220,7 +226,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
               executed.set(true).as(Chunk.empty)
             }
           }
-          outcome <- new AgentRunner[Any](Map(ToolKey.unsafe("shell") -> tool), Map("docs" -> retriever))
+          outcome <- new AgentRunner[Any](Map(FunctionKey.unsafe("shell") -> tool), Map("docs" -> retriever))
             .run(malicious, AgentTask("hello"), available)
             .either
           didExecute <- executed.get
@@ -288,9 +294,9 @@ final class AgentCapabilitiesSuite extends FunSuite {
       }
     }
     val program = NativeFunctionAgent[Agent[Any]](id, "model", capabilities = disabled)
-    val adapter = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock")))))
+    val adapter = ConfiguredAgent(delegate, AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("clock")))))
     run(new AgentRunner[Any](Map.empty, Map.empty).run(program.bind[Any](adapter), AgentTask("hello"), available))
-    val invalid = ConfiguredAgent(delegate, AgentCapabilities(tools = Some(Set(ToolKey.unsafe("typo")))))
+    val invalid = ConfiguredAgent(delegate, AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("typo")))))
     val error = run(
       new AgentRunner[Any](Map.empty, Map.empty)
         .run(program.bind[Any](invalid), AgentTask("hello"), available)
@@ -300,21 +306,20 @@ final class AgentCapabilitiesSuite extends FunSuite {
   }
 
   test("configured nonempty tool allowlist preserves allowed calls and rejects unadvertised allowed IDs") {
-    val policy = AgentCapabilities(tools = Some(Set(ToolKey.unsafe("clock"))))
+    val policy = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("clock"))))
     val call =
-      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("allowed-call"), ToolKey.unsafe("clock"), "{}"))
+      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("allowed-call"), FunctionKey.unsafe("clock"), "{}"))
     val delegate = new Agent[Any] {
       val id = AgentCapabilitiesSuite.this.id
       def turn(r: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
-        assert(!r.tools.exists(_.name == ToolKey.unsafe("shell")))
+        assert(!r.tools.exists(_.name == FunctionKey.unsafe("shell")))
         ZIO.succeed(AgentTurnResponse(Chunk(call), LlmStopReason.ToolUse))
       }
     }
     val adapter = ConfiguredAgent(delegate, policy)
-    val allowed = run(adapter.turn(request.copy(toolChoice = ToolChoice.Auto)))
+    val allowed = run(adapter.turn(request))
     assertEquals(allowed.output, Chunk(call))
     assert(run(adapter.turn(request.copy(tools = Chunk.empty)).either).isLeft)
-    assert(run(adapter.turn(request.copy(toolChoice = ToolChoice.None)).either).isLeft)
   }
 
   test("startup catalog validation catches unknown IDs on unselected agents without constructing adapters") {

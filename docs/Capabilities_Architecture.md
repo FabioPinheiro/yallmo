@@ -21,7 +21,7 @@ An audio-capable agent is not automatically a transcription agent. An agent usin
 
 ## 2. Configuration structure
 
-Capabilities belong to an agent definition, alongside—not inside—its model/prompt `config` object. For example, this **agent-definition fragment** permits two tool IDs and disables the other three capability categories:
+Capabilities belong to an agent definition, alongside—not inside—its model/prompt `config` object. For example, this **agent-definition fragment** permits the filesystem tool and its two read functions and disables the other three capability categories:
 
 ```json
 {
@@ -33,7 +33,8 @@ Capabilities belong to an agent definition, alongside—not inside—its model/p
     "parallelToolCalls": false
   },
   "capabilities": {
-    "tools": ["readFile", "listFiles"],
+    "tools": ["filesystem"],
+    "functions": ["readFile", "listFiles"],
     "retrievers": [],
     "skills": [],
     "extensions": []
@@ -43,22 +44,41 @@ Capabilities belong to an agent definition, alongside—not inside—its model/p
 
 A complete configuration also needs the agent's map key and a matching provider definition. Tool IDs must exist in the application's available catalog; the example does not install tools or configure an endpoint.
 
-`AgentCapabilities.tools` is `Option[Set[ToolKey]]`
+`AgentCapabilities.tools` is `Option[Set[ToolKey]]`; `functions` is `Option[Set[FunctionKey]]`.
+
+A **tool** is a capability group; a **function** is one callable operation, and a **function call** is one invocation with a call ID and arguments. Each `ToolDefinition` exposes `name: ToolKey` and `functions: Set[FunctionToolDefinition]`; membership is never inferred from a prefix. `FunctionKey` remains an opaque string without an owning-tool back-reference. Its companion contains constructors/codecs only; each tool declares its own callable identifiers in `model/.../model/tool/`.
+
+| Tool key | Callable function names |
+| --- | --- |
+| `filesystem` | `readFile`, `listFiles` |
+| `bash` | `bash` |
+| `repositoryChanges` | `repositoryChanges` |
+| `scalamode` | `scalamode` |
+| `sdlc` | `sdlc_set`, `sdlc_read_task`, `sdlc_set_intents`, `sdlc_read_intent`, `sdlc_list` |
+| `coach` | `coach_list_applications`, `coach_get_application`, `coach_save_application` |
+
+**Migration:** old per-operation `capabilities.tools` lists must move unchanged to `capabilities.functions` to preserve their exact restrictions. Alternatively, use `tools` with the group keys above to allow all available operations in a group. Existing `tools: []` still disables all functions. Persisted call names and provider-visible function names are unchanged. Unknown old keys in `tools` fail validation; there is no automatic broadening.
+
+Both restrictions must pass. For example, `tools: [sdlc]` with `functions: [sdlc_read_task, sdlc_read_intent, sdlc_list]` grants read-only SDLC access. A function allowlist cannot re-enable a disabled tool.
 
 | JSON form | Representation | Meaning |
 | --- | --- | --- |
 | Missing `capabilities`, or `"capabilities": {}` | All fields `None` | Inherit the application's existing setup for each category |
 | Field omitted from a partial object | That field is `None` | Inherit that category only |
 | `"tools": []` | `Some(Set.empty)` | Disable tools; do not inherit them |
-| `"tools": ["readFile"]` | `Some(Set(ToolKey.ReadFile))` | Permit only that ID from the available tools |
+| `"tools": ["sdlc"]` | `Some(Set(ToolKey.Sdlc))` | Permit the available SDLC functions |
+| `"functions": ["readFile"]` | `Some(Set(FilesystemToolDefinition.ReadFile))` | Permit only this function, subject to the tool restriction |
+| `"functions": []` | `Some(Set.empty)` | Disable every function |
 
-These semantics apply independently to tools, retrievers, skills and extensions. In particular, `{"tools": []}` does **not** disable inherited retrievers, skills or extensions.
+These semantics apply independently to tools, functions, retrievers, skills and extensions. In particular, `{"tools": []}` does **not** disable inherited retrievers, skills or extensions.
 
-IDs match catalog `.key` values exactly. Native tool definitions use the same key as their function `name`. Allowlists are sets, not execution-order declarations: filtering preserves the application's catalog order. An allowlist cannot create a missing capability or provide its implementation.
+Tool and function IDs match their definitions' `.name` values exactly; retrievers, skills and extensions still use `.key`. Function definitions use a `FunctionKey` as their provider `name`; the owning tool has a separate `ToolKey`. Allowlists are sets, not execution-order declarations: filtering preserves the application's catalog order. An allowlist cannot create a missing capability or provide its implementation.
 
 ### Available definitions versus executable implementations
 
-`StaticContext[R]` contains model-facing tool/retriever definitions, skill instructions and extension instances. The runner separately holds maps of executable `AgentTool[R]` and `KnowledgeRetriever[R]` implementations.
+`StaticContext[R].functions` contains model-facing schemas; `.tools` contains `ToolDefinition`s exposing the complete function definitions. Selection retains declared function names with available implementations and uses the schemas selected at binding. No callable definition stores reverse ownership metadata. Retrievers, skill instructions and extension instances remain separate.
+
+The runner holds maps of executable `AgentFunction[R]` and `KnowledgeRetriever[R]` implementations. `AgentTool[R]` binds implementations for the functions exposed by its `ToolDefinition`. `ResolvedAgent.functions` carries bound implementations, while `.tools` is their grouped view. The same `FunctionToolDefinition` is used by registration, orchestration and providers; there is no intermediate function-definition DTO. Provider requests remain flat `FunctionToolDefinition`s. `AgentTurnRequest.toolGroups` carries the host-only membership catalog for direct-request filtering; provider mappers never send this catalog.
 
 A tool or retriever must be both authorized in the effective context and backed by a registered implementation before it can run. Merely including it in configuration or a model response is insufficient.
 
@@ -70,15 +90,15 @@ All source paths below are relative to the repository root.
 | --- | --- |
 | [`AgentCapabilities.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala) | Decode optional allowlists; validate IDs and filter context (`resolve`); intersect restrictions (`intersect`); filter assembled tool requests (`filterRequest`) |
 | [`ConfigFile.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/config/ConfigFile.scala) | Validate configuration references and, when catalogs are supplied, capability IDs for all configured agents |
-| [`RuntimeInstances.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/RuntimeInstances.scala) | Lazily resolve/cache ordinary agents and providers; attach configured policy; provide generic checked audio-agent lookup |
+| [`AgentCatalog.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala) | Lazily cache complete executable generations, adapters and providers; attach configured policy; preserve rooted filesystems across explicit credential replacement |
 | [`ConfiguredAgent.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/ConfiguredAgent.scala) | Apply tool restrictions even to fully assembled direct requests; reject prohibited tool-call responses |
 | [`OAIAgent.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/oai/OAIAgent.scala), [`ChatGPTAgent.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/openai/ChatGPTAgent.scala) | Own agent identity, `turn`, canonical request/response mapping through protocol mappers, and turn diagnostics |
 | [`OAILlmProvider.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/oai/OAILlmProvider.scala), [`OpenAiCodexClient.scala`](../core/jvm/src/main/scala/fmgp/yallmo/provider/openai/OpenAiCodexClient.scala) | Own provider inference/HTTP completion and provider-specific credentials; neither is an `Agent` or exposes `turn` |
 | [`AgentInstance.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentInstance.scala) | Define the program-side policy and `configuredContext` hook used by the runner |
 | [`NativeFunctionAgent.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/NativeFunctionAgent.scala) | Combine program/adapter policies; assemble native requests from filtered context; decode responses into proposed actions |
-| [`AgentRunner.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala) | Resolve context before extensions; authorize actions and validate tool arguments before executing implementations |
-| [`ToolApproval.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/ToolApproval.scala) | Optional additional approval guard around a tool implementation |
-| [`ReplStartup.scala`](../repl/src/main/scala/fmgp/yallmo/repl/ReplStartup.scala) | Supply REPL catalogs, validate policies, bind selected agents, and enforce REPL-specific voice requirements |
+| [`AgentRunner.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala) | Consume a complete configured selection (or resolve context for generic programs); authorize actions and validate arguments before executing implementations |
+| [`FunctionApproval.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/FunctionApproval.scala) | Optional additional approval guard around a tool implementation |
+| [`ReplStartup.scala`](../repl/src/main/scala/fmgp/yallmo/repl/ReplStartup.scala) | Adapt retained embedded selections and enforce local voice requirements; connected startup remains client-only |
 
 `OpenAiCodexClient` retains its existing name but is a provider connection, not a second agent. `ChatGPTAgent` validates/maps native requests before asking that connection to complete a wire request; OAuth credentials, refresh coordination, HTTP headers, SSE decoding, and transport timeouts remain in the connection. Named agents sharing one connection therefore share account state, not agent identity. Native request-body mapping lives in `OpenAiCodexTurnMapper`, not in the provider connection.
 
@@ -91,21 +111,29 @@ Private configuration file
   -> ConfigFile.loadOrInitialize / validate
        structural fields and agent/provider references
   -> Application constructs complete available capability catalogs
-  -> ConfigFile.validateCapabilities(config, availableContext)
+  -> ServerApplication validates capability IDs against the available catalog
        validate all configured agents, including unselected ones
-  -> RuntimeInstances.getAgent(agentId), when needed
-       initialize/cache adapter and provider locally
-       attach configured restrictions
-  -> Bind adapter to the selected native program
+  -> AgentCatalog.resolve(agentId), when needed
+       initialize/cache adapter and provider locally; attach configured restrictions
+       bind program/blob reader and selected tools; resolve effective context
+       cache one complete ResolvedAgent generation
+  -> AgentRunner.execution(resolved) / invocation(resolved)
 ```
 
 Loading/lookup does not perform inference or authenticate against an endpoint. Settings decoding and capability validation are also local operations. A registry uses an immutable configuration snapshot; editing the file does not change already-created adapters or policies automatically.
 
-Capability validation needs the application's **complete, unfiltered available context**. `ConfigFile.validate` alone cannot check tool/skill/etc. IDs because the configuration file does not define those catalogs. The REPL supplies them in `ReplStartup.application` after tool availability evaluation.
+Capability validation needs the application's **complete, unfiltered available context**. `ConfigFile.validate` alone cannot check tool/skill/etc. IDs because the configuration file does not define those catalogs. `ServerApplication` supplies them after startup tool availability evaluation; the connected REPL does not compose tools.
 
 `resolve` rejects unknown IDs with `InvalidConfig`, naming the agent, capability field and unknown IDs. Do not prefilter the catalog by an agent's policy before validating it: that can confuse a denied capability with a nonexistent one. A capability installed in code but unavailable in the current application's catalog is not usable by naming it in an allowlist.
 
-The current REPL supplies available tools; its base retriever, skill and extension catalogs are empty. The generic core policy supports all four categories for applications that supply them. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
+The server supplies available tools; its base retriever, skill and extension catalogs are empty. The generic core policy supports all four categories for applications that supply them. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
+
+### Read roots are independent of Scala RPC
+
+Configured `readFile`/`listFiles` bind to agent `FsRead` when present, else workspace, for both managed submissions and
+direct invocations. Bash/Git keep workspace policy; SDLC uses the shared server-storage service. Filesystem-enabled
+Scala effects additionally require an explicit trusted RPC route/endpoint and selected `FsRead`. Private Coach tools
+remain local to that Coach selection. Folder programs advertise/execute no tools, including direct invocation.
 
 ## 5. Combining program and configured restrictions
 
@@ -157,32 +185,33 @@ Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, available
 
 ### At execution
 
-For `CallExternalTool`, the runner checks the effective tool definition, validates model-produced arguments against its input schema, and looks up the implementation before calling `execute`.
+For `CallExternalFunction`, the runner checks the effective tool definition, validates model-produced arguments against its input schema, and looks up the implementation before calling `execute`.
 
 For `RetrieveRag`, it checks effective retriever membership and looks up the implementation before calling `retrieve`.
 
 These checks still apply if a program proposes an action that was never advertised. Denial must not execute the implementation. Tool failures/denials become structured tool-result messages so the loop can respond; retrieval failures remain typed run failures. Turn/action budgets and the run timeout apply independently of capability permissions.
 
-`ToolApproval.guard` can add an approval decision before an already-authorized tool implementation runs. Allowlists do not automatically install this guard, and approval is not a replacement for membership checks or argument validation. Implementations remain responsible for their own domain/resource safety.
+`FunctionApproval.guard` can add an approval decision before an already-authorized tool implementation runs. Allowlists do not automatically install this guard, and approval is not a replacement for membership checks or argument validation. Implementations remain responsible for their own domain/resource safety.
 
 ## 7. Direct assembled requests cannot bypass tool policy
 
 A caller can bypass native prompt assembly and call a resolved configured adapter directly, or call `Orchestrator.turn`. These paths still pass through `ConfiguredAgent` for configured policies.
 
-When the `tools` allowlist is explicit, `filterRequest`:
+When a `tools` or `functions` allowlist is explicit, `filterRequest`:
 
-1. Removes function definitions whose names are not allowed.
-2. Changes a forced function choice to `ToolChoice.None` if that function is no longer present.
-3. Sets `ToolChoice.None` and disables parallel tool calls when no tool definitions remain.
-4. Otherwise preserves the requested tool choice and allows parallel calls only if tools remain.
+1. Removes function definitions whose names or tool memberships are not allowed.
+2. Narrows the host-side tool groups to the remaining functions.
+3. Disables parallel tool calls when no function definitions remain.
 
-For an explicit tools policy, the adapter also rejects a returned function call if its name is forbidden, it was not advertised in the filtered request, or the filtered choice was `ToolChoice.None`. This is a typed `InvalidConfig` failure before any execution.
+The exposed function list is the request-level control: an empty list requests text only; otherwise the model may answer directly or call an exposed function. There is no forced-function selection.
 
-If `tools` is omitted, request filtering and this extra response guard preserve existing behavior. The runner's effective-context checks still authorize execution on the runner path. An adapter turn itself does not execute tools or enter an orchestration loop.
+For an explicit tools or functions policy, the adapter also rejects a returned function call if it was not advertised in the filtered request. This is a typed `InvalidConfig` failure before any execution.
+
+If both allowlists are omitted, request filtering and this extra response guard preserve existing behavior. The runner's effective-context checks still authorize execution on the runner path. An adapter turn itself does not execute tools or enter an orchestration loop.
 
 ## 8. REPL transcription is application policy
 
-The configured `transcriberAgent` is an ordinary agent from the same catalog and remains selectable for normal use. There is no special core `ConfiguredTranscriber` type or transcription resolver in `RuntimeInstances`. The REPL's `Transcriber` service invokes that agent and handles transcript validation/retention; it is an application service, not a new agent type.
+An explicitly selected embedded transcriber is an ordinary agent from the same catalog and remains selectable for normal use. There is no special core `ConfiguredTranscriber` type or transcription resolver in `AgentCatalog`. The REPL's `Transcriber` service invokes that agent and handles transcript validation/retention; it is an application service, not a new agent type.
 
 `ReplStartup.voice` owns the voice-specific setup:
 
@@ -206,7 +235,7 @@ Use the following explicit policy for the voice agent so future application cata
 
 Omitted settings can pass the effective-empty check when the inherited catalogs are already empty; they do not mean that the category is permanently disabled.
 
-Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, `ToolChoice.None`, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
+Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
 `Orchestrator.turn` supplies `AgentTurnRequest.readBlob`; inference failure leaves that audio intact. A valid assistant
 transcript is then appended before text is offered to the editable draft. Recordings survive draft discard when using
 filesystem storage.
@@ -217,7 +246,7 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 
 - **Not a sandbox:** trusted Scala code can construct raw adapters or invoke tools directly. Registry wrappers protect configured-agent paths; application code must preserve those paths.
 - **Raw provider APIs:** `inferenceWithTextAndTools` is deprecated at the text-provider interface; `generateWithTools` is deprecated on the common provider API and explicitly on the OAI/Codex implementations. Their internal `toolLoop`/`executeTool` helpers are also deprecated. These APIs remain for compatibility but do not pass through the configured agent wrapper/runner. Use `Agent` with `NativeFunctionAgent`/`AgentRunner` for new tool-executing code; deprecation does not retrofit policy enforcement into the legacy path.
-- **Caller-supplied agents:** `RuntimeInstances.fromAgents`/registered instances are returned as supplied, without inventing configuration policy for them. Program-side policy and runner checks still apply when used through the runner.
+- **Caller-supplied agents:** `AgentCatalog.fromAgents`/registered instances are returned as supplied, without inventing configuration policy for them. Program-side policy and runner checks still apply when used through the runner.
 - **Not transcript sanitization:** allowlists prevent fresh capability application/execution. They do not remove old tool results, previously inserted skill text, or arbitrary caller-provided context from history. Direct-request filtering does not identify the origin of text inside a payload.
 - **Blob access is not a new authorization policy:** `readBlob` is a request-local function, not serialized content.
   `Orchestrator.turn` binds its own Storage reader; `NativeFunctionAgent.bind(adapter, orchestrator.readBlob)` binds the
@@ -230,7 +259,7 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 ## 10. Tests and related documentation
 
 - [`AgentCapabilitiesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCapabilitiesSuite.scala): omitted/empty/partial settings, unknown IDs, intersections, direct-request bypass attempts, filtered skills/extensions and denied actions.
-- [`RuntimeInstancesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/RuntimeInstancesSuite.scala): generic resolution/cache/audio checks and configured tool-request boundary.
+- [`AgentCatalogSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCatalogSuite.scala): generic resolution/cache/audio checks and configured tool-request boundary.
 - [`ReplStartupSuite`](../repl/src/test/scala/fmgp/yallmo/repl/ReplStartupSuite.scala): application-specific voice validation, inherited policies, ordinary selection and isolated retention.
 - [`TranscriberSuite`](../repl/src/test/scala/fmgp/yallmo/repl/voice/TranscriberSuite.scala): fresh tool-free turns, unexpected response rejection and retention failures.
 - [Agent/provider configuration](CONFIG_AGENT_PROVIDER.md) — its opening section describes the current implementation; later sections include historical designs.

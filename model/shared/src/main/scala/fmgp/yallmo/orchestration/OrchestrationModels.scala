@@ -1,9 +1,10 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolDefinition}
+
 import fmgp.yallmo.model.YallmoError
 import zio.*
 import fmgp.yallmo.model.{FunctionCallId, MessagePayload}
-import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.model.*
 
 // /** Re-export the model-layer identifier used by agents throughout orchestration. */
@@ -51,31 +52,24 @@ final case class AgentTurnResult(
 /** A query issued against a named RAG retriever. */
 final case class RagQuery(text: String)
 
-/** A model-facing description of an external capability available to one agent. */
-final case class AgentToolDefinition(
-    key: ToolKey,
-    description: String,
-    inputSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(Map.empty, additionalProperties = true)
-)
-
 /** A provider-neutral external-tool invocation proposed by an agent.
   *
   * Native calls retain their provider ID. If `callId` is absent, the runner assigns one before recording and executing
   * the invocation; tools and approval checks always receive the resolved ID.
   */
-final case class ExternalToolCall(
-    toolKey: ToolKey,
+final case class ExternalFunctionCall(
+    functionKey: FunctionKey,
     argumentsJson: String,
     callId: Option[FunctionCallId] = None
 )
 
 /** Typed host boundary; only restricted Scala results carry logs and process metadata. */
-sealed trait ExternalToolResult {
+sealed trait ExternalFunctionResult {
   def text: String
 }
 
-object ExternalToolResult {
-  final case class Generic(text: String) extends ExternalToolResult
+object ExternalFunctionResult {
+  final case class Generic(text: String) extends ExternalFunctionResult
 
   /** Host timings in milliseconds, with the same phase boundaries as [[ScalaModeOutput]]. */
   final case class ScalaMode(
@@ -86,12 +80,12 @@ object ExternalToolResult {
       compilationTime: Long = 0L,
       executionTime: Long = 0L,
       totalTime: Long = 0L
-  ) extends ExternalToolResult {
+  ) extends ExternalFunctionResult {
     def output: String = result.output
     def text: String = output
   }
 
-  def apply(text: String): ExternalToolResult = Generic(text)
+  def apply(text: String): ExternalFunctionResult = Generic(text)
 }
 
 /** Model guidance made available to an agent for this run. */
@@ -108,10 +102,11 @@ final case class AgentSkill(
   */
 final case class StaticContext[R](
     systemPrompt: String,
-    tools: Chunk[AgentToolDefinition] = Chunk.empty,
+    functions: Chunk[FunctionToolDefinition] = Chunk.empty,
     retrievers: Chunk[RetrieverDefinition] = Chunk.empty,
     skills: Chunk[AgentSkill] = Chunk.empty,
-    extensions: Chunk[ContextExtension[R]] = Chunk.empty[ContextExtension[R]]
+    extensions: Chunk[ContextExtension[R]] = Chunk.empty[ContextExtension[R]],
+    tools: Chunk[ToolDefinition] = Chunk.empty
 )
 
 /** A retriever advertised to an agent context. */
@@ -123,7 +118,7 @@ final case class RetrieverDefinition(
 /** A model-proposed action. Its execution remains owned by the trusted [[AgentRunner]]. */
 enum LlmAction {
   case RetrieveRag(retrieverKey: String, query: RagQuery)
-  case CallExternalTool(call: ExternalToolCall)
+  case CallExternalFunction(call: ExternalFunctionCall)
 }
 
 /** One outcome of an [[AgentInstance]] turn.

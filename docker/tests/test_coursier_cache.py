@@ -97,11 +97,11 @@ class CoursierCacheTests(unittest.TestCase):
             unavailable = root / "unavailable"
             unavailable.touch()
             result = self.invoke(
-                helper, 'cd -- "$TEST_WORKSPACE"; "$TEST_SCALA_CLI" --cli-default-scala-version 3.10.0 --version',
+                helper, 'cd -- "$TEST_WORKSPACE"; "$TEST_SCALA_CLI" --cli-default-scala-version 3.10.1 --version',
                 HOME=str(unavailable), XDG_CACHE_HOME=str(unavailable),
                 TEST_WORKSPACE=str(root), TEST_SCALA_CLI=shutil.which("scala-cli"))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Scala version (default): 3.10.0", result.stdout)
+            self.assertIn("Scala version (default): 3.10.1", result.stdout)
 
     def test_insecure_or_symlinked_default_directory_is_rejected_without_modification(self):
         for symlink in (False, True):
@@ -150,7 +150,7 @@ class CoursierCacheTests(unittest.TestCase):
                                              if not k.startswith(("COURSIER_", "SCALA_CLI_")) and k != "BASH_ENV"},
                                         text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                defaults = ["--cli-default-scala-version", "3.10.0"] if name in ("scala", "scala-cli") else []
+                defaults = ["--cli-default-scala-version", "3.10.1"] if name in ("scala", "scala-cli") else []
                 self.assertEqual(result.stdout.splitlines(), [str(users / str(os.getuid()) / "cache"),
                                                              *defaults, "space argument", "literal;$VALUE"])
 

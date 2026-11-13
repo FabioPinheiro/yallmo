@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "3.10.0"
+ThisBuild / scalaVersion := "3.10.1"
 ThisBuild / organization := "app.fmgp"
 ThisBuild / version := "2.0.0-SNAPSHOT"
 ThisBuild / versionScheme := Some("early-semver")

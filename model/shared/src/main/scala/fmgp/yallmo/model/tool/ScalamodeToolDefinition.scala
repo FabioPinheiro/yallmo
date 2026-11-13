@@ -10,7 +10,7 @@ object ScalamodeToolDefinition extends ToolDefinition {
 
   val Pure: FunctionToolDefinition = FunctionToolDefinition(
     name = Execute,
-    description = "Evaluate a Scala block with Scala 3.10.0, offline. The last expression is returned. " +
+    description = "Evaluate a Scala block with Scala 3.10.1, offline. The last expression is returned. " +
       "Returned ZIO effects are executed by the host. Automatically imported restricted ZIO constructors: " +
       "ZIO.succeed, fail, attempt, fromEither, foreach and unit (not the full zio.ZIO companion). " +
       "Example: ZIO.succeed(1 + 1) returns 2. Trace is supplied; do not import zio.ZIO. " +

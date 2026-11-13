@@ -112,7 +112,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
     })
   }
 
-  test("pinned Scala 3.10.0 child authenticates via stdin and reads, lists, streams and recovers domain errors") {
+  test("pinned Scala 3.10.1 child authenticates via stdin and reads, lists, streams and recovers domain errors") {
     withExecutor { (executor, endpoint, fs, route) =>
       executor
         .executeFilesystem(

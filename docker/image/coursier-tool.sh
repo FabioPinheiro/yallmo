@@ -7,7 +7,7 @@ case "$name" in
   scala|scala-cli)
     executable=/usr/share/coursier/bin/scala-cli
     # Match build.sbt without overriding project directives or an explicit --scala version.
-    set -- --cli-default-scala-version 3.10.0 "$@"
+    set -- --cli-default-scala-version 3.10.1 "$@"
     ;;
   metals|bloop) executable="/usr/share/coursier/bin/$name" ;;
   sbt) executable=/opt/sbt/bin/sbt ;;

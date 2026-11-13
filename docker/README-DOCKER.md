@@ -41,7 +41,7 @@ Add `--platform linux/amd64` or `--platform linux/arm64` to choose an architectu
 The image includes the server, website, Node/npm, Python, Git, SSH client, sbt,
 Coursier, Scala CLI and its `scala` alias. Metals, Bloop and Pi are sandbox-kit-only;
 no SSH server is installed. The full Scala distribution/offline Maven repository is not bundled.
-Both `scala` and `scala-cli` default to Scala **3.10.0**, matching `build.sbt`;
+Both `scala` and `scala-cli` default to Scala **3.10.1**, matching `build.sbt`;
 project directives and explicit `--scala` options still take precedence.
 Tool launchers keep Coursier and Scala CLI state private to each UID under
 `/var/cache/coursier/UID`, including Scala CLI's cache and config. Explicit
@@ -328,3 +328,12 @@ Sunday at **05:23 UTC**, for both architectures. Publishing requires `main` and:
 - Secret: `DOCKERHUB_TOKEN` (Docker Hub PAT with Read & Write).
 
 Otherwise, the workflow only builds, tests and scans. Never commit tokens.
+
+## other commands
+
+```bash
+sbx exec -it yallmo-sandbox bash # connect
+
+sbx policy allow network --sandbox yallmo-sandbox '**'          # add allow-all rule
+sbx policy rm network --sandbox yallmo-sandbox --resource '**'  # remove  allow-all rule
+```

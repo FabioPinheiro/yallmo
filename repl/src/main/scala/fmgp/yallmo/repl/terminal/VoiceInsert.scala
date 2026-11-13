@@ -6,6 +6,7 @@ import org.jline.reader.LineReader
 import fmgp.yallmo.repl.voice.CapturedAudio
 import fmgp.yallmo.repl.voice.Transcriber
 import fmgp.yallmo.repl.voice.{AudioRecorder, VoiceRecordingTermination}
+import scala.util.control.NonFatal
 
 /** Owns the line-editor-only voice workflow. It never submits text to [[fmgp.yallmo.repl.ReplApplication]]. */
 private[terminal] final class VoiceInsert(
@@ -28,7 +29,7 @@ private[terminal] final class VoiceInsert(
       if !insertVoiceSafely() then reader.getBuffer.cursor(originalCursor)
       true
     } catch {
-      case error: Throwable =>
+      case NonFatal(error) =>
         reader.getBuffer.cursor(originalCursor)
         showFailure(error)
         true

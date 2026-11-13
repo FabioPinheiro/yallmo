@@ -138,7 +138,8 @@ private[terminal] final class TerminalProviderLoginInput(terminal: Terminal, lin
           lineReader.foreach(_.setVariable(LineReader.DISABLE_HISTORY, true))
           (attributes, history)
         } catch {
-          case error: Throwable =>
+          // Restore secret-input settings even on fatal failures, then rethrow the original error.
+          case error =>
             terminal.setAttributes(attributes)
             lineReader.foreach(_.setVariable(LineReader.DISABLE_HISTORY, history.orNull))
             throw error

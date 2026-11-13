@@ -57,7 +57,7 @@ trait ScalaCodeExecutor {
 
 object ScalaCodeExecutor {
   // Pin the compiler to the main build's release; use its local cache without resolving a floating version.
-  val ScalaVersion: String = "3.10.0" // TODO let's make it configurable
+  val ScalaVersion: String = "3.10.1" // TODO let's make it configurable
   val live: ULayer[ScalaCodeExecutor] = layer()
 
   /** Executable, compiler version and offline mode are trusted host configuration, never tool arguments. */

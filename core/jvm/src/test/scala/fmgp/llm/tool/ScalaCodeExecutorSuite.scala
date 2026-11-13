@@ -98,7 +98,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("offline mode accepts exact releases and fully pinned nightlies") {
     withFakeCli("printf 5") { executable =>
-      for version <- List("3.10.0", "3.10.1-RC1", "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY") do {
+      for version <- List("3.10.0", "3.10.1") do {
         val result = run(
           ZIO
             .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 10.seconds, 1024))

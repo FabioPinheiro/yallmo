@@ -1,8 +1,5 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
-
-import fmgp.yallmo.model.ScalaModeResult
 import fmgp.yallmo.orchestration.ExternalFunctionResult
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}

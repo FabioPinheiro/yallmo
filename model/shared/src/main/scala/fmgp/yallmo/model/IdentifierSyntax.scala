@@ -1,6 +1,7 @@
 package fmgp.yallmo.model
 
 import scala.annotation.targetName
+import fmgp.yallmo.tool.FunctionCallId
 
 extension (agentId: AgentId)
   @targetName("agentIdValue")

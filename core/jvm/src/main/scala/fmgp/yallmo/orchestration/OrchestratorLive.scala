@@ -5,6 +5,7 @@ import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.storage.{StorageFS, StorageEvents, StorageInMemory, StoreageUtils}
 import java.nio.file.Path
 import zio.*
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId}
 
 /** Default [[Orchestrator]] implementation backed by an internal [[Storage]]. */
 final class OrchestratorLive[-R] private[orchestration] (

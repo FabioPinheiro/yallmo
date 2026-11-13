@@ -1,8 +1,16 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
-
-import fmgp.yallmo.model.tool.{BashToolDefinition, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.{
+  BashToolDefinition,
+  FunctionCall,
+  FunctionCallId,
+  FunctionGenericOutput,
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalaModeOutput,
+  ScalaModeResult,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.*
@@ -26,7 +34,6 @@ import zio.{Config as _, *}
 import zio.http.{Version as HttpVersion, *}
 import zio.json.*
 import zio.json.ast.Json
-
 final class AgentsInvokeSuite extends FunSuite {
   private val human = AgentId("user-human")
   private val assistant = AgentId("assistant")

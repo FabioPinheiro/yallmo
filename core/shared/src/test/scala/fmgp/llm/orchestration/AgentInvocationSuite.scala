@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey, FunctionToolDefinition}
 
 import RunnerTestSupport.*
 
@@ -8,7 +8,6 @@ import fmgp.yallmo.model.*
 import munit.FunSuite
 import scala.concurrent.Future
 import zio.*
-
 final class AgentInvocationSuite extends FunSuite {
   private val id = AgentId("recipient")
   private val call = FunctionCall(FunctionCallId.unsafe("direct-call"), FunctionKey.unsafe("echo"), "{}")

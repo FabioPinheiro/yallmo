@@ -187,7 +187,15 @@ Ordinary JVM compilation/test/run does not invoke npm or build the frontend. Wit
 `/rpc` still works. Asset/API misses return 404, never fallback HTML. The module JAR includes assets, not JVM dependencies;
 use sbt's runtime classpath or a normal JVM distribution.
 
-The entry point is `fmgp.yallmo.server.OrchestratorServerMain`:
+Website infrastructure lives in [`fmgp.yallmo.server.website`](src/main/scala/fmgp/yallmo/server/website/):
+`WebAssets` serves the packaged SPA and applies response security headers; `SdlcHttpRoutes` exposes the read-only
+planning inspector endpoints. `OrchestratorWSServer` remains in `fmgp.yallmo.server` and combines these with the shared
+JSON-RPC WebSocket transport. Asset URLs and the `/web-harness/` classpath resource root are unchanged.
+Run the website tests with `sbt 'server/testOnly fmgp.yallmo.server.website.*'`.
+
+The entry point is [`fmgp.yallmo.server.MainServer`](src/main/scala/fmgp/yallmo/server/MainServer.scala).
+Direct JVM launchers must use this class; `server/run` and the Docker entrypoint select it automatically.
+Its command-line arguments are unchanged:
 
 ```text
 --storage <existing-directory> --config <path> [--workspace <existing-directory>]

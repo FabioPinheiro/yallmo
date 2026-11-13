@@ -324,7 +324,7 @@ lazy val server = project
   .settings(jvmSettings)
   .settings(
     name := "yallmo-server",
-    Compile / mainClass := Some("fmgp.yallmo.server.OrchestratorServerMain"),
+    Compile / mainClass := Some("fmgp.yallmo.server.MainServer"),
     Compile / run / fork := true,
     Test / fork := true,
     libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,

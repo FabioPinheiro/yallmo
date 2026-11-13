@@ -1,17 +1,8 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.tool.{
-  BashToolDefinition,
-  FilesystemToolDefinition,
-  RepositoryChangesToolDefinition,
-  ScalamodeToolDefinition,
-  SdlcToolDefinition
-}
-
-import fmgp.yallmo.model.ScalaModeResult
-import fmgp.yallmo.tool.ToolKey
-import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.tool.*
+
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import java.nio.file.{Files, Path}
 import java.util.Comparator
 import munit.FunSuite

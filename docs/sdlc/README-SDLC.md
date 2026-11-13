@@ -247,7 +247,7 @@ headers and do not invoke an agent or create conversations/files. HTTP mutation
 methods are rejected. Failures return a sanitized JSON error with status 500.
 
 The standalone main creates one `SdlcService` and passes that same owner to agent
-tools and `SdlcHttpRoutes`. Viewer-only server mode also exposes the inspector.
+tools and `fmgp.yallmo.server.website.SdlcHttpRoutes`. Viewer-only server mode also exposes the inspector.
 Embedded hosts opt in by supplying their shared `SdlcService`.
 
 **Trusted environment only:** HTTP inspection requires no WebSocket identity or
@@ -324,6 +324,6 @@ requires explicit recovery, not a checkpoint that silently skips invalid data.
 ```sh
 sbt 'core/testOnly fmgp.yallmo.tool.sdlc.*'
 sbt 'coreJS/testOnly fmgp.yallmo.tool.sdlc.PlanModelsSuite'
-sbt 'server/testOnly fmgp.yallmo.server.SdlcHttpRoutesSuite fmgp.yallmo.server.application.ApplicationToolsSuite'
+sbt 'server/testOnly fmgp.yallmo.server.website.SdlcHttpRoutesSuite fmgp.yallmo.server.application.ApplicationToolsSuite'
 sbt 'webHarness/testOnly *Sdlc*Suite *ViewWebSuite'
 ```

@@ -14,10 +14,10 @@ Implemented plan records now live in `lixo/completed/`; moving them does not clo
 
 ### TODO other
 
-- [ ] In the server module move the website related files (WebAssets) into a package 'website'
-- [ ] rename OrchestratorServerMain to MainServer
-- [ ] rename model/shared/src/main/scala/fmgp/yallmo/model/tool to model/shared/src/main/scala/fmgp/yallmo/tool
-- [ ] rename model/shared/src/main/scala/fmgp/yallmo/model/FunctionCall.scala to model/shared/src/main/scala/fmgp/yallmo/tool/FunctionCall.scala
+- [x] Move server website assets and HTTP routes into `fmgp.yallmo.server.website`.
+- [x] Rename the standalone server entry point to `MainServer`.
+- [x] Consolidate shared tool definitions under `model/shared/src/main/scala/fmgp/yallmo/tool`.
+- [x] Move function-call types to `model/shared/src/main/scala/fmgp/yallmo/tool/FunctionCall.scala`.
 - [ ] Authentication, cancellation/status APIs and richer run-management machinery.
 - [ ] Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
 - [ ] TerminalVoiceModeStatus.remoteConnection Remove!

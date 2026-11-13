@@ -1,4 +1,4 @@
-package fmgp.yallmo.server
+package fmgp.yallmo.server.website
 
 import fmgp.yallmo.fs.FsError
 import fmgp.yallmo.tool.sdlc.SdlcService

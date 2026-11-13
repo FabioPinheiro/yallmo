@@ -1,18 +1,10 @@
 package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.tool.{ToolDefinition, FunctionToolDefinition, FunctionKey, ToolKey}
+import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.fs.{FileSystem, FsRead}
 import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult}
-import fmgp.yallmo.tool.*
-import fmgp.yallmo.model.tool.{
-  FilesystemToolDefinition,
-  BashToolDefinition,
-  RepositoryChangesToolDefinition,
-  ScalamodeToolDefinition,
-  SdlcToolDefinition
-}
 import fmgp.yallmo.tool.sdlc.{SdlcService, SdlcTools}
 import zio.*
 

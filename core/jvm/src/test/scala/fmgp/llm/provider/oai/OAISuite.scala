@@ -1,9 +1,9 @@
 package fmgp.yallmo.provider.oai
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.*
 
+import fmgp.yallmo.model.{AudioFormat, MessagePayload}
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
-import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.ProviderGenerateOptions
 import fmgp.yallmo.model.llm.*
 import munit.FunSuite

@@ -1,8 +1,15 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
-
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{
+  FunctionCall,
+  FunctionCallId,
+  FunctionGenericOutput,
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalaModeOutput,
+  ScalaModeResult,
+  ScalamodeToolDefinition
+}
 
 import RunnerTestSupport.*
 
@@ -13,7 +20,6 @@ import scala.concurrent.Future
 import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import fmgp.yallmo.model.*
-
 final class AgentRunnerSuite extends FunSuite:
   private val CoordinatorId = AgentId("coordinator")
 

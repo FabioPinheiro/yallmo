@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.som.*
@@ -13,7 +13,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import scala.jdk.CollectionConverters.*
 import munit.FunSuite
 import zio.*
-
 final class ManagedHistorySubmitSuite extends FunSuite {
   private val sessionId = SessionId.unsafe("managed")
   private val userId = AgentId("human")

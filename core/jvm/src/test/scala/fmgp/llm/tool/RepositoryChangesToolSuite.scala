@@ -1,7 +1,5 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.tool.RepositoryChangesToolDefinition
-
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.{ExternalFunctionCall}
 import munit.FunSuite

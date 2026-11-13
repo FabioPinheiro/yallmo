@@ -2,8 +2,6 @@ package fmgp.yallmo.tool
 
 import fmgp.yallmo.model.YallmoError
 
-import fmgp.yallmo.model.tool.RepositoryChangesToolDefinition
-
 import fmgp.yallmo.orchestration.*
 import zio.*
 

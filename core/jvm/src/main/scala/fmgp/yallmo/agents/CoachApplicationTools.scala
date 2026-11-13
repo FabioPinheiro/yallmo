@@ -1,9 +1,7 @@
 package fmgp.yallmo.agents
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
-
-import fmgp.yallmo.model.tool.CoachToolDefinition
+import fmgp.yallmo.tool.{CoachToolDefinition, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite, WriteMode}
 import fmgp.yallmo.orchestration.*

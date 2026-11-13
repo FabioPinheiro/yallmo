@@ -1,8 +1,13 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.tool.FunctionKey
-
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{
+  FunctionCallId,
+  FunctionGenericOutput,
+  FunctionKey,
+  ScalaModeOutput,
+  ScalaModeResult,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -15,7 +20,6 @@ import scala.scalajs.js.timers.setTimeout
 import zio.Chunk
 import zio.json.*
 import zio.json.ast.Json
-
 final class ScalamodeModelSuite extends FunSuite {
   private val human = AgentId("web-user-human")
   private val agent = AgentId("assistant")

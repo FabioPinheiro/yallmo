@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition}
 
 import RunnerTestSupport.*
 
@@ -10,7 +10,6 @@ import munit.FunSuite
 import scala.concurrent.Future
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
-
 final class NativeFunctionAgentSuite extends FunSuite:
   private val NativeId = AgentId("native")
 

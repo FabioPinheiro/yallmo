@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
@@ -10,7 +10,6 @@ import java.time.Instant
 import java.util.Comparator
 import munit.FunSuite
 import zio.*
-
 final class OrchestratorBranchSuite extends FunSuite {
   private val human = AgentId("human")
   private val assistant = AgentId("assistant")

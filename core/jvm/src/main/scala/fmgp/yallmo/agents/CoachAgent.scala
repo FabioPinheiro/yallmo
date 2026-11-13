@@ -1,14 +1,13 @@
 package fmgp.yallmo.agents
 
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
-import fmgp.yallmo.tool.{ToolDefinition, ToolKey}
+import fmgp.yallmo.tool.{CoachToolDefinition, ToolDefinition, ToolKey}
 
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
 import fmgp.yallmo.orchestration.{AgentFunction, HasLocalAgentFunctions}
-import fmgp.yallmo.model.tool.CoachToolDefinition
 import zio.*
 import zio.json.*
 import zio.stream.ZPipeline

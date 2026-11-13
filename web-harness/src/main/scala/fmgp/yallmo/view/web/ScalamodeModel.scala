@@ -1,6 +1,6 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, ScalaModeOutput, ScalaModeResult, ScalamodeToolDefinition}
 
 import com.raquo.laminar.api.L.Var
 import fmgp.yallmo.model.*
@@ -11,7 +11,6 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import zio.json.*
 import zio.json.ast.Json
-
 private[web] final case class ScalamodeResult(message: Message) {
   private val scalaOutput = message.payload match {
     case MessagePayload.ToolOutput(output: ScalaModeOutput) => Some(output)

@@ -1,6 +1,9 @@
-package fmgp.yallmo.server
+package fmgp.yallmo.server.website
 
-import fmgp.yallmo.model.tool.SdlcToolDefinition
+import fmgp.yallmo.server.application.TestServerApplication
+import fmgp.yallmo.server.OrchestratorWSServer
+
+import fmgp.yallmo.tool.SdlcToolDefinition
 
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.orchestration.OrchestratorLive
@@ -170,7 +173,7 @@ final class SdlcHttpRoutesSuite extends FunSuite {
       }
       fs <- FileSystem.open(root.toString).mapError(error => new java.io.IOException(error.toString))
       service <- SdlcService.make(fs, fs)
-      backend <- application.TestServerApplication.make()
+      backend <- TestServerApplication.make()
       master = backend.application.master
       port <- new OrchestratorWSServer(backend, sdlc = Some(service)).start(0)
     } yield Fixture(root, fs, service, master, port)

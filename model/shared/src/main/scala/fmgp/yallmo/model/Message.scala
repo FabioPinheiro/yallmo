@@ -7,6 +7,7 @@ import zio.json.ast.Json
 
 import java.time.Instant
 import scala.util.Try
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallOutput}
 
 /** A full SHA-256 address used by persisted artifacts. */
 opaque type MessageId = String

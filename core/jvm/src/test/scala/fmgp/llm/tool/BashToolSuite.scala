@@ -1,7 +1,5 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.tool.BashToolDefinition
-
 import fmgp.yallmo.orchestration.ExternalFunctionCall
 import munit.FunSuite
 import zio.*

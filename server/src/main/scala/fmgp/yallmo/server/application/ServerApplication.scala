@@ -150,7 +150,7 @@ object ServerApplication {
         val available = if definition.agentType == "CoachAgent" then
           context.copy(
             functions = context.functions ++ fmgp.yallmo.agents.CoachApplicationTools.Definitions,
-            tools = context.tools :+ fmgp.yallmo.model.tool.CoachToolDefinition
+            tools = context.tools :+ fmgp.yallmo.tool.CoachToolDefinition
           )
         else context
         ZIO.fromEither(definition.capabilities.resolve(id, available))

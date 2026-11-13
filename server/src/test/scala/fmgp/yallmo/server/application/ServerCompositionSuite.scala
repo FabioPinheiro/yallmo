@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.tool.{FilesystemToolDefinition, ScalamodeToolDefinition, SdlcToolDefinition}
+import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
@@ -20,11 +20,9 @@ import java.util.Comparator
 import munit.FunSuite
 import scala.concurrent.Future
 import zio.*
-import fmgp.yallmo.tool.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
-
 final class ServerCompositionSuite extends FunSuite {
   private val human = new Agent[Any] {
     override val id: AgentId = AgentId("operator")

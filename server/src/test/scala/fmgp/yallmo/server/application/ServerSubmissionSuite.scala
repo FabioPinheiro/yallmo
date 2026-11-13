@@ -1274,7 +1274,7 @@ final class ServerSubmissionSuite extends FunSuite {
     val capture = ZLogger.default.map(line => { logs.add(line); () })
     run(ZIO.scoped {
       for {
-        _ <- OrchestratorServerMain.configureLogging(LogLevel.Trace, capture).build
+        _ <- MainServer.configureLogging(LogLevel.Trace, capture).build
         app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
         port <- new OrchestratorWSServer(app).start(0)
         channelReady <- Promise.make[Nothing, WebSocketChannel]
@@ -1335,7 +1335,7 @@ final class ServerSubmissionSuite extends FunSuite {
     val capture = ZLogger.default.map(line => { logs.add(line); () })
     run(ZIO.scoped {
       for {
-        _ <- OrchestratorServerMain.configureLogging(LogLevel.Trace, capture).build
+        _ <- MainServer.configureLogging(LogLevel.Trace, capture).build
         exchanges <- Ref.make(0)
         app <- application(
           request =>

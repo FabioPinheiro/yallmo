@@ -1,4 +1,4 @@
-package fmgp.yallmo.server
+package fmgp.yallmo.server.website
 
 import zio.*
 import zio.http.{Body, Request, Response, Status}

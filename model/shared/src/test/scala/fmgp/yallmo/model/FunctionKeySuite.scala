@@ -1,11 +1,14 @@
 package fmgp.yallmo.model
 
-import fmgp.yallmo.tool.FunctionKey
-
-import fmgp.yallmo.model.tool.{
+import fmgp.yallmo.tool.{
   BashToolDefinition,
   CoachToolDefinition,
   FilesystemToolDefinition,
+  FunctionCall,
+  FunctionCallId,
+  FunctionCallOutput,
+  FunctionGenericOutput,
+  FunctionKey,
   RepositoryChangesToolDefinition,
   ScalamodeToolDefinition,
   SdlcToolDefinition
@@ -14,7 +17,6 @@ import fmgp.yallmo.model.tool.{
 import munit.FunSuite
 import scala.compiletime.testing.typeChecks
 import zio.json.*
-
 final class FunctionKeySuite extends FunSuite {
   private val builtins = List(
     FilesystemToolDefinition.ReadFile -> "readFile",
@@ -66,7 +68,7 @@ final class FunctionKeySuite extends FunSuite {
     assert(!typeChecks("""fmgp.yallmo.orchestration.ExternalFunctionCall("scalamode", "{}")"""))
     assert(
       typeChecks(
-        """fmgp.yallmo.orchestration.ExternalFunctionCall(fmgp.yallmo.model.tool.ScalamodeToolDefinition.Execute, "{}")"""
+        """fmgp.yallmo.orchestration.ExternalFunctionCall(fmgp.yallmo.tool.ScalamodeToolDefinition.Execute, "{}")"""
       )
     )
   }

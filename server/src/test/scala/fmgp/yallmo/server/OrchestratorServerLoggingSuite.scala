@@ -15,7 +15,7 @@ import scala.jdk.CollectionConverters.*
 import zio.*
 
 final class OrchestratorServerLoggingSuite extends FunSuite {
-  import OrchestratorServerMain.{Options, parse}
+  import MainServer.{Options, parse}
 
   test("startup defaults to INFO and accepts reordered/equal-syntax options") {
     assertEquals(
@@ -78,7 +78,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     val messages = new CopyOnWriteArrayList[String]()
     val capture = ZLogger.default.map(line => { messages.add(line); () })
     run(ZIO.scoped {
-      OrchestratorServerMain.configureLogging(LogLevel.Warning, capture).build *>
+      MainServer.configureLogging(LogLevel.Warning, capture).build *>
         (ZIO.logTrace("trace marker") *> ZIO.logDebug("debug marker") *> ZIO.logInfo("info marker") *>
           ZIO.logWarning("warning marker") *> ZIO.logError("error marker") *> ZIO.logFatal("fatal marker"))
     })
@@ -88,7 +88,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     assert(lines.exists(line => line.contains("level=ERROR") && line.contains("error marker")))
     assert(lines.exists(line => line.contains("level=FATAL") && line.contains("fatal marker")))
     run(ZIO.scoped {
-      OrchestratorServerMain.configureLogging(LogLevel.None, capture).build *>
+      MainServer.configureLogging(LogLevel.None, capture).build *>
         (ZIO.logFatal("suppressed fatal") *> LogLevel.None(ZIO.log("suppressed OFF-severity statement")))
     })
     assertEquals(messages.size(), 3)
@@ -267,7 +267,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
     }
     run(ZIO.scoped {
       for {
-        _ <- OrchestratorServerMain.configureLogging(level, capture).build
+        _ <- MainServer.configureLogging(level, capture).build
         backend <- application.TestServerApplication.make(Chunk(new Agent[Any] {
           val id = AgentId("human")
           def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = ZIO.dieMessage("No agent execution")

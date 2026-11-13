@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, ProviderContinuation, ProviderId}
@@ -9,7 +9,6 @@ import fmgp.yallmo.orchestration.config.AgentCapabilities
 import munit.FunSuite
 import scala.concurrent.Future
 import zio.*
-
 final class ReplSessionSubmissionSuite extends FunSuite {
   private val userId = AgentId("operator")
   private val assistantId = AgentId("assistant")

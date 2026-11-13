@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, JsonSchema}
@@ -8,7 +8,6 @@ import munit.FunSuite
 import zio.*
 
 import scala.concurrent.Future
-
 final class ResolvedAgentSuite extends FunSuite {
   test("resolved invocation consumes its cached effective context and retains permission and schema checks") {
     run {

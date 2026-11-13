@@ -290,7 +290,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     }
     run(ZIO.scoped {
       for {
-        _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
+        _ <- MainServer.configureLogging(LogLevel.Info, capture).build
         backend <- live
         master = backend.application.master
         port <- new OrchestratorWSServer(backend).start(0)
@@ -354,7 +354,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     }
     run(ZIO.scoped {
       for {
-        _ <- OrchestratorServerMain.configureLogging(LogLevel.Info, capture).build
+        _ <- MainServer.configureLogging(LogLevel.Info, capture).build
         backend <- live
         port <- new OrchestratorWSServer(backend).start(0)
         observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")

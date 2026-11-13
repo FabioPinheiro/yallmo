@@ -1,9 +1,7 @@
 package fmgp.yallmo.tool.sdlc
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
-
-import fmgp.yallmo.model.tool.SdlcToolDefinition
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, SdlcToolDefinition}
 
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite}
 import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult}

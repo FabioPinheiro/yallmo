@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
 
 import fmgp.yallmo.model.{UserId, YallmoError}
 import fmgp.rpc.RpcWebSocket
@@ -10,7 +10,6 @@ import fmgp.yallmo.orchestration.config.{AgentConfig, Config, FileSystemConfig, 
 import fmgp.yallmo.server.{OrchestratorClient, OrchestratorWSClient, OrchestratorWSServer}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
-import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, ScalaTool}
 import java.nio.file.Files
 import java.util.Comparator
 import munit.FunSuite

@@ -1,8 +1,15 @@
 package fmgp.yallmo.model
 
-import fmgp.yallmo.tool.FunctionKey
-
-import fmgp.yallmo.model.tool.BashToolDefinition
+import fmgp.yallmo.tool.{
+  BashToolDefinition,
+  FunctionCall,
+  FunctionCallId,
+  FunctionCallOutput,
+  FunctionGenericOutput,
+  FunctionKey,
+  ScalaModeOutput,
+  ScalaModeResult
+}
 
 import fmgp.yallmo.model.llm.{ProviderContinuation, ProviderId}
 import munit.FunSuite
@@ -10,7 +17,6 @@ import zio.Chunk
 import zio.json.{DecoderOps, EncoderOps}
 
 import java.time.Instant
-
 final class MessagePayloadSuite extends FunSuite {
   private val callId = FunctionCallId.unsafe("call-1")
   private val fixtures: Seq[(MessagePayload, String)] = Seq(
@@ -104,14 +110,16 @@ final class MessagePayloadSuite extends FunSuite {
     assertEquals(Message.ToolOutput(output).contentStr, "deadline exceeded")
     assert(output.toJson.contains("\"TimedOut\":{\"diagnostics\":\"deadline exceeded\"}"))
     assert(!output.toJson.contains("\"timedOut\""))
-    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
-      fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
+    assert(scala.compiletime.testing.typeChecks("""fmgp.yallmo.tool.ScalaModeOutput(
+      fmgp.yallmo.tool.FunctionCallId.unsafe("call"), fmgp.yallmo.tool.ScalaModeResult.Executed("42"))"""))
+    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.tool.ScalaModeOutput(
+      fmgp.yallmo.tool.FunctionCallId.unsafe("call"), fmgp.yallmo.tool.ScalaModeResult.Executed("42"),
       timedOut = true)"""))
     assertEquals(output.toJson.fromJson[FunctionCallOutput], Right(output))
     assertEquals(output.toJson.fromJson[ScalaModeOutput], Right(output))
-    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.model.ScalaModeOutput(
-      fmgp.yallmo.model.FunctionCallId.unsafe("call"), fmgp.yallmo.model.ScalaModeResult.Executed("42"),
-      name = fmgp.yallmo.model.tool.BashToolDefinition.Execute)"""))
+    assert(!scala.compiletime.testing.typeChecks("""fmgp.yallmo.tool.ScalaModeOutput(
+      fmgp.yallmo.tool.FunctionCallId.unsafe("call"), fmgp.yallmo.tool.ScalaModeResult.Executed("42"),
+      name = fmgp.yallmo.tool.BashToolDefinition.Execute)"""))
   }
 
   test("saved timeout flags decode into the typed result but are never emitted") {

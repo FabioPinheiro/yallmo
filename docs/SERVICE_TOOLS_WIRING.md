@@ -120,7 +120,7 @@ Each row below is one callable function. A function must be both available and p
 
 [tool-definition]: ../model/shared/src/main/scala/fmgp/yallmo/tool/ToolDefinition.scala
 [function-definition]: ../model/shared/src/main/scala/fmgp/yallmo/tool/FunctionToolDefinition.scala
-[declarations]: ../model/shared/src/main/scala/fmgp/yallmo/model/tool/
+[declarations]: ../model/shared/src/main/scala/fmgp/yallmo/tool/
 [execution-types]: ../core/shared/src/main/scala/fmgp/yallmo/orchestration/Capabilities.scala
 [registration]: ../server/src/main/scala/fmgp/yallmo/server/application/ApplicationTools.scala
 [catalog]: ../core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala

@@ -1,6 +1,7 @@
 package fmgp.yallmo
 
-import fmgp.yallmo.model.{FunctionCallId, MessagePayload}
+import fmgp.yallmo.model.MessagePayload
+import fmgp.yallmo.tool.FunctionCallId
 import fmgp.yallmo.model.llm.AgentTurnResponse
 import zio.*
 

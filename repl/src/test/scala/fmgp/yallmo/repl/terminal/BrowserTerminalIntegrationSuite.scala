@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.tool.FunctionKey
+import fmgp.yallmo.tool.{FunctionCallId, FunctionGenericOutput, FunctionKey}
 
 import fmgp.yallmo.clientharness.ControlAction
 

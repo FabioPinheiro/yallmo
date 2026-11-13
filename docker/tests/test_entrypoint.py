@@ -23,7 +23,7 @@ class EntrypointTests(unittest.TestCase):
         result = self.invoke("server", "--storage", "/some directory", "--config", "$(false);private.yaml")
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = json.loads(result.stdout)
-        self.assertIn("fmgp.yallmo.server.OrchestratorServerMain", arguments)
+        self.assertIn("fmgp.yallmo.server.MainServer", arguments)
         self.assertEqual(arguments[-4:], ["--storage", "/some directory", "--config", "$(false);private.yaml"])
         self.assertIn("/opt/yallmo/lib/*", arguments)
 

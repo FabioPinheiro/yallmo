@@ -1,7 +1,5 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.tool.FilesystemToolDefinition
-
 import fmgp.yallmo.fs.{FileSystem, FsRead}
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.orchestration.ExternalFunctionCall

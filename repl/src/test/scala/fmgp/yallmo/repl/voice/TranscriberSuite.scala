@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl.voice
 
-import fmgp.yallmo.tool.FunctionKey
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey}
 
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
@@ -9,7 +9,6 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.ConfiguredAgentSettings
 import munit.FunSuite
 import zio.*
-
 final class TranscriberSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }

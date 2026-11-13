@@ -39,7 +39,7 @@ class DistributionTests(unittest.TestCase):
             with log_path.open("w+") as log:
                 process = subprocess.Popen([
                     "java", "--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow",
-                    "-cp", str(LIB / "*"), "fmgp.yallmo.server.OrchestratorServerMain", *options,
+                    "-cp", str(LIB / "*"), "fmgp.yallmo.server.MainServer", *options,
                 ], stdout=log, stderr=subprocess.STDOUT)
                 try:
                     deadline = time.monotonic() + 45

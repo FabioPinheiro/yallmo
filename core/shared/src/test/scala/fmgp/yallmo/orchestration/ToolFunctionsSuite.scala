@@ -1,11 +1,17 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolDefinition, ToolKey}
+import fmgp.yallmo.tool.{
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalamodeToolDefinition,
+  SdlcToolDefinition,
+  ToolDefinition,
+  ToolKey
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.AgentCapabilities
-import fmgp.yallmo.model.tool.{SdlcToolDefinition, ScalamodeToolDefinition}
 import munit.FunSuite
 import zio.Chunk
 

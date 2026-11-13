@@ -1,8 +1,6 @@
 package fmgp.yallmo.model
 
-import fmgp.yallmo.tool.{FunctionKey, ToolKey}
-
-import fmgp.yallmo.model.tool.SdlcToolDefinition
+import fmgp.yallmo.tool.{FunctionKey, SdlcToolDefinition, ToolKey}
 
 import munit.FunSuite
 import scala.compiletime.testing.typeChecks
@@ -25,7 +23,7 @@ final class ToolKeySuite extends FunSuite {
   }
 
   test("tool keys cannot be substituted for function names or vice versa") {
-    assert(!typeChecks("""val key: fmgp.yallmo.tool.ToolKey = fmgp.yallmo.model.tool.SdlcToolDefinition.SetTasks"""))
+    assert(!typeChecks("""val key: fmgp.yallmo.tool.ToolKey = fmgp.yallmo.tool.SdlcToolDefinition.SetTasks"""))
     assert(!typeChecks("""val key: fmgp.yallmo.tool.FunctionKey = fmgp.yallmo.tool.ToolKey.Sdlc"""))
     assert(!typeChecks("""fmgp.yallmo.orchestration.ExternalFunctionCall(fmgp.yallmo.tool.ToolKey.Sdlc, "{}")"""))
   }

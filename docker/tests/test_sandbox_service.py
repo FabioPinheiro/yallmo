@@ -279,7 +279,7 @@ class SandboxServiceTests(unittest.TestCase):
         (self.workspace / "server.sh").write_text(
             '#!/bin/sh\nexec "$TEST_JAVA" --enable-native-access=ALL-UNNAMED '
             '--sun-misc-unsafe-memory-access=allow -cp "$TEST_CLASSPATH" '
-            'fmgp.yallmo.server.OrchestratorServerMain --storage ./storage --port "$FAKE_PORT"\n')
+            'fmgp.yallmo.server.MainServer --storage ./storage --port "$FAKE_PORT"\n')
         self.env.update(TEST_JAVA=shutil.which("java"),
                         TEST_CLASSPATH=str(ROOT.parents[1] / "target/docker/lib/*"))
         result = self.boot(autostart=True)

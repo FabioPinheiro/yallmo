@@ -1,6 +1,7 @@
 package fmgp.yallmo.server
 
 import fmgp.yallmo.server.application.ServerExecutionService
+import fmgp.yallmo.server.website.{SdlcHttpRoutes, WebAssets}
 import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.*
 import zio.http.*

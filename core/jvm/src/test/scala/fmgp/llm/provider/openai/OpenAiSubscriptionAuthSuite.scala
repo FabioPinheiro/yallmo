@@ -1,7 +1,8 @@
 package fmgp.yallmo.provider.openai
 
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
-import fmgp.yallmo.model.{AgentId, FunctionGenericOutput, MessagePayload}
+import fmgp.yallmo.model.{AgentId, MessagePayload}
+import fmgp.yallmo.tool.FunctionGenericOutput
 import fmgp.yallmo.model.llm.{AgentTurnRequest, LlmStopReason, ProviderGenerateOptions}
 import munit.FunSuite
 import zio.*

@@ -13,7 +13,7 @@ case "$1" in
       set -- --storage /data
     fi
     exec java --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow \
-      -cp '/opt/yallmo/lib/*' fmgp.yallmo.server.OrchestratorServerMain "$@"
+      -cp '/opt/yallmo/lib/*' fmgp.yallmo.server.MainServer "$@"
     ;;
   repl)
     shift

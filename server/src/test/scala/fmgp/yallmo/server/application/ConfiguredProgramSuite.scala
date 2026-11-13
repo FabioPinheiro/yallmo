@@ -1,8 +1,17 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
-
-import fmgp.yallmo.model.tool.{FilesystemToolDefinition, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.{
+  FilesystemToolDefinition,
+  FunctionCall,
+  FunctionCallId,
+  FunctionKey,
+  FunctionToolDefinition,
+  ReadFileTool,
+  ScalaCodeExecutor,
+  ScalaModeResult,
+  ScalaTool,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
@@ -10,12 +19,10 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
 import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
-import fmgp.yallmo.tool.{ReadFileTool, ScalaCodeExecutor, ScalaTool}
 import munit.FunSuite
 import zio.*
 
 import scala.concurrent.Future
-
 final class ConfiguredProgramSuite extends FunSuite {
   private val agentId = AgentId("configured")
   private val blob = Blob(BlobId.fresh(), Chunk[Byte](1, 2, 3))

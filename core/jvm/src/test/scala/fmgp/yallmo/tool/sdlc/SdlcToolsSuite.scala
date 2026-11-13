@@ -1,10 +1,9 @@
 package fmgp.yallmo.tool.sdlc
 
-import fmgp.yallmo.model.tool.SdlcToolDefinition
+import fmgp.yallmo.tool.{FunctionKey, SdlcToolDefinition}
 
 import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.tool.FunctionKey
 import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall}
 import fmgp.yallmo.tool.sdlc.llm.PlanTaskSimplifiedModel
 import java.nio.file.{Files, Path}

@@ -1,7 +1,7 @@
 package fmgp.yallmo.repl.terminal
 
-import fmgp.yallmo.tool.FunctionKey
-import fmgp.yallmo.model.{FunctionCallId, FunctionGenericOutput, MessagePayload}
+import fmgp.yallmo.tool.{FunctionCallId, FunctionGenericOutput, FunctionKey}
+import fmgp.yallmo.model.MessagePayload
 import fmgp.yallmo.orchestration.RunContext
 import fmgp.yallmo.repl.ReplState
 import fmgp.yallmo.repl.browser.{BrowserAudioBridge, BrowserAudioError}

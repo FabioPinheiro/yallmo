@@ -10,7 +10,7 @@ tool/dependency table.
 
 ```mermaid
 flowchart TD
-    Main[OrchestratorServerMain] --> App[ServerApplication]
+    Main[MainServer] --> App[ServerApplication]
     App -->|startup helpers| Tools[ApplicationTools]
     App --> Catalog[AgentCatalog]
     App --> Orch[OrchestratorLive]
@@ -23,6 +23,7 @@ flowchart TD
     Orch -->|execute handle with ManagedHistory| Runner
     Orch --> Storage[StorageEvents → StorageFS or StorageInMemory]
     Host[OrchestratorWSServer / OrchestratorRpc] --> Execution
+    Host --> Website[website.WebAssets / website.SdlcHttpRoutes]
 ```
 
 Arrows describe dependencies, not a linear runtime pipeline. The runner calls a program; native programs call an
@@ -41,6 +42,11 @@ adapter/provider for one turn. Programs propose actions, while the runner author
 Core depends on model/filesystem/RPC, never on server composition. `AgentExecution`/`AgentInvocation` are opaque internal
 contract plumbing between core execution and orchestration. Generic runner APIs still accept custom programs/context/tools
 for tests and embedded callers; configured execution uses `AgentRunner.execution(resolved)` or `.invocation(resolved)`.
+
+Website-only HTTP infrastructure belongs to `fmgp.yallmo.server.website` in
+[`server/.../website/`](../server/src/main/scala/fmgp/yallmo/server/website/). `WebAssets` owns packaged SPA reads and
+response security headers; `SdlcHttpRoutes` reads the shared planning service. The shared WebSocket/RPC transport stays
+in `fmgp.yallmo.server`; moving the website classes does not change HTTP paths, assets or protocol behavior.
 
 ## Startup and selection
 

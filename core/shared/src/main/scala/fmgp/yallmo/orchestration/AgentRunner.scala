@@ -1,8 +1,15 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
-
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{
+  FunctionCall,
+  FunctionCallId,
+  FunctionGenericOutput,
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalaModeOutput,
+  ScalaModeResult,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.model.YallmoError
 import java.util.UUID

@@ -1,6 +1,6 @@
 package fmgp.yallmo.tool.sdlc
 
-import fmgp.yallmo.model.tool.SdlcToolDefinition
+import fmgp.yallmo.tool.SdlcToolDefinition
 
 import fmgp.yallmo.fs.*
 import fmgp.yallmo.orchestration.ExternalFunctionCall

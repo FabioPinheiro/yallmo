@@ -1,8 +1,13 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
-
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+import fmgp.yallmo.tool.{
+  FunctionCall,
+  FunctionCallId,
+  FunctionGenericOutput,
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, ProviderContinuation, ProviderId}
@@ -11,7 +16,6 @@ import java.time.Instant
 import java.util.Comparator
 import munit.FunSuite
 import zio.*
-
 final class OrchestratorInvokeSuite extends FunSuite {
   private val human = AgentId("human")
   private val assistant = AgentId("assistant")

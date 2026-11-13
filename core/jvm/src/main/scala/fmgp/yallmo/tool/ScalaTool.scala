@@ -2,8 +2,6 @@ package fmgp.yallmo.tool
 
 import fmgp.yallmo.model.YallmoError
 
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
-
 import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
 import zio.*
 import fmgp.rpc.RpcWebSocket

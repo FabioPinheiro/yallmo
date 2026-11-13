@@ -1,6 +1,6 @@
 package fmgp.yallmo.repl
 
-import fmgp.yallmo.tool.FunctionKey
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey}
 
 import fmgp.yallmo.server.application.ToolAvailability
 import fmgp.yallmo.model.YallmoError
@@ -15,7 +15,6 @@ import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.repl.debug.{ReplDebug, ReplDebugSnapshot}
 import fmgp.yallmo.repl.grammar.*
 import fmgp.yallmo.repl.terminal.TerminalRepl
-
 final class ReplSuite extends FunSuite {
   test("typed grammar is the source for command parsing") {
     assertEquals(ReplGrammar.parse("/history"), Right(ReplInput.Command(ReplCommand.History)))

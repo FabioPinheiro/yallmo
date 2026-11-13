@@ -1,8 +1,5 @@
 package fmgp.yallmo.tool
 
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
-
-import fmgp.yallmo.model.{FunctionCallId, ScalaModeOutput, ScalaModeResult}
 import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import munit.FunSuite
 import zio.*

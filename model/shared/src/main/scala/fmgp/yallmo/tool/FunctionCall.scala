@@ -1,8 +1,4 @@
-package fmgp.yallmo.model
-
-import fmgp.yallmo.tool.FunctionKey
-
-import fmgp.yallmo.model.tool.ScalamodeToolDefinition
+package fmgp.yallmo.tool
 
 import zio.json.*
 import zio.json.ast.Json

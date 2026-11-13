@@ -1,11 +1,10 @@
 package fmgp.yallmo.model.llm
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition}
 
 import zio.Chunk
 import munit.FunSuite
 import fmgp.yallmo.model.*
-
 final class LlmProtocolSuite extends FunSuite:
   test("function call identifiers are opaque values with non-blank validation") {
     assertEquals(FunctionCallId.from("call-42").map(_.value), Right("call-42"))

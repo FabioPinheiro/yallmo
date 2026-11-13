@@ -1,6 +1,5 @@
-package fmgp.yallmo.model.tool
+package fmgp.yallmo.tool
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolDefinition, ToolKey}
 import fmgp.yallmo.model.llm.JsonSchema
 
 /** Stable callable identifiers and membership declared by this tool, independent of its runtime bindings. */

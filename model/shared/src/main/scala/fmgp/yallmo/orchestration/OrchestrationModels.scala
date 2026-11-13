@@ -1,12 +1,11 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolDefinition}
+import fmgp.yallmo.tool.{FunctionCallId, FunctionKey, FunctionToolDefinition, ScalaModeResult, ToolDefinition}
 
 import fmgp.yallmo.model.YallmoError
 import zio.*
-import fmgp.yallmo.model.{FunctionCallId, MessagePayload}
+import fmgp.yallmo.model.{MessagePayload}
 import fmgp.yallmo.model.*
-
 // /** Re-export the model-layer identifier used by agents throughout orchestration. */
 // type AgentId = fmgp.yallmo.model.AgentId
 
@@ -71,7 +70,7 @@ sealed trait ExternalFunctionResult {
 object ExternalFunctionResult {
   final case class Generic(text: String) extends ExternalFunctionResult
 
-  /** Host timings in milliseconds, with the same phase boundaries as [[ScalaModeOutput]]. */
+  /** Host timings in milliseconds, with the same phase boundaries as [[fmgp.yallmo.tool.ScalaModeOutput]]. */
   final case class ScalaMode(
       result: ScalaModeResult,
       logs: Seq[String] = Seq.empty,

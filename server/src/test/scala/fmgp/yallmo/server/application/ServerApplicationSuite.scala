@@ -1,12 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.model.tool.{
-  BashToolDefinition,
-  FilesystemToolDefinition,
-  RepositoryChangesToolDefinition,
-  ScalamodeToolDefinition,
-  SdlcToolDefinition
-}
+import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.{SessionId, ExternalFunctionResult}
@@ -18,10 +12,9 @@ import fmgp.yallmo.orchestration.config.{
   ProviderConfig,
   ProviderId
 }
-import fmgp.yallmo.server.{OrchestratorRpc, OrchestratorServerMain, OrchestratorWSClient, OrchestratorWSServer}
+import fmgp.yallmo.server.{OrchestratorRpc, MainServer, OrchestratorWSClient, OrchestratorWSServer}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
-import fmgp.yallmo.tool.*
 import java.nio.channels.FileChannel
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.nio.file.attribute.PosixFilePermissions
@@ -42,7 +35,7 @@ final class ServerApplicationSuite extends FunSuite {
   )
 
   test("startup requires config and accepts reordered/equal syntax") {
-    import OrchestratorServerMain.{Options, parse}
+    import MainServer.{Options, parse}
     assert(parse(List("--storage", "sessions")).isLeft)
     assertEquals(
       parse(List("--workspace=work", "--log-level", "debug", "--config", "private.json", "--storage=sessions")),
@@ -64,7 +57,7 @@ final class ServerApplicationSuite extends FunSuite {
       List("--storage=sessions", "--config=PRIVATE", "--workspace=one", "--workspace=two"),
       List("--storage=sessions", "--config=PRIVATE\u0000")
     ).foreach { args =>
-      val result = OrchestratorServerMain.parse(args)
+      val result = MainServer.parse(args)
       assert(result.isLeft)
       assert(!result.swap.toOption.get.contains("PRIVATE"))
     }

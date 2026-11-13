@@ -46,7 +46,9 @@ A complete configuration also needs the agent's map key and a matching provider 
 
 `AgentCapabilities.tools` is `Option[Set[ToolKey]]`; `functions` is `Option[Set[FunctionKey]]`.
 
-A **tool** is a capability group; a **function** is one callable operation, and a **function call** is one invocation with a call ID and arguments. Each `ToolDefinition` exposes `name: ToolKey` and `functions: Set[FunctionToolDefinition]`; membership is never inferred from a prefix. `FunctionKey` remains an opaque string without an owning-tool back-reference. Its companion contains constructors/codecs only; each tool declares its own callable identifiers in `model/.../model/tool/`.
+A **tool** is a capability group; a **function** is one callable operation, and a **function call** is one invocation with a call ID and arguments. Each `ToolDefinition` exposes `name: ToolKey` and `functions: Set[FunctionToolDefinition]`; membership is never inferred from a prefix. `FunctionKey` remains an opaque string without an owning-tool back-reference. Its companion contains constructors/codecs only; each tool declares its own callable identifiers in `model/shared/src/main/scala/fmgp/yallmo/tool/`.
+
+The shared tool API lives in `fmgp.yallmo.tool`: built-in declarations, `FunctionKey`, `ToolKey`, `FunctionCall`, `FunctionCallId`, `FunctionCallOutput`, `FunctionGenericOutput`, `ScalaModeOutput` and `ScalaModeResult`. The call/result types are defined in [FunctionCall.scala](../model/shared/src/main/scala/fmgp/yallmo/tool/FunctionCall.scala). Scala callers must import these types from this package; this source/binary package move does not change their JSON representation, persisted message hashes or provider-visible names.
 
 | Tool key | Callable function names |
 | --- | --- |

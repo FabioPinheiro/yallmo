@@ -1,8 +1,6 @@
 package fmgp.yallmo.agents
 
-import fmgp.yallmo.tool.FunctionToolDefinition
-
-import fmgp.yallmo.model.tool.BashToolDefinition
+import fmgp.yallmo.tool.{BashToolDefinition, FunctionCall, FunctionCallId, FunctionToolDefinition}
 
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.model.*
@@ -22,7 +20,6 @@ import scala.jdk.CollectionConverters.*
 import zio.{Config as _, *}
 import zio.http.Client
 import zio.json.*
-
 final class CoachAgentSuite extends FunSuite {
   private val id = AgentId("Coach")
   private val request = AgentTurnRequest(

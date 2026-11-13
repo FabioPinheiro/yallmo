@@ -1,6 +1,6 @@
 package fmgp.yallmo.provider.openai
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
@@ -11,7 +11,6 @@ import zio.*
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import scala.compiletime.testing.typeCheckErrors
-
 final class OpenAiCodexSuite extends FunSuite:
   test("provider connections are not agents and expose no turn method") {
     val noTurn = typeCheckErrors("""

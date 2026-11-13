@@ -1,4 +1,7 @@
-package fmgp.yallmo.server
+package fmgp.yallmo.server.website
+
+import fmgp.yallmo.server.application.TestServerApplication
+import fmgp.yallmo.server.{MainServer, OrchestratorWSServer}
 
 import java.net.{InetSocketAddress, Socket, URI}
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
@@ -13,7 +16,7 @@ final class OrchestratorWebHostSuite extends FunSuite {
 
   private def start: ZIO[Scope, Throwable, Int] =
     for {
-      backend <- application.TestServerApplication.make()
+      backend <- TestServerApplication.make()
       port <- new OrchestratorWSServer(backend).start(0)
     } yield port
 
@@ -53,7 +56,9 @@ final class OrchestratorWebHostSuite extends FunSuite {
             "/assets/missing.js",
             "/assets/../api/messages",
             "/assets/../../fmgp/yallmo/server/OrchestratorWSServer.class",
-            "/fmgp/yallmo/server/OrchestratorWSServer.class"
+            "/fmgp/yallmo/server/OrchestratorWSServer.class",
+            "/assets/../../fmgp/yallmo/server/website/WebAssets.class",
+            "/fmgp/yallmo/server/website/WebAssets.class"
           )
         )(path => get(port, path))
       } yield responses.foreach { response =>
@@ -131,17 +136,17 @@ final class OrchestratorWebHostSuite extends FunSuite {
 
   test("the new standalone entry point retains validated storage/port options") {
     assertEquals(
-      OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions")),
-      Right(OrchestratorServerMain.Options(Path.of("sessions"), Path.of("config.json")))
+      MainServer.parse(List("--config=config.json", "--storage", "sessions")),
+      Right(MainServer.Options(Path.of("sessions"), Path.of("config.json")))
     )
     assertEquals(
-      OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions", "--port", "8081")),
-      Right(OrchestratorServerMain.Options(Path.of("sessions"), Path.of("config.json"), 8081))
+      MainServer.parse(List("--config=config.json", "--storage", "sessions", "--port", "8081")),
+      Right(MainServer.Options(Path.of("sessions"), Path.of("config.json"), 8081))
     )
     List("0", "65536", "not-a-number").foreach { port =>
-      assert(OrchestratorServerMain.parse(List("--config=config.json", "--storage", "sessions", "--port", port)).isLeft)
+      assert(MainServer.parse(List("--config=config.json", "--storage", "sessions", "--port", port)).isLeft)
     }
-    assert(OrchestratorServerMain.parse(Nil).isLeft)
+    assert(MainServer.parse(Nil).isLeft)
   }
 
   private def get(port: Int, path: String, headers: List[(String, String)] = Nil): Task[HttpResponse[String]] =

@@ -13,7 +13,7 @@ import zio.http.Server
 /** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
   * Embedded applications should supply their configured backend instead.
   */
-object OrchestratorServerMain extends ZIOAppDefault {
+object MainServer extends ZIOAppDefault {
   private val Levels = "trace|debug|info|warning|error|fatal|off"
   private val Usage =
     s"Usage: server/run --storage <existing-directory> --config <path> [--workspace <existing-directory>] [--port <1-65535>] [--log-level <$Levels>]"

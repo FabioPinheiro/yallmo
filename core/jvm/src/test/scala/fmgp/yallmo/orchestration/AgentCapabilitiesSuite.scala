@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ToolKey}
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition, ToolKey}
 
 import RunnerTestSupport.*
 
@@ -10,7 +10,6 @@ import fmgp.yallmo.orchestration.config.{AgentCapabilities, AgentConfig, Configu
 import munit.FunSuite
 import zio.*
 import zio.json.*
-
 final class AgentCapabilitiesSuite extends FunSuite {
   private val id = AgentId("policy-test")
   private val disabled = AgentCapabilities(Some(Set.empty), Some(Set.empty), Some(Set.empty), Some(Set.empty))

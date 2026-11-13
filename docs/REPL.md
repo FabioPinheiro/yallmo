@@ -287,7 +287,7 @@ the model, and does not appear in `/tools`.
 
 Voice requires an explicit `--transcriber-agent <id>` selection to a configured audio-capable agent (currently
 `OAIAgent` with an OAI provider). Its `config.model` and `config.systemPrompt` must be explicit and nonblank.
-Its effective tools/retrievers/skills/extensions must all be empty; set all four `capabilities` allowlists to `[]`.
+Its effective function and skill catalogs must be empty; set `capabilities.tools` and `capabilities.skills` to `[]`.
 An absent flag disables voice before recording; missing IDs or invalid explicit settings fail startup locally.
 There is no selected-chat/provider fallback. Voice works with text-only or no selected chat agent, and switching chat
 agents never rebinds it. The transcriber remains selectable in the normal AGENTS menu.

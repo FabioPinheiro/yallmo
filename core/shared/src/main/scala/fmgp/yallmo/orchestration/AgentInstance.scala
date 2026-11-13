@@ -19,8 +19,7 @@ final case class AgentPrompt(
 
 /** A participant in an agent run.
   *
-  * An agent proposes a decision; it never executes tools or retrieval itself. Those side effects belong to
-  * [[AgentRunner]].
+  * An agent proposes a decision; it never executes tools itself. Those side effects belong to [[AgentRunner]].
   */
 trait AgentInstance[R] {
   def id: AgentId
@@ -146,9 +145,6 @@ object LlmDecisionAgent {
       capabilities = Chunk(
         staticContext.functions
           .map(function => s"Function: ${function.name} — ${function.description}")
-          .mkString("\n"),
-        staticContext.retrievers
-          .map(retriever => s"Retriever: ${retriever.key} — ${retriever.description}")
           .mkString("\n"),
         staticContext.skills.map(skill => s"Skill: ${skill.key} — ${skill.description}").mkString("\n")
       ).filter(_.nonEmpty)

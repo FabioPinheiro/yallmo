@@ -26,7 +26,7 @@ final class AgentInvocationSuite extends FunSuite {
         def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
           calls.update(_ + 1).as(ExternalFunctionResult("output"))
       }
-      runner = new AgentRunner[Any](Map(FunctionKey.unsafe("echo") -> tool), Map.empty)
+      runner = new AgentRunner[Any](Map(FunctionKey.unsafe("echo") -> tool))
       context = StaticContext[Any]("", functions = Chunk(tool.definition))
       _ <- runner.runWithContext(agent, AgentTask("continue"), context, RunContext(Chunk(Message.ToolCall(call))))
       reply <- runner
@@ -52,7 +52,7 @@ final class AgentInvocationSuite extends FunSuite {
         def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =
           ZIO.dieMessage("Direct tools must not invoke the agent")
       }
-      runner = new AgentRunner[Any](Map(FunctionKey.unsafe("echo") -> tool), Map.empty)
+      runner = new AgentRunner[Any](Map(FunctionKey.unsafe("echo") -> tool))
       context = StaticContext[Any]("", functions = Chunk(tool.definition))
       result <- runner
         .invocation(neverInfer, context, AgentBudget(1, 1, 50.millis))
@@ -67,7 +67,7 @@ final class AgentInvocationSuite extends FunSuite {
 
   test("invalid budgets prevent direct execution") {
     run(for {
-      runner = new AgentRunner[Any](Map.empty, Map.empty)
+      runner = new AgentRunner[Any](Map.empty)
       result <- runner
         .invocation(agent, StaticContext[Any](""), AgentBudget(1, 0, 1.second))
         .invoke(Message.ToolCall(call))

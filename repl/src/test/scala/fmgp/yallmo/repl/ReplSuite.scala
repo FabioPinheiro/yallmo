@@ -89,7 +89,7 @@ final class ReplSuite extends FunSuite {
   test("application emits client-neutral events for grammar commands") {
     val application = new ReplApplication[Any](
       new ReplSession[Any](
-        runner = new AgentRunner[Any](Map.empty, Map.empty),
+        runner = new AgentRunner[Any](Map.empty),
         agent = Some(new AgentInstance[Any] {
           override val id: AgentId = AgentId("unused")
 
@@ -154,7 +154,7 @@ final class ReplSuite extends FunSuite {
   test("history loads full stored messages without changing state or running the agent") {
     val orchestrator = inMemoryReplOrchestrator(AgentId("bob"))
     val application = new ReplApplication[Any](
-      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
+      new ReplSession[Any](new AgentRunner[Any](Map.empty), None, StaticContext[Any]("Test")),
       ToolAvailability(Chunk.empty, Chunk.empty),
       orchestrator
     )
@@ -180,7 +180,7 @@ final class ReplSuite extends FunSuite {
 
   test("history is empty before a session exists and reports invalid or missing sessions without changing state") {
     val application = new ReplApplication[Any](
-      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), None, StaticContext[Any]("Test")),
+      new ReplSession[Any](new AgentRunner[Any](Map.empty), None, StaticContext[Any]("Test")),
       ToolAvailability(Chunk.empty, Chunk.empty),
       inMemoryReplOrchestrator(AgentId("bob"))
     )
@@ -201,7 +201,7 @@ final class ReplSuite extends FunSuite {
     var observed = Option.empty[LogLevel]
     val application = new ReplApplication[Any](
       new ReplSession[Any](
-        runner = new AgentRunner[Any](Map.empty, Map.empty),
+        runner = new AgentRunner[Any](Map.empty),
         agent = Some(new AgentInstance[Any] {
           override val id: AgentId = AgentId("logger")
 
@@ -340,7 +340,7 @@ final class ReplSuite extends FunSuite {
         }
     }
     val session =
-      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test"))
+      new ReplSession[Any](new AgentRunner[Any](Map.empty), Some(agent), StaticContext[Any]("Test"))
     val orchestrator = inMemoryReplOrchestrator(agent.id)
     val before = seedSession(orchestrator, agent.id, "same-session", history)
     val first = runZIO(session.submit(before, "first", orchestrator))
@@ -363,7 +363,7 @@ final class ReplSuite extends FunSuite {
     }
     val orchestrator = inMemoryReplOrchestrator(bob)
     val application = new ReplApplication[Any](
-      new ReplSession[Any](new AgentRunner[Any](Map.empty, Map.empty), Some(agent), StaticContext[Any]("Test")),
+      new ReplSession[Any](new AgentRunner[Any](Map.empty), Some(agent), StaticContext[Any]("Test")),
       ToolAvailability(Chunk.empty, Chunk.empty),
       orchestrator,
       userId = AgentId("fabio")
@@ -396,7 +396,7 @@ final class ReplSuite extends FunSuite {
 
     }
     val session = new ReplSession[Any](
-      runner = new AgentRunner[Any](Map.empty, Map.empty),
+      runner = new AgentRunner[Any](Map.empty),
       agent = Some(agent),
       staticContext = StaticContext[Any]("Test")
     )

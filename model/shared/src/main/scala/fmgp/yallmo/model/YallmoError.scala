@@ -37,14 +37,6 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to call tool '$functionKey'")
       with YallmoError
 
-  final case class UnknownRetriever(requestedKey: String)
-      extends RuntimeException(s"No retriever is registered with key '$requestedKey'")
-      with YallmoError
-
-  final case class RetrieverUnavailableToAgent(agentId: AgentId, retrieverKey: String)
-      extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to use retriever '$retrieverKey'")
-      with YallmoError
-
   final case class EmptyActionBatch(agentId: AgentId)
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' returned an empty action batch")
       with YallmoError
@@ -81,10 +73,6 @@ object YallmoError {
 
   final case class InvalidToolArguments(functionKey: FunctionKey, reason: String)
       extends RuntimeException(s"Tool '$functionKey' received invalid arguments: $reason")
-      with YallmoError
-
-  final case class RetrievalFailed(retrieverKey: String, message: String, cause: Throwable)
-      extends RuntimeException(s"Retriever '$retrieverKey' failed: $message", cause)
       with YallmoError
 
   final case class SessionAlreadyExists(id: SessionId)

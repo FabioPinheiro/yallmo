@@ -18,7 +18,7 @@ Inspect a stored message without selecting/resuming its session or inserting it 
 1. Expose a typed, read-only message lookup by `MessageId` through `Orchestrator` and the storage abstraction. Reuse the filesystem object index rather than scanning session names; give in-memory storage equivalent lookup semantics. Keep internal store APIs private and preserve existing hash/structural checks, with no audio-specific exceptions.
 2. Extend typed command parsing, help, and completion. Validate full hashes with `MessageId.from`; distinguish invalid hashes, not-found messages, and storage failures without echoing secrets.
 3. Reuse safe debug rendering/export for a single message. Audio contains a blob reference and descriptive metadata; inspection does not load content; transcript/description text remains visible and may be sensitive. Do not follow parent IDs automatically or fetch anything remotely.
-4. Leave the selected agent, active session/head, run context, provider continuation, draft, and latest provider-request capture unchanged. Lookup/export must never invoke inference, tools, RAG, skills, or extensions.
+4. Leave the selected agent, active session/head, run context, provider continuation, draft, and latest provider-request capture unchanged. Lookup/export must never invoke inference, tools, or skills.
 5. Document how to find IDs. At minimum, include IDs in the message inspector and document their location in local `objects.jsonl`. Consider a small local transcription-success receipt containing its session/message IDs, without dumping transcript text or bytes to logs; agree its UI before implementation.
 
 ## Acceptance and tests

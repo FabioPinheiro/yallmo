@@ -54,7 +54,6 @@ final class LlmDecisionAgentSuite extends FunSuite {
         StaticContext[Any](
           "System",
           functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("clock"), "Time")),
-          retrievers = Chunk(RetrieverDefinition("notes", "Notes")),
           skills = Chunk(AgentSkill("guide", "Guidance", "Follow guide"))
         ),
         RunContext(Chunk(MessagePayload.User("Hello"), MessagePayload.Assistant("Hi"))),
@@ -64,7 +63,7 @@ final class LlmDecisionAgentSuite extends FunSuite {
     assertEquals(prompt.systemInstruction, "System\n\nFollow guide\n\nDecide")
     assertEquals(
       prompt.prompt,
-      "Function: clock — Time\n\nRetriever: notes — Notes\n\nSkill: guide — Guidance\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
+      "Function: clock — Time\n\nSkill: guide — Guidance\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
     )
   }
 }

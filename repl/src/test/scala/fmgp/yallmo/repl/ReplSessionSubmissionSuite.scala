@@ -12,7 +12,7 @@ import zio.*
 final class ReplSessionSubmissionSuite extends FunSuite {
   private val userId = AgentId("operator")
   private val assistantId = AgentId("assistant")
-  private val runner = new AgentRunner[Any](Map.empty, Map.empty)
+  private val runner = new AgentRunner[Any](Map.empty)
   private val context = StaticContext[Any]("System")
 
   test("unselected, mismatched and invalid-session submissions reject before creating or executing") {
@@ -277,7 +277,7 @@ final class ReplSessionSubmissionSuite extends FunSuite {
           )
         )
         configured = configuredExecution(
-          new AgentRunner[Any](Map(key -> tool), Map.empty),
+          new AgentRunner[Any](Map(key -> tool)),
           agent,
           available,
           10

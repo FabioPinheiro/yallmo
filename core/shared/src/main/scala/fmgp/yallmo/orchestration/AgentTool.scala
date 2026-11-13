@@ -2,11 +2,11 @@ package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.tool.ToolKey
 
-import fmgp.yallmo.model.{YallmoError, RagDocument}
+import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.{ToolDefinition, FunctionToolDefinition}
 
 import zio.*
-import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult, RagQuery, RetrieverDefinition}
+import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 
 /** A trusted external capability that an agent may request through [[LlmAction.CallExternalFunction]].
   *
@@ -45,14 +45,4 @@ object AgentTool {
 trait HasLocalAgentFunctions {
   def localFunctions: Chunk[AgentFunction[Any]]
   def localTools: Chunk[ToolDefinition] = Chunk.empty
-}
-
-/** A typed RAG boundary.
-  *
-  * Documents remain source-attributed [[RagDocument]] values until the receiving agent renders them for its model.
-  */
-trait KnowledgeRetriever[R] {
-  def definition: RetrieverDefinition
-
-  def retrieve(query: RagQuery): ZIO[R, YallmoError, Chunk[RagDocument]]
 }

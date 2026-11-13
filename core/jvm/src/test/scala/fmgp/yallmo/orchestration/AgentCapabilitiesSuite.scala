@@ -12,25 +12,17 @@ import zio.*
 import zio.json.*
 final class AgentCapabilitiesSuite extends FunSuite {
   private val id = AgentId("policy-test")
-  private val disabled = AgentCapabilities(Some(Set.empty), Some(Set.empty), Some(Set.empty), Some(Set.empty))
+  private val disabled =
+    AgentCapabilities(tools = Some(Set.empty), skills = Some(Set.empty), functions = Some(Set.empty))
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
-  private val extension = new ContextExtension[Any] {
-    val key = "memory"
-    def apply(context: StaticContext[Any], current: RunContext): IO[YallmoError, RunContext] = {
-      val _ = context
-      ZIO.succeed(current.append(MessagePayload.Context("memory", "extension text")))
-    }
-  }
   private val available = StaticContext[Any](
     "system",
     functions = Chunk(
       FunctionToolDefinition(FunctionKey.unsafe("clock"), "time"),
       FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
     ),
-    retrievers = Chunk(RetrieverDefinition("docs", "documents")),
-    skills = Chunk(AgentSkill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS")),
-    extensions = Chunk(extension)
+    skills = Chunk(AgentSkill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS"))
   )
   private val request = AgentTurnRequest(
     "model",
@@ -58,14 +50,19 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assertEquals(partial.capabilities.tools, Some(Set.empty[ToolKey]))
     val context = partial.capabilities.resolve(id, available).toOption.get
     assert(context.tools.isEmpty)
-    assertEquals(context.retrievers, available.retrievers)
     assertEquals(context.skills, available.skills)
-    assertEquals(context.extensions, available.extensions)
     assertEquals(partial.toJson.fromJson[AgentConfig], Right(partial))
     assertEquals(AgentCapabilities().resolve(id, available), Right(available))
     val empty = disabled.resolve(id, available).toOption.get
-    assert(empty.tools.isEmpty && empty.retrievers.isEmpty && empty.skills.isEmpty && empty.extensions.isEmpty)
+    assert(empty.tools.isEmpty && empty.functions.isEmpty && empty.skills.isEmpty)
   }
+
+  for field <- List("retrievers", "extensions") do
+    test(s"removed $field config is rejected instead of silently ignored") {
+      val json = s"""{"agentType":"OAIAgent","capabilities":{"$field":[]}}"""
+      assert(json.fromJson[AgentConfig].isLeft)
+      assert(!AgentCapabilities().toJson.contains(field))
+    }
 
   test("tool allowlists retain string JSON, support custom tools, and reject blank keys") {
     val json = """{"functions":["clock"]}"""
@@ -85,9 +82,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
 
   for (kind, policy) <- List(
       "functions" -> AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("typo")))),
-      "retrievers" -> AgentCapabilities(retrievers = Some(Set("typo"))),
-      "skills" -> AgentCapabilities(skills = Some(Set("typo"))),
-      "extensions" -> AgentCapabilities(extensions = Some(Set("typo")))
+      "skills" -> AgentCapabilities(skills = Some(Set("typo")))
     )
   do
     test(s"unknown $kind IDs fail with agent and field, not context contents") {
@@ -136,7 +131,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assert(!result._3.parallelToolCalls)
   }
 
-  test("bound native program inherits runtime restrictions before advertising skills or applying extensions") {
+  test("bound native program inherits runtime restrictions before advertising skills") {
     val result = run {
       for {
         seen <- Ref.make(Option.empty[AgentTurnRequest])
@@ -147,93 +142,74 @@ final class AgentCapabilitiesSuite extends FunSuite {
         }
         adapter = ConfiguredAgent(delegate, disabled)
         program = NativeFunctionAgent[Agent[Any]](id, "model").bind[Any](adapter)
-        runner = new AgentRunner[Any](Map.empty, Map.empty)
+        runner = new AgentRunner[Any](Map.empty)
         _ <- runner.run(program, AgentTask("hello"), available)
         captured <- seen.get
       } yield captured.get
     }
     assert(result.tools.isEmpty)
     assertEquals(result.input.last, MessagePayload.Instructions("system"))
-    assert(!result.input.exists { case MessagePayload.Context("memory", _) => true; case _ => false })
   }
 
-  test("unbound native program resolves runtime policy before extensions") {
+  test("unbound native program resolves runtime policy before advertising skills") {
     val delegate = new Agent[Any] {
       val id = AgentCapabilitiesSuite.this.id
       def turn(r: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
         assertEquals(r.input.last, MessagePayload.Instructions("system"))
-        assert(!r.input.exists { case MessagePayload.Context("memory", _) => true; case _ => false })
         ZIO.succeed(AgentTurnResponse(Chunk(MessagePayload.Assistant("done")), LlmStopReason.Stop))
       }
     }
     val context = StaticContext[Agent[Any]](
       "system",
-      skills = available.skills,
-      extensions = Chunk(new ContextExtension[Agent[Any]] {
-        val key = "memory"
-        def apply(c: StaticContext[Agent[Any]], r: RunContext): IO[YallmoError, RunContext] = {
-          val _ = (c, r)
-          ZIO.dieMessage("Forbidden extension ran")
-        }
-      })
+      skills = available.skills
     )
     run(
-      new AgentRunner[Agent[Any]](Map.empty, Map.empty)
+      new AgentRunner[Agent[Any]](Map.empty)
         .run(NativeFunctionAgent[Agent[Any]](id, "model"), AgentTask("hello"), context)
         .provideEnvironment(ZEnvironment[Agent[Any]](ConfiguredAgent(delegate, disabled)))
     )
   }
 
-  test("runner rejects disallowed tool and retriever actions even from a malicious program") {
-    for retrieve <- List(false, true) do {
-      val result = run {
-        for {
-          executed <- Ref.make(false)
-          malicious = new AgentInstance[Any] {
-            val id = AgentCapabilitiesSuite.this.id
-            override val capabilities = disabled
-            def next(t: AgentTask, c: StaticContext[Any], r: RunContext): IO[YallmoError, AgentTurn] = {
-              val _ = (t, c)
-              if r.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
-                ZIO.succeed(AgentTurn(None, AgentDecision.FinalAnswer("done")))
-              else
-                ZIO.succeed(
-                  AgentTurn(
-                    None,
-                    AgentDecision.Actions(
-                      Chunk(
-                        if retrieve then LlmAction.RetrieveRag("docs", RagQuery("query"))
-                        else LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("shell"), "{}"))
-                      )
+  test("runner rejects disallowed tool actions even from a malicious program") {
+    val result = run {
+      for {
+        executed <- Ref.make(false)
+        malicious = new AgentInstance[Any] {
+          val id = AgentCapabilitiesSuite.this.id
+          override val capabilities = disabled
+          def next(t: AgentTask, c: StaticContext[Any], r: RunContext): IO[YallmoError, AgentTurn] = {
+            val _ = (t, c)
+            if r.messages.exists(_.isInstanceOf[MessagePayload.ToolOutput]) then
+              ZIO.succeed(AgentTurn(None, AgentDecision.FinalAnswer("done")))
+            else
+              ZIO.succeed(
+                AgentTurn(
+                  None,
+                  AgentDecision.Actions(
+                    Chunk(
+                      LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("shell"), "{}"))
                     )
                   )
                 )
-            }
+              )
           }
-          tool = new AgentFunction[Any] {
-            val definition =
-              FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
-            def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = {
-              val _ = call
-              executed.set(true).as(ExternalFunctionResult("unsafe"))
-            }
+        }
+        tool = new AgentFunction[Any] {
+          val definition =
+            FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
+          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = {
+            val _ = call
+            executed.set(true).as(ExternalFunctionResult("unsafe"))
           }
-          retriever = new KnowledgeRetriever[Any] {
-            val definition = RetrieverDefinition("docs", "documents")
-            def retrieve(query: RagQuery): IO[YallmoError, Chunk[RagDocument]] = {
-              val _ = query
-              executed.set(true).as(Chunk.empty)
-            }
-          }
-          outcome <- new AgentRunner[Any](Map(FunctionKey.unsafe("shell") -> tool), Map("docs" -> retriever))
-            .run(malicious, AgentTask("hello"), available)
-            .either
-          didExecute <- executed.get
-        } yield (outcome, didExecute)
-      }
-      assert(!result._2)
-      if retrieve then assert(result._1.isLeft) else assert(result._1.isRight)
+        }
+        outcome <- new AgentRunner[Any](Map(FunctionKey.unsafe("shell") -> tool))
+          .run(malicious, AgentTask("hello"), available)
+          .either
+        didExecute <- executed.get
+      } yield (outcome, didExecute)
     }
+    assert(!result._2)
+    assert(result._1.isRight)
   }
 
   test("shared settings require an explicit or application-supplied prompt without a built-in default") {
@@ -294,10 +270,10 @@ final class AgentCapabilitiesSuite extends FunSuite {
     }
     val program = NativeFunctionAgent[Agent[Any]](id, "model", capabilities = disabled)
     val adapter = ConfiguredAgent(delegate, AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("clock")))))
-    run(new AgentRunner[Any](Map.empty, Map.empty).run(program.bind[Any](adapter), AgentTask("hello"), available))
+    run(new AgentRunner[Any](Map.empty).run(program.bind[Any](adapter), AgentTask("hello"), available))
     val invalid = ConfiguredAgent(delegate, AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("typo")))))
     val error = run(
-      new AgentRunner[Any](Map.empty, Map.empty)
+      new AgentRunner[Any](Map.empty)
         .run(program.bind[Any](invalid), AgentTask("hello"), available)
         .either
     ).swap.toOption.get

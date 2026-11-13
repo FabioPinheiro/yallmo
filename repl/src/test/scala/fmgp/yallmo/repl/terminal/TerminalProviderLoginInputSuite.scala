@@ -606,7 +606,7 @@ final class TerminalProviderLoginInputSuite extends FunSuite {
     val orchestrator = runZIO(OrchestratorLive.inMemory(instances))
     new ReplApplication(
       new ReplSession[Any](
-        new AgentRunner[Any](Map.empty, Map.empty),
+        new AgentRunner[Any](Map.empty),
         Some(new AgentInstance[Any] {
           val id = AgentId("unused")
           def next(task: AgentTask, context: StaticContext[Any], runContext: RunContext): IO[YallmoError, AgentTurn] =

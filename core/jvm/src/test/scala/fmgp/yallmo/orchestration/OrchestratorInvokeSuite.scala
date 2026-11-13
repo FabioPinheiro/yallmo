@@ -252,7 +252,7 @@ final class OrchestratorInvokeSuite extends FunSuite {
                 )
               )
           }
-          invocation = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+          invocation = new AgentRunner[Any](Map(tool.definition.name -> tool))
             .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
           result <- live.invoke(input, invocation).either
           executed <- calls.get
@@ -375,7 +375,7 @@ final class OrchestratorInvokeSuite extends FunSuite {
   }
 
   private def program(runContext: RunContext => IO[YallmoError, AgentTurnResult]): AgentInvocation[Any] =
-    new AgentRunner[Any](Map.empty, Map.empty).invocation(
+    new AgentRunner[Any](Map.empty).invocation(
       new AgentInstance[Any] {
         val id = assistant
         def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] = {

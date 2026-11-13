@@ -20,4 +20,6 @@ sbt 'core/runMain fmgp.yallmo.rag.RagMainDemo --model target/yallmo-demo/all-Min
 
 The default source directory is `data/lores`; override it with `--source <directory>`. Top-level Markdown files are ingested, excluding a directory `README.md`. The former `data/rag-demo` smoke-test corpus is not included in this checkout; supply your own source directory.
 
-The demonstration does not persist embeddings. Production integration should add a versioned index manifest, a corpus/update policy, and an explicit per-agent retrieval allowlist.
+This standalone library is not an agent capability and does not register a retriever or context extension.
+
+The demonstration does not persist embeddings. Production integration should add a versioned index manifest, a corpus/update policy, and explicit tool authorization if exposing retrieval to an agent.

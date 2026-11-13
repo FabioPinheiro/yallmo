@@ -8,9 +8,7 @@ agents:
     - docker-mr
     capabilities:
       tools: []
-      retrievers: []
       skills: []
-      extensions: []
     config:
       model: ai/gemma4:E4B
       systemPrompt: Transcribe the supplied audio exactly. Preserve the spoken language. Do not translate, summarize,

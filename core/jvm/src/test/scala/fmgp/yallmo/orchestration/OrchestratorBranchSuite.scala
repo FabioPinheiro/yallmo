@@ -95,7 +95,7 @@ final class OrchestratorBranchSuite extends FunSuite {
                 rootMessage.id,
                 human,
                 AgentTask("branch prompt"),
-                new AgentRunner[Any](Map(key -> tool), Map.empty).execution(
+                new AgentRunner[Any](Map(key -> tool)).execution(
                   agent,
                   context.copy(functions = Chunk(tool.definition)),
                   AgentBudget.default.copy(timeout = 150.millis)
@@ -156,7 +156,7 @@ final class OrchestratorBranchSuite extends FunSuite {
               calls.update(_ + 1).as(AgentTurn(Some(MessagePayload.Assistant("ok")), AgentDecision.FinalAnswer("ok")))
             }
           }
-          execution = new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+          execution = new AgentRunner[Any](Map.empty).execution(agent, context)
           orchestrator <- make(new NoSessions(base))
           rejected <- ZIO.foreach(
             List(

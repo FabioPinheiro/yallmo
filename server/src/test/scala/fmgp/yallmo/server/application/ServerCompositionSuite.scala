@@ -740,7 +740,7 @@ final class ServerCompositionSuite extends FunSuite {
 
   private val voiceId = AgentId("voice")
   private val voiceDefinition = definition(Some("Transcribe exactly")).copy(
-    capabilities = AgentCapabilities(Some(Set.empty), Some(Set.empty), Some(Set.empty), Some(Set.empty))
+    capabilities = AgentCapabilities(tools = Some(Set.empty), skills = Some(Set.empty), functions = Some(Set.empty))
   )
 
   test("explicit transcriber validation returns a local audio adapter without provider or authentication calls") {
@@ -801,31 +801,20 @@ final class ServerCompositionSuite extends FunSuite {
     }
   }
 
-  test("transcriber policy checks all four effective capability catalogs including partial inheritance") {
+  test("transcriber policy checks effective tool and skill catalogs including partial inheritance") {
     run {
       val tool = StaticContext[Any](
         "chat",
         functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
       )
-      val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
       val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
-      val ext = StaticContext[Any](
-        "chat",
-        extensions = Chunk(new ContextExtension[Any] {
-          val key = "memory"
-          def apply(context: StaticContext[Any], current: RunContext): IO[YallmoError, RunContext] = {
-            val _ = (context, current)
-            ZIO.dieMessage("Validation must not apply extensions")
-          }
-        })
-      )
       def check(policy: AgentCapabilities, context: StaticContext[Any]) =
         ServerApplication
           .make(config.copy(agents = Map(voiceId -> voiceDefinition.copy(capabilities = policy))), Chunk.empty)
           .flatMap(_.resolveTranscriber(voiceId, context))
           .either
       for {
-        inherited <- ZIO.foreach(List(tool, rag, skill, ext))(check(AgentCapabilities(), _))
+        inherited <- ZIO.foreach(List(tool, skill))(check(AgentCapabilities(), _))
         partial <- check(AgentCapabilities(functions = Some(Set.empty)), skill)
         allowed <- check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell")))), tool)
         unknown <- check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unknown")))), tool)

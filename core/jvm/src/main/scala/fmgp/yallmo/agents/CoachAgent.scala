@@ -63,9 +63,7 @@ object CoachAgent {
   /** Defense in depth: native context assembly and direct callers can only use the local application notebook. */
   val Capabilities: AgentCapabilities = AgentCapabilities(
     tools = Some(Set(ToolKey.Coach)),
-    retrievers = Some(Set.empty),
-    skills = Some(Set.empty),
-    extensions = Some(Set.empty)
+    skills = Some(Set.empty)
   )
 
   val SystemPrompt: String =

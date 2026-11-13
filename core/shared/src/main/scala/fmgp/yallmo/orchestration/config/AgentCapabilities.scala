@@ -5,7 +5,7 @@ import fmgp.yallmo.tool.{ToolDefinition, FunctionKey, ToolKey}
 
 import fmgp.yallmo.model.llm.AgentTurnRequest
 import fmgp.yallmo.orchestration.{StaticContext}
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, jsonNoExtraFields}
 import zio.Chunk
 
 /** None inherits the supplied catalog; Some(empty) disables that capability, even in a partial object.
@@ -13,11 +13,10 @@ import zio.Chunk
   * Tool and function restrictions are conjunctive: a function allowlist can narrow, but never enable a disabled tool.
   * Old per-operation `tools` allowlists must move to `functions`; `tools` now names capability groups.
   */
+@jsonNoExtraFields
 final case class AgentCapabilities(
     tools: Option[Set[ToolKey]] = None,
-    retrievers: Option[Set[String]] = None,
     skills: Option[Set[String]] = None,
-    extensions: Option[Set[String]] = None,
     functions: Option[Set[FunctionKey]] = None
 ) derives JsonCodec {
   def allowsTool(key: ToolKey): Boolean = tools.forall(_.contains(key))
@@ -51,9 +50,7 @@ final case class AgentCapabilities(
       )
       _ <- check("tools", tools, available.tools.map(_.name).toSet)
       _ <- check("functions", functions, available.functions.map(_.name).toSet)
-      _ <- check("retrievers", retrievers, available.retrievers.map(_.key).toSet)
       _ <- check("skills", skills, available.skills.map(_.key).toSet)
-      _ <- check("extensions", extensions, available.extensions.map(_.key).toSet)
     } yield restrict(available)
   }
 
@@ -63,9 +60,7 @@ final case class AgentCapabilities(
     available.copy(
       functions = permitted,
       tools = ToolDefinition.available(available.tools.filter(tool => allowsTool(tool.name)), permitted),
-      retrievers = available.retrievers.filter(t => retrievers.forall(_.contains(t.key))),
-      skills = available.skills.filter(t => skills.forall(_.contains(t.key))),
-      extensions = available.extensions.filter(t => extensions.forall(_.contains(t.key)))
+      skills = available.skills.filter(t => skills.forall(_.contains(t.key)))
     )
   }
 
@@ -91,9 +86,7 @@ final case class AgentCapabilities(
     }
     AgentCapabilities(
       tools = both(tools, other.tools),
-      retrievers = both(retrievers, other.retrievers),
       skills = both(skills, other.skills),
-      extensions = both(extensions, other.extensions),
       functions = both(functions, other.functions)
     )
   }

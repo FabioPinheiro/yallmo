@@ -67,11 +67,11 @@ final class ServerApplication private (
       _ <- ZIO
         .fail(
           YallmoError.InvalidConfig(
-            "Transcription requires effectively empty capabilities.tools/retrievers/skills/extensions; explicitly set each allowlist to [] to disable inherited capabilities"
+            "Transcription requires effectively empty capabilities.tools/skills; explicitly set each allowlist to [] to disable inherited capabilities"
           )
         )
         .unless(
-          context.functions.isEmpty && context.retrievers.isEmpty && context.skills.isEmpty && context.extensions.isEmpty
+          context.functions.isEmpty && context.skills.isEmpty
         )
       agent <- catalog
         .getAudioAgent(id)

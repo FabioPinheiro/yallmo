@@ -76,9 +76,8 @@ objects can still be inspected through `Orchestrator.listMessages` as their orig
 unsaved-object warning and never regenerates identities. Pending writes drain on success, failure, timeout and cancellation;
 a stuck backend can still delay draining indefinitely, and permanent object failures remain best-effort/logged.
 
-Each ordinary turn derives a fresh `RunContext` from managed history for extensions and provider rendering. Extensions
-must preserve that snapshot's prefix; only their new suffix is appended before inference. Assistant/reasoning messages
-and calls append before tools execute, and each result appends immediately after its action completes. Neither loop
+Each ordinary turn derives a fresh `RunContext` from managed history for provider rendering. Assistant/reasoning
+messages and calls append before tools execute, and each result appends immediately after its action completes. Neither loop
 recursion nor tool execution carries an authoritative `RunContext`. The compatibility `AgentTurnResult` snapshot is
 output only: submission responses use the accepted prompt plus an append-only execution audit, never a replaced active-prefix length
 or a returned transcript. Rebase copies are context, not new execution.
@@ -137,16 +136,16 @@ Original objects and parents remain inspectable through the inventory (including
 fork names. Logs record base/head/onto, old/new active heads and ordered original/copy ID pairs. This is **log-only
 operation provenance**, not a durable queryable operation journal or crash-recovery guarantee.
 
-Runner extension, model and action work captures the active `Option[MessageId]` head. Under the submission-local gate,
+Runner model and action work captures the active `Option[MessageId]` head. Under the submission-local gate,
 appends compare that parent and return their own resulting head atomically. The runner advances only through its own
-accepted writes: extension suffix to model turn, assistant/calls to action batch, and each result to the next action.
+accepted writes: assistant/calls to action batch, and each result to the next action.
 It never adopts an unrelated latest head for a queued decision. Ordinary concurrent appends or rewrites to a different
 head invalidate in-flight work; exact restoration A -> B -> A is the same immutable context and is accepted, not stale.
 Stale completed output is saved under its original parent and retained in execution audit, never silently attached to
 new context; continuation fails without rerunning side effects. Empty batches still check the captured head, including
 `None` for empty history. Session pointer-only changes do not affect this local identity. A program that awaits a rebase inside `nextManaged` must explicitly read `history.messages`
 and rebuild any inference request before returning output. This trusted-program contract is **not proof** that an LLM
-consumed the refreshed snapshot; unrelated extension/tool work cannot refresh its own fence through that read. Subsequent
+consumed the refreshed snapshot; unrelated tool work cannot refresh its own fence through that read. Subsequent
 runner turns obtain fresh snapshots. A rewrite does not change original message authors or count copies as execution.
 
 Managed rebase accepts complete independent tool exchanges: destination ancestry and the selected source range

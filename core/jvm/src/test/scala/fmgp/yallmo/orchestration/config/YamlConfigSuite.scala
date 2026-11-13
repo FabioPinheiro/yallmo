@@ -64,6 +64,18 @@ providers:
     }
   }
 
+  test("removed retriever and extension allowlists are rejected in YAML") {
+    for field <- List("retrievers", "extensions") do {
+      val text = s"""agents:
+  assistant:
+    agentType: OAIAgent
+    capabilities:
+      $field: []
+"""
+      assert(ConfigDocument.parse(Path.of("yallmo.yaml"), text).isLeft)
+    }
+  }
+
   test("missing YAML initializes privately and concurrent callers see one complete document") {
     withDirectory { root =>
       val path = root.resolve("nested/yallmo.yaml")

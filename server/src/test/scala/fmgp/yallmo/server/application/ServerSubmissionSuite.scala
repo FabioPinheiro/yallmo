@@ -827,7 +827,7 @@ final class ServerSubmissionSuite extends FunSuite {
           session.id,
           human,
           AgentTask("shorten"),
-          new AgentRunner[Any](Map.empty, Map.empty).execution(program, StaticContext[Any]("Synthetic"))
+          new AgentRunner[Any](Map.empty).execution(program, StaticContext[Any]("Synthetic"))
         )
         _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "after shortening")
         _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), second, "switch")
@@ -1947,7 +1947,7 @@ final class ServerSubmissionSuite extends FunSuite {
             }
           }
         }
-        execution = new AgentRunner[Any](Map(key -> tool), Map.empty).execution(
+        execution = new AgentRunner[Any](Map(key -> tool)).execution(
           fmgp.yallmo.orchestration.AgentContinuations.withCurrentContinuations(program, Int.MaxValue),
           StaticContext[Any]("Synthetic", functions = Chunk(tool.definition))
         )

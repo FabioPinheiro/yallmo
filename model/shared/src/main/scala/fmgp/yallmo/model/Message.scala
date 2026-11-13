@@ -149,6 +149,7 @@ object MessagePayload {
     override def contentStr: String = s"$label:\n$text"
   }
 
+  /** Legacy retrieval payload retained so persisted conversations remain readable; no runner action produces it. */
   final case class RagResult(retrieverKey: String, documents: Chunk[RagDocument]) extends MessagePayload
       derives JsonCodec {
     override def role: String = "context"

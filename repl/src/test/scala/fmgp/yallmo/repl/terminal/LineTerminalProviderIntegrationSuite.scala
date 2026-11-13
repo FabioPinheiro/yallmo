@@ -87,7 +87,7 @@ final class LineTerminalProviderIntegrationSuite extends FunSuite {
     val orchestrator = run(OrchestratorLive.inMemory(instances))
     new ReplApplication[Any](
       new ReplSession[Any](
-        new AgentRunner[Any](Map.empty, Map.empty),
+        new AgentRunner[Any](Map.empty),
         Some(new AgentInstance[Any] {
           val id = agent.id
           def next(task: AgentTask, context: StaticContext[Any], runContext: RunContext): IO[YallmoError, AgentTurn] =

@@ -1,7 +1,7 @@
 # Agent orchestration
 
 `fmgp.yallmo.orchestration` is a bounded, model-directed agent loop. An `AgentInstance` proposes a decision;
-`AgentRunner` validates and executes retrieval/tool actions. Application flows that do not need model-selected actions
+`AgentRunner` validates and executes tool actions. Application flows that do not need model-selected actions
 should use ordinary named ZIO methods, not a second workflow interpreter.
 
 ## Ownership
@@ -26,16 +26,15 @@ Configuration and authorization are described in [Capabilities architecture](../
 flowchart TD
     Request[User task and prior RunContext] --> Runner[AgentRunner]
     Runner --> Policy[Resolve configured capabilities]
-    Policy --> Extensions[Effective context extensions]
-    Extensions --> Program[NativeFunctionAgent]
+    Policy --> Program[NativeFunctionAgent]
     Program --> Adapter[Agent.turn: one provider request]
     Adapter --> Decision{AgentDecision}
     Decision --> Final[FinalAnswer: return AgentTurnResult]
     Decision --> Actions[Actions in declaration order]
     Actions --> Validate[Authorize and validate arguments]
-    Validate --> Execute[Trusted tool or retriever implementation]
+    Validate --> Execute[Trusted tool implementation]
     Execute --> Record[Append linked results to RunContext]
-    Record --> Extensions
+    Record --> Program
 ```
 
 A native tool-only response has no fabricated empty assistant message. Function-call requests and outputs retain their
@@ -44,7 +43,7 @@ call IDs. Provider reasoning/continuations remain typed payloads, separate from 
 ## Core contracts
 
 A decision-making program implements `AgentInstance[R]`. Its `configuredContext` hook validates/filters capabilities
-before extensions or actions run; `next` returns a proposed turn:
+before inference or actions run; `next` returns a proposed turn:
 
 ```scala
 trait AgentInstance[R] {
@@ -66,30 +65,30 @@ enum AgentDecision {
 }
 
 enum LlmAction {
-  case RetrieveRag(retrieverKey: String, query: RagQuery)
   case CallExternalFunction(call: ExternalFunctionCall)
 }
 ```
 
-`AgentRunner.run` starts with an empty transcript and returns `AgentResult`. `runWithContext` accepts prior history and
-returns `AgentTurnResult(result, runContext)`. A non-LLM program can propose these values directly for deterministic
+`AgentRunner.execution` builds an opaque handle for `Orchestrator.submit`, which supplies managed history and owns
+persistence. `AgentRunner.invocation` builds a single-message handle for `Orchestrator.invoke`, not a model/tool loop. A non-LLM program can propose these values directly for deterministic
 policies/tests; it need not construct a provider request.
 
 ## Context and capabilities
 
-- `StaticContext[R]` contains the system prompt, function/retriever definitions, skills, and ordered context extensions.
+- `StaticContext[R]` contains the system prompt, function definitions, tool groups and skills.
   `.functions` is the flat `FunctionToolDefinition` catalog; `.tools` contains `ToolDefinition`s exposing
   `name: ToolKey` and `functions: Set[FunctionToolDefinition]`.
   Each callable has a distinct `FunctionKey`. Tool-group and function allowlists are conjunctive.
 - `RunContext` contains ordered `MessagePayload` values, not persisted envelopes. Appends produce a new context.
-- `ContextExtension.apply(staticContext, runContext)` returns `ZIO[R, YallmoError, RunContext]`; it cannot change static
-  capabilities after the run starts. Extensions may load memory, add RAG, redact context, or add request metadata.
 - Omitted capability allowlists inherit the application's catalog; explicit empty lists disable a category.
 - Native program and configured adapter restrictions intersect. Direct configured-adapter requests also filter tools.
 - The runner requires both an effective advertised definition and a registered implementation before execution.
 
 `FunctionApproval.guard` can add human/policy approval around an authorized tool. Allowlists and approval are not a sandbox;
 trusted Scala implementations retain their own permissions and resource-safety responsibilities.
+
+Retrievers and automatic context extensions are no longer part of orchestration. Historical `RagResult` messages
+remain readable, but cannot trigger retrieval. The standalone local RAG library is independent.
 
 ## Native requests and blob readers
 
@@ -149,11 +148,7 @@ The JSON codec requires one object, without Markdown. Examples:
 ```
 
 ```json
-{"actions":[{"kind":"retrieve_rag","retrieverKey":"knowledge","query":"Faro beaches"}]}
-```
-
-```json
-{"actions":[{"kind":"call_tool","toolKey":"current-time","arguments":{}}]}
+{"actions":[{"kind":"call_external_tool","toolKey":"current-time","arguments":{}}]}
 ```
 
 Deprecated provider-owned tool loops remain compatibility APIs; new tool-executing callers should use
@@ -162,13 +157,12 @@ Deprecated provider-owned tool loops remain compatibility APIs; new tool-executi
 ## Guardrails and verification
 
 `AgentBudget` bounds model turns, action count, and total timeout. Actions execute sequentially. Tool failure, denial,
-unknown tools, and malformed arguments become linked error outputs where applicable; retrieval failures remain typed
-run failures. Expected errors use `YallmoError`.
+unknown tools, and malformed arguments become linked error outputs where applicable. Expected errors use `YallmoError`.
 
 Offline verification from the repository root:
 
 ```bash
-sbt --batch 'model/testOnly *; core/testOnly *; repl/testOnly *'
+sbt --batch ';model/test;core/test;repl/test'
 ```
 
 Tests cover protocol/mappers, configured policy, linked action ordering/recovery, persistence/blob lifecycle boundaries,

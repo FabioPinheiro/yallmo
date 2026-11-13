@@ -18,9 +18,7 @@
       ],
       "capabilities": {
         "tools": [],
-        "retrievers": [],
-        "skills": [],
-        "extensions": []
+        "skills": []
       },
       "config": {
         "model": "audio-capable-model",

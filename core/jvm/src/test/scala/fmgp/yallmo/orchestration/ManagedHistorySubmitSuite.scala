@@ -126,7 +126,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 sessionId,
                 userId,
                 AgentTask("finish research"),
-                new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+                new AgentRunner[Any](Map.empty).execution(agent, context)
               )
               history <- captured.await
               active <- history.messages
@@ -240,7 +240,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 sessionId,
                 userId,
                 AgentTask("continue"),
-                new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+                new AgentRunner[Any](Map.empty).execution(agent, context)
               )
               .fork
             _ <- reached.await
@@ -338,7 +338,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                 sessionId,
                 userId,
                 AgentTask("continue"),
-                new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+                new AgentRunner[Any](Map.empty).execution(agent, context)
               )
               .exit
             history <- captured.await
@@ -403,19 +403,13 @@ final class ManagedHistorySubmitSuite extends FunSuite {
       }
     }
 
-    test(s"$backend: every turn reads latest managed history and extensions, calls and each output append once") {
+    test(s"$backend: every turn reads latest managed history; calls and each output append once") {
       withStorage(backend) { storage =>
         for {
           orchestrator <- make(storage)
           captured <- Promise.make[Nothing, ManagedHistory]
           seen <- Ref.make(Chunk.empty[Chunk[Message]])
-          extensions <- Ref.make(0)
           executions <- Ref.make(0)
-          extension = new ContextExtension[Any] {
-            val key = "per-turn"
-            def apply(context: StaticContext[Any], current: RunContext): IO[YallmoError, RunContext] =
-              extensions.updateAndGet(_ + 1).map(n => current.append(MessagePayload.Context(key, s"$n")))
-          }
           agent = new AgentInstance[Any] {
             val id: AgentId = agentId
             def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =
@@ -459,8 +453,8 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             sessionId,
             userId,
             AgentTask("latest"),
-            new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
-              .execution(agent, context.copy(functions = Chunk(tool.definition), extensions = Chunk(extension)))
+            new AgentRunner[Any](Map(functionKey -> tool))
+              .execution(agent, context.copy(functions = Chunk(tool.definition)))
           )
           history <- captured.await
           active <- history.messages
@@ -471,7 +465,6 @@ final class ManagedHistorySubmitSuite extends FunSuite {
           assertEquals(observations.size, 2)
           assertEquals(observations.last, active.dropRight(1))
           assertEquals(observations.last.count(_.payload.isInstanceOf[MessagePayload.ToolOutput]), 2)
-          assertEquals(payloads.collect { case MessagePayload.Context("per-turn", n) => n }, Chunk("1", "2"))
           assertEquals(payloads.count(_ == MessagePayload.Context("generated", "additional")), 1)
           val calls = payloads.collect { case MessagePayload.ToolCall(call) => call.id }
           val outputs = payloads.collect { case MessagePayload.ToolOutput(output) => output.callId }
@@ -519,7 +512,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             sessionId,
             userId,
             AgentTask("rewrite"),
-            new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+            new AgentRunner[Any](Map.empty).execution(agent, context)
           )
           history <- captured.await
           active <- history.messages
@@ -730,7 +723,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
               sessionId,
               userId,
               AgentTask("prompt"),
-              new AgentRunner[Any](Map.empty, Map.empty).execution(agent, context)
+              new AgentRunner[Any](Map.empty).execution(agent, context)
             )
             .exit
           history <- captured.await
@@ -1440,52 +1433,6 @@ final class ManagedHistorySubmitSuite extends FunSuite {
       }
     }
 
-    test(s"$backend: stale extension output is retained under old parent and stops before inference") {
-      withStorage(backend) { storage =>
-        for {
-          orchestrator <- make(storage)
-          seed <- orchestrator.append(sessionId, userId, Chunk(MessagePayload.User("seed")))
-          captured <- Promise.make[Nothing, ManagedHistory]
-          old <- Ref.make(Option.empty[MessageId])
-          inferred <- Ref.make(false)
-          extension = new ContextExtension[Any] {
-            val key = "stale"
-            def apply(context: StaticContext[Any], current: RunContext) = for {
-              history <- captured.await
-              original <- history.messages
-              _ <- old.set(Some(original.last.id))
-              _ <- history.rebase(seed.messages.head.id, original.last.id, None)
-            } yield current.append(MessagePayload.Context(key, "old execution"))
-          }
-          agent = new AgentInstance[Any] {
-            val id = agentId
-            def next(task: AgentTask, context: StaticContext[Any], current: RunContext) =
-              inferred.set(true).as(finalTurn)
-          }
-          runner = new AgentRunner[Any](Map.empty, Map.empty)
-          execution = new AgentExecution[Any] {
-            val agentId = ManagedHistorySubmitSuite.this.agentId
-            private[orchestration] def run(task: AgentTask, history: ManagedHistory) =
-              captured.succeed(history) *> runner
-                .execution(agent, context.copy(extensions = Chunk(extension)))
-                .run(task, history)
-          }
-          failed <- orchestrator.submit(sessionId, userId, AgentTask("prompt"), execution).exit
-          inventory <- storage.listMessages
-          parent <- old.get
-          ran <- inferred.get
-          active <- captured.await.flatMap(_.messages)
-        } yield {
-          assert(failed.isFailure && !ran)
-          assertEquals(active.map(_.payload), Chunk(MessagePayload.User("prompt")))
-          assertEquals(
-            inventory.find(_.payload == MessagePayload.Context("stale", "old execution")).map(_.parentId),
-            Some(parent)
-          )
-        }
-      }
-    }
-
     test(s"$backend: tool side effect executes once; rewrite cannot break in-flight call/output correlation") {
       withStorage(backend) { storage =>
         for {
@@ -1548,27 +1495,25 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                     _ <- ZIO.succeed(assertEquals(fresh.map(_.payload), Chunk(MessagePayload.User("prompt"))))
                   } yield AgentTurn(
                     None,
-                    AgentDecision.Actions(Chunk(LlmAction.RetrieveRag("refresh", RagQuery("query"))))
+                    AgentDecision
+                      .Actions(Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(functionKey, "{}"))))
                   )
                 case _ =>
                   ZIO.succeed {
                     assertEquals(current.messages.head, MessagePayload.User("prompt"))
-                    assertEquals(current.messages.size, 2)
-                    assert(current.messages.last.isInstanceOf[MessagePayload.RagResult])
+                    assertEquals(current.messages.size, 3)
+                    assert(current.messages.last.isInstanceOf[MessagePayload.ToolOutput])
                     finalTurn
                   }
               }
           }
-          retriever = new KnowledgeRetriever[Any] {
-            val definition = RetrieverDefinition("refresh", "fresh turn")
-            def retrieve(query: RagQuery) = ZIO.succeed(Chunk.empty)
-          }
+          tool = toolWith(ZIO.succeed(ExternalFunctionResult("refreshed")))
           turn <- orchestrator.submit(
             sessionId,
             userId,
             AgentTask("prompt"),
-            new AgentRunner[Any](Map.empty, Map("refresh" -> retriever))
-              .execution(agent, context.copy(retrievers = Chunk(retriever.definition)))
+            new AgentRunner[Any](Map(functionKey -> tool))
+              .execution(agent, context.copy(functions = Chunk(tool.definition)))
           )
           count <- turns.get
         } yield {
@@ -1579,158 +1524,9 @@ final class ManagedHistorySubmitSuite extends FunSuite {
       }
     }
 
-    for boundary <- List("before-first", "between-actions", "running") do {
-      for (competingPointer, mutation) <- List(false, true).flatMap(pointer =>
-          List("rewrite", "append", "restored", "unchanged").map((pointer, _))
-        )
-      do {
-        test(s"$backend: RAG head guard at $boundary mutation=$mutation competing pointer=$competingPointer") {
-          val logs = new CopyOnWriteArrayList[String]()
-          withStorage(backend) { storage =>
-            withLogs(logs) {
-              for {
-                orchestrator <- make(storage)
-                seed <- orchestrator.append(sessionId, userId, Chunk(MessagePayload.User("seed")))
-                captured <- Promise.make[Nothing, ManagedHistory]
-                reached <- Promise.make[Nothing, Unit]
-                release <- Promise.make[Nothing, Unit]
-                effects <- Ref.make(Chunk.empty[String])
-                turns <- Ref.make(0)
-                agent = new AgentInstance[Any] {
-                  val id = agentId
-                  def next(task: AgentTask, context: StaticContext[Any], current: RunContext) =
-                    turns.updateAndGet(_ + 1).map { count =>
-                      if count == 1 then
-                        AgentTurn(
-                          Some(MessagePayload.Assistant("decision")),
-                          AgentDecision
-                            .Actions(Chunk("first", "second").map(key => LlmAction.RetrieveRag(key, RagQuery(key))))
-                        )
-                      else finalTurn
-                    }
-                }
-                retrievers = Chunk("first", "second").map { key =>
-                  key -> new KnowledgeRetriever[Any] {
-                    val definition = RetrieverDefinition(key, "RAG fence probe")
-                    def retrieve(query: RagQuery) =
-                      effects.update(_ :+ key) *>
-                        (reached.succeed(()) *> release.await).when(boundary == "running" && key == "first") *>
-                        ZIO.succeed(Chunk.empty)
-                  }
-                }.toMap
-                runnerExecution = new AgentRunner[Any](Map.empty, retrievers)
-                  .execution(agent, context.copy(retrievers = Chunk.fromIterable(retrievers.values.map(_.definition))))
-                execution = new AgentExecution[Any] {
-                  val agentId = ManagedHistorySubmitSuite.this.agentId
-                  private[orchestration] def run(task: AgentTask, history: ManagedHistory) = {
-                    val gated = new ManagedHistory {
-                      def initialMessages = history.initialMessages
-                      def messages = history.messages
-                      def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]) =
-                        history.rebase(base, head, onto)
-                      private[orchestration] def snapshot = history.snapshot
-                      private[orchestration] def append(payloads: Chunk[MessagePayload]) = history.append(payloads)
-                      private[orchestration] def appendAt(
-                          payloads: Chunk[MessagePayload],
-                          expectedParent: Option[MessageId]
-                      ) = {
-                        val stop =
-                          boundary == "before-first" && payloads.contains(MessagePayload.Assistant("decision")) ||
-                            boundary == "between-actions" && payloads.exists {
-                              case MessagePayload.RagResult("first", _) => true
-                              case _                                    => false
-                            }
-                        history
-                          .appendAt(payloads, expectedParent)
-                          .tap(_ => (reached.succeed(()) *> release.await).when(stop))
-                      }
-                    }
-                    captured.succeed(history) *> runnerExecution.run(task, gated)
-                  }
-                }
-                fiber <- orchestrator.submit(sessionId, userId, AgentTask("prompt"), execution).fork
-                _ <- reached.await
-                history <- captured.await
-                original <- history.messages
-                competitor <-
-                  if competingPointer then
-                    orchestrator.append(sessionId, userId, Chunk(MessagePayload.User("competitor"))).map(Some(_))
-                  else ZIO.succeed(None)
-                copies <- mutation match {
-                  case "rewrite"  => history.rebase(seed.messages.head.id, original.last.id, None)
-                  case "append"   => history.append(Chunk(MessagePayload.Context("concurrent", "keep"))).as(Chunk.empty)
-                  case "restored" =>
-                    history.rebase(original.last.id, original.last.id, Some(original.head.id)) *>
-                      history.rebase(original.head.id, original.head.id, Some(original.last.id))
-                  case _ => ZIO.succeed(Chunk.empty)
-                }
-                replacement <- history.messages
-                _ <- release.succeed(())
-                failed <- fiber.await
-                active <- history.messages
-                ran <- effects.get
-                turnCount <- turns.get
-                reopened <- reload(storage)
-                saved <- reopened.loadSession(sessionId)
-                inventory <- reopened.listMessages
-              } yield {
-                val accepted = mutation == "restored" || mutation == "unchanged"
-                assertEquals(failed.isSuccess, accepted)
-                assertEquals(turnCount, if accepted then 2 else 1)
-                assertEquals(
-                  ran,
-                  if accepted then Chunk("first", "second")
-                  else if boundary == "before-first" then Chunk.empty
-                  else Chunk("first")
-                )
-                assert(original.forall(inventory.contains))
-                assert(replacement.forall(inventory.contains))
-                if accepted then {
-                  assertEquals(replacement, original)
-                  assertEquals(active.take(original.size), original)
-                  assertEquals(active.last.payload, finalTurn.assistant.get)
-                  assertEquals(active.count(_.payload.isInstanceOf[MessagePayload.RagResult]), 2)
-                  assertEquals(active.drop(1).map(_.parentId), active.dropRight(1).map(m => Some(m.id)))
-                  val turn = failed.toEither.toOption.get
-                  assertEquals(turn.newMessages, active.drop(seed.messages.size).map(_.payload))
-                } else {
-                  assertEquals(active, replacement)
-                  if mutation == "rewrite" then {
-                    assertEquals(replacement, copies)
-                    assertEquals(replacement.head.parentId, None)
-                  }
-                  assert(!inventory.exists(_.payload == MessagePayload.RagResult("second", Chunk.empty)))
-                  val originalResult = inventory.find(m =>
-                    m.payload == MessagePayload.RagResult("first", Chunk.empty) &&
-                      m.parentId == original.find(_.payload == MessagePayload.Assistant("decision")).map(_.id)
-                  )
-                  if boundary == "before-first" then assertEquals(originalResult, None)
-                  else assert(originalResult.nonEmpty)
-                  if boundary == "running" then {
-                    assert(!active.exists(_.payload.isInstanceOf[MessagePayload.RagResult]))
-                    assertEquals(inventory.count(_.payload == MessagePayload.RagResult("first", Chunk.empty)), 1)
-                  }
-                }
-                assertEquals(saved.messages, competitor.fold(active)(_.messages))
-                if competingPointer then
-                  assert(
-                    logs.asScala.exists(line =>
-                      line.contains("level=ERROR") && line.contains("pointer publication failed") &&
-                        line.contains(s"session=${sessionId.value}") && line.contains("old=") && line.contains("new=")
-                    )
-                  )
-              }
-            }
-          }
-        }
-      }
-    }
-
-    for
-      phase <- List("extension", "after-extension", "model");
-      mutation <- List("rewrite", "append", "restored", "pointer")
+    for mutation <- List("rewrite", "append", "restored", "pointer")
     do
-      test(s"$backend: in-flight $phase output uses captured head after $mutation") {
+      test(s"$backend: in-flight model output uses captured head after $mutation") {
         withStorage(backend) { storage =>
           for {
             orchestrator <- make(storage)
@@ -1738,45 +1534,19 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             captured <- Promise.make[Nothing, ManagedHistory]
             reached <- Promise.make[Nothing, Unit]
             release <- Promise.make[Nothing, Unit]
-            effects <- Ref.make(0)
             inferred <- Ref.make(0)
-            extensionPayload = MessagePayload.Context("extension", "completed")
-            extension = new ContextExtension[Any] {
-              val key = "captured-head"
-              def apply(context: StaticContext[Any], current: RunContext) =
-                effects.update(_ + 1) *> (reached.succeed(()) *> release.await).when(phase == "extension") *>
-                  ZIO.succeed(current.append(extensionPayload))
-            }
             agent = new AgentInstance[Any] {
               val id = agentId
               def next(task: AgentTask, context: StaticContext[Any], current: RunContext) =
-                inferred.update(_ + 1) *> (reached.succeed(()) *> release.await).when(phase == "model") *>
+                inferred.update(_ + 1) *> (reached.succeed(()) *> release.await) *>
                   ZIO.succeed(finalTurn)
             }
             execution = new AgentExecution[Any] {
               val agentId = ManagedHistorySubmitSuite.this.agentId
               private[orchestration] def run(task: AgentTask, history: ManagedHistory) = {
-                val gated = new ManagedHistory {
-                  def initialMessages = history.initialMessages
-                  def messages = history.messages
-                  def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]) =
-                    history.rebase(base, head, onto)
-                  private[orchestration] def snapshot = history.snapshot
-                  private[orchestration] def append(payloads: Chunk[MessagePayload]) = history.append(payloads)
-                  private[orchestration] def appendAt(
-                      payloads: Chunk[MessagePayload],
-                      expectedParent: Option[MessageId]
-                  ) =
-                    history
-                      .appendAt(payloads, expectedParent)
-                      .tap(_ =>
-                        (reached.succeed(()) *> release.await)
-                          .when(phase == "after-extension" && payloads.contains(extensionPayload))
-                      )
-                }
-                captured.succeed(history) *> new AgentRunner[Any](Map.empty, Map.empty)
-                  .execution(agent, context.copy(extensions = Chunk(extension)))
-                  .run(task, gated)
+                captured.succeed(history) *> new AgentRunner[Any](Map.empty)
+                  .execution(agent, context)
+                  .run(task, history)
               }
             }
             running <- orchestrator.submit(sessionId, userId, AgentTask("prompt"), execution).fork
@@ -1797,16 +1567,13 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             active <- history.messages
             inventory <- storage.listMessages
             saved <- storage.loadSession(sessionId)
-            extensionCount <- effects.get
             modelCount <- inferred.get
           } yield {
             val accepted = mutation == "restored" || mutation == "pointer"
-            val produced = if phase == "model" then finalTurn.assistant.get else extensionPayload
-            val parent = if phase == "after-extension" then original.dropRight(1).lastOption.map(_.id)
-            else original.lastOption.map(_.id)
+            val produced = finalTurn.assistant.get
+            val parent = original.lastOption.map(_.id)
             assertEquals(result.isSuccess, accepted)
-            assertEquals(extensionCount, 1)
-            assertEquals(modelCount, if phase != "model" && !accepted then 0 else 1)
+            assertEquals(modelCount, 1)
             assertEquals(inventory.count(m => m.payload == produced && m.parentId == parent), 1)
             assert(original.forall(inventory.contains))
             if accepted then {
@@ -1815,7 +1582,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
               val turn = result.toEither.toOption.get
               assertEquals(
                 turn.newMessages,
-                Chunk(MessagePayload.User("prompt"), extensionPayload, finalTurn.assistant.get)
+                Chunk(MessagePayload.User("prompt"), finalTurn.assistant.get)
               )
             } else assertEquals(active, replacement)
             assertEquals(saved.messages, competitor.fold(active)(_.messages))
@@ -1948,61 +1715,6 @@ final class ManagedHistorySubmitSuite extends FunSuite {
           assert(originalsAndCopies.forall(inventory.contains))
           assert(active.forall(inventory.contains))
           assertEquals(active.last.parentId, Some(active.dropRight(1).last.id))
-        }
-      }
-    }
-
-    for mutation <- List("truncate", "replace") do {
-      test(s"$backend: $mutation extension prefix is rejected without corrupting active history after failed writes") {
-        withStorage(backend) { storage =>
-          for {
-            attempted <- Promise.make[Nothing, Unit]
-            captured <- Promise.make[Nothing, ManagedHistory]
-            seen <- Ref.make(Chunk.empty[Chunk[Message]])
-            extensionCalls <- Ref.make(0)
-            beforeMutation <- Ref.make(RunContext())
-            probe = new StorageProbe(storage) {
-              override def putMessage(message: Message): IO[YallmoError, Message] =
-                attempted.succeed(()) *> ZIO.fail(failure)
-            }
-            orchestrator <- make(probe)
-            extension = new ContextExtension[Any] {
-              val key = "invalid-prefix"
-              def apply(context: StaticContext[Any], current: RunContext): IO[YallmoError, RunContext] =
-                extensionCalls.updateAndGet(_ + 1).flatMap {
-                  case 1 => ZIO.succeed(current.append(MessagePayload.Context(key, "accepted")))
-                  case _ =>
-                    beforeMutation
-                      .set(current)
-                      .as(
-                        if mutation == "truncate" then RunContext(current.messages.take(1))
-                        else RunContext(current.messages.updated(0, MessagePayload.User("replacement")))
-                      )
-                }
-            }
-            tool = toolWith(attempted.await.as(ExternalFunctionResult("result")))
-            result <- orchestrator
-              .submit(
-                sessionId,
-                userId,
-                AgentTask("preserve"),
-                new AgentRunner[Any](Map(functionKey -> tool), Map.empty).execution(
-                  observingAgent(seen, captured),
-                  context.copy(functions = Chunk(tool.definition), extensions = Chunk(extension))
-                )
-              )
-              .either
-            history <- captured.await
-            active <- history.messages
-            before <- beforeMutation.get
-            stored <- storage.loadSession(sessionId)
-          } yield {
-            assert(result.swap.toOption.get.error.isInstanceOf[YallmoError.InvalidAgentDecision])
-            assertEquals(active.map(_.payload), before.messages)
-            assertEquals(active.head.payload, MessagePayload.User("preserve"))
-            assertEquals(active.count(_.payload.isInstanceOf[MessagePayload.ToolOutput]), 1)
-            assertEquals(stored.messages.map(_.payload), Chunk(MessagePayload.User("preserve")))
-          }
         }
       }
     }
@@ -2176,7 +1888,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                   )
                 )
             }
-            runner = new AgentRunner[Any](Map.empty, Map.empty)
+            runner = new AgentRunner[Any](Map.empty)
             first <- orchestrator
               .submit(sessionId, userId, AgentTask("first"), runner.execution(firstAgent, context))
               .fork
@@ -2274,7 +1986,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
             }
             orchestrator <- make(storage)
             budget = AgentBudget.default.copy(timeout = if ending == "timeout" then 100.millis else 5.seconds)
-            execution = new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
+            execution = new AgentRunner[Any](Map(functionKey -> tool))
               .execution(agent, context.copy(functions = Chunk(tool.definition)), budget)
             fiber <- orchestrator.submit(sessionId, userId, AgentTask("finish"), execution).fork
             _ <- started.await
@@ -2470,7 +2182,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
   }
 
   private def execution(agent: AgentInstance[Any], tool: AgentFunction[Any]): AgentExecution[Any] =
-    new AgentRunner[Any](Map(functionKey -> tool), Map.empty)
+    new AgentRunner[Any](Map(functionKey -> tool))
       .execution(agent, context.copy(functions = Chunk(tool.definition)))
 
   private def make(storage: Storage): IO[YallmoError, Orchestrator[Any]] = {

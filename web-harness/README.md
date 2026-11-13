@@ -233,7 +233,7 @@ In Chat, **Dictation** appears beside **Send** only for an initialized Operator 
 `Transcriber` and whose server advertises both `blobs.upload` and `agents.invoke`. No chat agent needs to be selected.
 This catalog check does not prove endpoint/model audio compatibility; normal server configuration/provider checks
 still apply. Configure an audio-capable `Transcriber` with transcription instructions; use explicit empty capability
-allowlists for tools/retrievers/skills/extensions if you want transcription only. There is no web-specific voice RPC.
+allowlists for tools/skills if you want transcription only. There is no web-specific voice RPC.
 
 Microphone capture requires **HTTPS or localhost**, microphone permission, Web Audio and AudioWorklet support.
 Unsupported browsers show a disabled control with an explanation. Nothing requests microphone access until a click.

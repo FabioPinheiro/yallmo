@@ -28,13 +28,12 @@ import fmgp.yallmo.orchestration.{
 
 /** AgentRunner is the trusted executor around an agent
   *
-  *   - The agent decides: answer, call tools, or retrieve knowledge.
+  *   - The agent decides: answer or call tools.
   *   - The runner executes those requests, checks permissions, and enforces limits.
   *   - The orchestrator persists messages and session (pointer to messages); the runner itself does not.
   */
 final class AgentRunner[R](
     functions: Map[FunctionKey, AgentFunction[R]],
-    retrievers: Map[String, KnowledgeRetriever[R]],
     val runnerId: UUID = UUID.randomUUID() //  Identifier added to logs
 ) {
 
@@ -87,7 +86,7 @@ final class AgentRunner[R](
               for {
                 _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                result <- executeAction(agent, PreparedAction.CallExternalFunction(call), context)
+                result <- executeAction(agent, call, context)
               } yield result
             case _: MessagePayload.Reasoning =>
               ZIO.fail(
@@ -96,8 +95,7 @@ final class AgentRunner[R](
             case _ =>
               for {
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                prepared <- applyExtensions(context, RunContext(Chunk(input)))
-                turn <- agent.next(AgentTask(input.contentStr), context, prepared)
+                turn <- agent.next(AgentTask(input.contentStr), context, RunContext(Chunk(input)))
                 result <- turn.decision match {
                   case AgentDecision.FinalAnswer(text) if text.trim.nonEmpty =>
                     ZIO.succeed(MessagePayload.Assistant(text))
@@ -163,16 +161,9 @@ final class AgentRunner[R](
       _ <- ZIO.fail(YallmoError.TurnLimitExceeded(budget.maxTurns)).when(turn > budget.maxTurns)
       original <- history.snapshot
       snapshot = RunContext(original.map(_.payload))
-      preparedRunContext <- applyExtensions(staticContext, snapshot)
-      _ <- ZIO
-        .fail(YallmoError.InvalidAgentDecision("Context extensions must preserve the active transcript"))
-        .unless(preparedRunContext.messages.take(snapshot.messages.size) == snapshot.messages)
-      extensionHead <- history.appendAt(
-        preparedRunContext.messages.drop(snapshot.messages.size),
-        original.lastOption.map(_.id)
-      )
-      work <- Ref.make(extensionHead)
-      // Only explicit reads by THIS program refresh its work fence; tools/extensions retain their own fence.
+      initialHead = original.lastOption.map(_.id)
+      work <- Ref.make(initialHead)
+      // Only explicit reads by THIS program refresh its work fence; tools retain their own fence.
       view = new ManagedHistory {
         def initialMessages: UIO[Chunk[Message]] = history.initialMessages
         def messages: UIO[Chunk[Message]] = history.snapshot.flatMap { messages =>
@@ -189,8 +180,8 @@ final class AgentRunner[R](
         ): IO[YallmoError, Option[MessageId]] =
           history.appendAt(payloads, expectedParent)
       }
-      _ <- checkHead(history, extensionHead)
-      agentTurn <- agent.nextManaged(task, staticContext, preparedRunContext, view)
+      _ <- checkHead(history, initialHead)
+      agentTurn <- agent.nextManaged(task, staticContext, snapshot, view)
       fence <- work.get
       generated = Chunk.fromIterable(agentTurn.assistant) ++ agentTurn.additionalMessages
       result <- agentTurn.decision match
@@ -204,43 +195,25 @@ final class AgentRunner[R](
           else
             for
               preparedActions <- prepareActions(actions)
-              calls = preparedActions.collect { case PreparedAction.CallExternalFunction(call) =>
-                MessagePayload.ToolCall(call)
-              }
+              calls = preparedActions.map(MessagePayload.ToolCall.apply)
               actionHead <- history.appendAt(generated ++ calls, fence)
               _ <- executeActions(agent, preparedActions, staticContext, budget, actionCount, history, actionHead)
               result <- runLoop(agent, task, staticContext, budget, turnCount, actionCount, history)
             yield result
     yield result
 
-  private def applyExtensions(
-      staticContext: StaticContext[R],
-      runContext: RunContext
-  ): ZIO[R, YallmoError, RunContext] =
-    ZIO.foldLeft(staticContext.extensions)(runContext) { (current, contextExtension) =>
-      contextExtension(staticContext, current)
-    }
-
-  /** Runner-internal actions cannot contain an uncorrelated tool invocation. */
-  private enum PreparedAction {
-    case RetrieveRag(retrieverKey: String, query: RagQuery)
-    case CallExternalFunction(call: FunctionCall)
-  }
-
-  private def prepareActions(actions: Chunk[LlmAction]): UIO[Chunk[PreparedAction]] =
-    ZIO.foreach(actions) {
-      case LlmAction.RetrieveRag(key, query)    => ZIO.succeed(PreparedAction.RetrieveRag(key, query))
-      case LlmAction.CallExternalFunction(call) =>
-        val callId = call.callId match {
-          case Some(id) => ZIO.succeed(id)
-          case None     => Random.nextUUID.map(uuid => FunctionCallId.unsafe(s"call-$uuid"))
-        }
-        callId.map(id => PreparedAction.CallExternalFunction(FunctionCall(id, call.functionKey, call.argumentsJson)))
+  private def prepareActions(actions: Chunk[LlmAction]): UIO[Chunk[FunctionCall]] =
+    ZIO.foreach(actions) { case LlmAction.CallExternalFunction(call) =>
+      val callId = call.callId match {
+        case Some(id) => ZIO.succeed(id)
+        case None     => Random.nextUUID.map(uuid => FunctionCallId.unsafe(s"call-$uuid"))
+      }
+      callId.map(id => FunctionCall(id, call.functionKey, call.argumentsJson))
     }
 
   private def executeActions(
       agent: AgentInstance[R],
-      actions: Chunk[PreparedAction],
+      actions: Chunk[FunctionCall],
       staticContext: StaticContext[R],
       budget: AgentBudget,
       actionCount: Ref[Int],
@@ -270,45 +243,31 @@ final class AgentRunner[R](
 
   private def executeAction(
       agent: AgentInstance[R],
-      action: PreparedAction,
+      functionCall: FunctionCall,
       staticContext: StaticContext[R]
-  ): ZIO[R, YallmoError, MessagePayload] =
-    action match
-      case PreparedAction.RetrieveRag(retrieverKey, query) =>
-        if !staticContext.retrievers.exists(_.key == retrieverKey) then
-          ZIO.fail(YallmoError.RetrieverUnavailableToAgent(agent.id, retrieverKey))
-        else
+  ): ZIO[R, YallmoError, MessagePayload] = {
+    val call = ExternalFunctionCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
+    val execute =
+      ZIO
+        .fromOption(staticContext.functions.find(_.name == call.functionKey))
+        .orElseFail(YallmoError.ToolUnavailableToAgent(agent.id, call.functionKey))
+        .flatMap { definition =>
           ZIO
-            .fromOption(retrievers.get(retrieverKey))
-            .orElseFail(YallmoError.UnknownRetriever(retrieverKey))
-            .flatMap(_.retrieve(query))
-            .map(MessagePayload.RagResult(retrieverKey, _))
-
-      case PreparedAction.CallExternalFunction(functionCall) =>
-        val call = ExternalFunctionCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
-        val execute =
-          if !staticContext.functions.exists(_.name == call.functionKey) then
-            ZIO.fail(YallmoError.ToolUnavailableToAgent(agent.id, call.functionKey))
-          else
-            ZIO
-              .fromOption(staticContext.functions.find(_.name == call.functionKey))
-              .orElseFail(YallmoError.ToolUnavailableToAgent(agent.id, call.functionKey))
-              .flatMap { definition =>
-                ZIO
-                  .fromEither(FunctionToolDefinition.validateArgument(call.argumentsJson, definition.inputSchema))
-                  .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
-              }
-              .zipRight(
-                ZIO
-                  .fromOption(functions.get(call.functionKey))
-                  .orElseFail(YallmoError.UnknownTool(call.functionKey))
-                  .flatMap(_.execute(call))
-              )
-
-        execute.fold(
-          error => toolMessage(functionCall, ExternalFunctionResult(toolErrorOutput(error))),
-          output => toolMessage(functionCall, output)
+            .fromEither(FunctionToolDefinition.validateArgument(call.argumentsJson, definition.inputSchema))
+            .mapError(YallmoError.InvalidToolArguments(call.functionKey, _))
+        }
+        .zipRight(
+          ZIO
+            .fromOption(functions.get(call.functionKey))
+            .orElseFail(YallmoError.UnknownTool(call.functionKey))
+            .flatMap(_.execute(call))
         )
+
+    execute.fold(
+      error => toolMessage(functionCall, ExternalFunctionResult(toolErrorOutput(error))),
+      output => toolMessage(functionCall, output)
+    )
+  }
 
   private def toolMessage(call: FunctionCall, result: ExternalFunctionResult): MessagePayload = {
     val output = if call.name == ScalamodeToolDefinition.Execute then
@@ -349,11 +308,11 @@ object AgentRunner {
       agent: ResolvedAgent,
       requestProgram: AgentInstance[Any] => AgentInstance[Any] = identity
   ): AgentExecution[Any] =
-    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
       .executionWithContext(requestProgram(agent.program), agent.context, AgentBudget.default, resolved = true)
 
   def invocation(agent: ResolvedAgent): AgentInvocation[Any] =
-    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+    new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
       .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true)
 
   val LogAnnotationKey = "agentRunnerId"

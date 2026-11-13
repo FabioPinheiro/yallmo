@@ -5,12 +5,12 @@ import fmgp.yallmo.model.YallmoError
 import zio.*
 import zio.json.*
 import zio.json.ast
-import fmgp.yallmo.orchestration.{AgentDecision, ExternalFunctionCall, LlmAction, RagQuery, StaticContext}
+import fmgp.yallmo.orchestration.{AgentDecision, ExternalFunctionCall, LlmAction, StaticContext}
 
 /** Strict JSON protocol for [[LlmDecisionAgent]].
   *
-  * The protocol keeps model output declarative: a model can request retrieval or a registered external tool, but it
-  * cannot execute either directly.
+  * The protocol keeps model output declarative: a model can request a registered external tool, but it cannot execute
+  * it directly.
   */
 object JsonAgentDecisionCodec extends AgentDecisionCodec {
   override val instructions: String =
@@ -22,8 +22,7 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
       |To request actions, return:
       |{"actions":[...]}
       |
-      |Each action has one of these forms:
-      |{"kind":"retrieve_rag","retrieverKey":"knowledge","query":"search terms"}
+      |Each action has this form:
       |{"kind":"call_external_tool","toolKey":"function-name","arguments":{"key":"value"}}""".stripMargin
 
   override def decode(response: String, _staticContext: StaticContext[?]): IO[YallmoError, AgentDecision] =
@@ -39,11 +38,6 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
 
   private def toAction(action: ActionPayload): IO[YallmoError, LlmAction] =
     action.kind match
-      case "retrieve_rag" =>
-        required(action.retrieverKey, "retrieverKey").zipWith(required(action.query, "query")) {
-          (retrieverKey, query) =>
-            LlmAction.RetrieveRag(retrieverKey, RagQuery(query))
-        }
       case "call_external_tool" =>
         for {
           value <- required(action.toolKey, "toolKey")
@@ -65,8 +59,6 @@ object JsonAgentDecisionCodec extends AgentDecisionCodec {
   // Keep the legacy non-native protocol spelling `toolKey`; its value is a FunctionKey, not a tool group.
   private final case class ActionPayload(
       kind: String,
-      retrieverKey: Option[String] = None,
-      query: Option[String] = None,
       toolKey: Option[String] = None,
       arguments: Option[ast.Json] = None
   ) derives JsonDecoder

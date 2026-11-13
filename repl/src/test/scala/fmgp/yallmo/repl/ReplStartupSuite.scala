@@ -451,7 +451,7 @@ final class ReplStartupSuite extends FunSuite {
     "OAIAgent",
     Seq(local),
     Json.Obj("model" -> Json.Str("audio-model"), "systemPrompt" -> Json.Str("Transcribe exactly")),
-    capabilities = AgentCapabilities(Some(Set.empty), Some(Set.empty), Some(Set.empty), Some(Set.empty))
+    capabilities = AgentCapabilities(tools = Some(Set.empty), skills = Some(Set.empty), functions = Some(Set.empty))
   )
   private val voiceConfig =
     config.copy(agents = config.agents.updated(voiceId, voiceDefinition))
@@ -496,25 +496,14 @@ final class ReplStartupSuite extends FunSuite {
       "chat",
       functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
     )
-    val rag = StaticContext[Any]("chat", retrievers = Chunk(RetrieverDefinition("docs", "documents")))
     val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
-    val ext = StaticContext[Any](
-      "chat",
-      extensions = Chunk(new ContextExtension[Any] {
-        val key = "memory"
-        def apply(c: StaticContext[Any], r: RunContext): IO[YallmoError, RunContext] = {
-          val _ = (c, r)
-          ZIO.dieMessage("Voice validation must not apply extensions")
-        }
-      })
-    )
     def check(policy: AgentCapabilities, context: StaticContext[Any]) = {
       val c = voiceConfig.copy(
         agents = voiceConfig.agents.updated(voiceId, voiceDefinition.copy(capabilities = policy))
       )
       run(configuredVoice(c, context).either)
     }
-    for context <- List(tool, rag, skill, ext) do assert(check(AgentCapabilities(), context).isLeft)
+    for context <- List(tool, skill) do assert(check(AgentCapabilities(), context).isLeft)
     assert(check(AgentCapabilities(functions = Some(Set.empty)), skill).isLeft)
     assert(check(AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell")))), tool).isLeft)
     assert(

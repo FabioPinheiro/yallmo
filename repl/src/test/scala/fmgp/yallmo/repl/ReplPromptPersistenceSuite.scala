@@ -175,7 +175,7 @@ final class ReplPromptPersistenceSuite extends FunSuite {
       repl = ReplOrchestratorLive.make(storage, human, Some(assistant))
     } yield new ReplApplication[Any](
       new ReplSession[Any](
-        new AgentRunner[Any](Map.empty, Map.empty),
+        new AgentRunner[Any](Map.empty),
         Some(program),
         StaticContext[Any]("Test")
       ),

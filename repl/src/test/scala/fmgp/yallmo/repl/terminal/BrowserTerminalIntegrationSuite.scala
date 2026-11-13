@@ -89,7 +89,7 @@ final class BrowserTerminalIntegrationSuite extends FunSuite {
       Vector("alpha", "beta", "unavailable").map(id => ReplAgentChoice(AgentId(id), "synthetic", Vector(id), Some(id)))
     def application(name: String = "alpha"): ReplApplication[Any] = new ReplApplication[Any](
       new ReplSession[Any](
-        new AgentRunner[Any](Map.empty, Map.empty),
+        new AgentRunner[Any](Map.empty),
         Some(new AgentInstance[Any] {
           val id = AgentId(name)
           def next(task: AgentTask, context: StaticContext[Any], runContext: RunContext): IO[YallmoError, AgentTurn] =

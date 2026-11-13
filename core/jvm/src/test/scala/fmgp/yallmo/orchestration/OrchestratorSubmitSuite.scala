@@ -227,7 +227,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
                 calls == 2 && outputs == (if call.argumentsJson == "{}" then 0 else 1)
               }.as(ExternalFunctionResult("saved"))
           }
-          configuredRunner = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+          configuredRunner = new AgentRunner[Any](Map(tool.definition.name -> tool))
           configuredContext = context.copy(functions = Chunk(tool.definition))
           execution = configuredRunner.execution(twoCalls(tool.definition.name), configuredContext)
           turn <- orchestrator.submit(sessionId, userId, AgentTask("tools"), execution)
@@ -265,7 +265,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
               if call.argumentsJson == "{}" then ZIO.succeed(ExternalFunctionResult("first result"))
               else started.succeed(()) *> ZIO.never
           }
-          execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+          execution = new AgentRunner[Any](Map(tool.definition.name -> tool))
             .execution(twoCalls(tool.definition.name), context.copy(functions = Chunk(tool.definition)))
           fiber <- orchestrator.submit(sessionId, userId, AgentTask("cancel tools"), execution).fork
           _ <- started.await
@@ -299,7 +299,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
               ZIO.fail(YallmoError.InvalidConfig("inference failed"))
             else base.next(AgentTask("fail"), context, current)
           }
-          execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+          execution = new AgentRunner[Any](Map(tool.definition.name -> tool))
             .execution(failing, context.copy(functions = Chunk(tool.definition)))
           failed <- orchestrator.submit(sessionId, userId, AgentTask("fail"), execution).either
           stored <- orchestrator.loadSession(sessionId)
@@ -391,7 +391,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
                 } *> base.next(AgentTask("recover"), context, current)
               else ZIO.succeed(answer)
             }
-            execution = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+            execution = new AgentRunner[Any](Map(tool.definition.name -> tool))
               .execution(recovering, context.copy(functions = Chunk(tool.definition)))
             turn <- orchestrator.submit(sessionId, userId, AgentTask("recover"), execution)
             reopened <- open(root)
@@ -442,7 +442,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
   private val userId = AgentId("human")
   private val assistantId = AgentId("assistant")
   private val context = StaticContext[Any]("Test")
-  private def runner = new AgentRunner[Any](Map.empty, Map.empty)
+  private def runner = new AgentRunner[Any](Map.empty)
   private def answer = AgentTurn(Some(MessagePayload.Assistant("ok")), AgentDecision.FinalAnswer("ok"))
 
   private def program(respond: RunContext => IO[YallmoError, AgentTurn]): AgentInstance[Any] =

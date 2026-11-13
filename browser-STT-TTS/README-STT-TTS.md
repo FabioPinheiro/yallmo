@@ -12,7 +12,7 @@ This bridge is a retained embedded feature, not enabled by the current connected
 ## Setup
 
 Configure the REPL's explicit `transcriberAgent` first: an audio-capable agent with a nonblank model/prompt and empty
-`tools`, `retrievers`, `skills` and `extensions` allowlists. See [the configuration example](../docs/examples/yallmo.json).
+`tools` and `skills` allowlists. See [the configuration example](../docs/examples/yallmo.json).
 Missing references disable voice before capture; invalid explicit configuration fails startup locally. Chat selection
 (including no selection) and chat-agent switches do not change the voice agent. Local adapter checks do not prove remote
 endpoint/model audio compatibility.
@@ -52,8 +52,8 @@ Test page access from the host with `curl -i http://127.0.0.1:5180/`. A URL frag
   blob cleanup or recording-deletion command. Protect the storage directory and backups. Provider debug captures are
   reference-based diagnostics, not exact audio wire requests. Transcripts/descriptions can also be sensitive.
   Active chat context/head/continuation and ordinary resume are unchanged.
-  Every voice request is one fresh turn containing only current audio and configured instructions; no tools, RAG, skills,
-  extensions, previous exchange or follow-up execution. Persistence failure leaves the draft unchanged and is reported.
+  Every voice request is one fresh turn containing only current audio and configured instructions; no tools, skills,
+  previous exchange or follow-up execution. Persistence failure leaves the draft unchanged and is reported.
 - Permissions, activation and background execution vary by browser/OS. A tab may be throttled/frozen or speech rejected/stalled despite setup succeeding. Focus the page and Enable again; this implementation intentionally has no automatic retry, recorder fallback or permanent-permission promise.
 
 ## Lifecycle logs

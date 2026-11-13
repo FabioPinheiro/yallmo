@@ -163,7 +163,7 @@ final class ConfiguredProgramSuite extends FunSuite {
           )
         ) { policy =>
           val binding = FolderAgentProgram(adapter, policy, readBlob)
-          val execution = new AgentRunner[Any](tools.map(tool => tool.definition.name -> tool).toMap, Map.empty)
+          val execution = new AgentRunner[Any](tools.map(tool => tool.definition.name -> tool).toMap)
             .invocation(binding, context.copy(functions = tools.map(_.definition)))
           for {
             registry <- AgentCatalog.fromAgents(Chunk(adapter))

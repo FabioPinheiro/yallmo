@@ -37,39 +37,6 @@ final class AgentRunnerSuite extends FunSuite:
     assertEquals(AgentId.from("coordinator"), Right(CoordinatorId))
   }
 
-  test("runner feeds retrieved RAG documents into the agent context before the next turn") {
-    runZIO {
-      for
-        turns <- Ref.make(0)
-        agent = TestAgent[Any](
-          CoordinatorId,
-          (_, _, runContext) =>
-            turns.updateAndGet(_ + 1).flatMap {
-              case 1 => ZIO.succeed(AgentDecision.Actions(Chunk(LlmAction.RetrieveRag("knowledge", RagQuery("Faro")))))
-              case 2 =>
-                val documents = runContext.messages.collectFirst { case Message.RagResult("knowledge", found) =>
-                  found
-                }
-                ZIO.succeed(AgentDecision.FinalAnswer(s"Found ${documents.fold(0)(_.size)} document"))
-              case _ => ZIO.dieMessage("unexpected extra turn")
-            }
-        )
-        retriever = StaticRetriever(
-          RetrieverDefinition("knowledge", "Local destination knowledge"),
-          Chunk(RagDocument("faro-1", "guide", "Faro is in southern Portugal."))
-        )
-        runner = new AgentRunner[Any](Map.empty, Map(retriever.definition.key -> retriever))
-        answer <- runner.run(
-          agent,
-          AgentTask("Research Faro"),
-          StaticContext[Any](systemPrompt = "Research context", retrievers = Chunk(retriever.definition))
-        )
-      yield answer
-    } { result =>
-      assertEquals(result, AgentResult(CoordinatorId, "Found 1 document"))
-    }
-  }
-
   test("runner executes an advertised external tool and gives its result to the next turn") {
     runZIO {
       for
@@ -105,7 +72,7 @@ final class AgentRunnerSuite extends FunSuite:
           override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             calls.update(_ :+ call).as(ExternalFunctionResult("2026-10-02T12:00:00Z"))
         }
-        runner = new AgentRunner[Any](Map(tool.definition.name -> tool), Map.empty)
+        runner = new AgentRunner[Any](Map(tool.definition.name -> tool))
         answer <- runner.runWithContext(
           agent,
           AgentTask("What time is it?"),
@@ -159,7 +126,7 @@ final class AgentRunnerSuite extends FunSuite:
         val definition = FunctionToolDefinition(ScalamodeToolDefinition.Execute, "Scala")
         def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = ZIO.succeed(result)
       }
-      new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool), Map.empty)
+      new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool))
         .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
         .invoke(Message.ToolCall(call))
     }) { outputs =>
@@ -196,7 +163,7 @@ final class AgentRunnerSuite extends FunSuite:
           )
         )
     }
-    val execution = new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool), Map.empty)
+    val execution = new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool))
       .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
     runZIO(ZIO.foreach(List("{}", "not-json")) { arguments =>
       execution.invoke(
@@ -252,7 +219,7 @@ final class AgentRunnerSuite extends FunSuite:
           override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             executions.update(_ :+ call).as(ExternalFunctionResult("12:00"))
         }
-        run <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool), Map.empty).runWithContext(
+        run <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool)).runWithContext(
           agent,
           AgentTask("Check repeatedly"),
           StaticContext[Any](
@@ -332,7 +299,7 @@ final class AgentRunnerSuite extends FunSuite:
             ZIO.fail(YallmoError.FunctionApprovalDenied(definition.name, "recipient is not authorized"))
         }
         guarded = FunctionApproval.guard(tool, approval)
-        runner = new AgentRunner[Any](Map(guarded.definition.name -> guarded), Map.empty)
+        runner = new AgentRunner[Any](Map(guarded.definition.name -> guarded))
         outcome <- runner.run(
           agent,
           AgentTask("Send an email"),
@@ -391,7 +358,7 @@ final class AgentRunnerSuite extends FunSuite:
               case _ => throw new IllegalStateException("unexpected extra turn")
             }
         )
-        answer <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool), Map.empty).run(
+        answer <- new AgentRunner[Any](Map(FunctionKey.unsafe("clock") -> tool)).run(
           agent,
           AgentTask("What time is it?"),
           StaticContext[Any](systemPrompt = "Tool context", functions = Chunk(toolDefinition))
@@ -409,7 +376,6 @@ final class AgentRunnerSuite extends FunSuite:
     val staticContext = StaticContext[Any](systemPrompt = "Coordinator context")
     val response =
       """{"actions":[
-        |{"kind":"retrieve_rag","retrieverKey":"knowledge","query":"Faro beaches"},
         |{"kind":"call_external_tool","toolKey":"clock","arguments":{}}
         |]}""".stripMargin
 
@@ -418,7 +384,6 @@ final class AgentRunnerSuite extends FunSuite:
         result,
         AgentDecision.Actions(
           Chunk(
-            LlmAction.RetrieveRag("knowledge", RagQuery("Faro beaches")),
             LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("clock"), "{}"))
           )
         )
@@ -426,30 +391,10 @@ final class AgentRunnerSuite extends FunSuite:
     }
   }
 
-  test("context extensions run before every agent turn") {
-    val extension = new ContextExtension[Any] {
-      override val key: String = "request-metadata"
-
-      override def apply(
-          _staticContext: StaticContext[Any],
-          runContext: RunContext
-      ): IO[YallmoError, RunContext] =
-        ZIO.succeed(runContext.append(Message.Context(key, "request-id=42")))
-    }
-    val agent = TestAgent[Any](
-      CoordinatorId,
-      (_, _, runContext) =>
-        val metadata = runContext.messages.collectFirst { case Message.Context("request-metadata", text) =>
-          text
-        }
-        ZIO.succeed(AgentDecision.FinalAnswer(metadata.getOrElse("missing metadata")))
-    )
-    val runner = new AgentRunner[Any](Map.empty, Map.empty)
-
-    runZIO(
-      runner.run(agent, AgentTask("Hello"), StaticContext[Any](systemPrompt = "Test", extensions = Chunk(extension)))
-    ) { result =>
-      assertEquals(result, AgentResult(CoordinatorId, "request-id=42"))
+  test("JSON decision codec rejects removed retrieval actions") {
+    val response = """{"actions":[{"kind":"retrieve_rag","retrieverKey":"docs","query":"query"}]}"""
+    runZIO(JsonAgentDecisionCodec.decode(response, StaticContext[Any]("test")).either) { result =>
+      assert(result.isLeft)
     }
   }
 
@@ -464,7 +409,7 @@ final class AgentRunnerSuite extends FunSuite:
           AgentDecision.FinalAnswer("done")
         }
     )
-    val runner = new AgentRunner[Any](Map.empty, Map.empty, runnerId)
+    val runner = new AgentRunner[Any](Map.empty, runnerId)
 
     runZIO(runner.run(agent, AgentTask("test"), StaticContext[Any](systemPrompt = "Test"))) { _ =>
       assertEquals(observed, Some(runnerId.toString))
@@ -474,10 +419,14 @@ final class AgentRunnerSuite extends FunSuite:
   test("runner stops an agent that exceeds its turn budget") {
     val agent = TestAgent[Any](
       CoordinatorId,
-      (_, _, _) => ZIO.succeed(AgentDecision.Actions(Chunk(LlmAction.RetrieveRag("knowledge", RagQuery("again")))))
+      (_, _, _) =>
+        ZIO.succeed(
+          AgentDecision.Actions(
+            Chunk(LlmAction.CallExternalFunction(ExternalFunctionCall(FunctionKey.unsafe("loop"), "{}")))
+          )
+        )
     )
-    val retriever = StaticRetriever(RetrieverDefinition("knowledge", "Test retriever"), Chunk.empty)
-    val runner = new AgentRunner[Any](Map.empty, Map(retriever.definition.key -> retriever))
+    val runner = new AgentRunner[Any](Map.empty)
     val budget = AgentBudget(maxTurns = 2, maxActions = 3, timeout = 1.second)
 
     runZIO(
@@ -485,7 +434,7 @@ final class AgentRunnerSuite extends FunSuite:
         .run(
           agent,
           AgentTask("Loop"),
-          StaticContext[Any](systemPrompt = "Loop context", retrievers = Chunk(retriever.definition)),
+          StaticContext[Any](systemPrompt = "Loop context"),
           budget
         )
         .either
@@ -506,13 +455,6 @@ final class AgentRunnerSuite extends FunSuite:
       decide(task, staticContext, runContext).map { decision =>
         AgentTurn(Some(Message.Assistant(decision.toString)), decision)
       }
-  }
-
-  private final case class StaticRetriever(
-      definition: RetrieverDefinition,
-      documents: Chunk[RagDocument]
-  ) extends KnowledgeRetriever[Any] {
-    override def retrieve(query: RagQuery): IO[YallmoError, Chunk[RagDocument]] = ZIO.succeed(documents)
   }
 
   private def runZIO[E, A](effect: ZIO[Any, E, A])(check: A => Unit): Future[Unit] =

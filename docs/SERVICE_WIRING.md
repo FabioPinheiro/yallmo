@@ -88,7 +88,7 @@ For the agent-tool flow and tool/dependency table, see [Agent tool wiring](SERVI
 | Coach private tools | Bound only to that Coach's notebook/filesystem; matching private keys replace shared keys for that selection |
 
 The same selected definitions and implementations travel together in `ResolvedAgent`. Availability is discovery, not
-permission: a configured allowlist cannot install an unavailable tool. Startup installs no retrievers/skills/extensions.
+permission: a configured allowlist cannot install an unavailable tool. Startup installs no skills. Retriever and context-extension catalogs have been removed.
 Folder programs always disable tools, including direct invocation, and validate non-blank text-only output without native
 model settings. Coach's built-in restriction intersects configured restrictions; direct adapter requests retain policy
 checks through `ConfiguredAgent`.

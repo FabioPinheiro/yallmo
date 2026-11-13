@@ -12,7 +12,7 @@ The central rule is: **configuration restricts what trusted application code mak
 | Concern | Examples | Owner |
 | --- | --- | --- |
 | Agent settings | Model, system prompt, thinking level, parallel tool calls | `AgentConfig.config`, decoded by `ConfiguredAgentSettings`; used by the application/program to assemble requests |
-| Capability authorization | Which tools, retrievers, skills and context extensions an agent may use | `AgentCapabilities`, configured adapters, native programs and `AgentRunner` |
+| Capability authorization | Which tools, functions and skills an agent may use | `AgentCapabilities`, configured adapters, native programs and `AgentRunner` |
 | Adapter/model support | Whether a request can encode audio or use a particular provider protocol | Concrete agent/provider adapter; actual endpoint/model acceptance may only be known at invocation |
 
 Core settings decoding does not supply an assistant persona. `ConfiguredAgentSettings.decode(definition)` requires a configured prompt; callers may instead pass `defaultSystemPrompt = Some(applicationPrompt)` for an absent prompt. An explicitly blank prompt remains invalid, even when a fallback is supplied. The REPL owns its terminal fallback in `ReplStartup.DefaultSystemPrompt`; its transcription path supplies no fallback and therefore requires an explicit configured prompt.
@@ -21,7 +21,7 @@ An audio-capable agent is not automatically a transcription agent. An agent usin
 
 ## 2. Configuration structure
 
-Capabilities belong to an agent definition, alongside—not inside—its model/prompt `config` object. For example, this **agent-definition fragment** permits the filesystem tool and its two read functions and disables the other three capability categories:
+Capabilities belong to an agent definition, alongside—not inside—its model/prompt `config` object. For example, this **agent-definition fragment** permits the filesystem tool and its two read functions and disables skills:
 
 ```json
 {
@@ -35,9 +35,7 @@ Capabilities belong to an agent definition, alongside—not inside—its model/p
   "capabilities": {
     "tools": ["filesystem"],
     "functions": ["readFile", "listFiles"],
-    "retrievers": [],
-    "skills": [],
-    "extensions": []
+    "skills": []
   }
 }
 ```
@@ -72,17 +70,21 @@ Both restrictions must pass. For example, `tools: [sdlc]` with `functions: [sdlc
 | `"functions": ["readFile"]` | `Some(Set(FilesystemToolDefinition.ReadFile))` | Permit only this function, subject to the tool restriction |
 | `"functions": []` | `Some(Set.empty)` | Disable every function |
 
-These semantics apply independently to tools, functions, retrievers, skills and extensions. In particular, `{"tools": []}` does **not** disable inherited retrievers, skills or extensions.
+These semantics apply independently to tools, functions and skills. In particular, `{"tools": []}` does **not** disable inherited skills. Unknown capability fields are rejected, including the removed `retrievers` and `extensions` fields; delete those fields from older configurations.
 
-Tool and function IDs match their definitions' `.name` values exactly; retrievers, skills and extensions still use `.key`. Function definitions use a `FunctionKey` as their provider `name`; the owning tool has a separate `ToolKey`. Allowlists are sets, not execution-order declarations: filtering preserves the application's catalog order. An allowlist cannot create a missing capability or provide its implementation.
+Tool and function IDs match their definitions' `.name` values exactly; skills use `.key`. Function definitions use a `FunctionKey` as their provider `name`; the owning tool has a separate `ToolKey`. Allowlists are sets, not execution-order declarations: filtering preserves the application's catalog order. An allowlist cannot create a missing capability or provide its implementation.
+
+The active orchestration API supports tool calls only: retriever actions and automatic context extensions have been
+removed. Legacy `MessagePayload.RagResult` payloads remain decodable/renderable for saved-conversation compatibility;
+they do not grant or execute retrieval. The standalone local [RAG library](RAG.md) is independent of agent capabilities.
 
 ### Available definitions versus executable implementations
 
-`StaticContext[R].functions` contains model-facing schemas; `.tools` contains `ToolDefinition`s exposing the complete function definitions. Selection retains declared function names with available implementations and uses the schemas selected at binding. No callable definition stores reverse ownership metadata. Retrievers, skill instructions and extension instances remain separate.
+`StaticContext[R].functions` contains model-facing schemas; `.tools` contains `ToolDefinition`s exposing the complete function definitions. Selection retains declared function names with available implementations and uses the schemas selected at binding. No callable definition stores reverse ownership metadata. Skill instructions remain separate from executable tools.
 
-The runner holds maps of executable `AgentFunction[R]` and `KnowledgeRetriever[R]` implementations. `AgentTool[R]` binds implementations for the functions exposed by its `ToolDefinition`. `ResolvedAgent.functions` carries bound implementations, while `.tools` is their grouped view. The same `FunctionToolDefinition` is used by registration, orchestration and providers; there is no intermediate function-definition DTO. Provider requests remain flat `FunctionToolDefinition`s. `AgentTurnRequest.toolGroups` carries the host-only membership catalog for direct-request filtering; provider mappers never send this catalog.
+The runner holds a map of executable `AgentFunction[R]` implementations. `AgentTool[R]` binds implementations for the functions exposed by its `ToolDefinition`. `ResolvedAgent.functions` carries bound implementations, while `.tools` is their grouped view. The same `FunctionToolDefinition` is used by registration, orchestration and providers; there is no intermediate function-definition DTO. Provider requests remain flat `FunctionToolDefinition`s. `AgentTurnRequest.toolGroups` carries the host-only membership catalog for direct-request filtering; provider mappers never send this catalog.
 
-A tool or retriever must be both authorized in the effective context and backed by a registered implementation before it can run. Merely including it in configuration or a model response is insufficient.
+A tool must be both authorized in the effective context and backed by a registered implementation before it can run. Merely including it in configuration or a model response is insufficient.
 
 ## 3. Ownership and source map
 
@@ -128,7 +130,7 @@ Capability validation needs the application's **complete, unfiltered available c
 
 `resolve` rejects unknown IDs with `InvalidConfig`, naming the agent, capability field and unknown IDs. Do not prefilter the catalog by an agent's policy before validating it: that can confuse a denied capability with a nonexistent one. A capability installed in code but unavailable in the current application's catalog is not usable by naming it in an allowlist.
 
-The server supplies available tools; its base retriever, skill and extension catalogs are empty. The generic core policy supports all four categories for applications that supply them. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
+The server supplies available tools; its base skill catalog is empty. Applications may supply their own skills. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
 
 ### Read roots are independent of Scala RPC
 
@@ -162,7 +164,7 @@ Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, available
   -> internal runner: agent.configuredContext(availableContext)
        validate and filter policy; compute effective context
   -> each turn:
-       apply only effectiveContext.extensions, in order
+       derive a fresh RunContext snapshot from managed history
        -> agent.next(task, effectiveContext, runContext)
        -> native program assembles request
             filtered tools become function definitions
@@ -180,18 +182,15 @@ Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, available
 
 ### Before inference
 
-- Denied tools/retrievers are removed from the context advertised to the program.
+- Denied tools are removed from the context advertised to the program.
 - Denied skills do not contribute their instructions during prompt assembly.
-- Denied extensions are removed before any extension is applied. The runner reapplies the remaining ordered extensions on subsequent turns.
 - `NativeFunctionAgent` filters the assembled tool request using its combined policy as well as constructing it from the filtered context.
 
 ### At execution
 
 For `CallExternalFunction`, the runner checks the effective tool definition, validates model-produced arguments against its input schema, and looks up the implementation before calling `execute`.
 
-For `RetrieveRag`, it checks effective retriever membership and looks up the implementation before calling `retrieve`.
-
-These checks still apply if a program proposes an action that was never advertised. Denial must not execute the implementation. Tool failures/denials become structured tool-result messages so the loop can respond; retrieval failures remain typed run failures. Turn/action budgets and the run timeout apply independently of capability permissions.
+These checks still apply if a program proposes an action that was never advertised. Denial must not execute the implementation. Tool failures/denials become structured tool-result messages so the loop can respond. Turn/action budgets and the run timeout apply independently of capability permissions.
 
 `FunctionApproval.guard` can add an approval decision before an already-authorized tool implementation runs. Allowlists do not automatically install this guard, and approval is not a replacement for membership checks or argument validation. Implementations remain responsible for their own domain/resource safety.
 
@@ -219,7 +218,7 @@ An explicitly selected embedded transcriber is an ordinary agent from the same c
 
 1. Missing `transcriberAgent` returns no voice service; there is no chat-agent/provider/model fallback.
 2. An explicit reference must resolve to a configured agent with an explicit nonblank model and system prompt.
-3. Resolve its policy against the application's available context and require all four **effective** capability sets to be empty. Conflicting policy fails startup instead of silently enabling capabilities.
+3. Resolve its policy against the application's available context and require the **effective** function and skill catalogs to be empty. Conflicting policy fails startup instead of silently enabling capabilities.
 4. Resolve the ordinary agent through `getAudioAgent` and pass it plus generic settings directly to [`Transcriber`](../repl/src/main/scala/fmgp/yallmo/repl/voice/Transcriber.scala).
 
 Use the following explicit policy for the voice agent so future application catalogs cannot accidentally enable inherited features:
@@ -228,16 +227,14 @@ Use the following explicit policy for the voice agent so future application cata
 {
   "capabilities": {
     "tools": [],
-    "retrievers": [],
-    "skills": [],
-    "extensions": []
+    "skills": []
   }
 }
 ```
 
 Omitted settings can pass the effective-empty check when the inherited catalogs are already empty; they do not mean that the category is permanently disabled.
 
-Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, and `parallelToolCalls = false`. It bypasses the conversational runner, so no extensions, skills, RAG or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
+Each voice invocation sends one fresh request containing only current audio and configured instructions, no tools or continuation, and `parallelToolCalls = false`. It bypasses the conversational runner, so no skills or follow-up tool loop are applied. Unexpected calls or unsupported/blank responses fail without execution. Audio is first appended as a `MessagePayload.AudioAttachment` reference with separately stored bytes in a generated session.
 `Orchestrator.turn` supplies `AgentTurnRequest.readBlob`; inference failure leaves that audio intact. A valid assistant
 transcript is then appended before text is offered to the editable draft. Recordings survive draft discard when using
 filesystem storage.
@@ -252,15 +249,14 @@ The generic audio marker/lookup does not prove the selected remote model accepts
 - **Not transcript sanitization:** allowlists prevent fresh capability application/execution. They do not remove old tool results, previously inserted skill text, or arbitrary caller-provided context from history. Direct-request filtering does not identify the origin of text inside a payload.
 - **Blob access is not a new authorization policy:** `readBlob` is a request-local function, not serialized content.
   `Orchestrator.turn` binds its own Storage reader; `NativeFunctionAgent.bind(adapter, orchestrator.readBlob)` binds the
-  reader for runner calls. Direct adapters default to `Blob.unavailable` and need an explicit reader for audio. The four
-  capability allowlists do not scope blob reads to particular sessions or agents; trusted callers own access control.
-- **Not credentials/provider routing policy:** these four allowlists do not grant accounts, endpoints or providers. Model/prompt settings are also not grants.
+  reader for runner calls. Direct adapters default to `Blob.unavailable` and need an explicit reader for audio. The capability allowlists do not scope blob reads to particular sessions or agents; trusted callers own access control.
+- **Not credentials/provider routing policy:** these allowlists do not grant accounts, endpoints or providers. Model/prompt settings are also not grants.
 - **No remote probes:** successful local validation proves references, catalogs and adapter compatibility, not authentication, remote availability or model capabilities.
-- **Secret-safe diagnostics:** never log the full configuration, credentials, raw recordings, or hidden skill/extension contents to explain a policy error.
+- **Secret-safe diagnostics:** never log the full configuration, credentials, raw recordings, or hidden skill contents to explain a policy error.
 
 ## 10. Tests and related documentation
 
-- [`AgentCapabilitiesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCapabilitiesSuite.scala): omitted/empty/partial settings, unknown IDs, intersections, direct-request bypass attempts, filtered skills/extensions and denied actions.
+- [`AgentCapabilitiesSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCapabilitiesSuite.scala): omitted/empty/partial settings, unknown IDs, intersections, direct-request bypass attempts, filtered skills and denied actions.
 - [`AgentCatalogSuite`](../core/jvm/src/test/scala/fmgp/yallmo/orchestration/AgentCatalogSuite.scala): generic resolution/cache/audio checks and configured tool-request boundary.
 - [`ReplStartupSuite`](../repl/src/test/scala/fmgp/yallmo/repl/ReplStartupSuite.scala): application-specific voice validation, inherited policies, ordinary selection and isolated retention.
 - [`TranscriberSuite`](../repl/src/test/scala/fmgp/yallmo/repl/voice/TranscriberSuite.scala): fresh tool-free turns, unexpected response rejection and retention failures.

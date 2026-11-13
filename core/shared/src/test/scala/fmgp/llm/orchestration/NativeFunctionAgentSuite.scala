@@ -45,7 +45,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
           override def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             ZIO.succeed(ExternalFunctionResult("12:00"))
         }
-        runner = new AgentRunner[Agent[Any]](Map(FunctionKey.unsafe("clock") -> tool), Map.empty)
+        runner = new AgentRunner[Agent[Any]](Map(FunctionKey.unsafe("clock") -> tool))
         run <- runner
           .runWithContext(
             NativeFunctionAgent(NativeId, "test-model"),
@@ -152,8 +152,7 @@ final class NativeFunctionAgentSuite extends FunSuite:
             FunctionKey.unsafe("guarded") -> guarded,
             FunctionKey.unsafe("validated") -> validated,
             FunctionKey.unsafe("broken") -> broken
-          ),
-          Map.empty
+          )
         )
         run <- runner
           .run(

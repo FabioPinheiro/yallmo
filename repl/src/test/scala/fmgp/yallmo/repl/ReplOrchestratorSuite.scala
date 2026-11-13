@@ -107,7 +107,7 @@ final class ReplOrchestratorSuite extends FunSuite {
   }
 
   private def execution(agentId: AgentId, response: Chunk[MessagePayload]): AgentExecution[Any] =
-    new AgentRunner[Any](Map.empty, Map.empty).execution(
+    new AgentRunner[Any](Map.empty).execution(
       new AgentInstance[Any] {
         override val id: AgentId = agentId
         override def next(

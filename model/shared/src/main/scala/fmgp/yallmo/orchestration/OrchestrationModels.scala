@@ -47,10 +47,6 @@ final case class AgentTurnResult(
     runContext: RunContext
 )
 
-/** A source-attributed document supplied to an agent by a RAG retrieval action. */
-/** A query issued against a named RAG retriever. */
-final case class RagQuery(text: String)
-
 /** A provider-neutral external-tool invocation proposed by an agent.
   *
   * Native calls retain their provider ID. If `callId` is absent, the runner assigns one before recording and executing
@@ -96,34 +92,25 @@ final case class AgentSkill(
 
 /** Static configuration explicitly available to one agent for an entire run.
   *
-  * The runner never replaces this value after a run starts. Tools and retrievers must be advertised here before the
-  * runner can resolve a model-requested capability.
+  * The runner never replaces this value after a run starts. Tools must be advertised here before the runner can resolve
+  * a model-requested capability.
   */
-final case class StaticContext[R](
+final case class StaticContext[+R](
     systemPrompt: String,
     functions: Chunk[FunctionToolDefinition] = Chunk.empty,
-    retrievers: Chunk[RetrieverDefinition] = Chunk.empty,
     skills: Chunk[AgentSkill] = Chunk.empty,
-    extensions: Chunk[ContextExtension[R]] = Chunk.empty[ContextExtension[R]],
     tools: Chunk[ToolDefinition] = Chunk.empty
-)
-
-/** A retriever advertised to an agent context. */
-final case class RetrieverDefinition(
-    key: String,
-    description: String
 )
 
 /** A model-proposed action. Its execution remains owned by the trusted [[AgentRunner]]. */
 enum LlmAction {
-  case RetrieveRag(retrieverKey: String, query: RagQuery)
   case CallExternalFunction(call: ExternalFunctionCall)
 }
 
 /** One outcome of an [[AgentInstance]] turn.
   *
-  * A batch permits independent retrievals or reads in one model turn. The runner executes the batch in declaration
-  * order today; concurrent execution must be introduced only for explicitly safe capabilities.
+  * A batch permits independent tool calls in one model turn. The runner executes the batch in declaration order today;
+  * concurrent execution must be introduced only for explicitly safe capabilities.
   */
 enum AgentDecision {
   case FinalAnswer(text: String)

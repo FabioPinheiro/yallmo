@@ -69,7 +69,7 @@ final case class ScalaModeOutput(
     executionTime: Long = 0L,
     totalTime: Long = 0L
 ) extends FunctionCallOutput {
-  def name: FunctionKey = ScalamodeToolDefinition.Execute
+  def name: FunctionKey = FunctionKey.scalamode
   def output: String = result.output
 }
 
@@ -79,7 +79,7 @@ object FunctionGenericOutput {
   given JsonCodec[FunctionGenericOutput] = summon[JsonCodec[Fields]].transformOrFail(
     fields =>
       Either.cond(
-        fields.name != ScalamodeToolDefinition.Execute,
+        fields.name != FunctionKey.scalamode,
         FunctionGenericOutput(fields.callId, fields.name, fields.output),
         "scalamode requires ScalaModeOutput"
       ),
@@ -105,7 +105,7 @@ object ScalaModeOutput {
   given JsonCodec[ScalaModeOutput] = summon[JsonCodec[Fields]].transformOrFail(
     fields =>
       Either.cond(
-        fields.name == ScalamodeToolDefinition.Execute,
+        fields.name == FunctionKey.scalamode,
         ScalaModeOutput(
           fields.callId,
           if fields.legacyTimedOut.contains(true) then ScalaModeResult.TimedOut(fields.result.output)
@@ -122,7 +122,7 @@ object ScalaModeOutput {
     output =>
       Fields(
         output.callId,
-        ScalamodeToolDefinition.Execute,
+        FunctionKey.scalamode,
         output.result,
         output.logs,
         output.exitCode,
@@ -142,7 +142,7 @@ object FunctionCallOutput {
   given JsonCodec[FunctionCallOutput] = summon[JsonCodec[Json]].transformOrFail(
     json =>
       json.as[Discriminator].flatMap { discriminator =>
-        if discriminator.name == ScalamodeToolDefinition.Execute then json.as[ScalaModeOutput]
+        if discriminator.name == FunctionKey.scalamode then json.as[ScalaModeOutput]
         else json.as[FunctionGenericOutput]
       },
     output =>

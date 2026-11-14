@@ -1,4 +1,6 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
+
+import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.orchestration.ExternalFunctionResult
 import fmgp.rpc.RpcWebSocket
@@ -963,7 +965,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
     for code <- List(
         "doesNotExist",
-        "new fmgp.yallmo.tool.ScalaTool()",
+        "new fmgp.yallmo.tool.scalamode.ScalaTool()",
         "java.nio.file.Files.readString(java.nio.file.Path.of(\"/etc/passwd\"))",
         "java.nio.file.Files.writeString(java.nio.file.Path.of(\"forbidden.txt\"), \"no\")",
         "java.lang.System.getenv()",

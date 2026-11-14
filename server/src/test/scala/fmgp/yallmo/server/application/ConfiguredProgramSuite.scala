@@ -1,5 +1,7 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+
 import fmgp.yallmo.tool.{
   FilesystemToolDefinition,
   FunctionCall,
@@ -7,10 +9,7 @@ import fmgp.yallmo.tool.{
   FunctionKey,
   FunctionToolDefinition,
   ReadFileTool,
-  ScalaCodeExecutor,
-  ScalaModeResult,
-  ScalaTool,
-  ScalamodeToolDefinition
+  ScalaModeResult
 }
 
 import fmgp.yallmo.model.*

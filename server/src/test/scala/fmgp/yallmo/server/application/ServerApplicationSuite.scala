@@ -1,5 +1,7 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeToolDefinition}
+
 import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.model.*

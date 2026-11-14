@@ -1,18 +1,19 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
 
 import fmgp.yallmo.model.llm.JsonSchema
 import zio.Chunk
+import fmgp.yallmo.tool.*
 
 /** Stable callable identifiers and membership declared by this tool, independent of its runtime bindings. */
 object ScalamodeToolDefinition extends ToolDefinition {
-  val Execute: FunctionKey = FunctionKey.unsafe("scalamode")
+  val Execute: FunctionKey = FunctionKey.scalamode
 
   val Pure: FunctionToolDefinition = FunctionToolDefinition(
     name = Execute,
     description = "Evaluate a Scala block with Scala 3.10.1, offline. The last expression is returned. " +
       "Returned ZIO effects are executed by the host. Automatically imported restricted ZIO constructors: " +
       "ZIO.succeed, fail, attempt, fromEither, foreach and unit (not the full zio.ZIO companion). " +
-      "Example: ZIO.succeed(1 + 1) returns 2. Trace is supplied; do not import zio.ZIO. " +
+      "Example: ZIO.succeed(1 + 1) returns 2." +
       "Trusted API, automatically imported: def api: Unit — prints Tool API available. Also available as tool.api. " +
       "No direct file, network, process, environment access or println. " +
       "No user-supplied dependencies, directives or annotations. " +

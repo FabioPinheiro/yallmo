@@ -1,5 +1,7 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+
 import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}

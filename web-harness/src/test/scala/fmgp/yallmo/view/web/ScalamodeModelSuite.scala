@@ -1,13 +1,6 @@
 package fmgp.yallmo.view.web
 
-import fmgp.yallmo.tool.{
-  FunctionCallId,
-  FunctionGenericOutput,
-  FunctionKey,
-  ScalaModeOutput,
-  ScalaModeResult,
-  ScalamodeToolDefinition
-}
+import fmgp.yallmo.tool.{FunctionCallId, FunctionGenericOutput, FunctionKey, ScalaModeOutput, ScalaModeResult}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -84,7 +77,7 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(params.agentId, agent)
     assertEquals(params.input.agentId, human)
     assertEquals(params.input.parentId, None)
-    assertEquals(call.name, ScalamodeToolDefinition.Execute)
+    assertEquals(call.name, FunctionKey.scalamode)
     assertEquals(
       call.argumentsJson.fromJson[Json],
       Right(Json.Obj("code" -> Json.Str("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)"), "mode" -> Json.Str("filesystem")))

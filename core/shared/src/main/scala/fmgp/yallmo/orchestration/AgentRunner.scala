@@ -7,8 +7,7 @@ import fmgp.yallmo.tool.{
   FunctionKey,
   FunctionToolDefinition,
   ScalaModeOutput,
-  ScalaModeResult,
-  ScalamodeToolDefinition
+  ScalaModeResult
 }
 
 import fmgp.yallmo.model.YallmoError
@@ -270,7 +269,7 @@ final class AgentRunner[R](
   }
 
   private def toolMessage(call: FunctionCall, result: ExternalFunctionResult): MessagePayload = {
-    val output = if call.name == ScalamodeToolDefinition.Execute then
+    val output = if call.name == FunctionKey.scalamode then
       result match {
         case value: ExternalFunctionResult.ScalaMode =>
           ScalaModeOutput(

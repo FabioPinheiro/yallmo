@@ -22,4 +22,7 @@ object FunctionKey {
   given JsonCodec[FunctionKey] = JsonCodec.string.transformOrFail(FunctionKey.from, _.value)
   given JsonFieldEncoder[FunctionKey] = JsonFieldEncoder.string.contramap(_.value)
   given JsonFieldDecoder[FunctionKey] = JsonFieldDecoder.string.mapOrFail(FunctionKey.from)
+
+  /** Stable wire key for Scala execution, shared by clients and codecs without depending on the JVM-only tool. */
+  val scalamode: FunctionKey = FunctionKey.unsafe("scalamode")
 }

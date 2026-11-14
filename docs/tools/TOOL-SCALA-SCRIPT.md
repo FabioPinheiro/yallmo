@@ -33,6 +33,13 @@ EOF
 
 The restricted `ScalaTool` (`scalamode`) is registered by `ApplicationTools`. Agent capability allowlists control access to registered tools.
 
+The JVM implementation and tool schemas live in `fmgp.yallmo.tool.scalamode`:
+[ScalaTool](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala),
+[ScalaCodeExecutor](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala) and
+[ScalamodeToolDefinition](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeToolDefinition.scala).
+Shared model code and Scala.js clients use `fmgp.yallmo.tool.FunctionKey.scalamode`; they do not depend on these JVM-only definitions.
+This package move changes Scala imports and test suite names, not the `scalamode` wire name or JSON formats.
+
 The `scalamode` agent tool accepts one JSON argument:
 
 ```json
@@ -179,9 +186,9 @@ The default pure mode supplies a **fixed-message output helper and restricted ZI
 ### Validation
 
 ```bash
-sbt 'core/testOnly fmgp.yallmo.tool.ScalaToolSuite fmgp.yallmo.tool.ScalaCodeExecutorSuite'
+sbt 'core/testOnly fmgp.yallmo.tool.scalamode.ScalaToolSuite fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite fmgp.yallmo.tool.scalamode.ScalaFilesystemRpcSuite'
 # Opt-in real compiler tests (requires the pinned compiler in cache):
-YALLMO_TEST_SCALA_CLI="$(command -v scala-cli)" sbt 'core/testOnly fmgp.yallmo.tool.ScalaCodeExecutorSuite'
+YALLMO_TEST_SCALA_CLI="$(command -v scala-cli)" sbt 'core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite'
 ```
 
 For an already-running sbt server, set `core / Test / envVars` explicitly so the forked test JVM sees `YALLMO_TEST_SCALA_CLI`. Integration tests default to the same pinned/offline compiler as the tool. They also accept `YALLMO_TEST_SCALA_VERSION` and `YALLMO_TEST_SCALA_OFFLINE` for explicit test overrides.
@@ -202,7 +209,7 @@ This is a narrow boundary, not general ZIO compatibility: automatic trace/`CanFa
 Run with explicit forked-test environment configuration (the Scala build definition's project value is `coreJVM`):
 
 ```bash
-sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli"); core/testOnly fmgp.yallmo.tool.ScalaCodeExecutorSuite -- --tests *phase*'
+sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli"); core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite -- --tests *phase*'
 ```
 
 At the Phase-1 checkpoint production generation was unchanged (pure returned values only). The following Phase-2 integration supersedes that production limitation; the feasibility tests above remain intact.
@@ -244,7 +251,7 @@ Domain `FsError`s retain their JSON representation. Infrastructure failures use 
 Focused checks (seven tests, including real children and thirteen expanded-classpath compiler-negative probes):
 
 ```bash
-sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli");core/testOnly fmgp.yallmo.tool.ScalaFilesystemRpcSuite'
+sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli");core/testOnly fmgp.yallmo.tool.scalamode.ScalaFilesystemRpcSuite'
 ```
 
 `ServerCompositionSuite` additionally checks concurrent selected roots, invoke/session parity, retained identity, workspace fallback, invalid-root rejection, consistent read/list/scala binding and Coach/Folder restrictions. These concurrent-root checks use a mocked executor/provider, not the full real stack.

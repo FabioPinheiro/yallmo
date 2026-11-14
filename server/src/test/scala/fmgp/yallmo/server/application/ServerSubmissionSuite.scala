@@ -1,6 +1,7 @@
 package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.*
+import fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{
   AgentCapabilities,

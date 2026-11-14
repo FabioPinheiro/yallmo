@@ -10,7 +10,6 @@ import fmgp.yallmo.tool.{
   FunctionGenericOutput,
   FunctionKey,
   RepositoryChangesToolDefinition,
-  ScalamodeToolDefinition,
   SdlcToolDefinition
 }
 
@@ -23,7 +22,7 @@ final class FunctionKeySuite extends FunSuite {
     FilesystemToolDefinition.ListFiles -> "listFiles",
     BashToolDefinition.Execute -> "bash",
     RepositoryChangesToolDefinition.Inspect -> "repositoryChanges",
-    ScalamodeToolDefinition.Execute -> "scalamode",
+    FunctionKey.scalamode -> "scalamode",
     SdlcToolDefinition.SetTasks -> "sdlc_set",
     SdlcToolDefinition.ReadTask -> "sdlc_read_task",
     SdlcToolDefinition.SetIntents -> "sdlc_set_intents",
@@ -53,10 +52,10 @@ final class FunctionKeySuite extends FunSuite {
   }
 
   test("collection and map-key codecs preserve strings and reject blank keys") {
-    val keys = Set(FilesystemToolDefinition.ReadFile, ScalamodeToolDefinition.Execute)
+    val keys = Set(FilesystemToolDefinition.ReadFile, FunctionKey.scalamode)
     assertEquals(keys.toJson.fromJson[Set[FunctionKey]], Right(keys))
     assertEquals("[\"clock\"]".fromJson[Set[FunctionKey]], Right(Set(FunctionKey.unsafe("clock"))))
-    val catalog = Map(ScalamodeToolDefinition.Execute -> "available")
+    val catalog = Map(FunctionKey.scalamode -> "available")
     assertEquals(catalog.toJson, """{"scalamode":"available"}""")
     assertEquals(catalog.toJson.fromJson[Map[FunctionKey, String]], Right(catalog))
     assert("""{" ":"available"}""".fromJson[Map[FunctionKey, String]].isLeft)
@@ -68,14 +67,14 @@ final class FunctionKeySuite extends FunSuite {
     assert(!typeChecks("""fmgp.yallmo.orchestration.ExternalFunctionCall("scalamode", "{}")"""))
     assert(
       typeChecks(
-        """fmgp.yallmo.orchestration.ExternalFunctionCall(fmgp.yallmo.tool.ScalamodeToolDefinition.Execute, "{}")"""
+        """fmgp.yallmo.orchestration.ExternalFunctionCall(fmgp.yallmo.tool.FunctionKey.scalamode, "{}")"""
       )
     )
   }
 
   test("tool calls and outputs retain their existing JSON shape") {
     val id = FunctionCallId.unsafe("call-1")
-    val call = FunctionCall(id, ScalamodeToolDefinition.Execute, "{}")
+    val call = FunctionCall(id, FunctionKey.scalamode, "{}")
     val output = FunctionGenericOutput(id, BashToolDefinition.Execute, "42")
     assertEquals(call.toJson, """{"id":"call-1","name":"scalamode","argumentsJson":"{}"}""")
     assertEquals(output.toJson, """{"callId":"call-1","name":"bash","output":"42"}""")

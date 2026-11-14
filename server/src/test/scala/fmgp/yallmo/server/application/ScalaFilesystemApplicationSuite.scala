@@ -1,6 +1,8 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.{BashExecutor, GitClient, ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+
+import fmgp.yallmo.tool.{BashExecutor, GitClient}
 
 import fmgp.yallmo.model.{UserId, YallmoError}
 import fmgp.rpc.RpcWebSocket

@@ -1,7 +1,7 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
 
 import fmgp.yallmo.model.YallmoError
-
+import fmgp.yallmo.tool.*
 import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
 import zio.*
 import fmgp.rpc.RpcWebSocket
@@ -31,6 +31,8 @@ final class ScalaTool(
 }
 
 object ScalaTool {
+
+  val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
   /** Caller-owned route and selected read capability are required only by the explicitly enabled variant. */
   def filesystem(
@@ -70,8 +72,6 @@ object ScalaTool {
         } yield result
     }
   }
-
-  val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
   /** Shared argument/error boundary for the two Scala tools, independent of their execution backend. */
   private[tool] def executeWith[R, A](call: ExternalFunctionCall, functionKey: FunctionKey)(

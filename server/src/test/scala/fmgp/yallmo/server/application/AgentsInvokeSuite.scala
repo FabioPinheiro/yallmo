@@ -1,5 +1,7 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition
+
 import fmgp.yallmo.tool.{
   BashToolDefinition,
   FunctionCall,
@@ -8,8 +10,7 @@ import fmgp.yallmo.tool.{
   FunctionKey,
   FunctionToolDefinition,
   ScalaModeOutput,
-  ScalaModeResult,
-  ScalamodeToolDefinition
+  ScalaModeResult
 }
 
 import fmgp.yallmo.model.*
@@ -236,7 +237,7 @@ final class AgentsInvokeSuite extends FunSuite {
         providers <- Ref.make(0)
         executions <- Ref.make(Chunk.empty[ExternalFunctionCall])
         tool = new AgentFunction[Any] {
-          val definition = fmgp.yallmo.tool.ScalaTool.definition
+          val definition = fmgp.yallmo.tool.scalamode.ScalaTool.definition
           def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
             executions
               .update(_ :+ call)
@@ -288,7 +289,7 @@ final class AgentsInvokeSuite extends FunSuite {
   }
 
   for (toolDefinition, arguments) <- List(
-      fmgp.yallmo.tool.ScalaTool.definition -> """{"code":"42"}""",
+      fmgp.yallmo.tool.scalamode.ScalaTool.definition -> """{"code":"42"}""",
       fmgp.yallmo.tool.sdlc.SdlcTools.SetDefinition -> """{"tasksJson":[]}""",
       fmgp.yallmo.tool.sdlc.SdlcTools.ReadTaskDefinition -> """{"taskIds":[]}""",
       fmgp.yallmo.tool.sdlc.SdlcTools.SetIntentsDefinition -> """{"intentsJson":[]}""",

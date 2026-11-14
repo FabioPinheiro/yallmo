@@ -1,6 +1,7 @@
 package fmgp.yallmo.repl
 
 import fmgp.yallmo.model.*
+import fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.server.{OrchestratorWSClient, OrchestratorWSServer}
 import fmgp.yallmo.repl.terminal.TerminalRepl

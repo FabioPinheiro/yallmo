@@ -130,7 +130,7 @@ Each row below is one callable function. A function must be both available and p
 [filesystem]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/FileSystemTools.scala
 [bash]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/BashTool.scala
 [git]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/RepositoryChangesTool.scala
-[scala]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/ScalaTool.scala
+[scala]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala
 [sdlc]: ../core/shared/src/main/scala/fmgp/yallmo/tool/sdlc/SdlcTools.scala
 [sdlc-service]: ../core/shared/src/main/scala/fmgp/yallmo/tool/sdlc/SdlcService.scala
 [coach]: ../core/jvm/src/main/scala/fmgp/yallmo/agents/CoachApplicationTools.scala

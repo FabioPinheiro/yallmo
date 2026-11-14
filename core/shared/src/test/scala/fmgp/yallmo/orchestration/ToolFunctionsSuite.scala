@@ -1,13 +1,7 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{
-  FunctionKey,
-  FunctionToolDefinition,
-  ScalamodeToolDefinition,
-  SdlcToolDefinition,
-  ToolDefinition,
-  ToolKey
-}
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, SdlcToolDefinition, ToolDefinition, ToolKey}
+import fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*

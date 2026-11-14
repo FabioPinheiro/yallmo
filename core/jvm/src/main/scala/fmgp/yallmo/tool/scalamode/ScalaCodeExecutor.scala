@@ -1,6 +1,7 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
 
 import fmgp.yallmo.scalacode.ScalaToolApi
+import fmgp.yallmo.tool.*
 import fmgp.yallmo.orchestration.ExternalFunctionResult
 import zio.*
 import fmgp.rpc.*

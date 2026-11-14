@@ -1,4 +1,6 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
+
+import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
 import munit.FunSuite
@@ -24,6 +26,21 @@ final class ScalaToolSuite extends FunSuite {
       ZIO.succeed(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("55\n"), Seq("connected", "disconnected")))
     }
   })
+
+  test("tool definitions retain the shared key and expose the selected binding schema") {
+    assertEquals(ScalamodeToolDefinition.Execute, FunctionKey.scalamode)
+    assertEquals(ScalamodeToolDefinition.name, ToolKey.Scalamode)
+    assertEquals(ScalamodeToolDefinition.functions, Set(ScalaTool.definition))
+    assertEquals(ScalaTool.definition.validate, Right(ScalaTool.definition))
+    assertEquals(ScalaTool.filesystemDefinition.validate, Right(ScalaTool.filesystemDefinition))
+    assertEquals(
+      ToolDefinition
+        .available(zio.Chunk(ScalamodeToolDefinition), zio.Chunk(ScalaTool.filesystemDefinition))
+        .head
+        .functions,
+      Set(ScalaTool.filesystemDefinition)
+    )
+  }
 
   test("pure code is forwarded and its result is returned") {
     val result =

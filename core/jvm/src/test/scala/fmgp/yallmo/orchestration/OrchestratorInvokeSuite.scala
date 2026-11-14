@@ -1,13 +1,8 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{
-  FunctionCall,
-  FunctionCallId,
-  FunctionGenericOutput,
-  FunctionKey,
-  FunctionToolDefinition,
-  ScalamodeToolDefinition
-}
+import fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition
+
+import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, FunctionKey, FunctionToolDefinition}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, ProviderContinuation, ProviderId}

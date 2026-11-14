@@ -7,9 +7,9 @@ import fmgp.yallmo.tool.{
   FunctionKey,
   FunctionToolDefinition,
   ScalaModeOutput,
-  ScalaModeResult,
-  ScalamodeToolDefinition
+  ScalaModeResult
 }
+import fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition
 
 import RunnerTestSupport.*
 
@@ -104,7 +104,7 @@ final class AgentRunnerSuite extends FunSuite:
   }
 
   test("runner propagates typed Scala results and metadata without rendering JSON") {
-    val call = FunctionCall(FunctionCallId.unsafe("scala-1"), ScalamodeToolDefinition.Execute, "{}")
+    val call = FunctionCall(FunctionCallId.unsafe("scala-1"), FunctionKey.scalamode, "{}")
     val results = List(
       ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("42\n"), Seq("info")),
       ExternalFunctionResult.ScalaMode(
@@ -123,10 +123,10 @@ final class AgentRunnerSuite extends FunSuite:
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
     runZIO(ZIO.foreach(results) { result =>
       val tool = new AgentFunction[Any] {
-        val definition = FunctionToolDefinition(ScalamodeToolDefinition.Execute, "Scala")
+        val definition = FunctionToolDefinition(FunctionKey.scalamode, "Scala")
         def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] = ZIO.succeed(result)
       }
-      new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool))
+      new AgentRunner[Any](Map(FunctionKey.scalamode -> tool))
         .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
         .invoke(Message.ToolCall(call))
     }) { outputs =>
@@ -153,7 +153,7 @@ final class AgentRunnerSuite extends FunSuite:
   test("runner represents Scala host infrastructure and argument failures as execution attempts") {
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
     val tool = new AgentFunction[Any] {
-      val definition = FunctionToolDefinition(ScalamodeToolDefinition.Execute, "Scala")
+      val definition = FunctionToolDefinition(FunctionKey.scalamode, "Scala")
       def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
         ZIO.fail(
           YallmoError.ToolExecutionFailed(
@@ -163,17 +163,17 @@ final class AgentRunnerSuite extends FunSuite:
           )
         )
     }
-    val execution = new AgentRunner[Any](Map(ScalamodeToolDefinition.Execute -> tool))
+    val execution = new AgentRunner[Any](Map(FunctionKey.scalamode -> tool))
       .invocation(agent, StaticContext[Any]("Test", functions = Chunk(tool.definition)))
     runZIO(ZIO.foreach(List("{}", "not-json")) { arguments =>
       execution.invoke(
-        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), ScalamodeToolDefinition.Execute, arguments))
+        Message.ToolCall(FunctionCall(FunctionCallId.unsafe("scala-error"), FunctionKey.scalamode, arguments))
       )
     }) { outputs =>
       outputs.foreach {
         case Message.ToolOutput(output: ScalaModeOutput) =>
           assert(output.result.isInstanceOf[ScalaModeResult.Executed])
-          assertEquals(output.name, ScalamodeToolDefinition.Execute)
+          assertEquals(output.name, FunctionKey.scalamode)
           assertEquals(output.exitCode, 1)
           assert(output.output.contains("error"))
           assertEquals(output.logs, Seq.empty)

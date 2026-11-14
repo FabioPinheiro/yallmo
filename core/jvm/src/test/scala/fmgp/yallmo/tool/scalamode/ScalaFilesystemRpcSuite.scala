@@ -1,4 +1,6 @@
-package fmgp.yallmo.tool
+package fmgp.yallmo.tool.scalamode
+
+import fmgp.yallmo.tool.*
 
 import fmgp.rpc.*
 import fmgp.yallmo.orchestration.ExternalFunctionResult
@@ -51,14 +53,14 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           tool
             .execute(
               fmgp.yallmo.orchestration
-                .ExternalFunctionCall(fmgp.yallmo.tool.ScalamodeToolDefinition.Execute, arguments)
+                .ExternalFunctionCall(fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition.Execute, arguments)
             )
             .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
         }
         filesystem <- tool
           .execute(
             fmgp.yallmo.orchestration.ExternalFunctionCall(
-              fmgp.yallmo.tool.ScalamodeToolDefinition.Execute,
+              fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition.Execute,
               """{"code":"42","mode":"filesystem"}"""
             )
           )
@@ -73,7 +75,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
           tool
             .execute(
               fmgp.yallmo.orchestration
-                .ExternalFunctionCall(fmgp.yallmo.tool.ScalamodeToolDefinition.Execute, arguments)
+                .ExternalFunctionCall(fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition.Execute, arguments)
             )
             .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
             .either
@@ -196,7 +198,7 @@ final class ScalaFilesystemRpcSuite extends FunSuite {
         .filesystem(endpoint, timeout = 120.seconds)
         .execute(
           fmgp.yallmo.orchestration.ExternalFunctionCall(
-            fmgp.yallmo.tool.ScalamodeToolDefinition.Execute,
+            fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition.Execute,
             """{"code":"fs.readUtf8(\"missing\")","mode":"filesystem"}"""
           )
         )

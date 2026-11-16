@@ -1,6 +1,6 @@
 package fmgp.rpc
 
-import munit.FunSuite
+import munit.ZSuite
 import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import zio.json.*
@@ -53,54 +53,58 @@ object RpcStreamFixtures {
     def close: UIO[Unit] = ZIO.unit
   }
 }
-class RpcStreamSuite extends FunSuite {
+class RpcStreamSuite extends ZSuite {
   import RpcStreamFixtures.*
-  private def run[A](effect: UIO[A]): A = Unsafe.unsafe { _ ?=>
-    Runtime.default.unsafe.run(effect).getOrThrowFiberFailure()
+  testZ("derived byte, DTO, Unit and nullable streams coexist with unary calls") {
+    ZIO.suspendSucceed {
+      val client = rpc.client(loopback(rpc.bind(new Service)))
+      for {
+        bytes <- client.readBytes("file").runCollect.either
+        entries <- client.entries().runCollect.either
+        units <- client.units().runCollect.either
+        nullable <- client.nullable().runCollect.either
+        pong <- client.ping("pong").either
+      } yield {
+        assertEquals(bytes, Right(Chunk.fromIterable((-128 to 127).map(_.toByte))))
+        assertEquals(entries, Right(Chunk(Entry("hello", 1), Entry("🙂", 2))))
+        assertEquals(units, Right(Chunk((), ())))
+        assertEquals(nullable, Right(Chunk(None, Some("hello"))))
+        assertEquals(pong, Right("pong"))
+        assertEquals(rpc.descriptor.streamMethods("readBytes"), true)
+        assertEquals(rpc.descriptor.streamMethods("entries"), false)
+      }
+    }
   }
-  test("derived byte, DTO, Unit and nullable streams coexist with unary calls") {
-    val client = rpc.client(loopback(rpc.bind(new Service)))
-    assertEquals(
-      run(client.readBytes("file").runCollect.either),
-      Right(Chunk.fromIterable((-128 to 127).map(_.toByte)))
-    )
-    assertEquals(run(client.entries().runCollect.either), Right(Chunk(Entry("hello", 1), Entry("🙂", 2))))
-    assertEquals(run(client.units().runCollect.either), Right(Chunk((), ())))
-    assertEquals(run(client.nullable().runCollect.either), Right(Chunk(None, Some("hello"))))
-    assertEquals(run(client.ping("pong").either), Right("pong"))
-    assertEquals(rpc.descriptor.streamMethods("readBytes"), true)
-    assertEquals(rpc.descriptor.streamMethods("entries"), false)
+  testZ("domain failures before and after output and sanitized construction/defects") {
+    ZIO.suspendSucceed {
+      val client = rpc.client(loopback(rpc.bind(new Service)))
+      for {
+        failure <- client.fail().runCollect.either
+        values <- Ref.make(List.empty[Int])
+        partial <- client.partial().tap(n => values.update(_ :+ n)).runDrain.either
+        output <- values.get
+        bad <- client.bad().runDrain.either
+        thrown <- client.thrown().runDrain.either
+      } yield {
+        assertEquals(failure, Left(FsError.Missing("first")))
+        assertEquals((output, partial), (List(1, 2), Left(FsError.Missing("later"))))
+        assertEquals(bad.left.map(_.asInstanceOf[RpcError].code), Left(RpcError.Code.ServiceFailure))
+        assertEquals(thrown.left.map(_.asInstanceOf[RpcError].code), Left(RpcError.Code.ServiceFailure))
+      }
+    }
   }
-  test("domain failures before and after output and sanitized construction/defects") {
-    val client = rpc.client(loopback(rpc.bind(new Service)))
-    assertEquals(run(client.fail().runCollect.either), Left(FsError.Missing("first")))
-    val seen = run(for {
-      values <- Ref.make(List.empty[Int])
-      result <- client.partial().tap(n => values.update(_ :+ n)).runDrain.either
-      output <- values.get
-    } yield (output, result))
-    assertEquals(seen, (List(1, 2), Left(FsError.Missing("later"))))
-    assertEquals(
-      run(client.bad().runDrain.either).left.map(_.asInstanceOf[RpcError].code),
-      Left(RpcError.Code.ServiceFailure)
-    )
-    assertEquals(
-      run(client.thrown().runDrain.either).left.map(_.asInstanceOf[RpcError].code),
-      Left(RpcError.Code.ServiceFailure)
-    )
-  }
-  test("mixed domain failure and interruption keeps interruption precedence after partial JSON and Byte output") {
-    List(false, true).foreach { includeDefect =>
-      val mixed = Cause.fail(FsError.Missing("later")) ++ Cause.interrupt(FiberId.None)
-      val cause = if includeDefect then mixed ++ Cause.die(new Exception("secret")) else mixed
-      assert(cause.isInterrupted, cause.toString)
-      val client = rpc.client(loopback(rpc.bind(new Service {
-        override def partial(): ZStream[Any, FsError, Int] =
-          ZStream.fromChannel(ZChannel.write(Chunk(1, 2)) *> ZChannel.failCause(cause))
-        override def readBytes(path: String): ZStream[Any, FsError, Byte] =
-          ZStream.fromChannel(ZChannel.write(Chunk[Byte](3)) *> ZChannel.failCause(cause))
-      })))
-      val result = run {
+  testZ("mixed domain failure and interruption keeps interruption precedence after partial JSON and Byte output") {
+    ZIO.suspendSucceed {
+      ZIO.foreachDiscard(List(false, true)) { includeDefect =>
+        val mixed = Cause.fail(FsError.Missing("later")) ++ Cause.interrupt(FiberId.None)
+        val cause = if includeDefect then mixed ++ Cause.die(new Exception("secret")) else mixed
+        assert(cause.isInterrupted, cause.toString)
+        val client = rpc.client(loopback(rpc.bind(new Service {
+          override def partial(): ZStream[Any, FsError, Int] =
+            ZStream.fromChannel(ZChannel.write(Chunk(1, 2)) *> ZChannel.failCause(cause))
+          override def readBytes(path: String): ZStream[Any, FsError, Byte] =
+            ZStream.fromChannel(ZChannel.write(Chunk[Byte](3)) *> ZChannel.failCause(cause))
+        })))
         for {
           seenJson <- Ref.make(List.empty[Int])
           json <- client.partial().tap(n => seenJson.update(_ :+ n)).runDrain.fork.flatMap(_.await)
@@ -108,42 +112,50 @@ class RpcStreamSuite extends FunSuite {
           seenBytes <- Ref.make(List.empty[Byte])
           bytes <- client.readBytes("mixed").tap(n => seenBytes.update(_ :+ n)).runDrain.fork.flatMap(_.await)
           byteValues <- seenBytes.get
-        } yield (json, jsonValues, bytes, byteValues)
+        } yield {
+          assert(json.isInterrupted, s"includeDefect=$includeDefect exit=$json")
+          assertEquals(json.causeOption.flatMap(_.failureOption), None)
+          assertEquals(jsonValues, List(1, 2))
+          assert(bytes.isInterrupted, s"includeDefect=$includeDefect exit=$bytes")
+          assertEquals(bytes.causeOption.flatMap(_.failureOption), None)
+          assertEquals(byteValues, List[Byte](3))
+        }
       }
-      assert(result._1.isInterrupted, s"includeDefect=$includeDefect exit=${result._1}")
-      assertEquals(result._1.causeOption.flatMap(_.failureOption), None)
-      assertEquals(result._2, List(1, 2))
-      assert(result._3.isInterrupted, s"includeDefect=$includeDefect exit=${result._3}")
-      assertEquals(result._3.causeOption.flatMap(_.failureOption), None)
-      assertEquals(result._4, List[Byte](3))
     }
   }
-  test("stream construction and take zero are lazy; repeat materialization invokes again") {
-    var invocations = 0
-    val client = rpc.client(loopback(rpc.bind(new Service {
-      override def entries(): ZStream[Any, FsError, Entry] = {
-        invocations += 1
-        super.entries()
-      }
-    })))
-    val stream = client.entries()
-    assertEquals(invocations, 0)
-    run(stream.take(0).runDrain.orDieWith(e => new Exception(e.toString)))
-    assertEquals(invocations, 0)
-    run(stream.runDrain.either)
-    run(stream.runDrain.either)
-    assertEquals(invocations, 2)
+  testZ("stream construction and take zero are lazy; repeat materialization invokes again") {
+    ZIO.suspendSucceed {
+      var invocations = 0
+      val client = rpc.client(loopback(rpc.bind(new Service {
+        override def entries(): ZStream[Any, FsError, Entry] = {
+          invocations += 1
+          super.entries()
+        }
+      })))
+      val stream = client.entries()
+      assertEquals(invocations, 0)
+      for {
+        _ <- stream.take(0).runDrain.orDieWith(e => new Exception(e.toString))
+        _ <- ZIO.succeed(assertEquals(invocations, 0))
+        _ <- stream.runDrain.either
+        _ <- stream.runDrain.either
+      } yield assertEquals(invocations, 2)
+    }
   }
-  test("method kind and encoding are checked before invoking service code") {
-    val dispatcher = rpc.bind(new Service)
-    assertEquals(
-      run(dispatcher.dispatch("test.stream.files", 1, "entries", Chunk.empty).either).left.map(_.code),
-      Left(RpcError.Code.UnknownMethod)
-    )
-    assertEquals(
-      run(dispatcher.dispatchStream("test.stream.files", 1, "readBytes", Chunk(Json.Str("x")), false).runDrain.either),
-      Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.ProtocolError)))
-    )
+  testZ("method kind and encoding are checked before invoking service code") {
+    ZIO.suspendSucceed {
+      val dispatcher = rpc.bind(new Service)
+      for {
+        unary <- dispatcher.dispatch("test.stream.files", 1, "entries", Chunk.empty).either
+        stream <- dispatcher
+          .dispatchStream("test.stream.files", 1, "readBytes", Chunk(Json.Str("x")), false)
+          .runDrain
+          .either
+      } yield {
+        assertEquals(unary.left.map(_.code), Left(RpcError.Code.UnknownMethod))
+        assertEquals(stream, Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.ProtocolError))))
+      }
+    }
   }
   test("macro rejects environments, Nothing, missing element/error codecs, nested stream shapes and missing mapper") {
     val environment =

@@ -17,11 +17,10 @@ import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
 import fmgp.yallmo.fs.{FsRead, FsError}
-import munit.FunSuite
+import munit.ZSuite
 import zio.*
 
-import scala.concurrent.Future
-final class ConfiguredProgramSuite extends FunSuite {
+final class ConfiguredProgramSuite extends ZSuite {
   private val agentId = AgentId("configured")
   private val blob = Blob(BlobId.fresh(), Chunk[Byte](1, 2, 3))
   private val input = Chunk[MessagePayload](
@@ -36,83 +35,79 @@ final class ConfiguredProgramSuite extends FunSuite {
   private val readBlob: BlobId => IO[YallmoError, Blob] = id =>
     if id == blob.id then ZIO.succeed(blob) else ZIO.fail(YallmoError.BlobMissing(id))
 
-  test("native binding retains configured capabilities and supplies the storage blob reader") {
-    runZIO {
-      for {
-        requests <- Ref.make(Chunk.empty[AgentTurnRequest])
-        adapter = new Agent[Any] with HasAgentCapabilities {
-          override val id: AgentId = agentId
-          override val capabilities: AgentCapabilities =
-            AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("adapter-only"))))
-          override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-            requests
-              .update(_ :+ request)
-              .as(
-                AgentTurnResponse(Chunk(MessagePayload.Assistant("Native answer")), LlmStopReason.Stop)
-              )
-        }
-        program = NativeFunctionAgent[Agent[Any]](
-          agentId,
-          "native-model",
-          capabilities =
-            AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("program-only"))))
-        )
-        bound = program.bind[Any](adapter, readBlob)
-        configured <- bound.configuredContext(context)
-        turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
-        request <- requests.get.map(_.head)
-        stored <- request.readBlob(blob.id)
-      } yield {
-        assertEquals(bound.id, agentId)
-        assertEquals(bound.capabilities.functions, Some(Set(FunctionKey.unsafe("shared"))))
-        assertEquals(configured.functions.map(_.name), Chunk(FunctionKey.unsafe("shared")))
-        assertEquals(request.tools.map(_.name), Chunk(FunctionKey.unsafe("shared")))
-        assertEquals(request.model, "native-model")
-        assertEquals(request.input, input :+ MessagePayload.Instructions("System"))
-        assertEquals(stored, blob)
-        assertEquals(turn.decision, AgentDecision.FinalAnswer("Native answer"))
+  testZ("native binding retains configured capabilities and supplies the storage blob reader") {
+    for {
+      requests <- Ref.make(Chunk.empty[AgentTurnRequest])
+      adapter = new Agent[Any] with HasAgentCapabilities {
+        override val id: AgentId = agentId
+        override val capabilities: AgentCapabilities =
+          AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("adapter-only"))))
+        override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+          requests
+            .update(_ :+ request)
+            .as(
+              AgentTurnResponse(Chunk(MessagePayload.Assistant("Native answer")), LlmStopReason.Stop)
+            )
       }
+      program = NativeFunctionAgent[Agent[Any]](
+        agentId,
+        "native-model",
+        capabilities =
+          AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shared"), FunctionKey.unsafe("program-only"))))
+      )
+      bound = program.bind[Any](adapter, readBlob)
+      configured <- bound.configuredContext(context)
+      turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
+      request <- requests.get.map(_.head)
+      stored <- request.readBlob(blob.id)
+    } yield {
+      assertEquals(bound.id, agentId)
+      assertEquals(bound.capabilities.functions, Some(Set(FunctionKey.unsafe("shared"))))
+      assertEquals(configured.functions.map(_.name), Chunk(FunctionKey.unsafe("shared")))
+      assertEquals(request.tools.map(_.name), Chunk(FunctionKey.unsafe("shared")))
+      assertEquals(request.model, "native-model")
+      assertEquals(request.input, input :+ MessagePayload.Instructions("System"))
+      assertEquals(stored, blob)
+      assertEquals(turn.decision, AgentDecision.FinalAnswer("Native answer"))
     }
   }
 
-  test("folder binding disables inherited tools and passes input and blob reader without native generation settings") {
-    runZIO {
-      for {
-        requests <- Ref.make(Chunk.empty[AgentTurnRequest])
-        adapter = new Agent[Any] {
-          override val id: AgentId = agentId
-          override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-            requests
-              .update(_ :+ request)
-              .as(
-                AgentTurnResponse(
-                  Chunk(MessagePayload.Assistant(" Folder"), MessagePayload.Assistant(" answer ")),
-                  LlmStopReason.Stop
-                )
+  testZ("folder binding disables inherited tools and passes input and blob reader without native generation settings") {
+    for {
+      requests <- Ref.make(Chunk.empty[AgentTurnRequest])
+      adapter = new Agent[Any] {
+        override val id: AgentId = agentId
+        override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+          requests
+            .update(_ :+ request)
+            .as(
+              AgentTurnResponse(
+                Chunk(MessagePayload.Assistant(" Folder"), MessagePayload.Assistant(" answer ")),
+                LlmStopReason.Stop
               )
-        }
-        policy = AgentCapabilities()
-        bound = FolderAgentProgram(adapter, policy, readBlob)
-        configured <- bound.configuredContext(context)
-        turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
-        request <- requests.get.map(_.head)
-        stored <- request.readBlob(blob.id)
-      } yield {
-        assertEquals(bound.id, agentId)
-        assertEquals(bound.capabilities, policy.copy(tools = Some(Set.empty)))
-        assertEquals(configured.functions, Chunk.empty)
-        assertEquals(request.model, "")
-        assertEquals(request.tools, Chunk.empty)
-        assertEquals(request.input, input)
-        assertEquals(stored, blob)
-        assertEquals(turn.assistant, Some(MessagePayload.Assistant(" Folder answer ")))
-        assertEquals(turn.decision, AgentDecision.FinalAnswer(" Folder answer "))
+            )
       }
+      policy = AgentCapabilities()
+      bound = FolderAgentProgram(adapter, policy, readBlob)
+      configured <- bound.configuredContext(context)
+      turn <- bound.next(AgentTask("Review this"), context, RunContext(input))
+      request <- requests.get.map(_.head)
+      stored <- request.readBlob(blob.id)
+    } yield {
+      assertEquals(bound.id, agentId)
+      assertEquals(bound.capabilities, policy.copy(tools = Some(Set.empty)))
+      assertEquals(configured.functions, Chunk.empty)
+      assertEquals(request.model, "")
+      assertEquals(request.tools, Chunk.empty)
+      assertEquals(request.input, input)
+      assertEquals(stored, blob)
+      assertEquals(turn.assistant, Some(MessagePayload.Assistant(" Folder answer ")))
+      assertEquals(turn.decision, AgentDecision.FinalAnswer(" Folder answer "))
     }
   }
 
-  test("folder direct scalamode and readFile invocations deny inherited and explicit tools before capability use") {
-    runZIO(ZIO.scoped {
+  testZ("folder direct scalamode and readFile invocations deny inherited and explicit tools before capability use") {
+    ZIO.scoped {
       for {
         used <- Ref.make(false)
         fs = new FsRead {
@@ -185,38 +180,31 @@ final class ConfiguredProgramSuite extends FunSuite {
         }
         accessed <- used.get
       } yield assert(!accessed, "Folder direct invocation must not execute Scala or access its private FsRead")
-    })
+    }
   }
 
-  test("folder binding rejects empty, blank, non-text and mixed output") {
+  testZ("folder binding rejects empty, blank, non-text and mixed output") {
     val invalid = Chunk(
       Chunk.empty[MessagePayload],
       Chunk[MessagePayload](MessagePayload.Assistant(" \n\t")),
       Chunk[MessagePayload](MessagePayload.User("Not an assistant answer")),
       Chunk[MessagePayload](MessagePayload.Assistant("Answer"), MessagePayload.Context("extra", "Not text output"))
     )
-    runZIO {
-      ZIO.foreachDiscard(invalid) { output =>
-        val adapter = new Agent[Any] {
-          override val id: AgentId = agentId
-          override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
-            ZIO.succeed(AgentTurnResponse(output, LlmStopReason.Stop))
-        }
-        FolderAgentProgram(adapter, AgentCapabilities(), readBlob)
-          .next(AgentTask("Review this"), context, RunContext(input))
-          .either
-          .map(result =>
-            assertEquals(
-              result,
-              Left(YallmoError.InvalidAgentDecision("FolderStructureAgent must return a non-blank text answer"))
-            )
-          )
+    ZIO.foreachDiscard(invalid) { output =>
+      val adapter = new Agent[Any] {
+        override val id: AgentId = agentId
+        override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+          ZIO.succeed(AgentTurnResponse(output, LlmStopReason.Stop))
       }
+      FolderAgentProgram(adapter, AgentCapabilities(), readBlob)
+        .next(AgentTask("Review this"), context, RunContext(input))
+        .either
+        .map(result =>
+          assertEquals(
+            result,
+            Left(YallmoError.InvalidAgentDecision("FolderStructureAgent must return a non-blank text answer"))
+          )
+        )
     }
   }
-
-  private def runZIO[E, A](effect: ZIO[Any, E, A]): Future[A] =
-    Unsafe.unsafe { unsafe ?=>
-      Runtime.default.unsafe.runToFuture(effect.mapError(error => FiberFailure(Cause.fail(error))))
-    }
 }

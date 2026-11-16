@@ -2,18 +2,14 @@ package fmgp.yallmo.tool.scalamode
 
 import fmgp.rpc.RpcConnection
 import fmgp.yallmo.fs.{FsError, FsRead}
-import munit.FunSuite
-import scala.concurrent.Future
+import munit.ZSuite
 import zio.*
 import zio.json.ast.Json
 import zio.stream.ZStream
 
 /** Contract derivation and typed errors remain portable even without a browser WebSocket transport. */
-final class FilesystemContractsSuite extends FunSuite {
-  private def run[A](effect: Task[A]): Future[A] =
-    Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.runToFuture(effect) }
-
-  test("FsRead contract preserves selected implementations and typed failures on JVM and JS") {
+final class FilesystemContractsSuite extends ZSuite {
+  testZ("FsRead contract preserves selected implementations and typed failures on JVM and JS")(ZIO.suspendSucceed {
     val read = new FsRead {
       def readBytes(path: String) = ZStream.dieMessage("Custom readUtf8 must not be replaced by its default")
       override def readUtf8(path: String) = ZIO.succeed(s"custom:$path")
@@ -25,15 +21,15 @@ final class FilesystemContractsSuite extends FunSuite {
         dispatcher.dispatch(serviceId, version, method, arguments)
       def close = ZIO.unit
     })
-    run(for {
+    for {
       text <- client.readUtf8("note.txt").orDieWith(error => new Exception(error.toString))
       missing <- client.list("missing").either
     } yield {
       assertEquals(text, "custom:note.txt")
       assertEquals(missing, Left(FsError.NotFound("missing")))
       assertEquals(FilesystemRuntime.readContract.descriptor.streamMethods, Map("readBytes" -> true))
-    })
-  }
+    }
+  })
 
   test("read-only and write-only contracts have disjoint authority") {
     val read = FilesystemRuntime.readContract.descriptor

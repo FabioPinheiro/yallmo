@@ -1,6 +1,6 @@
 package fmgp.rpc
 
-import munit.FunSuite
+import munit.ZSuite
 import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import zio.json.*
@@ -77,121 +77,166 @@ object RpcTypedErrorFixtures {
   def loopback(dispatcher: RpcDispatcher): RpcConnection = connection(dispatcher.dispatch)
 }
 
-class RpcTypedErrorSuite extends FunSuite {
+class RpcTypedErrorSuite extends ZSuite {
   import RpcTypedErrorFixtures.*
-  private def run[A](effect: UIO[A]): A = Unsafe.unsafe { _ ?=>
-    Runtime.default.unsafe.run(effect).getOrThrowFiberFailure()
-  }
-  test("IO String and ADT failures retain their exact type through either and catchAll") {
-    val client = files.client(loopback(files.bind(fileService)))
-    val failure: Either[FsError, String] = run(client.read("missing").either)
-    assertEquals(failure, Left(FsError.NotFound("missing")))
-    assertEquals(
-      run(client.read("missing").catchAll {
-        case FsError.NotFound(path)       => ZIO.succeed(path)
-        case FsError.Infrastructure(code) => ZIO.succeed(code.toString)
-      }),
-      "missing"
-    )
-    assertEquals(run(client.read("exists").either), Right("contents"))
-    val textClient = text.client(loopback(text.bind(new Text {
-      def fail(): IO[String, Int] = ZIO.fail("domain string")
-    })))
-    assertEquals(run(textClient.fail().either), Left("domain string"))
-  }
-  test("null service failure is present, distinct from Unit success and infrastructure error") {
-    val dispatcher = nullable.bind(new Nullable {
-      def fail(): IO[Option[String], Unit] = ZIO.fail(None)
-    })
-    val result = run(dispatcher.dispatch(nullable.descriptor.serviceId, 1, "fail", Chunk.empty).either)
-    assertEquals(result, Right(RpcResult.Failure(Json.Null)))
-    assertEquals(run(nullable.client(loopback(dispatcher)).fail().either), Left(None))
-    assertEquals(
-      RpcWire.response(RpcWire.success("1", RpcResult.Failure(Json.Null))).map(_.outcome),
-      Right(Right(RpcResult.Failure(Json.Null)))
-    )
-    assertEquals(
-      RpcWire.response(RpcWire.success("1", RpcResult.Success(Json.Null))).map(_.outcome),
-      Right(Right(RpcResult.Success(Json.Null)))
-    )
-    List(
-      """{"id":"1","failure":null,"result":null}""",
-      """{"id":"1","failure":null,"error":"ServiceFailure"}""",
-      """{"id":"1","failure":1,"failure":2}""",
-      """{"id":"1","failure":{"nested":1,"nested":2}}""",
-      """{"id":"1","error":"UnknownCode"}""",
-      """{"id":"1","error":null}""",
-      """{"id":"1"}"""
-    ).foreach(input => assert(RpcWire.response(input).isLeft, input))
-    assert(RpcWire.response("""{"id":"1","failure":""" + "[" * 33 + "]" * 33 + "}").isLeft)
-  }
-  test("typed infrastructure mapping covers every RpcError code and malformed success/domain payloads") {
-    RpcError.Code.values.foreach { code =>
-      val client = files.client(connection((_, _, _, _) => ZIO.fail(RpcError(code))))
-      assertEquals(run(client.read("x").either), Left(FsError.Infrastructure(code)))
-    }
-    List(RpcResult.Success(Json.Num(1)), RpcResult.Failure(Json.Str("not an FsError"))).foreach { result =>
-      val client = files.client(connection((_, _, _, _) => ZIO.succeed(result)))
-      assertEquals(run(client.read("x").either), Left(FsError.Infrastructure(RpcError.Code.ProtocolError)))
-    }
-    val dispatcher = files.bind(fileService)
-    val wrongVersion = files.client(connection((id, _, method, args) => dispatcher.dispatch(id, 1, method, args)))
-    assertEquals(run(wrongVersion.read("x").either), Left(FsError.Infrastructure(RpcError.Code.VersionMismatch)))
-    val missing = files.client(loopback(RpcFixtures.numbers.bind(RpcFixtures.numberService)))
-    assertEquals(run(missing.read("x").either), Left(FsError.Infrastructure(RpcError.Code.UnknownService)))
-  }
-  test("typed defects and construction throws are sanitized; interruption is not a domain failure") {
-    val client = files.client(loopback(files.bind(fileService)))
-    assertEquals(run(client.broken().either), Left(FsError.Infrastructure(RpcError.Code.ServiceFailure)))
-    assertEquals(run(client.thrown().either), Left(FsError.Infrastructure(RpcError.Code.ServiceFailure)))
-    assert(run(client.waitFor().fork.flatMap(_.interrupt)).isInterrupted)
-    assertEquals(run(client.read("exists").either), Right("contents"))
-  }
-  test("encoder Left/throws and decoder Left/throws map infrastructure, never valid domain values") {
-    val client = codecs.client(loopback(codecs.bind(codecService)))
-    List("left", "throw").foreach { mode =>
-      assertEquals(run(client.success(mode).either), Left(CodecValue("ProtocolError")))
-      assertEquals(run(client.failure(mode).either), Left(CodecValue("ProtocolError")))
-      assertEquals(run(client.argument(CodecValue(mode)).either), Left(CodecValue("ProtocolError")))
-      assertEquals(
-        run(
-          codecs.bind(codecService).dispatch(codecs.descriptor.serviceId, 1, "argument", Chunk(Json.Str(mode))).either
-        ),
-        Left(RpcError(RpcError.Code.InvalidArguments))
-      )
-      List(RpcResult.Success(Json.Str(mode)), RpcResult.Failure(Json.Str(mode))).foreach { result =>
-        val peer = codecs.client(connection((_, _, _, _) => ZIO.succeed(result)))
-        assertEquals(run(peer.success("ok").either), Left(CodecValue("ProtocolError")))
+  testZ("IO String and ADT failures retain their exact type through either and catchAll") {
+    ZIO.suspendSucceed {
+      val client = files.client(loopback(files.bind(fileService)))
+      val textClient = text.client(loopback(text.bind(new Text {
+        def fail(): IO[String, Int] = ZIO.fail("domain string")
+      })))
+      for {
+        failure: Either[FsError, String] <- client.read("missing").either
+        recovered <- client.read("missing").catchAll {
+          case FsError.NotFound(path)       => ZIO.succeed(path)
+          case FsError.Infrastructure(code) => ZIO.succeed(code.toString)
+        }
+        success <- client.read("exists").either
+        textFailure <- textClient.fail().either
+      } yield {
+        assertEquals(failure, Left(FsError.NotFound("missing")))
+        assertEquals(recovered, "missing")
+        assertEquals(success, Right("contents"))
+        assertEquals(textFailure, Left("domain string"))
       }
     }
   }
-  test("Task typed failures, defects and construction throws stay fixed sanitized ServiceFailure") {
-    trait Tasks { def call(mode: String): Task[Int] }
-    val rpc = Rpc.derived[Tasks]
-    val host = new Tasks {
-      def call(mode: String): Task[Int] = mode match {
-        case "throw"  => throw new IllegalStateException("construction secret")
-        case "defect" => ZIO.dieMessage("defect secret")
-        case "rpc"    => ZIO.fail(RpcError(RpcError.Code.UnknownMethod))
-        case _        => ZIO.fail(new IllegalArgumentException("failure secret"))
+  testZ("null service failure is present, distinct from Unit success and infrastructure error") {
+    ZIO.suspendSucceed {
+      val dispatcher = nullable.bind(new Nullable {
+        def fail(): IO[Option[String], Unit] = ZIO.fail(None)
+      })
+      for {
+        result <- dispatcher.dispatch(nullable.descriptor.serviceId, 1, "fail", Chunk.empty).either
+        failure <- nullable.client(loopback(dispatcher)).fail().either
+      } yield {
+        assertEquals(result, Right(RpcResult.Failure(Json.Null)))
+        assertEquals(failure, Left(None))
+        assertEquals(
+          RpcWire.response(RpcWire.success("1", RpcResult.Failure(Json.Null))).map(_.outcome),
+          Right(Right(RpcResult.Failure(Json.Null)))
+        )
+        assertEquals(
+          RpcWire.response(RpcWire.success("1", RpcResult.Success(Json.Null))).map(_.outcome),
+          Right(Right(RpcResult.Success(Json.Null)))
+        )
+        List(
+          """{"id":"1","failure":null,"result":null}""",
+          """{"id":"1","failure":null,"error":"ServiceFailure"}""",
+          """{"id":"1","failure":1,"failure":2}""",
+          """{"id":"1","failure":{"nested":1,"nested":2}}""",
+          """{"id":"1","error":"UnknownCode"}""",
+          """{"id":"1","error":null}""",
+          """{"id":"1"}"""
+        ).foreach(input => assert(RpcWire.response(input).isLeft, input))
+        assert(RpcWire.response("""{"id":"1","failure":""" + "[" * 33 + "]" * 33 + "}").isLeft)
       }
     }
-    val client = rpc.client(loopback(rpc.bind(host)))
-    List("throw", "defect", "rpc", "failure").foreach { mode =>
-      val error = run(client.call(mode).either).left.toOption.get
-      assertEquals(error, RpcError(RpcError.Code.ServiceFailure))
-      assertEquals(error.getMessage, "ServiceFailure")
-      assertEquals(error.getCause, null)
-    }
-    val unexpectedDomain = rpc.client(connection((_, _, _, _) => ZIO.succeed(RpcResult.Failure(Json.Null))))
-    assertEquals(run(unexpectedDomain.call("x").either), Left(RpcError(RpcError.Code.ProtocolError)))
   }
-  test("mapper throws are programmer defects, not fabricated domain failures") {
-    trait BadPolicy { def call(): IO[String, Int] }
-    given RpcErrorMapper[String] = RpcErrorMapper(_ => throw new Exception("bad policy"))
-    val rpc = Rpc.derived[BadPolicy]
-    val client = rpc.client(connection((_, _, _, _) => ZIO.fail(RpcError(RpcError.Code.Disconnected))))
-    assert(run(client.call().exit).causeOption.exists(_.defects.nonEmpty))
+  testZ("typed infrastructure mapping covers every RpcError code and malformed success/domain payloads") {
+    ZIO.suspendSucceed {
+      val dispatcher = files.bind(fileService)
+      val wrongVersion = files.client(connection((id, _, method, args) => dispatcher.dispatch(id, 1, method, args)))
+      val missing = files.client(loopback(RpcFixtures.numbers.bind(RpcFixtures.numberService)))
+      for {
+        _ <- ZIO.foreachDiscard(RpcError.Code.values) { code =>
+          val client = files.client(connection((_, _, _, _) => ZIO.fail(RpcError(code))))
+          client.read("x").either.map(result => assertEquals(result, Left(FsError.Infrastructure(code))))
+        }
+        _ <- ZIO.foreachDiscard(List(RpcResult.Success(Json.Num(1)), RpcResult.Failure(Json.Str("not an FsError")))) {
+          result =>
+            val client = files.client(connection((_, _, _, _) => ZIO.succeed(result)))
+            client
+              .read("x")
+              .either
+              .map(error => assertEquals(error, Left(FsError.Infrastructure(RpcError.Code.ProtocolError))))
+        }
+        versionFailure <- wrongVersion.read("x").either
+        missingFailure <- missing.read("x").either
+      } yield {
+        assertEquals(versionFailure, Left(FsError.Infrastructure(RpcError.Code.VersionMismatch)))
+        assertEquals(missingFailure, Left(FsError.Infrastructure(RpcError.Code.UnknownService)))
+      }
+    }
+  }
+  testZ("typed defects and construction throws are sanitized; interruption is not a domain failure") {
+    ZIO.suspendSucceed {
+      val client = files.client(loopback(files.bind(fileService)))
+      for {
+        broken <- client.broken().either
+        thrown <- client.thrown().either
+        interrupted <- client.waitFor().fork.flatMap(_.interrupt)
+        success <- client.read("exists").either
+      } yield {
+        assertEquals(broken, Left(FsError.Infrastructure(RpcError.Code.ServiceFailure)))
+        assertEquals(thrown, Left(FsError.Infrastructure(RpcError.Code.ServiceFailure)))
+        assert(interrupted.isInterrupted)
+        assertEquals(success, Right("contents"))
+      }
+    }
+  }
+  testZ("encoder Left/throws and decoder Left/throws map infrastructure, never valid domain values") {
+    ZIO.suspendSucceed {
+      val client = codecs.client(loopback(codecs.bind(codecService)))
+      ZIO.foreachDiscard(List("left", "throw")) { mode =>
+        for {
+          success <- client.success(mode).either
+          failure <- client.failure(mode).either
+          argument <- client.argument(CodecValue(mode)).either
+          dispatched <- codecs
+            .bind(codecService)
+            .dispatch(codecs.descriptor.serviceId, 1, "argument", Chunk(Json.Str(mode)))
+            .either
+          _ <- ZIO.succeed {
+            assertEquals(success, Left(CodecValue("ProtocolError")))
+            assertEquals(failure, Left(CodecValue("ProtocolError")))
+            assertEquals(argument, Left(CodecValue("ProtocolError")))
+            assertEquals(dispatched, Left(RpcError(RpcError.Code.InvalidArguments)))
+          }
+          _ <- ZIO.foreachDiscard(List(RpcResult.Success(Json.Str(mode)), RpcResult.Failure(Json.Str(mode)))) {
+            result =>
+              val peer = codecs.client(connection((_, _, _, _) => ZIO.succeed(result)))
+              peer.success("ok").either.map(error => assertEquals(error, Left(CodecValue("ProtocolError"))))
+          }
+        } yield ()
+      }
+    }
+  }
+  testZ("Task typed failures, defects and construction throws stay fixed sanitized ServiceFailure") {
+    ZIO.suspendSucceed {
+      trait Tasks { def call(mode: String): Task[Int] }
+      val rpc = Rpc.derived[Tasks]
+      val host = new Tasks {
+        def call(mode: String): Task[Int] = mode match {
+          case "throw"  => throw new IllegalStateException("construction secret")
+          case "defect" => ZIO.dieMessage("defect secret")
+          case "rpc"    => ZIO.fail(RpcError(RpcError.Code.UnknownMethod))
+          case _        => ZIO.fail(new IllegalArgumentException("failure secret"))
+        }
+      }
+      val client = rpc.client(loopback(rpc.bind(host)))
+      val unexpectedDomain = rpc.client(connection((_, _, _, _) => ZIO.succeed(RpcResult.Failure(Json.Null))))
+      for {
+        _ <- ZIO.foreachDiscard(List("throw", "defect", "rpc", "failure")) { mode =>
+          client.call(mode).either.map { result =>
+            val error = result.left.toOption.get
+            assertEquals(error, RpcError(RpcError.Code.ServiceFailure))
+            assertEquals(error.getMessage, "ServiceFailure")
+            assertEquals(error.getCause, null)
+          }
+        }
+        unexpected <- unexpectedDomain.call("x").either
+      } yield assertEquals(unexpected, Left(RpcError(RpcError.Code.ProtocolError)))
+    }
+  }
+  testZ("mapper throws are programmer defects, not fabricated domain failures") {
+    ZIO.suspendSucceed {
+      trait BadPolicy { def call(): IO[String, Int] }
+      given RpcErrorMapper[String] = RpcErrorMapper(_ => throw new Exception("bad policy"))
+      val rpc = Rpc.derived[BadPolicy]
+      val client = rpc.client(connection((_, _, _, _) => ZIO.fail(RpcError(RpcError.Code.Disconnected))))
+      client.call().exit.map(result => assert(result.causeOption.exists(_.defects.nonEmpty)))
+    }
   }
   test("derivation rejects missing error encoder, decoder, mapper, Nothing and Throwable subtype") {
     val encoder = typeCheckErrors("""

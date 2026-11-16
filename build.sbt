@@ -117,6 +117,7 @@ lazy val model = crossProject(JSPlatform, JVMPlatform)
       "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
   )
   .jvmSettings(jvmSettings)
@@ -142,6 +143,7 @@ lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
       "dev.zio" %% "zio" % "2.1.27",
       "com.lihaoyi" %% "upickle" % "4.3.2",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
   )
   .jvmSettings(jvmSettings)
@@ -163,6 +165,7 @@ lazy val filesystem = crossProject(JSPlatform, JVMPlatform)
       "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
   )
   .jvmSettings(jvmSettings)
@@ -179,6 +182,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
     libraryDependencies ++= Seq(
       "com.lihaoyi" %% "upickle" % "4.3.2",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
   )
   .jvmSettings(jvmSettings)
@@ -226,6 +230,7 @@ lazy val rpc = crossProject(JSPlatform, JVMPlatform)
       "dev.zio" %% "zio-streams" % "2.1.27",
       "dev.zio" %% "zio-json" % "1.1.1",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
   )
   .jvmSettings(jvmSettings)
@@ -284,6 +289,7 @@ lazy val repl = project
       "org.jline" % "jline-reader" % "4.0.14",
       "org.jline" % "jline-terminal-jni" % "4.0.14",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
       // Keep third-party SLF4J users silent without emitting the missing-provider warning.
       "org.slf4j" % "slf4j-nop" % "2.0.13" % Runtime,
     )
@@ -329,7 +335,10 @@ lazy val server = project
     Compile / mainClass := Some("fmgp.yallmo.server.MainServer"),
     Compile / run / fork := true,
     Test / fork := true,
-    libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test,
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit" % "1.2.4" % Test,
+      "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
+    ),
     Compile / resourceGenerators += Def.task {
       Def.uncached {
         val assets = (LocalRootProject / baseDirectory).value / "web-harness/vite/dist"

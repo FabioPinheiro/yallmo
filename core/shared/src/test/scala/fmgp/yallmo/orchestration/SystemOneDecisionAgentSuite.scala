@@ -2,12 +2,11 @@ package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.som.*
-import munit.FunSuite
-import scala.concurrent.Future
-import zio.{Cause, FiberFailure, IO, Runtime, Unsafe, ZEnvironment, ZIO}
+import munit.ZSuite
+import zio.{IO, ZEnvironment, ZIO}
 import zio.json.*
 
-final class SystemOneDecisionAgentSuite extends FunSuite {
+final class SystemOneDecisionAgentSuite extends ZSuite {
   private final case class State(task: String) derives JsonCodec
 
   private final case class Questions(worker: SystemOneQuestion.Choice) derives JsonCodec, SOSchema
@@ -21,12 +20,7 @@ final class SystemOneDecisionAgentSuite extends FunSuite {
       }
   }
 
-  private def run[A](effect: IO[YallmoError, A])(check: A => Unit): Future[Unit] =
-    Unsafe.unsafe { unsafe ?=>
-      Runtime.default.unsafe.runToFuture(effect.map(check).mapError(error => FiberFailure(Cause.fail(error))))
-    }
-
-  test("returns typed answers without pretending to be a text agent") {
+  testZ("returns typed answers without pretending to be a text agent")(ZIO.suspendSucceed {
     val agent = SystemOneDecisionAgent[State, Questions](
       model = "jev-latest",
       questions = _ => Questions(SystemOneQuestion.Choice("Select a worker", Map("review" -> "Review")))
@@ -39,7 +33,7 @@ final class SystemOneDecisionAgentSuite extends FunSuite {
       )
     )
 
-    run(agent.decide(State("Review this change")).provideEnvironment(ZEnvironment(provider))) { answer =>
+    agent.decide(State("Review this change")).provideEnvironment(ZEnvironment(provider)).map { answer =>
       assertEquals(answer.worker.choice, "review")
       assertEquals(
         provider.sentJson.map(_.fromJson[SystemOneRequest[State]]),
@@ -54,5 +48,5 @@ final class SystemOneDecisionAgentSuite extends FunSuite {
         )
       )
     }
-  }
+  })
 }

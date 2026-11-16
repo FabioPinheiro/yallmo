@@ -10,14 +10,9 @@ Implemented plan records now live in `lixo/completed/`; moving them does not clo
 
 - [ ] **Blob append failure:** in `core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala`, append the message successfully before capturing the producer exit/finalizing its buffer. Add a permanent regression proving failed message persistence never submits an empty blob or consumes its ID; preserve partial bytes when production fails after a successful append.
 - [ ] **Managed history acceptance:** manually inspect a synthetic rewritten session in the graph; run the opt-in synthetic-data live System One + conversational-provider smoke only with explicit consent; disposition qualified full-server/REPL failures. Automated validation is not live acceptance.
-- [ ] **SDLC evolution (deferred):** exercise the shared tools/HTTP inspector before deciding on editable/history views, project selection, retention/automatic maintenance, audit attribution, structured approvals, intent lifecycle or stricter containment. None is required to re-open the delivered initial implementation.
 
 ### TODO other
 
-- [x] Move server website assets and HTTP routes into `fmgp.yallmo.server.website`.
-- [x] Rename the standalone server entry point to `MainServer`.
-- [x] Consolidate shared tool definitions under `model/shared/src/main/scala/fmgp/yallmo/tool`.
-- [x] Move function-call types to `model/shared/src/main/scala/fmgp/yallmo/tool/FunctionCall.scala`.
 - [ ] Authentication, cancellation/status APIs and richer run-management machinery.
 - [ ] Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
 - [ ] TerminalVoiceModeStatus.remoteConnection Remove!
@@ -25,9 +20,9 @@ Implemented plan records now live in `lixo/completed/`; moving them does not clo
 - [ ] Review ServerApplication graceful-shutdown See https://zio.dev/reference/core/zioapp#graceful-shutdown-timeout
 - [ ] [Local RAG demo](RAG.md)
 
-### TODO - Agent Comands
+### REPL
 
-Each agent should bring their own comments to the REPL.
+- [ ] Agent Comands - Each agent should bring their own comments to the REPL.
 
 ### TODO - Newest Inference Engines
 

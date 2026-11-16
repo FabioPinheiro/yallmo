@@ -3,13 +3,10 @@ package fmgp.yallmo.tool.scalamode
 import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.orchestration.{ExternalFunctionCall, ExternalFunctionResult}
-import munit.FunSuite
+import munit.ZSuite
 import zio.*
 
-final class ScalaToolSuite extends FunSuite {
-  private def run[E, A](effect: ZIO[Any, E, A]): A =
-    Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
-
+final class ScalaToolSuite extends ZSuite {
   private val executor = ZLayer.succeed(new ScalaCodeExecutor {
     def isAvailable: UIO[Boolean] = ZIO.succeed(true)
     def execute(
@@ -43,22 +40,23 @@ final class ScalaToolSuite extends FunSuite {
     )
   }
 
-  test("pure code is forwarded and its result is returned") {
-    val result =
-      run(
-        new ScalaTool()
-          .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"(1 to 10).sum"}"""))
-          .provide(executor)
-      )
-    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
-    assertEquals(typed.logs, Seq("connected", "disconnected"))
-    assertEquals(typed.result, ScalaModeResult.Executed("55\n"))
-    assertEquals(typed.exitCode, 0)
-    assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut] && !typed.truncated)
-  }
+  testZ("pure code is forwarded and its result is returned")(ZIO.suspendSucceed {
+    for {
+      result <- new ScalaTool()
+        .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"(1 to 10).sum"}"""))
+        .provide(executor)
+    } yield {
+      val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
+      assertEquals(typed.logs, Seq("connected", "disconnected"))
+      assertEquals(typed.result, ScalaModeResult.Executed("55\n"))
+      assertEquals(typed.exitCode, 0)
+      assert(!typed.result.isInstanceOf[ScalaModeResult.TimedOut] && !typed.truncated)
+    }
+  })
 
-  test("invalid arguments are rejected before executing anything") {
-    for arguments <- List(
+  testZ("invalid arguments are rejected before executing anything")(ZIO.suspendSucceed {
+    ZIO.foreachDiscard(
+      List(
         "{}",
         "[]",
         """{"code":"1", "mode":"pure"}""",
@@ -68,16 +66,15 @@ final class ScalaToolSuite extends FunSuite {
         """{"code":"1", "scalamode":"3"}""",
         """{"code":"1", "dependencies":["dev.zio::zio:2.1.27"]}"""
       )
-    do
-      assert(
-        run(
-          new ScalaTool()
-            .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, arguments))
-            .either
-            .provide(executor)
-        ).isLeft
-      )
-  }
+    ) { arguments =>
+      for {
+        result <- new ScalaTool()
+          .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, arguments))
+          .either
+          .provide(executor)
+      } yield assert(result.isLeft)
+    }
+  })
 
   test("compiler escape hatches and directives are rejected conservatively") {
     for code <- List(
@@ -94,7 +91,7 @@ final class ScalaToolSuite extends FunSuite {
     do assert(ScalaTool.validate(code).isLeft, code.take(100))
   }
 
-  test("compilation and runtime errors remain tool results, not infrastructure failures") {
+  testZ("compilation and runtime errors remain tool results, not infrastructure failures")(ZIO.suspendSucceed {
     val errors = ZLayer.succeed(new ScalaCodeExecutor {
       def isAvailable: UIO[Boolean] = ZIO.succeed(true)
       def execute(
@@ -113,15 +110,15 @@ final class ScalaToolSuite extends FunSuite {
         )
       }
     })
-    val result =
-      run(
-        new ScalaTool()
-          .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"unknown"}"""))
-          .provide(errors)
-      )
-    val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
-    assertEquals(typed.exitCode, 1)
-    assertEquals(typed.result, ScalaModeResult.CompilationError("Compilation failed"))
-    assertEquals(typed.logs, Seq.empty[String])
-  }
+    for {
+      result <- new ScalaTool()
+        .execute(ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"unknown"}"""))
+        .provide(errors)
+    } yield {
+      val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
+      assertEquals(typed.exitCode, 1)
+      assertEquals(typed.result, ScalaModeResult.CompilationError("Compilation failed"))
+      assertEquals(typed.logs, Seq.empty[String])
+    }
+  })
 }

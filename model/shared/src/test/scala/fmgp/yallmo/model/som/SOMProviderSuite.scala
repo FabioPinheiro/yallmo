@@ -1,11 +1,11 @@
 package fmgp.yallmo.model.som
 
 import fmgp.yallmo.model.YallmoError
-import munit.FunSuite
-import zio.{IO, Runtime, Unsafe, ZIO}
+import munit.ZSuite
+import zio.{IO, ZIO}
 import zio.json.{JsonCodec, jsonField}
 
-final class SOMProviderSuite extends FunSuite {
+final class SOMProviderSuite extends ZSuite {
   private final case class State(task: String) derives JsonCodec
 
   private final case class Questions(
@@ -24,11 +24,6 @@ final class SOMProviderSuite extends FunSuite {
       }
   }
 
-  private def run[A](effect: IO[YallmoError, A]): A =
-    Unsafe.unsafe { unsafe ?=>
-      Runtime.default.unsafe.run(effect).getOrThrow()
-    }
-
   private val questions = Questions(
     worker = SystemOneQuestion.Choice("Select a worker", Map("review" -> "Review the change")),
     needsReview = SystemOneQuestion.Noul("Does this change need review?")
@@ -43,25 +38,29 @@ final class SOMProviderSuite extends FunSuite {
     usage = SystemOneUsage(inputTokens = 1, outputTokens = 1)
   )
 
-  test("encodes dynamic requests before delegating to the provider adapter") {
+  testZ("encodes dynamic requests before delegating to the provider adapter")(ZIO.suspendSucceed {
     val provider = new StubProvider(response)
     val request = SystemOneRequest(State("Review this change"), "jev-latest", Map("worker" -> questions.worker))
 
-    val result = run(provider.evaluate(request))
+    for {
+      result <- provider.evaluate(request)
+    } yield {
+      assertEquals(result, response)
+      assert(provider.sentJson.exists(_.contains("\"worker\"")))
+      assert(provider.sentJson.exists(_.contains("\"jev-latest\"")))
+    }
+  })
 
-    assertEquals(result, response)
-    assert(provider.sentJson.exists(_.contains("\"worker\"")))
-    assert(provider.sentJson.exists(_.contains("\"jev-latest\"")))
-  }
-
-  test("validates typed responses before exposing typed answers") {
+  testZ("validates typed responses before exposing typed answers")(ZIO.suspendSucceed {
     val provider = new StubProvider(response)
     val request = SORequest(State("Review this change"), "jev-latest", questions)
 
-    val answers = run(provider.evaluate(request))
-
-    assertEquals(answers.worker.choice, "review")
-    assertEquals(answers.needsReview.noul, 0.95)
-    assert(provider.sentJson.exists(_.contains("\"needs_review\"")))
-  }
+    for {
+      answers <- provider.evaluate(request)
+    } yield {
+      assertEquals(answers.worker.choice, "review")
+      assertEquals(answers.needsReview.noul, 0.95)
+      assert(provider.sentJson.exists(_.contains("\"needs_review\"")))
+    }
+  })
 }

@@ -1,6 +1,6 @@
 package fmgp.rpc
 
-import munit.FunSuite
+import munit.ZSuite
 import zio.*
 import zio.json.*
 import zio.stream.*
@@ -22,26 +22,35 @@ object RpcStreamCodecFixtures {
     def throwable(): ZStream[Any, Throwable, String] = ZStream("first") ++ ZStream.fail(new Exception("secret"))
   }
 }
-class RpcStreamCodecSuite extends FunSuite {
+class RpcStreamCodecSuite extends ZSuite {
   import RpcStreamCodecFixtures.*
   import RpcTypedErrorFixtures.CodecValue
-  private def run[A](effect: UIO[A]): A = Unsafe.unsafe { _ ?=>
-    Runtime.default.unsafe.run(effect).getOrThrowFiberFailure()
-  }
-  test("stream element and error encoder failures sanitize; null domain error is retained") {
-    val client = rpc.client(RpcStreamFixtures.loopback(rpc.bind(service)))
-    List("left", "throw").foreach { mode =>
-      assertEquals(run(client.value(mode).runDrain.either), Left(CodecValue("ProtocolError")))
-      assertEquals(run(client.failure(mode).runDrain.either), Left(CodecValue("ProtocolError")))
+  testZ("stream element and error encoder failures sanitize; null domain error is retained") {
+    ZIO.suspendSucceed {
+      val client = rpc.client(RpcStreamFixtures.loopback(rpc.bind(service)))
+      for {
+        _ <- ZIO.foreachDiscard(List("left", "throw")) { mode =>
+          for {
+            value <- client.value(mode).runDrain.either
+            failure <- client.failure(mode).runDrain.either
+          } yield {
+            assertEquals(value, Left(CodecValue("ProtocolError")))
+            assertEquals(failure, Left(CodecValue("ProtocolError")))
+          }
+        }
+        nullable <- client.nullable().runDrain.either
+        throwable <- client.throwable().runDrain.either
+      } yield {
+        assertEquals(nullable, Left(None))
+        assertEquals(
+          throwable.left.toOption.collect { case e: RpcError => e.code },
+          Some(RpcError.Code.ServiceFailure)
+        )
+      }
     }
-    assertEquals(run(client.nullable().runDrain.either), Left(None))
-    assertEquals(
-      run(client.throwable().runDrain.either).left.toOption.collect { case e: RpcError => e.code },
-      Some(RpcError.Code.ServiceFailure)
-    )
   }
-  test("malformed element decoding fails explicitly and closes the upstream scope") {
-    val result = run {
+  testZ("malformed element decoding fails explicitly and closes the upstream scope") {
+    ZIO.suspendSucceed {
       for {
         released <- Ref.make(false)
         connection = new RpcConnection {
@@ -65,8 +74,7 @@ class RpcStreamCodecSuite extends FunSuite {
         }
         outcome <- rpc.client(connection).value("x").runDrain.either
         closed <- released.get
-      } yield (outcome, closed)
+      } yield assertEquals((outcome, closed), (Left(CodecValue("ProtocolError")), true))
     }
-    assertEquals(result, (Left(CodecValue("ProtocolError")), true))
   }
 }

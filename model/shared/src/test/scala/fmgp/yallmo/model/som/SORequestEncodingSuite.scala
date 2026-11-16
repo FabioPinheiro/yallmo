@@ -1,13 +1,13 @@
 package fmgp.yallmo.model.som
 
 import fmgp.yallmo.model.YallmoError
-import munit.FunSuite
+import munit.ZSuite
 import scala.compiletime.testing.typeCheckErrors
-import zio.{IO, Runtime, Unsafe, ZIO}
+import zio.{IO, ZIO}
 import zio.json.*
 import zio.json.ast.Json
 
-final class SORequestEncodingSuite extends FunSuite {
+final class SORequestEncodingSuite extends ZSuite {
   private final case class State(@jsonField("task_text") task: String) derives JsonCodec
   private final case class Questions(
       @jsonField("route_to") route: SystemOneQuestion.Choice,
@@ -50,10 +50,6 @@ final class SORequestEncodingSuite extends FunSuite {
     }
   }
 
-  private def run[A](effect: IO[YallmoError, A]): A = Unsafe.unsafe { unsafe ?=>
-    Runtime.default.unsafe.run(effect).getOrThrow()
-  }
-
   // Full structural equality independent of object member order, also rejecting duplicate keys at every depth.
   private def canonical(json: Json): Json = json match {
     case Json.Obj(fields) =>
@@ -79,49 +75,60 @@ final class SORequestEncodingSuite extends FunSuite {
     assertEnvelope(dynamic.toJson) // The ordinary map-backed encoder remains unchanged.
   }
 
-  test("state retains its caller-supplied encoder rather than being rebuilt from product fields") {
+  testZ("state retains its caller-supplied encoder rather than being rebuilt from product fields")(ZIO.suspendSucceed {
     given JsonEncoder[State] = JsonEncoder[String].contramap(state => s"custom:${state.task}")
     val wanted = expected.replace("{\"task_text\":\"Synthetic change\"}", "\"custom:Synthetic change\"")
     assertEnvelope(request.toJson, wanted)
     assertEnvelope(summon[SOSchema[Questions]].encodeRequest(request), wanted)
     val provider = new RecordingProvider
-    run(provider.evaluate(request))
-    assertEnvelope(provider.sent.head, wanted)
-  }
+    for {
+      _ <- provider.evaluate(request)
+    } yield assertEnvelope(provider.sent.head, wanted)
+  })
 
-  test("actual typed SOMProvider sends the complete discriminated envelope and validates all answer types") {
-    val provider = new RecordingProvider
-    val answer = run(provider.evaluate(request))
-    assertEquals(provider.sent.size, 1)
-    assertEnvelope(provider.sent.head)
-    assertEquals(answer.route.choice, "review")
-    assertEquals(answer.score.score, 0.0)
-    assertEquals(answer.yes.noul, 0.99)
-    assertEquals(answer.bare.noul, 0.98)
-  }
+  testZ("actual typed SOMProvider sends the complete discriminated envelope and validates all answer types")(
+    ZIO.suspendSucceed {
+      val provider = new RecordingProvider
+      for {
+        answer <- provider.evaluate(request)
+      } yield {
+        assertEquals(provider.sent.size, 1)
+        assertEnvelope(provider.sent.head)
+        assertEquals(answer.route.choice, "review")
+        assertEquals(answer.score.score, 0.0)
+        assertEquals(answer.yes.noul, 0.99)
+        assertEquals(answer.bare.noul, 0.98)
+      }
+    }
+  )
 
   private final case class CustomQuestions(@jsonField("custom_route") route: SystemOneQuestion.Choice) derives SOSchema
   private def customRequest = SORequest(State("Synthetic change"), "jev-latest", CustomQuestions(questions.route))
   private def customEncoder(json: String): JsonEncoder[CustomQuestions] =
     JsonEncoder[Json].contramap(_ => json.fromJson[Json].fold(fail(_), identity))
 
-  test("custom payload encoders retain aliases, instructions, criteria and extra fields, without duplicate hints") {
-    for hint <- List("", "\"type\":\"choice\",") do {
-      given JsonEncoder[CustomQuestions] = customEncoder(
-        s"""{"custom_route":{${hint}"instructions":"Custom instruction","criteria":{"review":"Custom review"},"extension":42}}"""
-      )
-      val json = customRequest.toJson
-      val wanted = """{"state":{"task_text":"Synthetic change"},"model":"jev-latest","questions":{
+  testZ("custom payload encoders retain aliases, instructions, criteria and extra fields, without duplicate hints")(
+    ZIO.suspendSucceed {
+      ZIO.foreachDiscard(List("", "\"type\":\"choice\",")) { hint =>
+        given JsonEncoder[CustomQuestions] = customEncoder(
+          s"""{"custom_route":{${hint}"instructions":"Custom instruction","criteria":{"review":"Custom review"},"extension":42}}"""
+        )
+        val json = customRequest.toJson
+        val wanted = """{"state":{"task_text":"Synthetic change"},"model":"jev-latest","questions":{
         "custom_route":{"type":"choice","instructions":"Custom instruction","criteria":{"review":"Custom review"},"extension":42}}}"""
-      assertEnvelope(json, wanted)
-      assertEnvelope(summon[SOSchema[CustomQuestions]].encodeRequest(customRequest), wanted)
-      val provider = new RecordingProvider
-      // Response validation may fail for this alternate schema, but the actual transport must receive the same wire.
-      run(provider.evaluate(customRequest).either)
-      assertEquals(provider.sent.size, 1)
-      assertEnvelope(provider.sent.head, wanted)
+        assertEnvelope(json, wanted)
+        assertEnvelope(summon[SOSchema[CustomQuestions]].encodeRequest(customRequest), wanted)
+        val provider = new RecordingProvider
+        // Response validation may fail for this alternate schema, but the actual transport must receive the same wire.
+        for {
+          _ <- provider.evaluate(customRequest).either
+        } yield {
+          assertEquals(provider.sent.size, 1)
+          assertEnvelope(provider.sent.head, wanted)
+        }
+      }
     }
-  }
+  )
 
   for (name, encoded) <- List(
       "not an object" -> "[]",
@@ -134,33 +141,38 @@ final class SORequestEncodingSuite extends FunSuite {
       "duplicate question" -> """{"custom_route":{},"custom_route":{}}"""
     )
   do
-    test(s"malformed custom encoding: $name fails explicitly before provider transport") {
+    testZ(s"malformed custom encoding: $name fails explicitly before provider transport")(ZIO.suspendSucceed {
       given JsonEncoder[CustomQuestions] = customEncoder(encoded)
       intercept[IllegalArgumentException](customRequest.toJson)
       intercept[IllegalArgumentException](summon[SOSchema[CustomQuestions]].encodeRequest(customRequest))
       val provider = new RecordingProvider
-      assertEquals(
-        run(provider.evaluate(customRequest).either),
-        Left(YallmoError.ProtocolFailure("Invalid typed System One request encoding"))
-      )
-      assertEquals(provider.sent, Vector.empty)
-    }
+      for {
+        result <- provider.evaluate(customRequest).either
+      } yield {
+        assertEquals(result, Left(YallmoError.ProtocolFailure("Invalid typed System One request encoding")))
+        assertEquals(provider.sent, Vector.empty)
+      }
+    })
 
   private final case class DuplicateQuestions(
       @jsonField("same") first: SystemOneQuestion.Noul,
       @jsonField("same") second: SystemOneQuestion.Noul
   ) derives SOSchema
 
-  test("duplicate schema aliases cannot manufacture an ambiguous typed request") {
+  testZ("duplicate schema aliases cannot manufacture an ambiguous typed request")(ZIO.suspendSucceed {
     given JsonEncoder[DuplicateQuestions] =
       JsonEncoder[Map[String, SystemOneQuestion]].contramap(q => Map("same" -> q.first))
     val duplicate =
       SORequest(State("Synthetic change"), "jev-latest", DuplicateQuestions(questions.yes, questions.bare))
     intercept[IllegalArgumentException](duplicate.toJson)
     val provider = new RecordingProvider
-    assert(run(provider.evaluate(duplicate).either).isLeft)
-    assertEquals(provider.sent, Vector.empty)
-  }
+    for {
+      result <- provider.evaluate(duplicate).either
+    } yield {
+      assert(result.isLeft)
+      assertEquals(provider.sent, Vector.empty)
+    }
+  })
 
   test("direct typed encoding requires SOSchema rather than an arbitrary question object") {
     val errors = typeCheckErrors("""{

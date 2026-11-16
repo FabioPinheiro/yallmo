@@ -1,6 +1,6 @@
 package fmgp.rpc
 
-import munit.FunSuite
+import munit.ZSuite
 import scala.compiletime.testing.typeCheckErrors
 import zio.*
 import zio.json.*
@@ -51,99 +51,121 @@ object RpcFixtures {
   }
 }
 
-class RpcSuite extends FunSuite {
+class RpcSuite extends ZSuite {
   import RpcFixtures.*
-  def run[A](effect: Task[A]): A = Unsafe.unsafe { _ ?=>
-    Runtime.default.unsafe.run(effect.timeoutFail(new Exception("test deadline"))(10.seconds)).getOrThrowFiberFailure()
-  }
-  test("generated host and typed client support multiple, zero and parameterless args, Unit and DTOs") {
-    val dispatcher = numbers.bind(numberService).merge(greetings.bind(greetingService)).toOption.get
-    val connection = new RpcConnection {
-      def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult] =
-        dispatcher.dispatch(serviceId, version, method, arguments)
-      def close: UIO[Unit] = ZIO.unit
-    }
-    val math = numbers.client(connection)
-    val greeter = greetings.client(connection)
-    assertEquals(run(math.add(4, 5)), 9)
-    assertEquals(run(math.current), 7)
-    assertEquals(run(math.reset()), ())
-    assertEquals(run(greeter.hello("hello", 2)), Greeting("hello", 2))
-    assertEquals(run(greeter.repeat(Greeting("dto", 3))), Greeting("dto", 3))
-    assertEquals(run(greeter.acknowledge(())), ())
-    assertEquals(run(greeter.inherited()), "inherited")
-    assertEquals(greetings.descriptor.serviceId, "fmgp.rpc.RpcFixtures$.Greetings")
-  }
-  test("default-only and inherited concrete unary/stream methods are remote and preserve host overrides") {
-    val seen = scala.collection.mutable.ListBuffer.empty[String]
-    def connection(dispatcher: RpcDispatcher): RpcConnection = new RpcConnection {
-      def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] = {
-        seen += method
-        dispatcher.dispatch(service, version, method, args)
+  private def withDeadline[A](effect: Task[A]): Task[A] =
+    effect.timeoutFail(new Exception("test deadline"))(10.seconds)
+  testZ("generated host and typed client support multiple, zero and parameterless args, Unit and DTOs") {
+    ZIO.suspendSucceed {
+      val dispatcher = numbers.bind(numberService).merge(greetings.bind(greetingService)).toOption.get
+      val connection = new RpcConnection {
+        def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]): IO[RpcError, RpcResult] =
+          dispatcher.dispatch(serviceId, version, method, arguments)
+        def close: UIO[Unit] = ZIO.unit
       }
-      override def stream(
-          service: String,
-          version: Int,
-          method: String,
-          args: Chunk[Json],
-          binary: Boolean
-      ): ZStream[Any, RpcStreamError, RpcStreamChunk] = {
-        seen += method
-        dispatcher.dispatchStream(service, version, method, args, binary)
+      val math = numbers.client(connection)
+      val greeter = greetings.client(connection)
+      for {
+        sum <- withDeadline(math.add(4, 5))
+        current <- withDeadline(math.current)
+        reset <- withDeadline(math.reset())
+        hello <- withDeadline(greeter.hello("hello", 2))
+        repeated <- withDeadline(greeter.repeat(Greeting("dto", 3)))
+        acknowledged <- withDeadline(greeter.acknowledge(()))
+        inherited <- withDeadline(greeter.inherited())
+      } yield {
+        assertEquals(sum, 9)
+        assertEquals(current, 7)
+        assertEquals(reset, ())
+        assertEquals(hello, Greeting("hello", 2))
+        assertEquals(repeated, Greeting("dto", 3))
+        assertEquals(acknowledged, ())
+        assertEquals(inherited, "inherited")
+        assertEquals(greetings.descriptor.serviceId, "fmgp.rpc.RpcFixtures$.Greetings")
       }
-      def close: UIO[Unit] = ZIO.unit
     }
-    val defaultClient = defaults.client(connection(defaults.bind(new Defaults {})))
-    assertEquals(run(defaultClient.unary()), "helper")
-    assertEquals(run(defaultClient.stream().runCollect), Chunk("default stream"))
-    val inheritedClient = inheritedDefaults.client(connection(inheritedDefaults.bind(new InheritedDefaults {
-      def abstractMethod(): Task[String] = ZIO.succeed("abstract host")
-      override def unary(): Task[String] = ZIO.succeed("host override")
-      override def stream(): ZStream[Any, Throwable, String] = ZStream("host stream override")
-    })))
-    assertEquals(run(inheritedClient.unary()), "host override")
-    assertEquals(run(inheritedClient.stream().runCollect), Chunk("host stream override"))
-    assertEquals(run(inheritedClient.abstractMethod()), "abstract host")
-    assertEquals(seen.toList, List("unary", "stream", "unary", "stream", "abstractMethod"))
-    assertEquals(defaults.descriptor.methods, Set("unary", "stream"))
-    assertEquals(inheritedDefaults.descriptor.methods, Set("abstractMethod", "unary", "stream"))
-    assertEquals(inheritedDefaults.descriptor.streamMethods, Map("stream" -> false))
   }
-  test("codec-backed Chunk arguments and results are data, not callbacks") {
-    val rpc = Rpc.derived[Collections]
-    val dispatcher = rpc.bind(new Collections {
-      def echo(values: Chunk[String]): Task[Chunk[String]] = ZIO.succeed(values.reverse)
-    })
-    val client = rpc.client(new RpcConnection {
-      def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] =
-        dispatcher.dispatch(service, version, method, args)
-      def close: UIO[Unit] = ZIO.unit
-    })
-    assertEquals(run(client.echo(Chunk("one", "two"))), Chunk("two", "one"))
+  testZ("default-only and inherited concrete unary/stream methods are remote and preserve host overrides") {
+    ZIO.suspendSucceed {
+      val seen = scala.collection.mutable.ListBuffer.empty[String]
+      def connection(dispatcher: RpcDispatcher): RpcConnection = new RpcConnection {
+        def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] = {
+          seen += method
+          dispatcher.dispatch(service, version, method, args)
+        }
+        override def stream(
+            service: String,
+            version: Int,
+            method: String,
+            args: Chunk[Json],
+            binary: Boolean
+        ): ZStream[Any, RpcStreamError, RpcStreamChunk] = {
+          seen += method
+          dispatcher.dispatchStream(service, version, method, args, binary)
+        }
+        def close: UIO[Unit] = ZIO.unit
+      }
+      val defaultClient = defaults.client(connection(defaults.bind(new Defaults {})))
+      val inheritedClient = inheritedDefaults.client(connection(inheritedDefaults.bind(new InheritedDefaults {
+        def abstractMethod(): Task[String] = ZIO.succeed("abstract host")
+        override def unary(): Task[String] = ZIO.succeed("host override")
+        override def stream(): ZStream[Any, Throwable, String] = ZStream("host stream override")
+      })))
+      for {
+        defaultUnary <- withDeadline(defaultClient.unary())
+        defaultStream <- withDeadline(defaultClient.stream().runCollect)
+        inheritedUnary <- withDeadline(inheritedClient.unary())
+        inheritedStream <- withDeadline(inheritedClient.stream().runCollect)
+        abstractResult <- withDeadline(inheritedClient.abstractMethod())
+      } yield {
+        assertEquals(defaultUnary, "helper")
+        assertEquals(defaultStream, Chunk("default stream"))
+        assertEquals(inheritedUnary, "host override")
+        assertEquals(inheritedStream, Chunk("host stream override"))
+        assertEquals(abstractResult, "abstract host")
+        assertEquals(seen.toList, List("unary", "stream", "unary", "stream", "abstractMethod"))
+        assertEquals(defaults.descriptor.methods, Set("unary", "stream"))
+        assertEquals(inheritedDefaults.descriptor.methods, Set("abstractMethod", "unary", "stream"))
+        assertEquals(inheritedDefaults.descriptor.streamMethods, Map("stream" -> false))
+      }
+    }
   }
-  test("routing and malformed argument failures remain explicit; merging duplicate IDs fails") {
-    val dispatcher = numbers.bind(numberService)
-    assertEquals(dispatcher.merge(dispatcher).left.toOption, Some(RpcError(RpcError.Code.DuplicateService)))
-    val versionTwo = Rpc.derived[Numbers]("example.numbers", 2).bind(numberService)
-    assertEquals(dispatcher.merge(versionTwo).left.toOption, Some(RpcError(RpcError.Code.DuplicateService)))
-    val invalid = run(dispatcher.dispatch("example.numbers", 1, "add", Chunk(Json.Str("bad"), Json.Num(2))).either)
-    assertEquals(invalid, Left(RpcError(RpcError.Code.InvalidArguments)))
-    assertEquals(
-      run(dispatcher.dispatch("example.numbers", 1, "add", Chunk.empty).either),
-      Left(RpcError(RpcError.Code.InvalidArguments))
-    )
-    assertEquals(
-      run(dispatcher.dispatch("missing", 1, "add", Chunk.empty).either),
-      Left(RpcError(RpcError.Code.UnknownService))
-    )
-    assertEquals(
-      run(dispatcher.dispatch("example.numbers", 1, "missing", Chunk.empty).either),
-      Left(RpcError(RpcError.Code.UnknownMethod))
-    )
-    assertEquals(
-      run(dispatcher.dispatch("example.numbers", 2, "current", Chunk.empty).either),
-      Left(RpcError(RpcError.Code.VersionMismatch))
-    )
+  testZ("codec-backed Chunk arguments and results are data, not callbacks") {
+    ZIO.suspendSucceed {
+      val rpc = Rpc.derived[Collections]
+      val dispatcher = rpc.bind(new Collections {
+        def echo(values: Chunk[String]): Task[Chunk[String]] = ZIO.succeed(values.reverse)
+      })
+      val client = rpc.client(new RpcConnection {
+        def call(service: String, version: Int, method: String, args: Chunk[Json]): IO[RpcError, RpcResult] =
+          dispatcher.dispatch(service, version, method, args)
+        def close: UIO[Unit] = ZIO.unit
+      })
+      withDeadline(client.echo(Chunk("one", "two"))).map(result => assertEquals(result, Chunk("two", "one")))
+    }
+  }
+  testZ("routing and malformed argument failures remain explicit; merging duplicate IDs fails") {
+    ZIO.suspendSucceed {
+      val dispatcher = numbers.bind(numberService)
+      assertEquals(dispatcher.merge(dispatcher).left.toOption, Some(RpcError(RpcError.Code.DuplicateService)))
+      val versionTwo = Rpc.derived[Numbers]("example.numbers", 2).bind(numberService)
+      assertEquals(dispatcher.merge(versionTwo).left.toOption, Some(RpcError(RpcError.Code.DuplicateService)))
+      for {
+        invalid <- withDeadline(
+          dispatcher.dispatch("example.numbers", 1, "add", Chunk(Json.Str("bad"), Json.Num(2))).either
+        )
+        wrongArity <- withDeadline(dispatcher.dispatch("example.numbers", 1, "add", Chunk.empty).either)
+        unknownService <- withDeadline(dispatcher.dispatch("missing", 1, "add", Chunk.empty).either)
+        unknownMethod <- withDeadline(dispatcher.dispatch("example.numbers", 1, "missing", Chunk.empty).either)
+        wrongVersion <- withDeadline(dispatcher.dispatch("example.numbers", 2, "current", Chunk.empty).either)
+      } yield {
+        assertEquals(invalid, Left(RpcError(RpcError.Code.InvalidArguments)))
+        assertEquals(wrongArity, Left(RpcError(RpcError.Code.InvalidArguments)))
+        assertEquals(unknownService, Left(RpcError(RpcError.Code.UnknownService)))
+        assertEquals(unknownMethod, Left(RpcError(RpcError.Code.UnknownMethod)))
+        assertEquals(wrongVersion, Left(RpcError(RpcError.Code.VersionMismatch)))
+      }
+    }
   }
   test("wire bounds nesting, duplicate keys, unknown fields and ambiguous responses") {
     assert(RpcWire.request("[" * 33 + "]" * 33).isLeft)

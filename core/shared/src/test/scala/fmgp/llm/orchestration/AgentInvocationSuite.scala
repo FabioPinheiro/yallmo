@@ -5,10 +5,9 @@ import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionGenericOutput, Fu
 import RunnerTestSupport.*
 
 import fmgp.yallmo.model.*
-import munit.FunSuite
-import scala.concurrent.Future
+import munit.ZSuite
 import zio.*
-final class AgentInvocationSuite extends FunSuite {
+final class AgentInvocationSuite extends ZSuite {
   private val id = AgentId("recipient")
   private val call = FunctionCall(FunctionCallId.unsafe("direct-call"), FunctionKey.unsafe("echo"), "{}")
 
@@ -18,8 +17,8 @@ final class AgentInvocationSuite extends FunSuite {
       ZIO.succeed(AgentTurn(Some(Message.Assistant("handled")), AgentDecision.FinalAnswer("handled")))
   }
 
-  test("historical calls and supplied ToolOutput data do not execute tools") {
-    run(for {
+  testZ("historical calls and supplied ToolOutput data do not execute tools") {
+    for {
       calls <- Ref.make(0)
       tool = new AgentFunction[Any] {
         val definition = FunctionToolDefinition(FunctionKey.unsafe("echo"), "test")
@@ -36,11 +35,11 @@ final class AgentInvocationSuite extends FunSuite {
     } yield {
       assertEquals(count, 0)
       assertEquals(reply, Message.Assistant("handled"))
-    })
+    }
   }
 
-  test("a direct call is bounded and interrupts its tool without asking the agent for a turn") {
-    run(for {
+  testZ("a direct call is bounded and interrupts its tool without asking the agent for a turn") {
+    for {
       cancelled <- Ref.make(false)
       tool = new AgentFunction[Any] {
         val definition = FunctionToolDefinition(FunctionKey.unsafe("echo"), "test")
@@ -62,19 +61,17 @@ final class AgentInvocationSuite extends FunSuite {
     } yield {
       assertEquals(result, Left(YallmoError.AgentTimedOut(50.millis)))
       assert(interrupted)
-    })
+    }
   }
 
-  test("invalid budgets prevent direct execution") {
-    run(for {
+  testZ("invalid budgets prevent direct execution") {
+    for {
       runner = new AgentRunner[Any](Map.empty)
       result <- runner
         .invocation(agent, StaticContext[Any](""), AgentBudget(1, 0, 1.second))
         .invoke(Message.ToolCall(call))
         .either
-    } yield assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidAgentBudget])))
+    } yield assert(result.left.toOption.exists(_.isInstanceOf[YallmoError.InvalidAgentBudget]))
   }
 
-  private def run[A](effect: Task[A]): Future[A] =
-    Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.runToFuture(effect) }
 }

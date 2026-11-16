@@ -4,13 +4,12 @@ import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionTool
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, JsonSchema}
-import munit.FunSuite
+import munit.ZSuite
 import zio.*
 
-import scala.concurrent.Future
-final class ResolvedAgentSuite extends FunSuite {
-  test("resolved invocation consumes its cached effective context and retains permission and schema checks") {
-    run {
+final class ResolvedAgentSuite extends ZSuite {
+  testZ("resolved invocation consumes its cached effective context and retains permission and schema checks")(
+    ZIO.suspendSucceed {
       val id = AgentId("resolved")
       val key = FunctionKey.unsafe("probe")
       for {
@@ -72,10 +71,6 @@ final class ResolvedAgentSuite extends FunSuite {
         assertEquals(count, 1)
       }
     }
-  }
+  )
 
-  private def run[E, A](effect: ZIO[Any, E, A]): Future[A] =
-    Unsafe.unsafe { unsafe ?=>
-      Runtime.default.unsafe.runToFuture(effect.mapError(error => FiberFailure(Cause.fail(error))))
-    }
 }

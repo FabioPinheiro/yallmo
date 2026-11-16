@@ -19,7 +19,7 @@ Client and server share one current contract. There is no application protocol v
 backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"`.
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
-Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
+Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `tools.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
 Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
 The server requires a configured backend; standalone startup requires `--config`. There is no viewer-only server mode.
@@ -383,7 +383,6 @@ No provider inference or session is needed for direct tools.
 
 The restricted Scala tool key is `scalamode`, accepting `{"code":"..."}`. The browser's
 [Scalamode page](../web-harness/README.md#scalamode) invokes it through this generic flow using **Run scalamode**.
-The server still checks tool availability and authorization.
 
 Both input and final output are visible through `messages.list` and survive filesystem reopen. Neither creates a
 session/sidebar conversation or advances an existing session. Message puts validate content addresses and existing
@@ -530,9 +529,25 @@ For `turn.submit`, pre-execution rejections are JSON-RPC errors and execution fa
 Unconfigured mutation endpoints return MethodNotFound. Malformed unidentifiable requests use null ID; notifications
 receive no reply. Connection overload is a close, not a run-capacity/ledger API.
 
-Tools are now capability groups (`ToolKey`), while invocation `name`/summary `toolName` fields still identify individual functions (`FunctionKey`). Existing call/result JSON and function names are unchanged. The disabled `ToolsList` draft still returns flat function schemas without ownership fields; it is not an active discovery endpoint. Each `ToolDefinition` exposes its name and a set of complete `FunctionToolDefinition`s. The disabled draft uses `name`, rather than the former orchestration DTO's `key`, for each function.
+Tools are capability groups (`ToolKey`), while invocation `name`/summary `toolName` fields identify individual functions (`FunctionKey`). Existing call/result JSON and function names are unchanged. Each `ToolDefinition` exposes its name and a set of complete `FunctionToolDefinition`s.
 
-Existing `SessionsFork`, `ToolsList`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
+`tools.list` accepts `{agentId}` and is available to initialized Viewers and Operators. It returns the selected configured
+agent's effective tool groups after capability filtering and resolution-time tool wiring. Each entry has
+`{name: ToolKey, functions: FunctionToolDefinition[]}`; groups and their functions are sorted by their respective keys.
+Membership comes from the resolved tool catalog, never from function-name conventions. Each function contains `name`,
+`description` and `inputSchema` in the shared model's JSON representation. This grouped response replaces the earlier flat
+function array; deploy matching browser/server versions together. Scalamode definitions may additionally contain
+`scalamode: {builtins, services}`, where each service has
+`parameter`, `apiTypes`, `description` and optional `scalaApi` interface source. This is host-authored documentation of
+that exact binding, not a global service registry or execution configuration. Absent metadata means unavailable; an empty
+`services` list means no additional service is bound. Ordinary function JSON is unchanged. No endpoints, tickets,
+dispatchers, artifact locations or runner metadata are serialized. It uses the same cached resolved generation as execution. Inspection may lazily initialize the local
+adapter/context and run resolution-time wiring, but never runs inference, invokes a function, creates a session or writes
+messages. Empty means no effective callable functions. Unknown/nonconfigured IDs (including human/presence and registered-only
+agents) return NotFound; context-resolution failures return Rejected with a sanitized message. The browser's Agents page loads
+schemas only on explicit **Inspect tools** / **Reload tools** actions.
+
+Existing `SessionsFork`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
 `TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.
 They are not advertised, prerequisites for active submission, implemented controls or a promised roadmap.
 Provider creation/editing, voice/human-interaction integration and public authentication remain separate pending work.

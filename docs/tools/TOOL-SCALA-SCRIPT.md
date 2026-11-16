@@ -1,46 +1,26 @@
-# TOOL SCALA SCRIPT
-
-Create a tool that allowed to create and run scala code in one shot.
-Review [the Scala Days notes for inspiration](../scala_agent_orchestration_inspiration.md)
-
-Review the scala 3 capture-checking
-- [ATC: A Minimal Agent With Tracked Capabilities](https://github.com/lampepfl/atc)
-- [ACIT: Tracked Agent Capabilities In Types](https://github.com/lampepfl/tacit)
-- [Scala 3 Capture Checking](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/index.html)
-  - [Capture Checking Basics](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/basics.html)
-  - [Safe Mode](https://docs.scala-lang.org/scala3/reference/experimental/capture-checking/safe.html)
-- [Securing Agents With Tracked Capabilities](https://dl.acm.org/doi/10.1145/3786335.3813127)
-
-- Scala Days talks
-  - [Łukasz Biały, Jakub Warchoł – Making the AI agents safe with Scala](https://www.youtube.com/watch?v=2QQd6i0uvMY&pp=0gcJCTsMAYcqIYzv)
-  - [Salim Belkhir – AI on your desktop: secure automation using capture checking](https://www.youtube.com/watch?v=8T5o9ih7bkI)
-
-## bash example 
-
-
-```bash
-echo 'println("Hello World")' | scala-cli run _.sc
-
-# if JVM 25 use java-opt
-scala-cli run _.sc --java-opt=--sun-misc-unsafe-memory-access=allow --java-opt=--enable-native-access=ALL-UNNAMED <<'EOF'
-val x = 10
-val y = 20
-println(x + y)
-EOF
-```
-
-## Minimal implementation
+# Restricted Scala execution (`scalamode`)
 
 The restricted `ScalaTool` (`scalamode`) is registered by `ApplicationTools`. Agent capability allowlists control access to registered tools.
 
-The JVM implementation and tool schemas live in `fmgp.yallmo.tool.scalamode`:
-[ScalaTool](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala),
-[ScalaCodeExecutor](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala) and
-[ScalamodeToolDefinition](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeToolDefinition.scala).
-Shared model code and Scala.js clients use `fmgp.yallmo.tool.FunctionKey.scalamode`; they do not depend on these JVM-only definitions.
-This package move changes Scala imports and test suite names, not the `scalamode` wire name or JSON formats.
+Module ownership (the package remains `fmgp.yallmo.tool.scalamode`):
 
-The `scalamode` agent tool accepts one JSON argument:
+- Shared API declaration: [ScalamodeToolDefinition](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeToolDefinition.scala).
+- JVM API: [ScalaTool](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala),
+  [ScalaCodeExecutor interface/defaults](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala),
+  [ScalamodeService](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeService.scala) and
+  [AgentToolWirings](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/AgentToolWirings.scala).
+- Core host only: [ScalaCodeExecutorLive](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorLive.scala)
+  owns Scala CLI/process execution, generated source, classpaths and diagnostics. `LocalProcess` and `CommandOutput` also stay in core. None is on the child classpath; the small compiled child runners remain in API.
+
+`ApplicationTools.live` supplies `ScalaCodeExecutorLive.live`; custom trusted configuration uses
+`ScalaCodeExecutorLive.layer(executable, scalaVersion = ScalaCodeExecutor.ScalaVersion, offline = true)`.
+Consumers/custom test doubles still require or implement `ScalaCodeExecutor`, not a new service type.
+The API depends on model/filesystem/rpc, never core/server. Its JVM JSON argument parsing uses the same pinned upickle
+as core. Scala.js can use the shared definition; execution/service/wiring factories remain JVM-only.
+Relocation changes module ownership and the live factory name, not packages, suite names, callable IDs or JSON formats.
+
+The `scalamode` agent tool accepts only a `code` string. Unknown fields, including the retired `mode` field
+(with either former value), are rejected; there is no compatibility branch:
 
 ```json
 {"code":"val numbers = List(1, 2, 3); numbers.map(_ * 2).sum"}
@@ -87,7 +67,7 @@ the shared output byte budget; successful values are never rewritten.
 Safe mode is always enabled by the host's file-level `import scala.language.experimental.safe`. The host also sets
 capture-checking/modularity flags; submitted code cannot disable them or supply its own language imports/directives.
 The executor uses ordinary `Snippet.scala` and `Main.scala` files, not a REPL or `.sc` script. We retain the internal
-result wrapper to capture the last expression (and inject `fs` in filesystem mode), without requiring it in submitted
+result wrapper to capture the last expression (and the explicit compiled API parameter for service bindings), without requiring it in submitted
 code. No bundled compiler or staging task is required.
 
 ### Compiled runtime API
@@ -101,9 +81,9 @@ tool.api // prints "Yes Tool API is available" through the trusted API
 
 The result is `42\n`; `logs` contains `Yes Tool API is available`.
 
-The model sees only the public contract in the tool description: the fixed API availability message and restricted effect constructors. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/shared/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.scalacode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
+The model sees only the public contract in the tool description: the fixed API availability message and restricted effect constructors. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/shared/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
 
-The greeting helper and a narrow `ScalaToolApi.ZIO` facade use `@caps.assumeSafe` to cross the compiler's trust boundary. These methods are marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
+The greeting helper, narrow `ScalaToolApi.ZIO` facade, and immutable `FilesystemModes` accessors use `@caps.assumeSafe` to cross the compiler's trust boundary. These methods are marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
 
 `ZIO` is automatically imported from that facade, **not** from `zio.ZIO` (the library companion is not safe-mode compatible). It supplies `succeed`, `fail`, `attempt`, `fromEither`, `foreach` and `unit`; callbacks remain compiler-checked safe code. Trace evidence is injected by the host. Do not import `zio.ZIO` yourself. For example:
 
@@ -114,7 +94,7 @@ for {
 } yield a + b
 ```
 
-The default mode now executes a returned `ZIO[Any, E, A]` and returns its success value (`2\n` above), while ordinary values still work unchanged. The snippet result type is inferred so the trusted runner selects a typed evaluation overload; there are no runtime type tests or casts to recover effects from `Any`. Typed failures, defects and finalizers are handled by ZIOApp. No runtime, environment service lookup or ambient I/O constructors are exposed. Existing restrictions on automatic `CanFail` materialization still apply.
+The default executor executes a returned `ZIO[Any, E, A]` and returns its success value (`2\n` above), while ordinary values still work unchanged. The snippet result type is inferred so the trusted runner selects a typed evaluation overload; there are no runtime type tests or casts to recover effects from `Any`. Typed failures, defects and finalizers are handled by ZIOApp. No runtime, environment service lookup or ambient I/O constructors are exposed. Existing restrictions on automatic `CanFail` materialization still apply.
 
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
 - Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.1` compiler with `--offline --jvm system --server=false`. Do not add `--quiet`: it also suppresses Scala CLI dependency-resolution errors, so an offline cache miss can otherwise return exit 1 with no diagnostics. This matches the main project's Scala version. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
@@ -171,98 +151,259 @@ scala-cli compile "$warmup" \
 rm -rf "$warmup"
 ```
 
-Filesystem mode additionally needs the streams/HTTP dependencies listed below. A cache warmed as root or under a different `COURSIER_CACHE` is not necessarily available to the service. This provisioning step requires repository/network access; tool invocations remain offline.
+RPC service bindings additionally need the pinned streams/HTTP dependencies described below. A cache warmed as root or under a different `COURSIER_CACHE` is not necessarily available to the service. This provisioning step requires repository/network access; tool invocations remain offline.
 
 ### Safety review / inspiration
 
 [ATC](https://github.com/lampepfl/atc) and [TACIT](https://github.com/lampepfl/tacit) combine compiler safe mode, capture checking, lexical validation, and trusted capability APIs. Their permission checks govern operations exposed by those APIs; **they do not lock down the JVM**. An allowed external command still runs with the user's OS privileges. See ATC's README security model and both projects' `CodeValidator` / REPL implementations.
 
-The default pure mode supplies a **fixed-message output helper and restricted ZIO constructors**; configured server execution additionally supports the explicitly selected read-only filesystem effect mode below. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI, trusted runtime API and trusted runner remain part of the trusted computing base.
+The base code-only binding supplies a **fixed-message output helper and restricted ZIO constructors**. ChatGPTAgent
+adds hello and, when both filesystem read/list functions are permitted, the selected rooted filesystem API by default.
+Workspace/private-root bindings include writes; a read-only embedded capability does not. Other filesystem operations
+require native tools or explicit service bindings as described below. Safe mode, rather than regex matching of JVM API names, rejects ambient filesystem/network/process/environment access, reflection, casts and global printing. Annotations are rejected so submitted code cannot declare itself `@assumeSafe`. The compiler, JDK, Scala CLI, trusted runtime API and trusted runner remain part of the trusted computing base.
 
-[Pi codemode](https://pi.dev) is inspiration for code-in/result-out and returning only the computation result to the agent. Its QuickJS sandbox lacks Node/filesystem/network APIs; ordinary Scala/JVM does not have that property. There is no general `tools` bridge: filesystem mode exports only `FsRead`.
+[Pi codemode](https://pi.dev) is inspiration for code-in/result-out and returning only the computation result to the agent. Its QuickJS sandbox lacks Node/filesystem/network APIs; ordinary Scala/JVM does not have that property. There is no automatic general `tools` bridge or ambient filesystem authority; the default filesystem grant is rooted and tool-gated.
 
 **Experimental compiler restrictions, not an OS/JVM sandbox. Do not expose this prototype as a hostile-code execution service.** Compiler defects or future compiler regressions can invalidate the restrictions. Compilation runs with the host user's privileges, can download artifacts and is not given a hard OS memory/CPU/disk quota; the evaluation heap cap is not a whole-process/container quota. Compiler updates require rechecking the restrictions.
 
 ### Validation
 
 ```bash
-sbt 'core/testOnly fmgp.yallmo.tool.scalamode.ScalaToolSuite fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite fmgp.yallmo.tool.scalamode.ScalaFilesystemRpcSuite'
+sbt 'scalaCodeApi/testOnly fmgp.yallmo.tool.scalamode.ScalaToolSuite fmgp.yallmo.tool.scalamode.ScalaToolRuntimeSuite; core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite fmgp.yallmo.tool.scalamode.ScalamodeServiceSuite'
 # Opt-in real compiler tests (requires the pinned compiler in cache):
-YALLMO_TEST_SCALA_CLI="$(command -v scala-cli)" sbt 'core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite'
+sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/local/bin/scala-cli"); core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite fmgp.yallmo.tool.scalamode.ScalamodeServiceSuite; set coreJVM / Test / envVars -= "YALLMO_TEST_SCALA_CLI"'
 ```
 
-For an already-running sbt server, set `core / Test / envVars` explicitly so the forked test JVM sees `YALLMO_TEST_SCALA_CLI`. Integration tests default to the same pinned/offline compiler as the tool. They also accept `YALLMO_TEST_SCALA_VERSION` and `YALLMO_TEST_SCALA_OFFLINE` for explicit test overrides.
+For an already-running sbt server, set `coreJVM / Test / envVars` explicitly so the forked test JVM sees `YALLMO_TEST_SCALA_CLI`. Integration tests default to the same pinned/offline compiler as the tool. They also accept `YALLMO_TEST_SCALA_VERSION` and `YALLMO_TEST_SCALA_OFFLINE` for explicit test overrides.
 
-### Phase 1 filesystem feasibility (test-only)
+## Agent-defined service bindings (opt-in)
 
-`ScalaCodeExecutorSuite` proves a separate, typed child-JVM entry point against the existing compiled filesystem artifact:
+`ScalamodeService` is a small **host-authored descriptor**, not a ZIO environment. Implement any subtype with
+`apiDocs`, `binding: ScalamodeService.Binding`, and optionally `rpcBinding`. Override `scalaApi: Option[String]` with
+public Scala interface declarations for the exact selected API views. `ScalaTool.withServices` includes those declarations
+in the model-facing description and attaches a safe documentation projection (`parameter`, `apiTypes`, `description`,
+`scalaApi`) to the function definition. The Agents page (`#/agents` → **Inspect tools** → **Available Scalamode services**)
+shows every bound service/API view and a built-in `tool`/restricted `ZIO` reference. No host reflection is used; missing
+interface source is explicitly marked unavailable. Only effective bindings are shown, never all server/classpath APIs.
+This metadata does not include RPC endpoints/tickets, dispatchers, runners or artifact paths, and changing it grants no authority.
+The explicit
+`executeWithServices[R <: ScalamodeService](code, services, timeout, maxOutputBytes)` parameter preserves the
+host descriptor type; neither the executor nor `ScalaTool` derives an RPC contract from abstract `R`.
+`ScalaTool` remains non-generic. `ScalaTool.withServices(service)` captures the descriptor behind the existing
+`scalamode` ID, **code-only** schema and public API docs. No source implementation or transport is a model argument.
+Custom executors retain their unsupported-service default. Ordinary `execute` remains a value/environment-free
+effect path. ChatGPTAgent resolution installs the rooted filesystem service when both native filesystem functions
+are permitted, retaining hello alongside fs. No listener starts at construction/selection: local filesystem bindings
+start an executor-owned loopback listener only for the invocation and close it on every exit. The existing UI/server
+RPC endpoint is unchanged.
+
+### Compiled binding contract and thin generated glue
+
+A binding names a parameter, compiled API view(s), compiled runner method and optional additional artifact anchors.
+Optional `constants` add reviewed pure singleton parameters through validated names and `.type` references, never source.
+The default filesystem descriptor uses this to keep `hello` available alongside `fs`.
+Names are validated identifiers/qualified names, not arbitrary Scala source. API views may be intersected; singleton
+views may end in `.type`. `errorType` supplies explicit `CanFail` evidence and is imported for submitted code.
+The executor generates only safe imports, `ScalaToolSnippet.result(parameter: Api)(using Trace, CanFail[Error])`
+around the validated submitted body, and this fixed runner entry (with the descriptor's names substituted):
 
 ```scala
-def result(fs: fmgp.yallmo.fs.FsRead)(using zio.Trace, zio.CanFail[fmgp.yallmo.fs.FsError])
-    : zio.ZIO[Any, fmgp.yallmo.fs.FsError, String]
+object ScalaToolMain extends ZIOAppDefault {
+  override val bootstrap = ScalaToolRuntime.bootstrap
+  def run = CompiledBinding.run { service =>
+    ScalaToolRuntime.evaluate(ScalaToolSnippet.result(service)(using Trace.empty, summon[CanFail[Error]]))
+  }
+}
 ```
 
-The test-only trusted main injects an in-memory `FsRead`, supplies inert `Trace.empty`/`CanFail` evidence, and runs the returned effect without erasure/casts or an ambient service environment. Real pinned/offline compiler tests exercise inherited `readUtf8`, `list`, incremental `readBytes.take(3).runCollect.map` (exactly three pulls), typed-error recovery with `fold`, and pure expressions/the existing greeting API.
+`evaluate` stays at the inferred snippet type. The compiled runner accepts a callback returning `ZIO[Any, E, A]`;
+there are no effect casts, runtime type tests, reflective construction or generic service registries. The compiled
+`ScalaToolRuntime.runPure` and `runRpc(concreteContract)` share printing, lazy evaluation and scoped connection
+lifecycle. `runRpc` consumes endpoint/ticket from stdin, creates the concrete proxy and closes the connection on
+scope exit. The generated main contains no proxy implementation, RPC derivation, bootstrap parsing or cleanup logic.
+Runners are unsafe infrastructure, not ambient safe capabilities; do not mark them `assumeSafe`.
 
-This is a narrow boundary, not general ZIO compatibility: automatic trace/`CanFail` materialization is rejected in safe code, hence the explicit evidence parameters. `FsError.NotFound` extractors are also rejected; the proof recovers through a callback typed as `FsError`, not case-specific pattern matching. With the filesystem artifact visible, negative tests reject `FileSystem.open`, its private constructor, direct NIO/network/process/ZIO runtime authority, `Unsafe`, casts and access to the trusted main's capability. Compiler restrictions still are **not a sandbox**.
+For a custom compiled helper, put both helper and runner in a **narrow reviewed artifact**, for example:
 
-Run with explicit forked-test environment configuration (the Scala build definition's project value is `coreJVM`):
+```scala
+package example
 
-```bash
-sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli"); core/testOnly fmgp.yallmo.tool.scalamode.ScalaCodeExecutorSuite -- --tests *phase*'
+import fmgp.yallmo.tool.scalamode.ScalaToolRuntime
+
+// Compiled narrow artifact, not generated source (no core dependency):
+@scala.annotation.experimental @caps.assumeSafe
+object Arithmetic {
+  @caps.assumeSafe def twice(value: Int): Int = value * 2
+}
+object ArithmeticRuntime {
+  @scala.annotation.experimental
+  def run[E, A](evaluate: Arithmetic.type => zio.ZIO[Any, E, A]) =
+    ScalaToolRuntime.runPure(_ => evaluate(Arithmetic))
+}
 ```
 
-At the Phase-1 checkpoint production generation was unchanged (pure returned values only). The following Phase-2 integration supersedes that production limitation; the feasibility tests above remain intact.
+Host/agent code, with that artifact as an explicit dependency (separate from the narrow artifact):
 
-### Phase 2: configured server filesystem effects
+```scala
+import example.ArithmeticRuntime
+import fmgp.yallmo.tool.scalamode.{ScalaTool, ScalamodeService}
 
-The configured standalone server owns a **separate loopback, ephemeral-port capability listener** (not the UI `/rpc` listener). It supplies its exact `RpcWebSocket.RpcRoute` and trusted endpoint to application assembly. Existing `new ScalaTool()`, executor `execute`, `ServerApplication.open`, and embedded `ReplStartup` remain pure-only and start no listener. A connected terminal uses its configured server's tools; a real connected interactive prompt was not exercised in this phase.
+object ArithmeticService extends ScalamodeService {
+  val apiDocs = "math.twice(value: Int): Int doubles an integer; values and environment-free ZIO effects work."
+  val binding = ScalamodeService.Binding(
+    parameter = "math",
+    apiTypes = Seq("example.Arithmetic.type"),
+    runner = "example.ArithmeticRuntime.run",
+    artifacts = Seq(ArithmeticRuntime.getClass)
+  )
+}
+val arithmeticTool = ScalaTool.withServices(ArithmeticService)
+// Agent explicitly chooses this bound function; request: {"code":"ZIO.succeed(math.twice(21))"}
+```
 
-Filesystem-enabled `scalamode` keeps existing `{ "code": "..." }` callers unchanged. Select the effect boundary explicitly:
+A custom RPC binding instead compiles its narrow trait and a runner delegating to
+`ScalaToolRuntime.runRpc(onceDerivedConcreteContract)(evaluate)`. The host provides
+`RpcBinding(endpoint, route, concreteContract.bind(exactImplementation))`. The caller owns the listener; the executor
+registers only that dispatcher for the invocation. A pure binding needs no RPC configuration.
+Endpoints must be single-line `ws`/`wss` URIs with a host, at most 2048 UTF-8 bytes and no user info/query/fragment;
+validation precedes registration and launch. Credentials travel only over child stdin, concurrently with the process
+deadline. The invocation scope owns `registerScoped` cleanup on success, failure, timeout and cancellation, including
+authenticated host work. Ticket TTL equals the process deadline and must fit the route's configured maximum.
+No reconnect, retry or raw `FsRead` export is implied. The proxy exposes neither connection nor bearer. Executable custom pure
+and non-filesystem greeting RPC fixtures live in scalacode-api's test artifact
+[`CompiledServices.scala`](../../scalacode-api/jvm/src/test/scala/fmgp/yallmo/scalacode/fixture/CompiledServices.scala),
+selected by descriptor subtypes in `ScalamodeServiceSuite`; they do not inject implementations as source strings.
+
+Pure and service classpaths explicitly contain **scalacode-api + model + filesystem + rpc** to resolve the shared
+runtime signatures; service bindings additionally include their reviewed artifact anchors. No full application classpath, core or server artifact is added. The API CrossProject depends on
+those reviewed modules on JVM/JS; runtime/transport helpers remain JVM-only. Abstract capability views reuse existing
+types where appropriate, but adding filesystem/model classes does **not** export `FileSystem.open` or other ambient
+authority: compiler-negative tests check those restrictions. The expanded API artifact also contains the host-facing
+executor interface, ScalaTool and wiring/service factories, but no assumeSafe authority grant was added. Real compiler
+probes reject executor service acquisition, broader tool/RPC construction, private validator access and host engine
+lookup. Artifact/classpath tests separately prove the engine and general host execution helpers are absent. This is not an OS sandbox or a capability grant inferred
+from classpath presence. Host authors must not add broader artifacts or hide extra authority in compiled helpers.
+
+`dependencies` are pinned host-supplied Scala CLI coordinates, defaulting to the reviewed ZIO/streams/JSON/HTTP set
+and BouncyCastle 1.86 pins. Mandatory ZIO/ZIO JSON/ZIO Streams are still added; provision every selected/transitive artifact in the
+service user's cache. No uncached compiler fallback or silent network download is used.
+All phases retain the existing deadline, byte budget, process-tree cleanup and monotonic timings. Submitted code
+retains its 65,536-character bound. Diagnostics use the fixed generated preamble length; trusted setup failures and
+warning source excerpts are hidden. Successful returned stdout, including literal source-looking gutters such as
+`Main.scala:3:1`, is never treated as setup diagnostics. User-body positions remain mapped to submitted lines.
+Never put credentials in docs, source, model JSON, process arguments or URLs. Endpoint validation and retained-output
+credential redaction remain in place. Host authors still review compiled helper authority and public error messages.
+
+### Explicit rooted FsRead / FsWrite services
+
+`FilesystemService.read(read, route, endpoint)`, `.write(write, route, endpoint)`, and
+`.readWrite(read, write, route, endpoint)` expose host-supplied capabilities as `fs` behind the existing code-only
+Scalamode tool. Read services use the actual `FsRead` interface, including streamed binary reads and structured listings.
+Write services expose `FsWriteApi`: UTF-8 writes and filesystem mutations with explicit modes.
+Overloads without route/endpoint use executor-owned scoped local RPC; `FilesystemService.default(read, optionalWriter)`
+includes hello. ChatGPTAgent installs this default view automatically for a complete native filesystem grant. Stream uploads and scoped
+writers are not exposed because the RPC transport does not support them. Domain `FsError` failures are preserved;
+infrastructure failures become `FsError.IoFailure(".", "RPC <code>")`.
+
+`AgentToolWirings.withFilesystemServices(read, write: Option[FsWrite], executor, route, endpoint)` opts in only when
+both native read/list functions and default Scalamode survive filtering. `None` grants reads only; supplying a writer
+is an explicit host authorization, never inferred from the read-only native filesystem tool. Missing/partial native
+grants and custom Scalamode bindings are preserved. Apply before hello-world fallback. The caller owns the listener
+and must supply the intended agent root; this deliberately grants raw capabilities rather than preserving native
+functions' custom behavior. Use the exact-delegation utility below when that behavior or partial grants matter.
+
+Safe snippets select modes with `import fmgp.yallmo.tool.scalamode.FilesystemModes`, for example
+`fs.writeUtf8("note.txt", "hello", FilesystemModes.createNew)`. Available values are `createNew`, `replace`, `append`,
+`emptyOnly`, `recursive`, `failIfExists`, and `replaceFile`. The original enum companions are not safe constructors.
+See [service examples and validation](../../scalacode-api/README-SCALACODE.md#explicit-fsread--fswrite-services).
+
+### Native read/list utility: exact delegation, not a raw filesystem grant
+
+`ApplicationTools.selected` binds native `readFile`/`listFiles` to the selected private root, otherwise the workspace.
+Invalid explicit roots fail at first selection rather than falling back. The complete executable generation is cached;
+direct invocation and session execution share it. Coach/Folder restrictions remain unchanged; Bash/Git stay
+workspace-bound. The filesystem module and its read/write/patch permissions remain independent of Scalamode.
+
+`AgentToolWirings.withFilesystem(executor, route, endpoint, timeout, maxOutputBytes): ToolWiring` returns one ordinary
+function. Add it explicitly to an agent's `toolWirings`; no agent receives it by default. It replaces an existing,
+permitted **default** `scalamode` binding only (selected definition equality, not implementation class), without new model-visible names or a global registry lookup. The caller owns the listener and its lifetime; server startup never substitutes an unfiltered `FsRead` binding.
+
+The stage receives the resolver's **already-filtered** `AgentTool[Any]` generation. It captures the exact native
+`filesystem/readFile` and `filesystem/listFiles` implementations and their bound definitions, not `FsRead`. Every
+RPC invocation builds `{ "path": ... }`, validates it against the **selected** native schema, and calls that exact
+implementation. Selected roots and custom read-tool behavior are therefore retained. Writes, patches, recursive
+Scalamode and other groups are not exported. Read-only and list-only permissions produce different compiled parameter
+views and docs. Missing operations fail on the host even if a caller bypasses the typed facade. Missing filesystem,
+Scalamode or usable bound reads leaves the generation unchanged, as does an already custom/service-bound Scalamode.
+The stage cannot add Scalamode back or overwrite a custom service. Unrelated tools/functions and order are preserved.
+
+The narrow JVM scalacode-api contract uses `NativeReadFile`, `NativeListFiles`, their combined RPC contract
+`NativeReadTools`, and `ReadToolError(kind, message)`. Both methods return the native tool's **text**:
+`readFile` normally returns UTF-8 contents; `listFiles` normally returns newline-separated entry names. They do not
+parse formatted JSON or pretend tool text is structured filesystem data. Native failures preserve their concrete
+error class name and public message (including filesystem domain details); exception causes/stacks are not serialized.
+Infrastructure errors use `ReadToolError("RpcError", code)`. Custom native tools must keep their public messages safe.
+
+Explicit host composition uses the caller's **existing** RPC listener. `route` must already be mounted at
+`endpoint`; its application-owned scope must outlive the resolved tools. The utility never starts a hidden listener.
+`provider` is the caller's existing `OpenAiCodexClient` and `executor` is the supplied `ScalaCodeExecutor`:
+
+```scala
+import fmgp.yallmo.provider.openai.ChatGPTAgent
+import fmgp.yallmo.tool.scalamode.AgentToolWirings
+
+val agent = new ChatGPTAgent(
+  id,
+  provider,
+  toolWiring = AgentToolWirings.withFilesystem(executor, route, endpoint),
+  scalaCodeExecutor = executor
+)
+// Custom service selection happens before ChatGPTAgent's default greeting binding.
+// An already-custom Scalamode service is preserved, not implicitly merged with hello.
+// A custom non-final Agent can instead override def toolWirings(tools).
+// Resolution filters only before wiring, not between composed calls or on their output.
+// Resolver supplies filtered tools; do not supply an unrestricted application registry instead.
+```
+
+Without a custom binding, `new ChatGPTAgent(id, provider)` binds the compiled `HelloWorldService` to an existing,
+permitted Scalamode function. Snippets use `hello.helloWorld` or `ZIO.succeed(hello.helloWorld)`; the returned value is
+`Hello world` (the child runner's output includes a trailing newline). It requires no RPC or filesystem service.
+There is **no separate native hello tool**, no `{}` hello call, and no `helloWorld` capability key to allowlist.
+The Scalamode inspector lists the bound `hello` API using the same metadata advertised to the model.
+
+`AgentToolWirings.withHelloWorld(executor): ToolWiring` is idempotent and preserves missing/custom Scalamode.
+`withService(service, executor): ToolWiring` binds another explicitly selected compiled descriptor.
+`withFilesystem` defaults to `45.seconds` and `64 * 1024` output bytes and still requires an existing caller-owned
+listener. Startup validation continues to check existing configured tool/function IDs; the greeting adds no new IDs.
+
+For an agent with both selected reads, a code-only request can be:
 
 ```json
-{"mode":"filesystem","code":"for { text <- fs.readUtf8(\"notes.txt\"); names <- fs.list(\".\"); bytes <- fs.readBytes(\"notes.txt\").take(3).runCollect; recovered <- fs.readUtf8(\"missing\").fold((e: FsError) => e.toString, identity) } yield text + names.mkString(\",\") + bytes.size + recovered"}
+{"code":"for { text <- reads.readFile(\"notes.txt\"); entries <- reads.listFiles(\".\") } yield text + \"|\" + entries"}
 ```
 
-`mode` is optional (`pure` by default); only `pure` and `filesystem` are accepted. In filesystem mode the code is the body of:
+The utility uses the bounded reviewed service classpath above (not core/server/application artifacts), with the
+existing ZIO/streams/JSON/HTTP dependencies. Child BouncyCastle coordinates are pinned to 1.86, matching the existing host
+security overrides, instead of resolving zio-http's older transitives. Provision those exact versions offline.
 
-```scala
-def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): zio.ZIO[Any, FsError, Any]
+Agent source is trusted authority. Policy filtering enforces declared/catalog operations, **not hidden captured
+capabilities**; this utility's delegation discipline is what preserves the native read boundary. Eager server startup
+capability validation is unchanged; this stage uses only the existing filesystem/scalamode IDs.
+
+Run the service tests, including actual offline compiler/child RPC and authenticated cancellation:
+
+```sh
+sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/local/bin/scala-cli"); core/testOnly fmgp.yallmo.tool.scalamode.ScalamodeServiceSuite; set coreJVM / Test / envVars -= "YALLMO_TEST_SCALA_CLI"'
 ```
 
-The effect's success type is widened covariantly, never erased and cast back into ZIO. `FsRead`, `FsError`, `ZIO`, `api` and `tool.api` are imported; there is no ambient service environment. Return an effect, not its executed value. Use `fold` for error recovery; automatic trace/CanFail materialization and FsError case extractors retain the Phase-1 compiler limitations. Pure mode prints ordinary last expressions or executes returned environment-free ZIO effects, using the same restricted constructors.
+Without the opt-in variable, real-child tests skip. Unit tests exercise selected schemas, partial/denied RPC,
+two independently bound agents, malformed JSON, diagnostics, output limits, cleanup/cancellation/timeouts and old
+executor compatibility; they are not evidence of real child integration on their own. There is no new retry,
+download policy, OS sandbox or automatic service derivation.
 
-Each effect invocation exports only `Rpc.derived[FsRead]` (default fully-qualified identity, version 1). The trusted child Main reads endpoint and single-use bearer from **stdin**, connects once, constructs a typed proxy locally, runs the typed effect and closes its connection. Stdin forwarding was verified with the real pinned/offline Scala CLI. Credentials are absent from submitted/generated sources, command arguments, URLs and logs/output. The proxy exposes no connection or bearer. No uploads, FsWrite, reconnect or retry are added.
 
-The trusted endpoint must be a single-line `ws`/`wss` URI with a host, at most 2048 UTF-8 bytes; validation precedes registration and process launch. Bootstrap delivery runs concurrently with the process deadline, and cancellation destroys the child to unblock a pending stdin write.
-
-The invocation scope owns `registerScoped` authority, including authenticated socket/work cleanup on completion, timeout, cancellation, compilation or launch failure. Pending-ticket TTL equals the compilation/execution deadline (45 seconds by default); the route rejects deadlines above its configured maximum (five minutes by default). Existing process-tree cleanup, heap/output/source bounds remain. Cooperative host finalization may wait on uninterruptible work; these compiler restrictions are **not OS isolation**.
-
-`ServerApplication` retains the workspace read capability; `AgentCatalog` retains each configured agent's exact
-rooted filesystem and caches complete executable generations. Explicit native agent roots are validated at first
-selection; invalid roots fail instead of falling back. `readFile`/`listFiles` always use the selected agent capability,
-else workspace, including without Scala RPC. Filesystem-enabled Scala effects require both that capability and an
-explicit trusted RPC route/endpoint. Coach/Folder keep private capabilities without gaining scalamode: Coach restrictions
-remain unchanged; Folder programs deny tools for normal turns and direct invocation. Bash/Git remain workspace-bound.
-Selected definitions and implementations travel together without duplicate keys.
-
-Domain `FsError`s retain their JSON representation. Infrastructure failures use the integration policy `FsError.IoFailure("<rpc>", "RPC " + error.code.toString)`; `<rpc>` is a sentinel, not a relative filesystem path. This total mapper is identical in host derivation and trusted child source; raw transport exceptions/messages are not exposed. The child classpath includes only compiled scalacode-api/filesystem/RPC artifacts and pinned ZIO/streams/JSON/HTTP dependencies, not core/model/server or the whole application classpath.
-
-Focused checks (seven tests, including real children and thirteen expanded-classpath compiler-negative probes):
-
-```bash
-sbt 'set coreJVM / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli");core/testOnly fmgp.yallmo.tool.scalamode.ScalaFilesystemRpcSuite'
-```
-
-`ServerCompositionSuite` additionally checks concurrent selected roots, invoke/session parity, retained identity, workspace fallback, invalid-root rejection, consistent read/list/scala binding and Coach/Folder restrictions. These concurrent-root checks use a mocked executor/provider, not the full real stack.
-
-`ScalaFilesystemApplicationSuite` is an opt-in configured-application acceptance test: the existing UI WebSocket turn path, `ServerApplication.openRpc`, real compiler/child and authenticated filesystem RPC use loopback listeners; a deterministic local HTTP fake provider requests the tool and returns its result. It checks advertised filesystem mode, a private root different from workspace, traversal/no-fallback errors, viewer denial and persisted response. No external provider, credentials or interactive terminal are exercised.
-
-```bash
-sbt 'set server / Test / envVars += ("YALLMO_TEST_SCALA_CLI" -> "/usr/share/coursier/scala-cli"); server/testOnly *ScalaFilesystemApplicationSuite'
-```
-
-## FUTURE (Not now)
-### SANDBOX
-
-Add an OS/container isolation boundary around **compilation as well as execution**, with no host credentials/workspace mounts, no evaluation network and hard resource limits. Keep compiler/capability checks as defense in depth, not a replacement for isolation.
+Current tests live in API `ScalaToolSuite`/`ScalaToolRuntimeSuite`, core `ScalaCodeExecutorSuite`/`ScalamodeServiceSuite`,
+server composition/program suites and web `ScalamodeModelSuite`. The dedicated legacy filesystem suites and raw
+filesystem compiler feasibility fixtures have been removed; canonical real-child read delegation, partial-view
+host denial, cancellation and authority-negative checks remain in `ScalamodeServiceSuite`. Current validation and
+historical checkpoints are recorded in [the durable plan](../AGENT_TOOL_WIRING_PLAN.md).

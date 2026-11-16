@@ -5,10 +5,8 @@ import java.util.Locale
 import scala.util.Try
 import fmgp.yallmo.server.application.ServerApplication
 import zio.*
-import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.tool.sdlc.SdlcService
-import zio.http.Server
 
 /** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
   * Embedded applications should supply their configured backend instead.
@@ -54,19 +52,13 @@ object MainServer extends ZIOAppDefault {
           filesystem <- FileSystem.open(storageRoot.toString).mapError(error => new java.io.IOException(error.toString))
           // Exactly one planning service is shared by agent tools and HTTP routes.
           sdlc <- SdlcService.make(filesystem, filesystem)
-          route <- RpcWebSocket.route()
-          hostname = "127.0.0.1"
-          http <- Server.defaultWith(_.binding(hostname, 0)).build
-          port <- Server.install(route.routes).provideEnvironment(http)
           configured <- ServerApplication
-            .openRpc(
+            .open(
               storageRoot,
               options.config,
               options.workspace,
-              s"ws://$hostname:$port/rpc",
               Some(sdlc)
             )
-            .provideSomeEnvironment[Scope & ServerApplication.Environment](_.add[RpcWebSocket.RpcRoute](route))
           bound <- new OrchestratorWSServer(configured, Some(sdlc))
             .start(options.port)
           _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)") // loopback

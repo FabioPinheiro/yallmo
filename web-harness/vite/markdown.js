@@ -13,9 +13,9 @@ const escapeHtml = text => text.replace(/[&<>"']/g, character => ({
 // The returned fragment is the only HTML boundary. Raw HTML remains literal,
 // embedded images never load, and sanitizer policy excludes controls, CSS, IDs,
 // scripts, SVG and other active content.
-export function createMarkdownRenderer(window, { fencedOnly = false } = {}) {
+export function createMarkdownRenderer(window, { fencedOnly = false, codeLanguage = null } = {}) {
   const purifier = createDOMPurify(window);
-  const renderCode = ({ text, lang }) => {
+  const renderCode = ({ text, lang }, trailingNewline = true) => {
     const language = lang?.trim().split(/\s+/)[0].toLowerCase();
     let content = escapeHtml(text);
     let classes = language === "mermaid" ? "language-mermaid" : "";
@@ -27,7 +27,7 @@ export function createMarkdownRenderer(window, { fencedOnly = false } = {}) {
         // A highlighting failure must not hide or alter the original code.
       }
     }
-    return `<pre><code${classes ? ` class="${classes}"` : ""}>${content}\n</code></pre>\n`;
+    return `<pre><code${classes ? ` class="${classes}"` : ""}>${content}${trailingNewline ? "\n" : ""}</code></pre>\n`;
   };
   const parser = new Marked({
     gfm: true,
@@ -61,7 +61,9 @@ export function createMarkdownRenderer(window, { fencedOnly = false } = {}) {
     return html;
   };
   return source => {
-    const html = fencedOnly ? renderBlocks(source) : parser.parse(source, { async: false });
+    const html = codeLanguage
+      ? renderCode({ text: source, lang: codeLanguage }, false)
+      : fencedOnly ? renderBlocks(source) : parser.parse(source, { async: false });
     const fragment = purifier.sanitize(html, {
       RETURN_DOM_FRAGMENT: true,
       ALLOWED_TAGS: [

@@ -135,14 +135,16 @@ lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
   .in(file("scalacode-api"))
+  .dependsOn(model, filesystem, rpc)
   .settings(
     name := "yallmo-scalacode-api",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % "2.1.27",
+      "com.lihaoyi" %% "upickle" % "4.3.2",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
   )
-  .jvmSettings(libraryDependencies += "dev.zio" %% "zio-json" % "1.1.1")
+  .jvmSettings(jvmSettings)
   .jsSettings(
     libraryDependencies += "io.github.cquiroz" %% "scala-java-time" % "2.8.0",
   )
@@ -171,7 +173,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
   .in(file("core"))
-  .dependsOn(model, filesystem, scalaCodeApi, rpc)
+  .dependsOn(model, filesystem, scalaCodeApi % "compile->compile;test->test", rpc)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(

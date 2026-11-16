@@ -62,6 +62,147 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
+  test("tools.list is a viewer read of each agent's resolved, capability-filtered function schemas") {
+    run(ZIO.scoped {
+      val readable = definition.copy(capabilities =
+        AgentCapabilities(
+          tools = Some(Set(FilesystemToolDefinition.name)),
+          functions = Some(Set(FilesystemToolDefinition.ReadFileDefinition.name))
+        )
+      )
+      for {
+        app <- application(
+          _ => ZIO.dieMessage("Tool inspection must not call a provider"),
+          config.copy(agents = Map(first -> definition, second -> readable))
+        )
+        rpc = new OrchestratorRpc(app)
+        connection <- rpc.openConnection
+        _ <- ZIO.addFinalizer(rpc.disconnect(connection))
+        unauthorized <- rpc.handle(
+          JsonRpc.Request(Json.Str("before"), ToolsList.method, ToolsList.Params(second)).toJson,
+          connection
+        )
+        initialized <- rpc.handle(
+          JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params("viewer")).toJson,
+          connection
+        )
+        empty <- rpc.handle(
+          JsonRpc.Request(Json.Str("empty"), ToolsList.method, ToolsList.Params(first)).toJson,
+          connection
+        )
+        effective <- rpc.handle(
+          JsonRpc.Request(Json.Str("readable"), ToolsList.method, ToolsList.Params(second)).toJson,
+          connection
+        )
+        selected <- app.application.resolve(second)
+        messages <- app.application.master.listMessages
+        sessions <- app.application.master.listSessions
+      } yield {
+        assertEquals(decode[JsonRpc.Failure](unauthorized.get).error.code, ErrorCode.Unauthorized)
+        val info = decode[JsonRpc.Success[Initialize.Result]](initialized.get).result
+        assertEquals(info.identity.role, Role.Viewer)
+        assert(info.methods.contains(ToolsList.method))
+        assertEquals(decode[JsonRpc.Success[ToolsList.Result]](empty.get).result, Chunk.empty)
+        val tools = decode[JsonRpc.Success[ToolsList.Result]](effective.get).result
+        assertEquals(tools, ToolsList.from(selected.context.tools))
+        assertEquals(tools.map(_.name), Chunk(FilesystemToolDefinition.name))
+        assertEquals(tools.head.functions.map(_.name), Chunk(FilesystemToolDefinition.ReadFileDefinition.name))
+        assertEquals(tools.head.functions.head.inputSchema, selected.functions.head.definition.inputSchema)
+        assertEquals(messages, Chunk.empty)
+        assertEquals(sessions, Chunk.empty)
+      }
+    })
+  }
+
+  test("tools.list includes agent-local wired functions absent from the shared application catalog") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        coach = definition.copy(
+          agentType = "CoachAgent",
+          filesystem = Some(FileSystemConfig(root.toString)),
+          capabilities = AgentCapabilities()
+        )
+        app <- application(
+          _ => ZIO.dieMessage("Inspection must not call a provider"),
+          config.copy(agents = Map(first -> coach))
+        )
+        rpc = new OrchestratorRpc(app)
+        connection <- rpc.openConnection
+        _ <- ZIO.addFinalizer(rpc.disconnect(connection))
+        _ <- rpc.handle(
+          JsonRpc.Request(Json.Str("init"), Initialize.method, Initialize.Params("viewer")).toJson,
+          connection
+        )
+        replies <- ZIO.foreach(1 to 2)(_ =>
+          rpc.handle(JsonRpc.Request(Json.Str("tools"), ToolsList.method, ToolsList.Params(first)).toJson, connection)
+        )
+        selected <- app.application.resolve(first)
+        cached <- app.application.resolve(first)
+        files <- ZIO
+          .attemptBlocking(Files.list(root))
+          .flatMap(stream =>
+            ZIO.attemptBlocking {
+              try stream.count()
+              finally stream.close()
+            }
+          )
+      } yield {
+        assert(
+          !app.application.context(None).functions.exists(f => CoachToolDefinition.functions.exists(_.name == f.name))
+        )
+        replies.foreach { reply =>
+          val tools = decode[JsonRpc.Success[ToolsList.Result]](reply.get).result
+          assertEquals(tools, ToolsList.from(selected.context.tools))
+          assertEquals(tools.map(_.name), Chunk(CoachToolDefinition.name))
+          assertEquals(tools.flatMap(_.functions).toSet, CoachToolDefinition.functions)
+        }
+        assert(selected eq cached)
+        assertEquals(files, 0L)
+      }
+    })
+  }
+
+  test("tools.list rejects unknown, presence-only and malformed IDs without leaking resolution details") {
+    run(ZIO.scoped {
+      val broken = definition.copy(agentType = "private-agent-type")
+      for {
+        app <- application(
+          _ => ZIO.dieMessage("Tool inspection must not call a provider"),
+          config.copy(agents = Map(first -> broken))
+        )
+        rpc = new OrchestratorRpc(app)
+        connection <- rpc.openConnection
+        _ <- ZIO.addFinalizer(rpc.disconnect(connection))
+        _ <- rpc.handle(
+          JsonRpc
+            .Request(Json.Str("init"), Initialize.method, Initialize.Params("test", Some(UserId("presence"))))
+            .toJson,
+          connection
+        )
+        missing <- ZIO.foreach(List(AgentId("unknown"), UserId.chatAgent(UserId("presence")))) { id =>
+          rpc.handle(JsonRpc.Request(Json.Str("missing"), ToolsList.method, ToolsList.Params(id)).toJson, connection)
+        }
+        malformed <- rpc.handle(
+          """{"jsonrpc":"2.0","id":"bad","method":"tools.list","params":{"agentId":" "}}""",
+          connection
+        )
+        unavailable <- rpc.handle(
+          JsonRpc.Request(Json.Str("broken"), ToolsList.method, ToolsList.Params(first)).toJson,
+          connection
+        )
+      } yield {
+        missing.foreach(reply => assertEquals(decode[JsonRpc.Failure](reply.get).error.code, ErrorCode.NotFound))
+        assertEquals(decode[JsonRpc.Failure](malformed.get).error, JsonRpc.Error.InvalidParams)
+        assertEquals(
+          decode[JsonRpc.Failure](unavailable.get).error,
+          JsonRpc.Error(ErrorCode.Rejected, "Agent tool context unavailable")
+        )
+        assert(!unavailable.get.contains("private-agent-type"))
+      }
+    })
+  }
+
   test("configured server executes once with durable claimed author, prompt and real message delta IDs") {
     run(ZIO.scoped {
       for {
@@ -97,7 +238,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.get.methods.size, 18)
+        assertEquals(info.get.methods.size, 19)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -443,7 +584,7 @@ final class ServerSubmissionSuite extends FunSuite {
         }
       } yield results.foreach { case (info, code) =>
         assertEquals(info.identity.role, Role.Viewer)
-        assertEquals(info.methods.size, 9)
+        assertEquals(info.methods.size, 10)
         assertEquals(code, ErrorCode.Forbidden)
       }
     })
@@ -475,8 +616,8 @@ final class ServerSubmissionSuite extends FunSuite {
             .toJson,
           connection
         )
-        forbidden <- rpc.handle(
-          JsonRpc.Request(Json.Str("reserved"), ToolsList.method, ToolsList.Params(first)).toJson,
+        tools <- rpc.handle(
+          JsonRpc.Request(Json.Str("tools"), ToolsList.method, ToolsList.Params(first)).toJson,
           connection
         )
         _ <- rpc.disconnect(connection)
@@ -498,7 +639,7 @@ final class ServerSubmissionSuite extends FunSuite {
         )
         assertEquals(info.notifications, List(EventsUpdate.method))
         assertEquals(decode[JsonRpc.Failure](changed.get).error.code, ErrorCode.Conflict)
-        assertEquals(decode[JsonRpc.Failure](forbidden.get).error, JsonRpc.Error.MethodNotFound)
+        assertEquals(decode[JsonRpc.Success[ToolsList.Result]](tools.get).result, Chunk.empty)
       }
     })
   }
@@ -999,7 +1140,7 @@ final class ServerSubmissionSuite extends FunSuite {
         _ <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "small")
         valid <- backend.providerRequest(session.id)
         turnId = ujson.read(valid.toJson)("providerRequest")("turnId").str
-        path = Path.of("debug", s"$turnId-request.json")
+        path = backend.workspace.resolve("logs").resolve("debug").resolve(s"$turnId-request.json")
         _ <- ZIO.attemptBlocking(Files.writeString(path, "x" * (DiagnosticsRequest.MaxCaptureBytes + 1)))
         large <- backend.providerRequest(session.id).either
         port <- new OrchestratorWSServer(app).start(0)

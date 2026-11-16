@@ -88,6 +88,7 @@ final class OrchestratorRpcSuite extends FunSuite {
           "sessions.get",
           "messages.list",
           "agents.list",
+          "tools.list",
           "blobs.list",
           "blobs.read",
           "events.subscribe",
@@ -103,7 +104,7 @@ final class OrchestratorRpcSuite extends FunSuite {
           "providers.login.cancel"
         )
       )
-      assertEquals(result.methods.size, 18)
+      assertEquals(result.methods.size, 19)
       assertEquals(result.notifications, List(EventsUpdate.method))
       assertEquals(error(changed).code, ErrorCode.Conflict)
       assertEquals(error(removed).code, ErrorCode.Conflict)

@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.protocol
 
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadLimits, Message, MessageId, UserId}
-import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
+import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey, ToolDefinition, ToolKey}
 
 import fmgp.yallmo.model.llm.JsonSchema
 import fmgp.yallmo.orchestration.{
@@ -285,10 +285,22 @@ object YallmoProtocol {
     type Result = Message
   }
 
+  /** Read-only, configured-agent inspection of effective tools after capability filtering and wiring. Resolves the same
+    * cached context used by execution, without inference or tool invocation. Tool membership is retained explicitly;
+    * nonconfigured registry/presence IDs have no inspectable context.
+    */
   object ToolsList {
     val method: String = "tools.list"
     final case class Params(agentId: AgentId) derives JsonCodec
-    type Result = Chunk[FunctionToolDefinition]
+
+    /** One resolved tool group, containing only its effective callable functions. */
+    final case class Tool(name: ToolKey, functions: Chunk[FunctionToolDefinition]) derives JsonCodec
+
+    /** Stable presentation order without inferring membership from function names. */
+    def from(tools: Chunk[ToolDefinition]): Result =
+      tools.sortBy(_.name.value).map(tool => Tool(tool.name, Chunk.fromIterable(tool.functions).sortBy(_.name.value)))
+
+    type Result = Chunk[Tool]
   }
 
   object BlobsList {

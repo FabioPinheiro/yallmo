@@ -92,7 +92,7 @@ All source paths below are relative to the repository root.
 
 | Component | Responsibility |
 | --- | --- |
-| [`AgentCapabilities.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala) | Decode optional allowlists; validate IDs and filter context (`resolve`); intersect restrictions (`intersect`); filter assembled tool requests (`filterRequest`) |
+| [`AgentCapabilities.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala) | Decode optional allowlists; validate IDs/catalog uniqueness (`validateIds`); validate then filter context (`resolve`); intersect restrictions (`intersect`); filter assembled tool requests (`filterRequest`) |
 | [`ConfigFile.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/config/ConfigFile.scala) | Validate configuration references and, when catalogs are supplied, capability IDs for all configured agents |
 | [`AgentCatalog.scala`](../core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala) | Lazily cache complete executable generations, adapters and providers; attach configured policy; preserve rooted filesystems across explicit credential replacement |
 | [`ConfiguredAgent.scala`](../core/shared/src/main/scala/fmgp/yallmo/orchestration/ConfiguredAgent.scala) | Apply tool restrictions even to fully assembled direct requests; reject prohibited tool-call responses |
@@ -114,29 +114,42 @@ All source paths below are relative to the repository root.
 Private configuration file
   -> ConfigFile.loadOrInitialize / validate
        structural fields and agent/provider references
-  -> Application constructs complete available capability catalogs
-  -> ServerApplication validates capability IDs against the available catalog
-       validate all configured agents, including unselected ones
+  -> Application constructs available base capability catalogs
+  -> ServerApplication.make eagerly validates every configured agent's capability IDs
+       startup-available definitions; Coach definitions supplemented for Coach agents
+       unknown IDs fail construction even for unselected agents
   -> AgentCatalog.resolve(agentId), when needed
        initialize/cache adapter and provider locally; attach configured restrictions
-       bind program/blob reader and selected tools; resolve effective context
+       bind program/blob reader and selected base tools
+       validate base keys/memberships; filter before Agent.toolWirings
+       call toolWirings(filteredTools); validate output without filtering it
+       validate explicit policy IDs against accumulated available IDs
        cache one complete ResolvedAgent generation
   -> AgentRunner.execution(resolved) / invocation(resolved)
 ```
 
 Loading/lookup does not perform inference or authenticate against an endpoint. Settings decoding and capability validation are also local operations. A registry uses an immutable configuration snapshot; editing the file does not change already-created adapters or policies automatically.
 
-Capability validation needs the application's **complete, unfiltered available context**. `ConfigFile.validate` alone cannot check tool/skill/etc. IDs because the configuration file does not define those catalogs. `ServerApplication` supplies them after startup tool availability evaluation; the connected REPL does not compose tools.
+There are two capability-validation boundaries. `ServerApplication.make` retains eager validation of **every configured agent**, before catalog construction, against startup-available definitions. For Coach agents it supplements that catalog with the hard-coded Coach notebook definitions, so explicit Coach-local IDs pass without initializing their private tools. Unknown IDs on unselected agents still fail server construction. `ConfigFile.validate` alone cannot check tool/skill IDs because the configuration file does not define those catalogs. The connected REPL does not compose tools.
 
-`resolve` rejects unknown IDs with `InvalidConfig`, naming the agent, capability field and unknown IDs. Do not prefilter the catalog by an agent's policy before validating it: that can confuse a denied capability with a nonexistent one. A capability installed in code but unavailable in the current application's catalog is not usable by naming it in an allowlist.
+`Agent.toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]]` preserves its input by default. `ToolWiring` is an ordinary function alias with the same input/output types, used for utility factories. Wiring runs once per cached resolved generation, not per turn. Configured and filesystem-binding wrappers forward the method; Coach composes its delegate's method before adding its notebook. Resolution filters only before wiring and validates, but does not filter, the final output. Trusted wiring owns added capabilities and internal composition; existing lower-level request guards remain separate.
+
+Separately, `AgentCatalog.resolve` validates selected-agent policies against the **accumulated available IDs**, including those introduced by later wiring stages. The resolver therefore supports later-stage IDs, but the server's eager check remains an integration constraint: future consumers introducing explicit local IDs beyond the Coach supplement must also update the startup validation boundary. This refactor does not remove or defer the server's eager check.
+
+`validateIds` rejects unknown IDs with `InvalidConfig`, naming the agent, capability field and unknown IDs, without filtering or constructing a restricted context. `resolve` reuses that validation before restricting contexts for its other callers. The input catalog is filtered before wiring; its output is structurally validated without further filtering. A separate available-ID catalog remembers base and final output IDs, avoiding confusion between denied and nonexistent capabilities. Internal intermediate outputs are not observed. An implementation unavailable in both the base and final output cannot be enabled by naming it in an allowlist.
 
 The server supplies available tools; its base skill catalog is empty. Applications may supply their own skills. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
 
-### Read roots are independent of Scala RPC
+### Native read roots and default Scalamode services
 
 Configured `readFile`/`listFiles` bind to agent `FsRead` when present, else workspace, for both managed submissions and
-direct invocations. Bash/Git keep workspace policy; SDLC uses the shared server-storage service. Filesystem-enabled
-Scala effects additionally require an explicit trusted RPC route/endpoint and selected `FsRead`. Private Coach tools
+direct invocations. Bash/Git keep workspace policy; SDLC uses the shared server-storage service. ChatGPT defaults
+expose hello plus rooted filesystem reads/mutations when both native read/list functions and Scalamode survive
+filtering. Private roots override workspace for both reads and writes; read-only embedded roots remain read-only.
+**Supplying rooted `FsWrite` intentionally grants mutations in the read/list-qualified default service.** Trusted wiring
+owns this derived API; there is no separate write allowlist or post-wiring permission filter. Custom Scalamode bindings and partial
+native grants are preserved. The executor owns the filesystem invocation's scoped loopback listener. Explicit
+`withFilesystem` remains available for exact delegation of selected native functions through a caller-owned listener. Private Coach tools
 remain local to that Coach selection. Folder programs advertise/execute no tools, including direct invocation.
 
 ## 5. Combining program and configured restrictions
@@ -152,7 +165,7 @@ remain local to that Coach selection. Folder programs advertise/execute no tools
 
 An explicit empty set therefore wins over any broader set. For example, if the adapter permits `readFile` and `listFiles`, but the program permits only `readFile`, the effective context contains only `readFile`.
 
-Both original policies are validated against the available catalog **before** applying their intersection. A typo in the adapter configuration is not hidden just because the program's empty allowlist would remove it.
+Both original policies are validated against the available catalog, not just their intersection. A typo in the adapter configuration is not hidden just because the program's empty allowlist would remove it. Catalog resolution applies the intersection only before trusted wiring and then performs validation-only ID checks once the complete base/final available-ID catalog is known; the server's earlier startup check remains in place. Ordinary standalone native programs validate against their supplied context.
 
 This works for both `program.bind(adapter)` and native programs resolving `Agent[Any]` from the ZIO environment.
 

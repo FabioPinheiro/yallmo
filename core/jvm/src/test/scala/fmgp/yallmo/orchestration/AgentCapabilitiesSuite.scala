@@ -80,13 +80,32 @@ final class AgentCapabilitiesSuite extends FunSuite {
     assertEquals(context.skills, available.skills)
   }
 
+  test("validateIds checks the catalog without applying restrictions; resolve still restricts") {
+    val policy = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("shell"))), skills = Some(Set.empty))
+    assertEquals(policy.validateIds(id, available), Right(()))
+    val resolved = policy.resolve(id, available).toOption.get
+    assertEquals(resolved, policy.restrict(available))
+    assertEquals(resolved.functions.map(_.name), Chunk(FunctionKey.unsafe("shell")))
+    assert(resolved.skills.isEmpty)
+  }
+
+  test("validateIds and resolve reject duplicate function keys even when all capabilities are disabled") {
+    val duplicates = available.copy(functions = available.functions ++ available.functions)
+    val error = disabled.validateIds(id, duplicates).swap.toOption.get
+    assertEquals(error.getMessage, "Duplicate function keys in available catalog: clock, shell")
+    assertEquals(disabled.resolve(id, duplicates), Left(error))
+  }
+
   for (kind, policy) <- List(
+      "tools" -> AgentCapabilities(tools = Some(Set(ToolKey.unsafe("typo")))),
       "functions" -> AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("typo")))),
       "skills" -> AgentCapabilities(skills = Some(Set("typo")))
     )
   do
     test(s"unknown $kind IDs fail with agent and field, not context contents") {
-      val error = policy.resolve(id, available).swap.toOption.get.getMessage
+      val validationError = policy.validateIds(id, available).swap.toOption.get
+      assertEquals(policy.resolve(id, available), Left(validationError))
+      val error = validationError.getMessage
       assert(error.contains("policy-test") && error.contains(s"capabilities.$kind") && error.contains("typo"))
       assert(!error.contains("SECRET_SKILL_INSTRUCTIONS"))
     }
@@ -295,6 +314,42 @@ final class AgentCapabilitiesSuite extends FunSuite {
     val allowed = run(adapter.turn(request))
     assertEquals(allowed.output, Chunk(call))
     assert(run(adapter.turn(request.copy(tools = Chunk.empty)).either).isLeft)
+  }
+
+  test("configured Coach direct requests require group metadata without rerunning private wiring") {
+    val root = java.nio.file.Files.createTempDirectory("configured-coach-wiring-")
+    try {
+      run {
+        for {
+          seen <- Ref.make(Vector.empty[Chunk[FunctionToolDefinition]])
+          delegate = new Agent[Any] {
+            val id = AgentCapabilitiesSuite.this.id
+            def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+              seen
+                .update(_ :+ request.tools)
+                .as(AgentTurnResponse(Chunk(MessagePayload.Assistant("done")), LlmStopReason.Stop))
+          }
+          fs <- fmgp.yallmo.fs.FileSystem.open(root.toString)
+          coach <- fmgp.yallmo.agents.CoachAgent.make(delegate, fs)
+          configured = ConfiguredAgent(coach, fmgp.yallmo.agents.CoachAgent.Capabilities)
+          wired <- ToolWiringResolver.resolve(
+            id,
+            StaticContext[Any]("system"),
+            Chunk.empty,
+            configured.toolWirings,
+            fmgp.yallmo.agents.CoachAgent.Capabilities,
+            Chunk.empty
+          )
+          prepared = request.copy(tools = wired.context.functions, toolGroups = wired.context.tools)
+          _ <- configured.turn(prepared)
+          _ <- configured.turn(prepared.copy(toolGroups = Chunk.empty))
+          requests <- seen.get
+        } yield {
+          assertEquals(requests, Vector(wired.context.functions, Chunk.empty))
+          assertEquals(wired.context.tools.map(_.name), Chunk(ToolKey.Coach))
+        }
+      }
+    } finally java.nio.file.Files.delete(root)
   }
 
   test("startup catalog validation catches unknown IDs on unselected agents without constructing adapters") {

@@ -1,6 +1,13 @@
 package fmgp.yallmo.server.jsonrpc
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.tool.{
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalamodeApi,
+  ScalamodeServiceApi,
+  ToolDefinition,
+  ToolKey
+}
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{JsonSchema, ProviderContinuation, ProviderId}
@@ -481,23 +488,63 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire(AgentResult(agentId, "Hi"), """{"agentId":"agent1","text":"Hi"}""")
   }
 
-  test("tools use FunctionToolDefinition and its existing JsonSchema model, not a duplicate DTO") {
+  test("tool groups retain keys and reuse FunctionToolDefinition and its existing JsonSchema model") {
     val tools: ToolsList.Result = Chunk(
-      FunctionToolDefinition(
-        FunctionKey.unsafe("inspect"),
-        "Read",
-        JsonSchema.ObjectSchema(
-          Map("path" -> JsonSchema.StringSchema()),
-          Set("path")
+      ToolsList.Tool(
+        ToolKey.unsafe("files"),
+        Chunk(
+          FunctionToolDefinition(
+            FunctionKey.unsafe("inspect"),
+            "Read",
+            JsonSchema.ObjectSchema(
+              Map("path" -> JsonSchema.StringSchema()),
+              Set("path")
+            )
+          )
         )
       )
     )
     assertWire(
       tools,
-      """[{"name":"inspect","description":"Read","inputSchema":{"properties":{"path":{"StringSchema":{"allowedValues":[]}}},"required":["path"],"additionalProperties":false}}]"""
+      """[{"name":"files","functions":[{"name":"inspect","description":"Read","inputSchema":{"properties":{"path":{"StringSchema":{"allowedValues":[]}}},"required":["path"],"additionalProperties":false}}]}]"""
     )
     val schema: JsonSchema = JsonSchema.ArraySchema(JsonSchema.IntegerSchema(Some("index")))
     assertEquals(schema.toJson.fromJson[JsonSchema], Right(schema))
+  }
+
+  test("tool inspection round-trips optional Scalamode APIs without changing ordinary function JSON") {
+    val source = "trait Reads { def readFile(path: String): zio.IO[ReadToolError, String] }"
+    val api = ScalamodeApi(
+      "def api: Unit",
+      List(
+        ScalamodeServiceApi("reads", List("example.Reads"), "Selected reads", Some(source)),
+        ScalamodeServiceApi("math", List("example.Math", "example.Text"), "Custom helpers")
+      )
+    )
+    val definition = FunctionToolDefinition(FunctionKey.scalamode, "Scala", scalamode = Some(api))
+    val tools: ToolsList.Result = Chunk(ToolsList.Tool(ToolKey.Scalamode, Chunk(definition)))
+    assertEquals(tools.toJson.fromJson[ToolsList.Result], Right(tools))
+    assertEquals(
+      tools.toJson.fromJson[ToolsList.Result].map(_.head.functions.head.scalamode.get.services.size),
+      Right(2)
+    )
+    assert(definition.toJson.contains("scalamode"))
+    assert(!definition.copy(scalamode = None).toJson.contains("\"scalamode\":"))
+  }
+
+  test("tool inspection keeps declared membership and sorts tool and function keys") {
+    val first = FunctionToolDefinition(FunctionKey.unsafe("a"), "First")
+    val last = FunctionToolDefinition(FunctionKey.unsafe("z"), "Last")
+    val tools = ToolsList.from(
+      Chunk(
+        ToolDefinition(ToolKey.unsafe("z-tool"), Set(first)),
+        ToolDefinition(ToolKey.unsafe("a-tool"), Set(last, first))
+      )
+    )
+    assertEquals(tools.map(_.name.value), Chunk("a-tool", "z-tool"))
+    assertEquals(tools.head.functions.map(_.name.value), Chunk("a", "z"))
+    assertEquals(tools.last.functions, Chunk(first))
+    assertEquals(tools.toJson.fromJson[ToolsList.Result], Right(tools))
   }
 
   test("domain ID validation applies to protocol params without duplicate validation logic") {

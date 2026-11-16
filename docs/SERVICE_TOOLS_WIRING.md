@@ -23,6 +23,9 @@ trait ToolDefinition {
 | `FunctionToolDefinition` | A function's name, description and input schema. The same type is used in declarations, orchestration and native model requests. |
 | `AgentFunction[R]` | Binds one `FunctionToolDefinition` to an `execute` implementation and its required environment. |
 | `AgentTool[R]` | Groups bound `AgentFunction[R]` implementations under a `ToolDefinition`. |
+| `ToolWiring` | Alias for one ordinary function: `Seq[AgentTool[Any]] => IO[YallmoError, Seq[AgentTool[Any]]]`. |
+
+`AgentFunction`, `AgentTool` and the top-level `ToolWiring` alias live together in shared `model`, retaining the `fmgp.yallmo.orchestration` package. `Agent.toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]]` defaults to `ZIO.succeed(tools)`. Agents compose utility functions explicitly inside this method; there is no wiring wrapper, extra agent hierarchy or local-function marker trait.
 
 The built-in objects in [the model's tool declarations][declarations] implement `ToolDefinition` and own their function keys and schemas. `FunctionKey` itself contains no built-in catalog or tool back-reference. Membership comes from `ToolDefinition.functions`, never from parsing a name prefix.
 
@@ -36,10 +39,11 @@ flowchart TD
     Implementations["AgentFunction implementations<br/>services and execution logic"] --> Register
     Register --> Bind["ApplicationTools.selected<br/>bind selected services and filesystem"]
     Config["Agent configuration<br/>agentType, filesystem.root, capabilities"] --> Bind
-    Bind --> Policy["AgentCatalog.resolve<br/>merge declarations and implementations, apply policy"]
-    Local["Agent-local declarations and functions<br/>Coach private notebook"] --> Policy
+    Bind --> Policy["AgentCatalog.resolve<br/>validate base bindings, filter before wiring"]
+    Local["Agent.toolWirings<br/>composed method; Coach private notebook"] --> Policy
+    Policy --> Stages["Validate returned catalog<br/>no output filtering"]
     Config --> Policy
-    Policy --> Agent["ResolvedAgent<br/>permitted definitions and bound functions"]
+    Stages --> Agent["ResolvedAgent<br/>permitted definitions and bound functions"]
     Agent --> Model["NativeFunctionAgent<br/>advertise flat FunctionToolDefinition list"]
     Model --> Runner["AgentRunner<br/>authorize FunctionKey and validate arguments"]
     Agent --> Runner
@@ -48,12 +52,44 @@ flowchart TD
 
 1. **Declare:** each `ToolDefinition` exposes a set of complete `FunctionToolDefinition`s. For example, `SdlcToolDefinition` exposes the five planning operations; `CoachToolDefinition` exposes the three notebook operations.
 2. **Register:** [`ApplicationTools.evaluate`][registration] probes dependencies and supplies available shared `AgentFunction`s. `ApplicationTools.ToolDefinitions` is the shared declaration catalog; Coach is agent-local, not part of that shared catalog.
-3. **Bind:** [`ApplicationTools.selected`][registration] binds read functions to the agent filesystem, otherwise the workspace. Bash/Git keep the workspace; SDLC keeps server storage. Coach constructs its own private notebook functions. A binding can also select a schema variant, such as filesystem-enabled Scala.
-4. **Select:** [`AgentCatalog.resolve`][catalog] merges shared and local declarations and implementations, then resolves the capability policy. Local function implementations replace shared ones with the same `FunctionKey`; local tool declarations replace shared ones with the same `ToolKey`.
-5. **Keep definitions aligned:** [`ToolDefinition.available`][tool-definition] retains declared functions that have available implementations and uses their bound schemas. Tools with no remaining functions are omitted. Permission filtering narrows both the flat function list and the sets exposed by tool declarations.
+3. **Bind:** [`ApplicationTools.selected`][registration] binds read functions to the agent filesystem, otherwise the workspace. Bash/Git keep the workspace; SDLC keeps server storage. Coach constructs its own private notebook functions. A binding can also select API descriptions, such as a code-only compiled Scala service.
+4. **Wire:** [`AgentCatalog.resolve`][catalog] validates base keys/memberships, filters the base catalog by effective policy, then calls `adapter.toolWirings(filteredTools)` once. The returned catalog is validated but **not filtered again**. Wiring owns additions and internal composition order. Duplicate tool/function keys or mismatched declarations/implementations fail with `InvalidConfig`; replacement is explicit, never a silent merge.
+5. **Keep definitions aligned:** [`ToolDefinition.available`][tool-definition] selects available base implementations and their bound schema variants. Wiring must return matching declarations and implementations. A separate available-ID catalog remembers base and final output IDs (including denied base IDs); `AgentCapabilities.validateIds` checks explicit policies after wiring so local IDs work and typos/unavailable IDs still fail, without constructing a restricted output context. Internal intermediate catalogs are not inspected by the resolver.
 6. **Expose:** `ResolvedAgent.context.functions` contains the permitted flat `FunctionToolDefinition` list; `context.tools` contains the matching `ToolDefinition`s. `ResolvedAgent.functions` carries the bound implementations, and `.tools` provides their `AgentTool` grouping. Registration alone does not grant permission.
 7. **Advertise:** [`NativeFunctionAgent`][native] puts the same permitted definitions into `AgentTurnRequest.tools` without converting them to another definition type. `request.toolGroups` carries host-only membership metadata for direct-request filtering; provider mappers do not send that catalog.
 8. **Execute:** [`AgentRunner`][runner] resolves the requested `FunctionKey`, requires an effective advertised definition and a registered implementation, validates arguments against the selected schema, then calls `AgentFunction.execute`. Direct tool-call invocation uses the same checks without requiring model inference.
+
+The server also retains an **earlier eager validation** in `ServerApplication.make`: every configured agent's explicit IDs must exist in startup-available definitions, with a hard-coded notebook-definition supplement for Coach agents. Unknown IDs on unselected agents fail server construction. The resolver supports later-stage local IDs, but future consumers beyond Coach must account for this startup integration constraint as well; selected-agent wiring has not replaced the server's eager check.
+
+### Explicit utility composition
+
+Factories return ordinary functions using the `ToolWiring` alias; agents opt in by composing them inside `toolWirings`. For example, using already-bound fake or application functions:
+
+```scala
+import fmgp.yallmo.model.*
+import fmgp.yallmo.orchestration.*
+import fmgp.yallmo.tool.*
+import zio.*
+
+object ExampleToolWiring {
+  def add(tool: AgentTool[Any]): ToolWiring =
+    tools => ZIO.succeed(tools :+ tool)
+
+  def replace(tool: AgentTool[Any]): ToolWiring =
+    tools => ZIO.succeed(tools.filterNot(_.name == tool.name) :+ tool)
+}
+
+// Inside an Agent implementation; services/functions are captured at initialization:
+// override def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] =
+//   for {
+//     added <- ExampleToolWiring.add(notebook)(tools)
+//     replaced <- ExampleToolWiring.replace(selectedVariant)(added)
+//   } yield replaced
+```
+
+The default method preserves the permitted base catalog. Coach first calls `delegate.toolWirings(tools)` and then adds its notebook. Factories can add, remove or replace tools, but must update a replaced function's declaration as well as its implementation. Wiring runs at resolution, not on LLM turns; successful resolution is cached until generation invalidation (for example credential replacement). Resolution filters **only before** wiring; trusted factories own the capabilities they add and there are no filtering boundaries between composed calls. Existing lower-level request filtering remains independent of this resolution contract. Wiring is not a sandbox for arbitrary code or hidden captured authority.
+
+`ConfiguredAgent` forwards the delegate's wiring but its lower-level `turn` method only filters the request's supplied `toolGroups`. It does not infer ownership from function names or execute wiring per turn. Callers bypassing resolved invocation must supply matching membership metadata for group-restricted functions (including configured Coach); without it those functions are safely removed. Normal resolved direct/session invocation already supplies the final catalog.
 
 ### What configuration controls
 
@@ -92,7 +128,7 @@ Each row below is one callable function. A function must be both available and p
 | `filesystem` | `listFiles` | List sorted direct directory entries. | Same `FsRead` binding and registration requirement as `readFile`. |
 | `bash` | `bash` | Run a shell command and return bounded output/status. | `BashExecutor`, Bash on `PATH`, workspace working directory. |
 | `repositoryChanges` | `repositoryChanges` | Inspect Git status, staged diff or unstaged diff. | `GitClient`, Git on `PATH`, workspace that is a Git work tree. |
-| `scalamode` | `scalamode` | Evaluate restricted Scala code. | `ScalaCodeExecutor`, Scala CLI and provisioned compiler/runtime dependencies. Filesystem mode additionally needs an explicit trusted RPC route/endpoint and selected `FsRead`. |
+| `scalamode` | `scalamode` | Evaluate restricted Scala code. | `ScalaCodeExecutor`, Scala CLI and provisioned compiler/runtime dependencies. ChatGPT defaults include hello plus rooted filesystem reads/mutations when both native read/list functions are permitted; the executor owns invocation-scoped local RPC. |
 | `sdlc` | `sdlc_list` | Search/page task and intent summaries. | Shared `SdlcService`, backed by server-storage `FsRead` / `FsWrite`. |
 | `sdlc` | `sdlc_read_task` | Read task snapshots by ID. | Same shared `SdlcService`; task journal. |
 | `sdlc` | `sdlc_set` | Create/update task snapshots with revision checks. | Same shared `SdlcService`; task journal and reference validation. |
@@ -104,9 +140,9 @@ Each row below is one callable function. A function must be both available and p
 
 ### Scope matters
 
-- **Read functions:** paths are relative to the selected root; the filesystem rejects absolute paths, parent traversal and symlinks. Selecting a private root works independently of Scala RPC wiring.
+- **Read functions:** paths are relative to the selected root; the filesystem rejects absolute paths, parent traversal and symlinks. Selecting a private root works independently of Scalamode service opt-in.
 - **Bash/Git:** the workspace is their working directory. An agent's read root does not relocate them or sandbox Bash.
-- **Scala:** pure execution needs no filesystem RPC. The filesystem-enabled binding allows explicit read-only effects; it uses the same `scalamode` function name with the selected schema, not another tool. See [Scala tool restrictions](tools/TOOL-SCALA-SCRIPT.md).
+- **Scala:** the base executor is code-only. ChatGPT defaults expose hello and rooted filesystem reads/mutations for a complete native read/list grant, using executor-owned scoped local RPC. Custom bindings and partial grants are preserved. All bindings use the same `scalamode` name and code-only schema; explicit native exact-delegation wiring captures only filtered functions. See [Scala tool restrictions](tools/TOOL-SCALA-SCRIPT.md).
 - **SDLC:** all five functions share server-storage journals at `sdlc/tasks.jsonl` and `sdlc/intents.jsonl`. They need no Bash/Git/Scala dependency. See [SDLC tools](sdlc/README-SDLC.md).
 - **Coach:** only the selected Coach gets its notebook functions, backed by `applications.jsonl` under its agent root. Saving a draft does not send a message, submit an application or book an interview.
 
@@ -121,7 +157,7 @@ Each row below is one callable function. A function must be both available and p
 [tool-definition]: ../model/shared/src/main/scala/fmgp/yallmo/tool/ToolDefinition.scala
 [function-definition]: ../model/shared/src/main/scala/fmgp/yallmo/tool/FunctionToolDefinition.scala
 [declarations]: ../model/shared/src/main/scala/fmgp/yallmo/tool/
-[execution-types]: ../core/shared/src/main/scala/fmgp/yallmo/orchestration/Capabilities.scala
+[execution-types]: ../model/shared/src/main/scala/fmgp/yallmo/orchestration/AgentTool.scala
 [registration]: ../server/src/main/scala/fmgp/yallmo/server/application/ApplicationTools.scala
 [catalog]: ../core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala
 [policy]: ../core/shared/src/main/scala/fmgp/yallmo/orchestration/config/AgentCapabilities.scala
@@ -130,7 +166,55 @@ Each row below is one callable function. A function must be both available and p
 [filesystem]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/FileSystemTools.scala
 [bash]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/BashTool.scala
 [git]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/RepositoryChangesTool.scala
-[scala]: ../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala
+[scala]: ../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala
 [sdlc]: ../core/shared/src/main/scala/fmgp/yallmo/tool/sdlc/SdlcTools.scala
 [sdlc-service]: ../core/shared/src/main/scala/fmgp/yallmo/tool/sdlc/SdlcService.scala
 [coach]: ../core/jvm/src/main/scala/fmgp/yallmo/agents/CoachApplicationTools.scala
+
+### Opt-in Scalamode read-service stage
+
+The shared `ScalamodeToolDefinition` and JVM `ScalaTool`, `ScalamodeService`, `ScalaCodeExecutor` interface/defaults
+and wiring factory belong to **scalacode-api**, retaining `fmgp.yallmo.tool.scalamode`. The module depends only on
+model/filesystem/rpc (plus pinned libraries), never core/server. Core alone owns
+[`ScalaCodeExecutorLive`](../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorLive.scala):
+`ApplicationTools.live` installs `.live`, and explicitly configured host/test construction uses `.layer(...)`.
+Process execution/compiler/source/diagnostic helpers stay core-only, outside every child classpath. The child API
+still owns its small compiled runners. API factories/interfaces on the child classpath grant no ambient safe
+capability; actual compiler-negative probes cover executor lookup, broader tool/RPC factories and private checks.
+
+The JVM utility `AgentToolWirings.withFilesystem(executor, route, endpoint)` returns the existing **function alias**
+`ToolWiring`. Capture explicit trusted executor/route/endpoint dependencies at agent construction and call the
+factory inside `Agent.toolWirings`. It replaces only an already-permitted default Scalamode definition, preserving custom service bindings and order,
+deriving its API from the
+exact already-filtered `filesystem/readFile` and `filesystem/listFiles` implementations/definitions. It never
+exports raw `FsRead`, a registry, write/patch tools or recursive Scalamode. Each generated native call is validated
+against the selected schema. Partial permission changes the docs and compiled view; the host also denies absent
+operations. Missing either tool or usable native reads is an identity operation. Native output stays tool text and failures retain kind/message. Two resolved agents retain their
+independently selected roots/implementations. No default agent receives this service and startup capability validation is unchanged. ApplicationTools
+binds only native filesystem functions, never an automatic filesystem Scalamode replacement. Trusted agent closures can still capture authority not visible to catalog policy.
+
+[Service contracts, executable explicit-dependency example and tests](tools/TOOL-SCALA-SCRIPT.md#agent-defined-service-bindings-opt-in)
+cover the generic host descriptor (not a ZIO environment), custom pure helpers, explicit scoped concrete RPC bindings,
+code-only `ScalaTool.withServices`, narrow child classpaths and compiler/sandbox limitations.
+
+Current validation and historical relocation/service counts live in the [durable plan](AGENT_TOOL_WIRING_PLAN.md).
+The generic service suite retains real pinned/offline compiler/RPC coverage; retired dedicated filesystem-mode
+suites are removed, not retained for compatibility. These checks do not establish OS isolation.
+
+`HelloWorldService` is a pure compiled **Scalamode service**, not a standalone native tool. ChatGPTAgent's
+`toolWirings` runs custom composition first, then `AgentToolWirings.withDefaults(scalaCodeExecutor, filesystem, filesystemWrite)`. This replaces
+only the permitted default Scalamode function. Snippets call `hello.helloWorld` (or
+`ZIO.succeed(hello.helloWorld)`) and receive `Hello world`. The function remains named `scalamode`, with the same
+code-only schema; its structured inspector/model metadata includes the greeting service. No `helloWorld` tool or
+function key is installed. Missing Scalamode and existing custom service bindings are preserved; bindings are not
+implicitly merged or overwritten.
+
+Catalog-created ChatGPT agents, including `sol`, receive this wiring. Server workspace composition passes its
+already-configured `ScalaCodeExecutor` through the catalog; direct construction defaults to a resource-free live
+executor description and can explicitly supply `scalaCodeExecutor`. No compilation occurs at construction or
+resolution. `AgentToolWirings.withService(service, executor)` supports explicitly selecting another compiled service;
+`withDefaults` automatically includes fs alongside hello for permitted filesystem tools; private roots override workspace
+for reads and writes. Supplying rooted `FsWrite` intentionally grants mutations in this read/list-qualified default service;
+trusted wiring owns the derived API, with no separate write allowlist or post-wiring permission filter.
+`withFilesystem` remains an explicit caller-owned-listener exact-delegation choice. Existing resolved
+generations remain cached: restart the application to observe new code/wiring.

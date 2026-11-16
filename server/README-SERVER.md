@@ -37,9 +37,6 @@ never starts a local application.
 provider creation/editing, voice/TTS and attachment upload remain unavailable in the terminal client, even for Operator.
 Negotiated Operators can list providers and log in from the provider picker using the existing WebSocket. See [REPL](../docs/REPL.md).
 
-`/debug request` is enabled only when `diagnostics.request` is negotiated for a trusted-environment Operator. It returns the
-latest actual request capture for the selected session, including failed turns, without inference or client-local file
-access. Captures retain metadata and existing continuation redaction; conversation/tool text remains sensitive.
 The index retains 128 sessions in memory, survives client reconnect, and is lost on server restart. Reads reject captures
 over 256 KiB, symlinks and corrupt data without exposing server paths. See [protocol](PROTOCOL.md#provider-request-diagnostics).
 
@@ -250,8 +247,7 @@ Tool composition, availability models/probes and service layers live in server-m
 connects over WebSocket and has no local tool probing or execution path. Tool implementations remain in core;
 read-only file tools now use the shared `filesystem` capabilities.
 
-Agent read roots are opened lazily and cached; selected file tools receive only that root's `FsRead` capability.
-Filesystem-enabled Scala effects additionally require an explicit trusted RPC route/endpoint; ordinary read tools do not.
+
 SDLC remains bound to the shared server-storage service, not to an agent root.
 Paths must be relative to the selected read root (`.` lists the root); empty/absolute paths, `..` and symlinks are rejected.
 A listing fails if any direct entry is a symlink. Direct module callers must also supply a root with no symlink

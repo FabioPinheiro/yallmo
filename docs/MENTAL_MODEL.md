@@ -227,9 +227,10 @@ ownership system. Configuration is a snapshot: editing the file does not mutate 
 credential replacement invalidates dependent adapter and complete-agent caches atomically while preserving rooted
 filesystems. In-flight work retains its old generation.
 
-`readFile`/`listFiles` use the selected agent's configured `FsRead`, otherwise workspace, regardless of Scala RPC wiring.
-Bash/Git remain workspace-bound; SDLC stays server-storage-bound. Filesystem-enabled Scala effects additionally require
-an explicitly supplied trusted RPC route/endpoint and the selected read capability.
+`readFile`/`listFiles` use the selected agent's configured `FsRead`, otherwise workspace, independently of Scalamode.
+Bash/Git remain workspace-bound; SDLC stays server-storage-bound. Scalamode is code-only, with no filesystem API by
+default. Optional compiled read-service wiring delegates only filtered native functions and requires a caller-owned
+RPC listener. Standalone startup no longer creates a private Scalamode listener or captures a raw read capability.
 
 ## Keep it simple
 

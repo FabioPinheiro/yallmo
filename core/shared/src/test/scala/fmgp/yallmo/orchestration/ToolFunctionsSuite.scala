@@ -32,12 +32,13 @@ final class ToolFunctionsSuite extends FunSuite {
     assertEquals(ToolDefinition.available(context.tools, Chunk(read, write)), Chunk(planning))
     val bound = read.copy(description = "Read from the selected private root")
     assertEquals(ToolDefinition.available(context.tools, Chunk(bound)).head.functions, Set(bound))
+    val service = ScalamodeToolDefinition.withServices("math.twice(value: Int): Int")
     assertEquals(
       ToolDefinition
-        .available(Chunk(ScalamodeToolDefinition), Chunk(ScalamodeToolDefinition.Filesystem))
+        .available(Chunk(ScalamodeToolDefinition), Chunk(service))
         .head
         .functions,
-      Set(ScalamodeToolDefinition.Filesystem)
+      Set(service)
     )
   }
 

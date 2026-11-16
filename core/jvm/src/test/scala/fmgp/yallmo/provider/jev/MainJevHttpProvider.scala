@@ -8,8 +8,7 @@ import zio.json.{JsonCodec, JsonEncoder}
 
 /** Manual smoke test for the local Laya-compatible System One endpoint.
   *
-  * It is a test-scope main, not an automated test: it needs a running service at
-  * `host.docker.internal:8000`. Run with:
+  * It is a test-scope main, not an automated test: it needs a running service at `host.docker.internal:8000`. Run with:
   *
   * {{ sbt 'core/Test/runMain fmgp.yallmo.provider.jev.MainJevHttpProvider' }}
   */

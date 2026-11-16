@@ -1,6 +1,13 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.scalamode.{
+  HelloWorldService,
+  FilesystemRuntime,
+  ScalaCodeExecutor,
+  ScalaTool,
+  ScalamodeService,
+  ScalamodeToolDefinition
+}
 
 import fmgp.yallmo.tool.*
 
@@ -76,8 +83,178 @@ final class ServerCompositionSuite extends FunSuite {
     }
   }
 
+  test("configured ChatGPT sol binds the hello Scalamode service using the workspace executor") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        events <- Ref.make(Vector.empty[String])
+        alive <- Ref.make(false)
+        executions <- Ref.make(0)
+        executor = new ScalaCodeExecutor {
+          def isAvailable = ZIO.succeed(true)
+          def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+            ZIO.dieMessage("Expected the bound hello service")
+          override def executeWithServices[R <: ScalamodeService](
+              code: String,
+              service: R,
+              timeout: Duration,
+              maxOutputBytes: Int
+          ) = {
+            assert(service eq HelloWorldService)
+            assertEquals(code, "hello.helloWorld")
+            executions.update(_ + 1).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("Hello world")))
+          }
+        }
+        sol = AgentId("sol")
+        runtime <- ServerApplication.workspace(
+          Config(
+            agents = Map(
+              sol -> AgentConfig(
+                "ChatGPTAgent",
+                Seq(provider),
+                Json.Obj("model" -> Json.Str("test-model")),
+                capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Scalamode)))
+              )
+            ),
+            providers = Map(provider -> ProviderConfig.ChatGPT())
+          ),
+          Chunk(human),
+          None,
+          root,
+          toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
+        )
+        resolved <- runtime.resolve(sol)
+        again <- runtime.resolve(sol)
+        before <- executions.get
+        bound = resolved.functions.head
+        result <- runtime.invoke(
+          Message(
+            MessageData(
+              human.id,
+              None,
+              java.time.Instant.EPOCH,
+              MessagePayload.ToolCall(
+                FunctionCall(
+                  FunctionCallId.unsafe("hello"),
+                  bound.definition.name,
+                  """{"code":"hello.helloWorld"}"""
+                )
+              )
+            )
+          ),
+          resolved
+        )
+        after <- executions.get
+      } yield {
+        assert(resolved eq again)
+        assertEquals(before, 0)
+        assertEquals(after, 1)
+        assertEquals(resolved.context.tools.map(_.name), Chunk(ToolKey.Scalamode))
+        assertEquals(resolved.context.functions.map(_.name), Chunk(ScalamodeToolDefinition.Execute))
+        assertEquals(bound.definition.scalamode.get.services, List(HelloWorldService.inspection))
+        assertEquals(runtime.context(Some(resolved)).functions, resolved.functions.map(_.definition))
+        assertEquals(result.payload.contentStr, "Hello world")
+      }
+    })
+  }
+
+  test("ChatGPT defaults expose hello and filesystem with private-root isolation and capability filtering") {
+    run(ZIO.scoped(for {
+      root <- temporaryRoot
+      oneRoot <- ZIO.attempt(Files.createDirectory(root.resolve("one")))
+      twoRoot <- ZIO.attempt(Files.createDirectory(root.resolve("two")))
+      _ <- ZIO.attempt {
+        Files.writeString(root.resolve("note.txt"), "workspace")
+        Files.writeString(oneRoot.resolve("note.txt"), "one")
+        Files.writeString(twoRoot.resolve("note.txt"), "two")
+      }
+      events <- Ref.make(Vector.empty[String])
+      alive <- Ref.make(false)
+      executions <- Ref.make(0)
+      executor = new ScalaCodeExecutor {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          ZIO.dieMessage("Expected default services")
+        override def executeWithServices[R <: ScalamodeService](
+            code: String,
+            service: R,
+            timeout: Duration,
+            maxOutputBytes: Int
+        ) = {
+          assertEquals(service.inspections.map(_.parameter), List("fs", "hello"))
+          assert(service.rpcBinding.isEmpty)
+          val dispatcher = service.localRpcBinding.get
+          val fs = FilesystemRuntime.contract.client(new fmgp.rpc.RpcConnection {
+            def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]) =
+              dispatcher.dispatch(serviceId, version, method, arguments)
+            def close = ZIO.unit
+          })
+          (for {
+            _ <- executions.update(_ + 1)
+            _ <- fs.writeUtf8("via-scala.txt", "written", fmgp.yallmo.fs.WriteMode.Replace)
+            text <- fs.readUtf8("note.txt")
+          } yield ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(text)))
+            .mapError(error => new Exception(error.toString))
+        }
+      }
+      fallback = AgentId("workspace-defaults")
+      partial = AgentId("partial-defaults")
+      disabled = AgentId("disabled-defaults")
+      chat = AgentConfig("ChatGPTAgent", Seq(provider), Json.Obj("model" -> Json.Str("test-model")))
+      runtime <- ServerApplication.workspace(
+        Config(
+          agents = Map(
+            first -> chat.copy(filesystem = Some(FileSystemConfig(oneRoot.toString))),
+            second -> chat.copy(filesystem = Some(FileSystemConfig(twoRoot.toString))),
+            fallback -> chat,
+            partial -> chat.copy(capabilities =
+              AgentCapabilities(functions =
+                Some(Set(FilesystemToolDefinition.ReadFile, ScalamodeToolDefinition.Execute))
+              )
+            ),
+            disabled -> chat.copy(capabilities = AgentCapabilities(tools = Some(Set(ToolKey.Filesystem))))
+          ),
+          providers = Map(provider -> ProviderConfig.ChatGPT())
+        ),
+        Chunk(human),
+        None,
+        root,
+        toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
+      )
+      bindings <- ZIO.foreach(List(first, second, fallback))(runtime.resolve)
+      before <- executions.get
+      values <- ZIO.foreach(bindings) { binding =>
+        val function = binding.functions.find(_.definition.name == ScalamodeToolDefinition.Execute).get
+        assertEquals(function.definition.scalamode.get.services.map(_.parameter), List("fs", "hello"))
+        function.execute(
+          ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"fs.readUtf8(\"note.txt\")"}""")
+        )
+      }
+      narrowed <- runtime.resolve(partial)
+      noScala <- runtime.resolve(disabled)
+      again <- runtime.resolve(first)
+    } yield {
+      assertEquals(before, 0)
+      assertEquals(values.map(_.text), List("one", "two", "workspace"))
+      assertEquals(
+        narrowed.functions
+          .find(_.definition.name == ScalamodeToolDefinition.Execute)
+          .get
+          .definition
+          .scalamode
+          .get
+          .services,
+        List(HelloWorldService.inspection)
+      )
+      assert(!noScala.functions.exists(_.definition.name == ScalamodeToolDefinition.Execute))
+      assert(bindings.head eq again)
+      for directory <- List(root, oneRoot, twoRoot) do
+        assertEquals(Files.readString(directory.resolve("via-scala.txt")), "written")
+    }))
+  }
+
   test(
-    "RPC composition binds selected private roots consistently for direct tools and session loops without duplicate keys"
+    "workspace composition keeps private native read roots and code-only Scala separate in direct and session calls"
   ) {
     run(ZIO.scoped {
       for {
@@ -88,11 +265,12 @@ final class ServerCompositionSuite extends FunSuite {
           Files.writeString(root.resolve("notes.txt"), "workspace")
           Files.writeString(oneRoot.resolve("notes.txt"), "one")
           Files.writeString(twoRoot.resolve("notes.txt"), "two")
+          Files.writeString(root.resolve("workspace-only.txt"), "workspace")
+          Files.writeString(oneRoot.resolve("one-only.txt"), "one")
+          Files.writeString(twoRoot.resolve("two-only.txt"), "two")
         }
         events <- Ref.make(Vector.empty[String])
         alive <- Ref.make(false)
-        seen <- Ref.make(Vector.empty[fmgp.yallmo.fs.FsRead])
-        route <- fmgp.rpc.RpcWebSocket.route()
         executor = new ScalaCodeExecutor {
           def isAvailable: UIO[Boolean] = ZIO.succeed(true)
           def execute(
@@ -101,20 +279,10 @@ final class ServerCompositionSuite extends FunSuite {
               maxOutputBytes: Int,
               dependencies: Seq[String]
           ): Task[ExternalFunctionResult.ScalaMode] =
-            ZIO.dieMessage("Expected explicit filesystem mode")
-          override def executeFilesystem(
-              code: String,
-              endpoint: String,
-              timeout: Duration,
-              maxOutputBytes: Int
-          ): ZIO[fmgp.yallmo.fs.FsRead & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
-            for {
-              fs <- ZIO.service[fmgp.yallmo.fs.FsRead]
-              supplied <- ZIO.service[fmgp.rpc.RpcWebSocket.RpcRoute]
-              _ <- ZIO.attempt { assert(supplied eq route); assertEquals(endpoint, "ws://127.0.0.1:1/rpc") }
-              _ <- seen.update(_ :+ fs)
-              text <- fs.readUtf8("notes.txt").mapError(error => new Exception(error.toString))
-            } yield ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(text))
+            ZIO.attempt {
+              assertEquals(code, "1 + 1")
+              ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("2"))
+            }
         }
         coachId = AgentId("coach-private")
         folderId = AgentId("folder-private")
@@ -136,8 +304,7 @@ final class ServerCompositionSuite extends FunSuite {
             Chunk(human),
             Some(root),
             root,
-            toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor)),
-            Some(route -> "ws://127.0.0.1:1/rpc")
+            toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
           )
           .provideSomeEnvironment[Scope](_.add[Client](selectedFilesystemClient))
         opened = (runtime, runtime.availability)
@@ -177,128 +344,65 @@ final class ServerCompositionSuite extends FunSuite {
         )
         sharedPlan <- opened._1.invoke(readRequest, two)
         results <- ZIO.foreachPar(List(one -> "one", two -> "two", workspace -> "workspace")) { (binding, expected) =>
-          val input = Message(
+          def input(key: FunctionKey, arguments: String): Message = Message(
             MessageData(
               human.id,
               None,
               java.time.Instant.EPOCH,
               MessagePayload.ToolCall(
-                FunctionCall(
-                  FunctionCallId.unsafe("read-private"),
-                  ScalamodeToolDefinition.Execute,
-                  """{"code":"read notes","mode":"filesystem"}"""
-                )
+                FunctionCall(FunctionCallId.unsafe(s"direct-$expected-${key.value}"), key, arguments)
               )
             )
           )
-          opened._1.invoke(input, binding).map { message =>
-            assertEquals(message.payload.contentStr, expected)
+          for {
+            read <- opened._1.invoke(input(FilesystemToolDefinition.ReadFile, """{"path":"notes.txt"}"""), binding)
+            listing <- opened._1.invoke(input(FilesystemToolDefinition.ListFiles, """{"path":"."}"""), binding)
+            escaped <- opened._1
+              .invoke(input(FilesystemToolDefinition.ReadFile, """{"path":"../notes.txt"}"""), binding)
+            missing <-
+              if expected == "workspace" then ZIO.none
+              else
+                opened._1
+                  .invoke(input(FilesystemToolDefinition.ReadFile, """{"path":"workspace-only.txt"}"""), binding)
+                  .asSome
+            computed <- opened._1.invoke(input(ScalamodeToolDefinition.Execute, """{"code":"1 + 1"}"""), binding)
+            session <- runtime.master.createSession(SessionId.unsafe(s"private-$expected"), Chunk(human.id, binding.id))
+            turn <- runtime.master.submit(session.id, human.id, AgentTask("read"), AgentRunner.execution(binding))
+          } yield {
+            assertEquals(read.payload.contentStr, expected)
+            assert(listing.payload.contentStr.contains(s"$expected-only.txt"))
+            if expected != "workspace" then assert(!listing.payload.contentStr.contains("workspace-only.txt"))
+            assertEquals(ujson.read(escaped.payload.contentStr)("error")("kind").str, "ToolExecutionFailed")
+            missing.foreach(message =>
+              assertEquals(ujson.read(message.payload.contentStr)("error")("kind").str, "ToolExecutionFailed")
+            )
+            assertEquals(computed.payload.contentStr, "2")
+            assertEquals(turn.result, AgentResult(binding.id, expected))
           }
         }
-        submission = opened._1.submission(human.id, Some(two))
-        session <- submission.create(Some("private-root"))
-        turn <- submission.submit(Some(session.id.value), "read")
         coach <- runtime.resolve(coachId)
         folder <- runtime.resolve(folderId)
         input = Message(MessageData(human.id, None, java.time.Instant.EPOCH, MessagePayload.User("review")))
         folderReply <- opened._1.invoke(input, folder)
-        capabilities <- seen.get
       } yield {
         assert(!coach.adapter.asInstanceOf[HasAgentCapabilities].capabilities.allowsTool(ToolKey.Scalamode))
         assert(folderReply.payload.contentStr.contains("notes.txt"))
-        assertEquals(capabilities.size, 4, "Folder execution must not invoke scalamode")
         assertEquals(results.size, 3)
         assertEquals(sharedPlan.payload.contentStr, savedPlan.payload.contentStr)
         assert(sharedPlan.payload.contentStr.contains("Shared by both agents"))
         assert(Files.exists(root.resolve("sdlc/tasks.jsonl")))
         assert(!Files.exists(oneRoot.resolve("sdlc")))
         assert(!Files.exists(twoRoot.resolve("sdlc")))
-        assertEquals(turn.result, AgentResult(second, "two"))
         assert(failed.isLeft, "An invalid explicit private root must not fall back to workspace")
+        assert(one eq again, "Complete executable selection, not just its adapter or filesystem, is cached")
         assert(one.filesystem.get eq again.filesystem.get)
-        assert(capabilities.exists(_ eq one.filesystem.get))
-        assertEquals(capabilities.count(_ eq two.filesystem.get), 2)
         val keys = opened._1.context(Some(one)).functions.map(_.name)
         assertEquals(keys.distinct, keys)
         assertEquals(
           opened._1.context(Some(one)).functions.find(_.name == ScalamodeToolDefinition.Execute).get,
-          ScalaTool.filesystemDefinition
+          ScalaTool.definition
         )
       }
-    })
-  }
-
-  test("without Scala RPC, direct invocation and managed submit use private read roots with workspace fallback") {
-    run(ZIO.scoped {
-      for {
-        root <- temporaryRoot
-        privateRoot <- ZIO.attempt(Files.createDirectory(root.resolve("private")))
-        _ <- ZIO.attempt {
-          Files.writeString(root.resolve("notes.txt"), "workspace")
-          Files.writeString(root.resolve("workspace-only.txt"), "workspace")
-          Files.writeString(privateRoot.resolve("notes.txt"), "private")
-          Files.writeString(privateRoot.resolve("private-only.txt"), "private")
-        }
-        events <- Ref.make(Vector.empty[String])
-        alive <- Ref.make(false)
-        executor = new ScalaCodeExecutor {
-          def isAvailable: UIO[Boolean] = ZIO.succeed(true)
-          def execute(
-              code: String,
-              timeout: Duration,
-              maxOutputBytes: Int,
-              dependencies: Seq[String]
-          ): Task[ExternalFunctionResult.ScalaMode] = ZIO.dieMessage("No filesystem Scala without explicit RPC")
-        }
-        application <- ServerApplication
-          .workspace(
-            config.copy(agents =
-              Map(
-                first -> definition().copy(filesystem = Some(FileSystemConfig(privateRoot.toString))),
-                second -> definition()
-              )
-            ),
-            Chunk(human),
-            None,
-            root,
-            toolServices(events, alive).map(_.add[ScalaCodeExecutor](executor))
-          )
-          .provideSomeEnvironment[Scope](_.add[Client](filesystemClient(rpc = false)))
-        _ <- ZIO.foreachDiscard(List((first, "private"), (second, "workspace"))) { (id, expected) =>
-          for {
-            selected <- application.resolve(id)
-            again <- application.resolve(id)
-            input = (key: FunctionKey, args: String) =>
-              Message(
-                MessageData(
-                  human.id,
-                  None,
-                  java.time.Instant.EPOCH,
-                  MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe(s"direct-${id}-${key}"), key, args))
-                )
-              )
-            read <- application.invoke(input(FilesystemToolDefinition.ReadFile, """{"path":"notes.txt"}"""), selected)
-            listing <- application.invoke(input(FilesystemToolDefinition.ListFiles, """{"path":"."}"""), selected)
-            scalaDenied <- application.invoke(
-              input(ScalamodeToolDefinition.Execute, """{"code":"fs.list","mode":"filesystem"}"""),
-              selected
-            )
-            session <- application.master.createSession(SessionId.unsafe(s"no-rpc-$id"), Chunk(human.id, id))
-            turn <- application.master.submit(session.id, human.id, AgentTask("read"), AgentRunner.execution(selected))
-          } yield {
-            assert(selected eq again, "Complete executable selection, not just the adapter, is cached")
-            assertEquals(read.payload.contentStr, expected)
-            assertEquals(
-              selected.context.functions.find(_.name == ScalamodeToolDefinition.Execute).get,
-              ScalaTool.definition
-            )
-            assert(scalaDenied.payload.contentStr.contains("InvalidToolArguments"))
-            assert(listing.payload.contentStr.contains(s"$expected-only.txt"))
-            if id == first then assert(!listing.payload.contentStr.contains("workspace-only.txt"))
-            assertEquals(turn.result, AgentResult(id, expected))
-          }
-        }
-      } yield ()
     })
   }
 
@@ -312,7 +416,14 @@ final class ServerCompositionSuite extends FunSuite {
             Files.writeString(root.resolve("experiences/project.md"), "User-reported Scala experience")
           }
           requests <- Ref.make(0)
-          coach = definition().copy(agentType = "CoachAgent", filesystem = Some(FileSystemConfig(root.toString)))
+          coach = definition().copy(
+            agentType = "CoachAgent",
+            filesystem = Some(FileSystemConfig(root.toString)),
+            capabilities = AgentCapabilities(
+              tools = Some(Set(ToolKey.Coach)),
+              functions = Some(fmgp.yallmo.agents.CoachApplicationTools.Definitions.map(_.name).toSet)
+            )
+          )
           otherRoot <- ZIO.attempt(Files.createDirectory(root.resolve("other-coach")))
           runtime <- ServerApplication
             .make(
@@ -332,6 +443,7 @@ final class ServerCompositionSuite extends FunSuite {
               )
             )
           binding <- runtime.resolve(first)
+          cached <- runtime.resolve(first)
           before <- requests.get
           assembled = runtime
           submission = assembled.submission(human.id, Some(binding))
@@ -339,13 +451,26 @@ final class ServerCompositionSuite extends FunSuite {
           result <- submission.submit(Some(session.id.value), "Help me plan my next career move")
           after <- requests.get
           other <- runtime.resolve(second)
-          otherTools = other.adapter.asInstanceOf[HasLocalAgentFunctions].localFunctions
-          otherNotebook <- otherTools
-            .find(_.definition.name == fmgp.yallmo.agents.CoachApplicationTools.ListKey)
-            .get
-            .execute(ExternalFunctionCall(fmgp.yallmo.agents.CoachApplicationTools.ListKey, "{}"))
+          otherNotebook <- runtime.invoke(
+            Message(
+              MessageData(
+                human.id,
+                None,
+                java.time.Instant.EPOCH,
+                MessagePayload.ToolCall(
+                  FunctionCall(
+                    FunctionCallId.unsafe("other-notebook"),
+                    fmgp.yallmo.agents.CoachApplicationTools.ListKey,
+                    "{}"
+                  )
+                )
+              )
+            ),
+            other
+          )
         } yield {
-          assertEquals(otherNotebook.text, "[]")
+          assert(binding eq cached, "Private wiring belongs to the cached resolved generation")
+          assertEquals(otherNotebook.payload.contentStr, "[]")
           assert(binding.settings.nonEmpty)
           assertEquals(before, 0)
           assertEquals(after, 2)
@@ -452,6 +577,27 @@ final class ServerCompositionSuite extends FunSuite {
         assertEquals(opened.context(None).systemPrompt, ServerApplication.DefaultSystemPrompt)
         assertEquals(loaded, saved)
         assertEquals(unknown, Left(YallmoError.UnknownAgent(AgentId("missing"))))
+      }
+    }
+  }
+
+  test("startup rejects unknown capability IDs on unselected configured agents before inference") {
+    run {
+      for {
+        requests <- Ref.make(0)
+        unselected = definition().copy(
+          capabilities = AgentCapabilities(functions = Some(Set(FunctionKey.unsafe("unselected_typo"))))
+        )
+        outcome <- ServerApplication
+          .make(config.copy(agents = config.agents.updated(second, unselected)), Chunk(human))
+          .provideEnvironment(ZEnvironment(responseClient(requests)))
+          .either
+        calls <- requests.get
+      } yield {
+        val error = outcome.swap.toOption.get
+        assert(error.isInstanceOf[YallmoError.InvalidConfig])
+        assert(error.getMessage.contains("Agent 'second' capabilities.functions contains unknown IDs: unselected_typo"))
+        assertEquals(calls, 0, "Startup validation must not invoke a provider or require agent selection")
       }
     }
   }
@@ -884,9 +1030,7 @@ final class ServerCompositionSuite extends FunSuite {
       }
     })
 
-  private def selectedFilesystemClient: Client = filesystemClient(rpc = true)
-
-  private def filesystemClient(rpc: Boolean): Client =
+  private def selectedFilesystemClient: Client =
     Client.fromDriver(new ZClient.Driver[Any, Scope, Throwable] {
       override def request(
           version: Version,
@@ -903,17 +1047,15 @@ final class ServerCompositionSuite extends FunSuite {
           val messages = request("messages").arr
           val outputs = messages.filter(_("role").str == "tool").map(_("content").str)
           val response = if outputs.nonEmpty then {
-            assertEquals(outputs.size, if rpc then 3 else 2)
+            assertEquals(outputs.size, 2)
             val read = outputs(0)
             assert(outputs(1).contains("notes.txt"))
-            if rpc then assertEquals(outputs(2), read)
             ujson.Obj("role" -> "assistant", "content" -> read)
           } else {
             val calls = List(
               ("readFile", ujson.Obj("path" -> "notes.txt")),
-              ("listFiles", ujson.Obj("path" -> ".")),
-              ("scalamode", ujson.Obj("code" -> "fs.readUtf8(\"notes.txt\")", "mode" -> "filesystem"))
-            ).take(if rpc then 3 else 2).zipWithIndex.map { case ((name, arguments), index) =>
+              ("listFiles", ujson.Obj("path" -> "."))
+            ).zipWithIndex.map { case ((name, arguments), index) =>
               ujson.Obj(
                 "id" -> s"call-$index",
                 "type" -> "function",

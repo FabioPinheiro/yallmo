@@ -1,4 +1,4 @@
-package fmgp.yallmo.scalacode
+package fmgp.yallmo.tool.scalamode
 
 import scala.annotation.experimental
 

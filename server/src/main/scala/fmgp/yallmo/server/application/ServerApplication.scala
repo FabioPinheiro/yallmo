@@ -7,8 +7,7 @@ import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import fmgp.yallmo.tool.sdlc.SdlcService
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{Config, ConfiguredAgentSettings, ProviderId}
-import fmgp.yallmo.fs.FsRead
-import fmgp.rpc.RpcWebSocket
+import fmgp.yallmo.fs.{FsRead, FsWrite}
 import fmgp.yallmo.model.llm.ProviderContinuation
 import fmgp.yallmo.orchestration.config.ConfigFile
 import java.nio.channels.{FileChannel, OverlappingFileLockException}
@@ -16,15 +15,16 @@ import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
 import scala.collection.immutable.VectorMap
 import zio.json.ast.Json
 import java.util.concurrent.ConcurrentHashMap
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorLive}
 import zio.*
 import zio.http.Client
 
 /** Shared application composition: one agent catalog, orchestration master and bound tool environment.
   *
   * This is the trusted in-process API for resolving agents and using core execution. The standalone factories
-  * [[ServerApplication.open]] and [[ServerApplication.openRpc]] return [[ServerExecutionService]], which adds server
-  * request policy and application-owned execution lifetime around this same composition. Neither construction nor agent
-  * selection runs inference. Embedded factories do not acquire the standalone storage lease.
+  * [[ServerApplication.open]] returns [[ServerExecutionService]], which adds server request policy and
+  * application-owned execution lifetime around this same composition. Neither construction nor agent selection runs
+  * inference. Embedded factories do not acquire the standalone storage lease.
   */
 final class ServerApplication private (
     val master: OrchestratorLive[Any],
@@ -137,7 +137,9 @@ object ServerApplication {
       availableFunctions: Chunk[AgentFunction[Any]] = Chunk.empty,
       workspaceFilesystem: Option[FsRead] = None,
       selectedFunctions: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
-      toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions
+      toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions,
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+      workspaceFilesystemWrite: Option[FsWrite] = None
   ): ZIO[Client, YallmoError, ServerApplication] =
     for {
       context = StaticContext[Any](
@@ -162,10 +164,13 @@ object ServerApplication {
         context,
         fs => {
           val rebound = selectedFunctions(fs.orElse(workspaceFilesystem))
-          if rebound.isEmpty then ApplicationTools.selected(availableFunctions, fs.orElse(workspaceFilesystem), None)
+          if rebound.isEmpty then ApplicationTools.selected(availableFunctions, fs.orElse(workspaceFilesystem))
           else rebound
         },
-        id => reader.await.flatMap(_.readBlob(id))
+        id => reader.await.flatMap(_.readBlob(id)),
+        scalaCodeExecutor,
+        workspaceFilesystem,
+        workspaceFilesystemWrite
       )
       master <- storageRoot match {
         case None       => OrchestratorLive.inMemory(catalog)
@@ -199,7 +204,6 @@ object ServerApplication {
       storageRoot: Option[Path],
       workspace: Path,
       services: ULayer[ApplicationTools.Environment] = ApplicationTools.live,
-      rpc: Option[(RpcWebSocket.RpcRoute, String)] = None,
       sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope & Client, YallmoError, ServerApplication] =
     for {
@@ -212,15 +216,16 @@ object ServerApplication {
             tool.execute(call).provideEnvironment(environment)
         }
       }
-      selected = (fs: Option[FsRead]) =>
-        ApplicationTools.selected(
-          tools,
-          fs,
-          rpc.map { case (route, endpoint) =>
-            (environment.add[RpcWebSocket.RpcRoute](route), endpoint)
-          }
-        )
-      application <- make(config, registeredAgents, storageRoot, tools, startup.filesystem, selected)
+      application <- make(
+        config,
+        registeredAgents,
+        storageRoot,
+        tools,
+        startup.filesystem,
+        fs => ApplicationTools.selected(tools, fs),
+        scalaCodeExecutor = environment.get[ScalaCodeExecutor],
+        workspaceFilesystemWrite = startup.filesystemWrite
+      )
     } yield new ServerApplication(
       application.master,
       application.catalog,
@@ -238,21 +243,6 @@ object ServerApplication {
   val live: ZLayer[Any, Throwable, Environment] =
     Client.default ++ ApplicationTools.live
 
-  /** Opens the scoped standalone execution service with explicit filesystem-enabled Scala RPC wiring. The caller owns
-    * the loopback listener, route lifetime and trusted endpoint; the returned service must not outlive this scope or
-    * its HTTP/tool services.
-    */
-  def openRpc(
-      storage: Path,
-      configPath: Path,
-      workspace: Option[Path],
-      endpoint: String,
-      sharedSdlc: Option[SdlcService] = None
-  ): ZIO[Scope & Environment & fmgp.rpc.RpcWebSocket.RpcRoute, Throwable, ServerExecutionService] =
-    ZIO.serviceWithZIO[fmgp.rpc.RpcWebSocket.RpcRoute] { route =>
-      openConfigured(storage, configPath, workspace, Some(route -> endpoint), sharedSdlc)
-    }
-
   /** Opens the standalone execution service and its shared application under a scoped storage lease. The returned
     * service owns admitted work beyond individual caller waits, but must not escape this scope or the lifetime of the
     * supplied HTTP/tool services. No agent is selected or executed at startup.
@@ -263,13 +253,12 @@ object ServerApplication {
       workspace: Option[Path] = None,
       sharedSdlc: Option[SdlcService] = None
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
-    openConfigured(storage, configPath, workspace, None, sharedSdlc)
+    openConfigured(storage, configPath, workspace, sharedSdlc)
 
   private def openConfigured(
       storage: Path,
       configPath: Path,
       workspace: Option[Path],
-      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
       sharedSdlc: Option[SdlcService]
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     ZIO.uninterruptibleMask { restore =>
@@ -277,7 +266,7 @@ object ServerApplication {
         parent <- ZIO.service[Scope]
         // Failed opens release ownership immediately, even if the caller catches the failure in a longer-lived scope.
         ownership <- parent.fork
-        application <- restore(compose(storage, configPath, workspace, rpc, sharedSdlc))
+        application <- restore(compose(storage, configPath, workspace, sharedSdlc))
           .provideSomeEnvironment[Scope & Environment](_.add[Scope](ownership))
           .onExit {
             case Exit.Success(_) => ZIO.unit
@@ -290,7 +279,6 @@ object ServerApplication {
       storage: Path,
       configPath: Path,
       workspace: Option[Path],
-      rpc: Option[(fmgp.rpc.RpcWebSocket.RpcRoute, String)],
       sharedSdlc: Option[SdlcService]
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     for {
@@ -309,7 +297,6 @@ object ServerApplication {
           Some(root),
           selectedWorkspace,
           ZLayer.succeedEnvironment(environment),
-          rpc,
           sharedSdlc
         )
         .mapError(error =>
@@ -330,7 +317,16 @@ object ServerApplication {
         OpenAiCodexAuth.oauthFlow(client),
         (id, credentials) => opened.catalog.updateChatGptCredentials(id, credentials).fold(_ => false, _ => true)
       )
-    } yield new ServerExecutionService(opened, selectedWorkspace, providers, scope, inFlight, continuations, captures)
+    } yield new ServerExecutionService(
+      opened,
+      selectedWorkspace,
+      providers,
+      scope,
+      inFlight,
+      continuations,
+      captures,
+      root.resolve("logs").resolve("debug")
+    )
 
   private def existingDirectory(path: Path, message: String): Task[Path] =
     ZIO

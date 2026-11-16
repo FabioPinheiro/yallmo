@@ -3,6 +3,14 @@ package fmgp.yallmo.provider.openai
 import fmgp.yallmo.orchestration.config.OAuthCredentialsConfig
 import fmgp.yallmo.model.{AgentId, MessagePayload}
 import fmgp.yallmo.tool.FunctionGenericOutput
+import fmgp.yallmo.tool.scalamode.{
+  HelloWorldService,
+  ScalaCodeExecutor,
+  ScalaTool,
+  ScalamodeService,
+  ScalamodeToolDefinition
+}
+import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult, ToolWiring}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, LlmStopReason, ProviderGenerateOptions}
 import munit.FunSuite
 import zio.*
@@ -403,6 +411,73 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
       } yield text
     }
     assertEquals(result, "Provider reply")
+  }
+
+  test("ChatGPTAgent binds hello as a Scalamode service by default, after explicit tool wiring") {
+    run {
+      for {
+        calls <- Ref.make(0)
+        client = fakeClient(_ =>
+          calls
+            .update(_ + 1)
+            .as(
+              Response.text(
+                """data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done"}]}]}}""" + "\n\n"
+              )
+            )
+        )
+        provider <- OpenAiCodexClient.make(Some(inferenceCredentials)).provideEnvironment(ZEnvironment(client))
+        executor = new ScalaCodeExecutor {
+          def isAvailable = ZIO.succeed(true)
+          def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+            ZIO.dieMessage("Expected service execution")
+          override def executeWithServices[R <: ScalamodeService](
+              code: String,
+              service: R,
+              timeout: Duration,
+              maxOutputBytes: Int
+          ) = ZIO.succeed {
+            assert(service eq HelloWorldService)
+            assertEquals(code, "hello.helloWorld")
+            ExternalFunctionResult.ScalaMode(fmgp.yallmo.tool.ScalaModeResult.Executed("Hello world"))
+          }
+        }
+        original = new AgentFunction[Any] {
+          val definition = ScalaTool.definition
+          def execute(call: ExternalFunctionCall) = ZIO.dieMessage("Expected replacement")
+        }
+        base = Seq(AgentTool(ScalamodeToolDefinition, Chunk(original)))
+        defaultAgent = new ChatGPTAgent(AgentId("default"), provider, scalaCodeExecutor = executor)
+        compositions <- Ref.make(0)
+        wiring: ToolWiring = tools => compositions.update(_ + 1).as(tools)
+        injected = new ChatGPTAgent(AgentId("injected"), provider, toolWiring = wiring, scalaCodeExecutor = executor)
+        before <- calls.get
+        empty <- defaultAgent.toolWirings(Seq.empty)
+        tools <- defaultAgent.toolWirings(base)
+        customized <- injected.toolWirings(base)
+        unchanged <- defaultAgent.toolWirings(tools)
+        hello = tools.head.functions.head
+        result <- hello.execute(ExternalFunctionCall(hello.definition.name, """{"code":"hello.helloWorld"}"""))
+        compositionCount <- compositions.get
+        afterUtility <- calls.get
+        turn <- injected.turn(
+          AgentTurnRequest("model", Chunk(MessagePayload.User("Hello"), MessagePayload.Instructions("Be helpful")))
+        )
+        afterTurn <- calls.get
+      } yield {
+        assertEquals(empty, Seq.empty[AgentTool[Any]])
+        assert(unchanged eq tools)
+        assertEquals(tools.map(_.name), Seq(fmgp.yallmo.tool.ToolKey.Scalamode))
+        assertEquals(hello.definition.scalamode.get.services, List(HelloWorldService.inspection))
+        assertEquals(customized.head.definition, tools.head.definition)
+        assertEquals(compositionCount, 1)
+        assertEquals(result.text, "Hello world")
+        assertEquals(before, 0)
+        assertEquals(afterUtility, 0)
+        assertEquals(afterTurn, 1)
+        assertEquals(turn.output, Chunk(MessagePayload.Assistant("Done")))
+      }
+    }
   }
 
   test("agent and provider inference retain the HTTP response-body timeout") {

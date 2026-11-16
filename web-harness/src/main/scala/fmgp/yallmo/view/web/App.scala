@@ -345,7 +345,22 @@ object App {
                   () => client.agents(),
                   refreshes
                 ) { ids =>
-                  ul(cls := "id-list", children <-- ids.split(identity) { (id, _, _) => li(code(id)) })
+                  div(
+                    p(
+                      cls := "muted",
+                      "Inspect a configured agent's effective callable functions after capability filtering and tool wiring. Inspection does not run inference or execute tools."
+                    ),
+                    ul(
+                      cls := "agent-tools-list",
+                      children <-- ids.split(identity) { (id, _, _) =>
+                        AgentToolsView(
+                          id,
+                          chat.state.signal.map(_.agents.contains(AgentId(id))).distinct,
+                          client.tools
+                        )
+                      }
+                    )
+                  )
                 }
               case ViewRoute.Blobs =>
                 listPage("Blobs", "No stored blobs.", () => client.blobs(), refreshes) { ids =>
@@ -511,6 +526,42 @@ object App {
   }
 
   private def messageBody(message: MessageSnapshot): HtmlElement =
+    ToolCallContent.scalaSource(message.role, message.toolName, message.content) match {
+      case Some(source) =>
+        div(
+          cls := "scalamode-tool-call",
+          div(
+            cls := "source-file",
+            MarkdownView.scalaCode(source)
+          ),
+          rawArguments(message)
+        )
+      case None =>
+        ToolCallContent.bashCommand(message.role, message.toolName, message.content) match {
+          case Some(command) =>
+            div(
+              cls := "bash-tool-call",
+              div(
+                cls := "source-file terminal-command",
+                div(
+                  cls := "terminal-command-body",
+                  span(cls := "terminal-prompt", aria.hidden := true, "$"),
+                  pre(code(command))
+                )
+              ),
+              rawArguments(message)
+            )
+          case None => genericMessageBody(message)
+        }
+    }
+
+  private def rawArguments(message: MessageSnapshot): HtmlElement =
+    detailsTag(
+      summaryTag("Raw arguments JSON"),
+      MessageBodyView(MessageText.format(message.role, message.content), markdown = false)
+    )
+
+  private def genericMessageBody(message: MessageSnapshot): HtmlElement =
     (if message.role == "tool_result" then ToolResultContent.parse(message.content) else None) match {
       case Some(result) =>
         div(

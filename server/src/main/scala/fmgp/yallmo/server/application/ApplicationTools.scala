@@ -1,11 +1,11 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaTool, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorLive, ScalaTool, ScalamodeToolDefinition}
 
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
 
-import fmgp.yallmo.fs.{FileSystem, FsRead}
+import fmgp.yallmo.fs.{FileSystem, FsRead, FsWrite}
 import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.tool.sdlc.{SdlcService, SdlcTools}
 import zio.*
@@ -20,7 +20,8 @@ import java.nio.file.Path
 final case class StartupTools(
     functions: Chunk[AgentFunction[ApplicationTools.Environment]],
     availability: ToolAvailability,
-    filesystem: Option[FsRead] = None
+    filesystem: Option[FsRead] = None,
+    filesystemWrite: Option[FsWrite] = None
 ) {
   def tools: Chunk[AgentTool[ApplicationTools.Environment]] =
     AgentTool.group(ApplicationTools.ToolDefinitions, functions)
@@ -72,7 +73,7 @@ object ApplicationTools {
   )
 
   val live: ULayer[Environment] =
-    BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutor.live
+    BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutorLive.live
 
   /** Probes requirements without executing tools and logs availability once at startup. */
   def evaluate(
@@ -130,6 +131,7 @@ object ApplicationTools {
       startupTools = StartupTools(
         allAvailable,
         ToolAvailability.from(allAvailable.map(_.definition), unavailable, ToolDefinitions),
+        filesystem,
         filesystem
       )
       summary = startupTools.availability.availableTools
@@ -143,24 +145,15 @@ object ApplicationTools {
       )
     } yield startupTools
 
-  /** Reads use the selected private root even without Scala RPC. Process tools retain the workspace. */
+  /** Reads use the selected private root. Process tools retain the workspace. */
   private[application] def selected(
       tools: Chunk[AgentFunction[Any]],
-      filesystem: Option[FsRead],
-      scalaRpc: Option[(ZEnvironment[Environment & fmgp.rpc.RpcWebSocket.RpcRoute], String)]
+      filesystem: Option[FsRead]
   ): Chunk[AgentFunction[Any]] = tools.map { tool =>
     filesystem match {
       case Some(fs) if tool.definition.name == FilesystemToolDefinition.ReadFile => bindFilesystem(new ReadFileTool, fs)
       case Some(fs) if tool.definition.name == FilesystemToolDefinition.ListFiles =>
         bindFilesystem(new ListFilesTool, fs)
-      case Some(fs) if tool.definition.name == ScalamodeToolDefinition.Execute && scalaRpc.nonEmpty =>
-        val (environment, endpoint) = scalaRpc.get
-        val selected = ScalaTool.filesystem(endpoint)
-        new AgentFunction[Any] {
-          val definition = selected.definition
-          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
-            selected.execute(call).provideEnvironment(environment.add[FsRead](fs))
-        }
       case _ => tool
     }
   }

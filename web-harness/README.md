@@ -33,7 +33,7 @@ browser Origin. It also proxies `/api/sdlc` over HTTP to `http://127.0.0.1:8080`
 Static assets and SDLC inspection use HTTP; other application requests and attachment bytes use JSON-RPC. No Scala.js/Vite sbt
 bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat,
 all messages, an interactive timestamp-based conversation DAG,
-registry agent IDs, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
+registry agents with on-demand tool inspection, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
 from the conversation sidebar; empty, unknown and former Sessions hashes open Chat. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
@@ -81,7 +81,14 @@ dark palette. Language tags are case-insensitive; unknown/unlabeled languages an
 remain readable plain code. Inline code stays inline. Fenced `mermaid` blocks retain diagram rendering and source access
 on these routes too.
 
-Tool call JSON stays pretty-printed and literal. Decoded tool-result blocks and Scalamode output/logs preserve whitespace
+Scalamode tool calls with the known `{"code":"..."}` arguments display as syntax-highlighted Scala source,
+decoding the JSON string once and preserving the source literally (including Markdown fences inside code).
+Original arguments remain available under **Raw arguments JSON**. Neither code nor command panels add a header row.
+Bash tool calls with `{"command":"..."}` arguments display as a terminal-style panel with a `$` prompt,
+showing the decoded command literally, including multiline scripts. This is display-only: commands are not executed
+by the browser, and embedded HTML/Markdown remains text. Raw arguments are available in the same disclosure.
+Other tool calls and malformed/unknown Scalamode or Bash arguments keep their pretty-printed, literal JSON display.
+Decoded tool-result blocks and Scalamode output/logs preserve whitespace
 and literal Markdown outside top-level fenced blocks, while supporting Scala highlighting and Mermaid inside fences.
 Raw HTML is never executed, Markdown image URLs never load, and code text remains selectable. Metadata, Read speech,
 attachment controls, stored content and SDLC Copy Markdown/Raw JSON exports are unchanged.
@@ -95,6 +102,22 @@ The browser depends on `protocolJS → modelJS`, using the shared JVM/JS JSON-RP
 There is no direct source inclusion or JVM core dependency. SDLC uses a small browser projection backed by the full JSON AST,
 not duplicated core PlanTask/PlanIntent codecs. The cross-projects use
 `shared/src`, `jvm/src` and `js/src`; System One/macros are included and tested on both platforms.
+
+## Agent tool inspection
+
+Open **Agents** (`#/agents`) and click **Inspect tools** on a configured agent. The read-only `tools.list` request shows
+its effective tool and function counts after capability filtering and tool wiring. Tools are grouped under their tool keys;
+each function key is a keyboard-accessible disclosure, collapsed initially. Expanding a function shows its description
+directly, with a separate disclosure for input-schema/raw function JSON. An empty list is explicitly identified; presence/human and registered-only IDs have no configured tool
+context and their inspection button is disabled. Inspection resolves the same cached local agent context used for execution,
+but does not run inference or execute tools. Scalamode entries include an **Available Scalamode services** section:
+each bound service has its own initially collapsed disclosure labeled with its parameter and API types. Expanding it
+shows its description and supplied Scala interface declarations/method signatures. An expandable
+**Built-in Scala API (tool / ZIO)** reference is also available. Partial read/list bindings show only permitted methods. Pure bindings
+explicitly report no additional services; bindings without interface documentation say so rather than guessing.
+The full LLM tool description is shown inline inside its function, like other function descriptions. No RPC endpoints, tickets, dispatchers, artifact paths
+or private runtime implementations are included. **Reload tools** explicitly refreshes a result or retries a failure. Reconnect,
+page refresh and leaving the page discard inspection state; late replies cannot overwrite a new view.
 
 ## Providers and ChatGPT login
 
@@ -190,22 +213,23 @@ a conversation turn. Choose an agent using the **same toolbar picker as Chat**, 
 **Run scalamode** for restricted Scala execution. Both views use the current conversation's selected agent;
 Scalamode has no separate agent selection. The shared agent picker and run button are disabled while a request is pending.
 The page sends an ordinary `agents.invoke` message containing
-`ToolCall(name = scalamode, argumentsJson = {"code":"...","mode":"filesystem"})` and displays its correlated `ToolOutput`:
+`ToolCall(name = scalamode, argumentsJson = {"code":"..."})` and displays its correlated `ToolOutput`:
 stdout/result, compiler/runtime diagnostics, typed timeout outcomes, exit code and truncation metadata.
 The result panel shows `compilationTime`, `executionTime` and `totalTime` in milliseconds (`ms`), including failures
 and timeouts. Execution time includes Scala CLI/JVM startup, not only snippet evaluation; total time also includes
 executor setup and cleanup. Skipped or unmeasured timings display `0 ms`.
-The default example lists entries in the selected agent’s configured root with `fs.list(".").map(_.mkString("\n"))`.
-The browser always requests filesystem-capable execution, which requires a filesystem-enabled backend.
+The default example is `List(1, 2, 3).map(_ * 2).sum`, a computation that needs no bound services.
+The browser sends only code; any extra API must be explicitly bound by the selected agent/host.
 Editor text is treated only as text; no Markdown/HTML is executed by the browser.
 
 A configured backend, initialized Operator and advertised `agents.invoke` method are required. Tool availability and
 the selected agent's capability allowlist are checked by the server, not inferred from the agent selector. Scala CLI
 must exist on the backend; restricted execution also needs the pinned offline compiler cache. `ApplicationTools`
 registers the restricted tool.
-Unavailable or denied tools return server errors. The backend API still accepts
-`{"code":"..."}` in pure mode, or `{"code":"...","mode":"filesystem"}` when supported, with the same compiler
-restrictions, injected `tool.api` helper and execution limits.
+Unavailable or denied tools return server errors. The backend API accepts only `{"code":"..."}`; retired `mode` fields are rejected as unknown.
+Compiler restrictions, injected `tool.api` helper and execution limits apply to default and service-bound calls.
+Filesystem access uses native read tools or explicitly opted-in service APIs such as `reads.readFile`, not an
+automatically injected `fs` capability.
 
 Source, pending state and the last result live at application root and survive tab navigation, not
 page reload. Editing while running does not change the submitted code. Double clicks cannot

@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.LlmProviderPayloadDebug
+import fmgp.yallmo.{LlmDebugCapture, LlmProviderPayloadDebug}
 import fmgp.yallmo.model.{AgentId, AudioAgent, Message, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.ProviderContinuation
 import fmgp.yallmo.orchestration.*
@@ -17,8 +17,8 @@ import zio.json.ast.Json
 /** Server-facing execution service over one shared [[ServerApplication]], not a configuration value or another agent
   * runtime.
   *
-  * Created by [[ServerApplication.open]] or [[ServerApplication.openRpc]] for the standalone server. RPC handlers use
-  * this service rather than assembling runners or submitting directly to core orchestration. It adds:
+  * Created by [[ServerApplication.open]] for the standalone server. RPC handlers use this service rather than
+  * assembling runners or submitting directly to core orchestration. It adds:
   *   - Request policy: author registration, same-session Busy rejection, optional expected-head checks, and
   *     provider-continuation reset/agent-switch policy for session submissions.
   *   - Execution ownership: submissions, branch submissions and invocations run in the application's child scope.
@@ -46,6 +46,8 @@ import zio.json.ast.Json
   *   per-session selected agent and opaque continuation identities excluded from provider requests, not stored history
   * @param requestCaptures
   *   bounded in-memory index of latest captured request paths per session; not a durable execution journal
+  * @param debugDirectory
+  *   destination for provider captures; standalone servers use the storage root's logs/debug directory
   */
 final class ServerExecutionService private[application] (
     val application: ServerApplication,
@@ -54,7 +56,8 @@ final class ServerExecutionService private[application] (
     scope: Scope,
     inFlight: Ref[Set[SessionId]],
     continuations: Ref[Map[SessionId, (AgentId, Set[ProviderContinuation])]],
-    requestCaptures: Ref[VectorMap[SessionId, Path]]
+    requestCaptures: Ref[VectorMap[SessionId, Path]],
+    debugDirectory: Path = Path.of("debug")
 ) {
   private val MaxCapturedSessions = 128
 
@@ -303,7 +306,7 @@ final class ServerExecutionService private[application] (
         // Terminal mapping/delivery stays masked after interruptible work and its finalizers have stopped.
         fiber <- ZIO
           .uninterruptibleMask { _ =>
-            effect.interruptible.exit.flatMap {
+            LlmDebugCapture.withDirectory(debugDirectory)(effect).interruptible.exit.flatMap {
               case Exit.Success(value) => terminal.succeed(value).unit
               case Exit.Failure(cause) =>
                 (ZIO

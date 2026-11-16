@@ -1,11 +1,12 @@
 package fmgp.yallmo.tool.scalamode
 
-import fmgp.yallmo.scalacode.ScalaToolApi
+import fmgp.yallmo.tool.scalamode.ScalaToolApi
 import fmgp.yallmo.tool.*
 import fmgp.yallmo.orchestration.ExternalFunctionResult
 import zio.*
 import fmgp.rpc.*
 import fmgp.yallmo.fs.FsRead
+import zio.http.Server
 
 import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -22,42 +23,8 @@ import scala.jdk.CollectionConverters.*
   * TODO: Add a separate execution-only timeout. The current timeout covers downloads, compilation and execution
   * together.
   */
-trait ScalaCodeExecutor {
-
-  def isAvailable: UIO[Boolean]
-
-  /** Compiles and evaluates code, returning the value separately from compiler/runtime logs.
-    *
-    * @param timeout
-    *   Combined process deadline, including compiler resolution/downloads, compilation and execution.
-    * @param maxOutputBytes
-    *   Positive shared byte budget for the result and logs. Keeps the first bytes, not the last. If output exceeds this
-    *   limit, the remainder is drained and discarded and `truncated` is true; otherwise it is false. Retained bytes are
-    *   decoded as UTF-8; this is a byte limit, not a character limit.
-    * @param dependencies
-    *   Trusted host-supplied Scala CLI dependency coordinates, never model-supplied tool arguments.
-    */
-  def execute(
-      code: String,
-      timeout: Duration,
-      maxOutputBytes: Int,
-      dependencies: Seq[String] = ScalaTool.DefaultDependencies
-  ): Task[ExternalFunctionResult.ScalaMode]
-
-  /** Explicit effect mode; pure/custom executors need not support a capability listener. */
-  @scala.annotation.nowarn("msg=unused explicit parameter")
-  def executeFilesystem(
-      code: String,
-      endpoint: String,
-      timeout: Duration,
-      maxOutputBytes: Int
-  ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
-    ZIO.fail(new UnsupportedOperationException("Filesystem Scala execution is not enabled"))
-}
-
-object ScalaCodeExecutor {
-  // Pin the compiler to the main build's release; use its local cache without resolving a floating version.
-  val ScalaVersion: String = "3.10.1" // TODO let's make it configurable
+object ScalaCodeExecutorLive {
+  import ScalaCodeExecutor.ScalaVersion
   val live: ULayer[ScalaCodeExecutor] = layer()
 
   /** Executable, compiler version and offline mode are trusted host configuration, never tool arguments. */
@@ -65,7 +32,14 @@ object ScalaCodeExecutor {
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
       offline: Boolean = true
-  ): ULayer[ScalaCodeExecutor] = ZLayer.succeed(new ScalaCodeExecutor {
+  ): ULayer[ScalaCodeExecutor] = ZLayer.succeed(make(executable, scalaVersion, offline))
+
+  /** Construct a resource-free executor description for explicitly bound agent services. No process starts here. */
+  def make(
+      executable: String = "scala-cli",
+      scalaVersion: String = ScalaVersion,
+      offline: Boolean = true
+  ): ScalaCodeExecutor = new ScalaCodeExecutor {
     override def isAvailable: UIO[Boolean] = LocalProcess.isAvailable(executable)
 
     override def execute(
@@ -75,18 +49,33 @@ object ScalaCodeExecutor {
         dependencies: Seq[String]
     ): Task[ExternalFunctionResult.ScalaMode] = run(code, timeout, maxOutputBytes, dependencies, None)
 
-    override def executeFilesystem(
+    override def executeWithServices[R <: ScalamodeService](
         code: String,
-        endpoint: String,
+        services: R,
         timeout: Duration,
         maxOutputBytes: Int
-    ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] = ZIO.scoped {
+    ): Task[ExternalFunctionResult.ScalaMode] = ZIO.scoped {
       for {
-        fs <- ZIO.service[FsRead]
-        route <- ZIO.service[RpcWebSocket.RpcRoute]
-        _ <- ZIO.attempt(validateFilesystemEndpoint(endpoint))
-        token <- route.registerScoped(FsReadRpc.contract.bind(fs), ttl = timeout)
-        result <- run(code, timeout, maxOutputBytes, filesystemDependencies, Some(endpoint -> token))
+        config <- ZIO.attempt(services.binding)
+        _ <- ZIO.attempt(
+          require(services.rpcBinding.isEmpty || services.localRpcBinding.isEmpty, "Choose one Scalamode RPC transport")
+        )
+        transport <- services.rpcBinding match {
+          case Some(binding) => ZIO.some(binding)
+          case None          =>
+            ZIO.foreach(services.localRpcBinding) { dispatcher =>
+              for {
+                route <- RpcWebSocket.route()
+                server <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
+                port <- Server.install(route.routes).provideEnvironment(server)
+              } yield ScalamodeService.RpcBinding(s"ws://127.0.0.1:$port/rpc", route, dispatcher)
+            }
+        }
+        bootstrap <- ZIO.foreach(transport) { binding =>
+          ZIO.attempt(validateRpcEndpoint(binding.endpoint)) *>
+            binding.route.registerScoped(binding.dispatcher, ttl = timeout).map(token => binding.endpoint -> token)
+        }
+        result <- run(code, timeout, maxOutputBytes, config.dependencies, bootstrap, Some(config))
       } yield result
     }
 
@@ -95,9 +84,13 @@ object ScalaCodeExecutor {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String],
-        bootstrap: Option[(String, RpcToken)]
+        bootstrap: Option[(String, RpcToken)],
+        service: Option[ScalamodeService.Binding] = None
     ): Task[ExternalFunctionResult.ScalaMode] =
-      (ZIO
+      (ZIO.attempt {
+        require(timeout > Duration.Zero, "timeout must be positive")
+        require(maxOutputBytes > 0, "maxOutputBytes must be positive")
+      } *> ZIO
         .fail(new IllegalArgumentException("Offline mode requires an exact Scala release or full nightly version"))
         .when(
           offline && !scalaVersion.matches("""\d+\.\d+\.\d+(?:-(?:RC\d+|M\d+))?(?:-bin-\d{8}-[0-9a-f]+-NIGHTLY)?""")
@@ -116,18 +109,20 @@ object ScalaCodeExecutor {
               _ <- ZIO.attemptBlocking {
                 Files.writeString(
                   directory.resolve("Snippet.scala"),
-                  if bootstrap.isDefined then filesystemSnippet(code) else snippet(code),
+                  service.fold(snippet(code))(config => servicePreamble(config) + code + "\n  }\n}\n"),
                   UTF_8
                 )
                 Files.writeString(
                   directory.resolve("Main.scala"),
-                  if bootstrap.isDefined then filesystemMain else main,
+                  service.fold(main)(serviceMain),
                   UTF_8
                 )
               }
               deadline <- ZIO.succeed(java.lang.System.nanoTime() + timeout.toNanos)
               remaining <- ZIO.succeed(new AtomicInteger(maxOutputBytes))
-              classpath = if bootstrap.isDefined then filesystemClasspath else apiClasspath
+              classpath = service.fold(apiClasspath)(
+                serviceClasspath
+              )
               _ <- ZIO.logInfo(s"Scala CLI compiling compiler=$scalaVersion offline=$offline timeout=$timeout")
               (compilationDuration, compilation) <- runProcess(
                 compileArguments(executable, scalaVersion, offline, dependencies, classpath),
@@ -137,8 +132,11 @@ object ScalaCodeExecutor {
                 None
               ).timed
               compiled = compilation.exitCode == 0 && !compilation.timedOut
+              compilationDiagnostics = service.fold(compilation)(config =>
+                hideSetupDiagnostics(compilation, code, servicePreamble(config).count(_ == '\n'), compiled)
+              )
               (executionDuration, command) <-
-                if !compiled then ZIO.succeed((Duration.Zero, compilation))
+                if !compiled then ZIO.succeed((Duration.Zero, compilationDiagnostics))
                 else
                   (for {
                     runtime <- runProcess(
@@ -149,18 +147,30 @@ object ScalaCodeExecutor {
                       bootstrap
                     )
                     fileLogs <- readRuntimeLogs(directory, remaining)
+                    // Runtime stdout is a returned value, never a trusted-source diagnostic channel.
+                    runtimeLogs = runtime.copy(output = "", logs = runtime.logs ++ fileLogs._1)
+                    runtimeDiagnostics = service.fold(runtimeLogs)(config =>
+                      hideSetupDiagnostics(runtimeLogs, code, servicePreamble(config).count(_ == '\n'), compiled)
+                    )
                   } yield runtime.copy(
-                    logs = compilation.logs ++ compilation.output.linesIterator.toVector ++ runtime.logs ++ fileLogs._1,
+                    logs = compilationDiagnostics.logs ++ compilationDiagnostics.output.linesIterator.toVector ++
+                      runtimeDiagnostics.logs,
                     truncated = compilation.truncated || runtime.truncated || fileLogs._2
                   )).timed
             } yield result(
-              displayDiagnostics(command, code, bootstrap.isDefined, compiled, maxOutputBytes),
+              displayDiagnostics(
+                redactBootstrap(command, bootstrap),
+                code,
+                compiled,
+                maxOutputBytes,
+                service.map(config => servicePreamble(config).count(_ == '\n'))
+              ),
               compiled
             ).copy(compilationTime = compilationDuration.toMillis, executionTime = executionDuration.toMillis)
           }
           .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))).timed
         .map { case (duration, output) => output.copy(totalTime = duration.toMillis) }
-  })
+  }
 
   /** Every phase owns its process and stream readers; both phases share the deadline and byte budget. */
   private def runProcess(
@@ -260,7 +270,7 @@ object ScalaCodeExecutor {
 
   private def readRuntimeLogs(directory: Path, remaining: AtomicInteger): Task[(Vector[String], Boolean)] =
     ZIO.attemptBlocking {
-      val path = directory.resolve(fmgp.yallmo.scalacode.ScalaToolRuntime.LogFile)
+      val path = directory.resolve(fmgp.yallmo.tool.scalamode.ScalaToolRuntime.LogFile)
       if !Files.exists(path) then (Vector.empty, false)
       else {
         val input = Files.newInputStream(path)
@@ -298,23 +308,27 @@ object ScalaCodeExecutor {
     ExternalFunctionResult.ScalaMode(outcome, logs, command.exitCode, command.truncated)
   }
 
-  private def validateFilesystemEndpoint(endpoint: String): Unit = {
+  private def validateRpcEndpoint(endpoint: String): Unit = {
     require(
       endpoint.length <= 2048 && endpoint.getBytes(UTF_8).length <= 2048 &&
         !endpoint.exists(Character.isISOControl),
-      "Filesystem RPC endpoint must be a single line of at most 2048 UTF-8 bytes"
+      "RPC endpoint must be a single line of at most 2048 UTF-8 bytes"
     )
     require(
       scala.util
         .Try(new java.net.URI(endpoint))
         .toOption
-        .exists(uri => Set("ws", "wss").contains(uri.getScheme) && uri.getHost != null),
-      "Expected a ws/wss filesystem RPC endpoint"
+        .exists(uri =>
+          Set("ws", "wss").contains(uri.getScheme) && uri.getHost != null &&
+            uri.getRawUserInfo == null && uri.getRawQuery == null && uri.getRawFragment == null
+        ),
+      "Expected a ws/wss RPC endpoint without credentials, query or fragment"
     )
   }
 
   // Required by the trusted ZIOApp runner even when the host requests no additional snippet libraries.
-  private[tool] val RuntimeDependencies = Seq("dev.zio::zio:2.1.27", "dev.zio::zio-json:1.1.1")
+  private[tool] val RuntimeDependencies =
+    Seq("dev.zio::zio:2.1.27", "dev.zio::zio-json:1.1.1", "dev.zio::zio-streams:2.1.27")
 
   private[tool] def arguments(
       executable: String = "scala-cli",
@@ -364,7 +378,7 @@ object ScalaCodeExecutor {
 
   private val purePreamble =
     "import scala.language.experimental.safe\n" +
-      "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
+      "import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}\n" +
       "object ScalaToolSnippet {\n  import tool.*\n  def result(using zio.Trace) = {\n"
 
   private[tool] def snippet(code: String): String = purePreamble + code + "\n  }\n}\n"
@@ -379,8 +393,10 @@ object ScalaCodeExecutor {
     * generated closing braces point to the end of the submitted code instead. Setup failures are not blamed on a user
     * line. Successful result values never pass through this formatter.
     */
-  private[tool] def remapDiagnostics(diagnostics: String, code: String, filesystem: Boolean): String = {
-    val preambleLines = (if filesystem then filesystemPreamble else purePreamble).count(_ == '\n')
+  private[tool] def remapDiagnostics(diagnostics: String, code: String): String =
+    remapDiagnosticsAt(diagnostics, code, purePreamble.count(_ == '\n'))
+
+  private def remapDiagnosticsAt(diagnostics: String, code: String, preambleLines: Int): String = {
     val codeLines = code.split("\n", -1).map(_.stripSuffix("\r"))
     val lastLine = preambleLines + codeLines.length
     val generatedEnd = lastLine + 3 // Two closing braces and the file's final newline.
@@ -446,9 +462,9 @@ object ScalaCodeExecutor {
   private[tool] def displayDiagnostics(
       command: CommandOutput,
       code: String,
-      filesystem: Boolean,
       compiled: Boolean,
-      maxOutputBytes: Int
+      maxOutputBytes: Int,
+      preambleLines: Option[Int] = None
   ): CommandOutput = {
     var remaining = maxOutputBytes
     var truncated = command.truncated
@@ -459,64 +475,95 @@ object ScalaCodeExecutor {
       remaining -= kept
       new String(bytes, 0, kept, UTF_8)
     }
+    def remap(value: String): String =
+      preambleLines.fold(remapDiagnostics(value, code))(lines => remapDiagnosticsAt(value, code, lines))
     val output = retain(if compiled || command.exitCode == 0 then command.output
-    else remapDiagnostics(command.output, code, filesystem))
-    val logs = retain(remapDiagnostics(command.logs.mkString("\n"), code, filesystem)).linesIterator.toVector
+    else remap(command.output))
+    val logs = retain(remap(command.logs.mkString("\n"))).linesIterator.toVector
     command.copy(output = output, logs = logs, truncated = truncated)
   }
 
-  // Expose only scalacode-api, not the application classpath or model-supplied dependencies.
-  // The stable API object is the location anchor; only its privileged methods are experimental.
-  private[tool] def apiClasspath: String =
-    Path.of(ScalaToolApi.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString
+  private[scalamode] def servicePreamble(config: ScalamodeService.Binding): String =
+    "import scala.language.experimental.safe\n" +
+      "import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}\nimport tool.*\n" +
+      s"import ${config.errorType}\n" +
+      "object ScalaToolSnippet {\n" +
+      s"  def result(${config.parameter}: ${config.apiTypes.mkString(" & ")})(using zio.Trace, zio.CanFail[${config.errorType}]) = {\n" +
+      config.constants.map { constant =>
+        s"    val ${constant.parameter}: ${constant.apiTypes.head} = ${constant.apiTypes.head.stripSuffix(".type")}\n"
+      }.mkString
 
-  private[tool] val filesystemDependencies = Seq(
-    "dev.zio::zio-streams:2.1.27",
-    "dev.zio::zio-json:1.1.1",
-    "dev.zio::zio-http:3.11.6"
+  private[scalamode] def serviceMain(config: ScalamodeService.Binding): String =
+    s"""import fmgp.yallmo.tool.scalamode.ScalaToolRuntime
+       |import zio.*
+       |object ScalaToolMain extends ZIOAppDefault {
+       |  override val bootstrap = ScalaToolRuntime.bootstrap
+       |  def run = ${config.runner} { ${config.parameter} =>
+       |    ScalaToolRuntime.evaluate(ScalaToolSnippet.result(${config.parameter})(using Trace.empty, summon[CanFail[${config.errorType}]]))
+       |  }
+       |}
+       |""".stripMargin
+
+  // Explicit reviewed module anchors, plus only the descriptor's narrow compiled artifacts. Never fullClasspath.
+  private[scalamode] def serviceClasspath(config: ScalamodeService.Binding): String = reviewedClasspath(
+    config.artifacts
   )
 
-  private[tool] def filesystemClasspath: String =
-    Seq(ScalaToolApi.getClass, classOf[FsRead], classOf[RpcConnection])
+  private def reviewedClasspath(artifacts: Seq[Class[?]]): String =
+    (Seq(ScalaToolApi.getClass, classOf[FsRead], classOf[RpcConnection], classOf[fmgp.yallmo.model.YallmoError]) ++
+      artifacts)
       .map(cls => Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString)
       .distinct
       .mkString(java.io.File.pathSeparator)
 
-  private val filesystemPreamble =
-    "import scala.language.experimental.safe\n" +
-      "import fmgp.yallmo.scalacode.{ScalaToolApi as tool}\n" +
-      "import fmgp.yallmo.fs.{FsRead, FsError}\nimport fmgp.yallmo.scalacode.ScalaToolApi.ZIO\n" +
-      "object ScalaToolSnippet {\n  import tool.*\n" +
-      "  def result(fs: FsRead)(using zio.Trace, zio.CanFail[FsError]): zio.ZIO[Any, FsError, Any] = {\n"
+  private def redactBootstrap(command: CommandOutput, bootstrap: Option[(String, RpcToken)]): CommandOutput =
+    bootstrap.fold(command) { case (endpoint, token) =>
+      def redact(text: String): String = {
+        val secret = token.exportSecret
+        val redacted = text.replace(endpoint, "<rpc endpoint>").replace(secret, "<rpc ticket>")
+        // Capture can end in the middle of a ticket. Never return that retained prefix either.
+        val prefix = if command.truncated then
+          (1 until secret.length).reverse.find(size => redacted.endsWith(secret.take(size)))
+        else None
+        prefix.fold(redacted)(size => redacted.dropRight(size) + "<rpc ticket>")
+      }
+      command.copy(output = redact(command.output), logs = redact(command.logs.mkString("\n")).linesIterator.toVector)
+    }
 
-  private[tool] def filesystemSnippet(code: String): String = filesystemPreamble + code + "\n  }\n}\n"
+  // Fail closed for trusted-source diagnostics, including source excerpts and compiler explanations.
+  private def hideSetupDiagnostics(
+      command: CommandOutput,
+      code: String,
+      preambleLines: Int,
+      compiled: Boolean
+  ): CommandOutput = {
+    val text = (command.output +: command.logs).mkString("\n")
+    val positions = "(?:[A-Za-z0-9_]+)\\.(?:scala|sc|java):(\\d+)".r.findAllMatchIn(text).toList
+    val lastBody = preambleLines + code.split("\n", -1).length
+    val setupFailure = positions.exists(position =>
+      !position.matched.startsWith("Snippet.scala:") ||
+        position.group(1).toIntOption.forall(number => number <= preambleLines || number > lastBody + 3)
+    )
+    val sourceExcerpt = text.linesIterator.exists(line => sourceGutter.findPrefixMatchOf(line).nonEmpty)
+    if setupFailure && !compiled then
+      command.copy(output = "Trusted Scalamode setup failed; contact the host.", logs = Vector.empty)
+    else if setupFailure && sourceExcerpt then
+      // Successful compilation can still emit warnings with privileged source excerpts, including during `run`.
+      val outputHasSource = command.output.linesIterator.exists(line => sourceGutter.findPrefixMatchOf(line).nonEmpty)
+      command.copy(
+        output = if outputHasSource then "Trusted Scalamode setup diagnostics were hidden; contact the host."
+        else command.output,
+        logs = Vector("Trusted Scalamode setup diagnostics were hidden; contact the host.")
+      )
+    else command
+  }
 
-  private val filesystemMain = """import fmgp.rpc.*
-    |import fmgp.yallmo.fs.{FsRead, FsError}
-    |import fmgp.yallmo.scalacode.ScalaToolRuntime
-    |import zio.*
-    |object ScalaToolMain extends ZIOAppDefault {
-    |  override val bootstrap = ScalaToolRuntime.bootstrap
-    |
-    |  private given RpcErrorMapper[FsError] = RpcErrorMapper(error =>
-    |    FsError.IoFailure("<rpc>", "RPC " + error.code.toString))
-    |
-    |  def run = ZIO.scoped {
-    |    for {
-    |      endpoint <- Console.readLine
-    |      secret <- Console.readLine
-    |      token <- ZIO.fromEither(RpcToken.parse(secret))
-    |      connection <- RpcWebSocket.connect(endpoint, token)
-    |      fs = Rpc.derived[FsRead].client(connection)
-    |      value <- ZIO.suspendSucceed(ScalaToolSnippet.result(fs)(using Trace.empty, summon[CanFail[FsError]]))
-    |      _ <- Console.printLine(value)
-    |    } yield ()
-    |  }
-    |}
-    |""".stripMargin
+  // Pure runners also need the API's reviewed signature dependencies (not core/server or the application classpath).
+  // Classpath presence is not authority: safe-mode checks still reject acquiring services or ambient filesystem access.
+  private[tool] def apiClasspath: String = reviewedClasspath(Seq.empty)
 
   // ZIOApp owns the runtime, failure reporting and logger scope; stdout is only the returned value.
-  private val main = """import fmgp.yallmo.scalacode.ScalaToolRuntime
+  private val main = """import fmgp.yallmo.tool.scalamode.ScalaToolRuntime
     |import zio.*
     |object ScalaToolMain extends ZIOAppDefault {
     |  override val bootstrap = ScalaToolRuntime.bootstrap

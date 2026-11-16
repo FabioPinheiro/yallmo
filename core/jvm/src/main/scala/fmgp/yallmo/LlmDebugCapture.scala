@@ -14,7 +14,14 @@ import java.util.UUID
   * Capture failures are logged and never fail the LLM request.
   */
 object LlmDebugCapture {
-  private val LocalDirectory = Path.of("debug")
+  private val Directory: FiberRef[Path] =
+    Unsafe.unsafe { unsafe ?=> FiberRef.unsafe.make(Path.of("debug")) }
+
+  /** Overrides both legacy and native provider capture destinations, including child fibers. */
+  def withDirectory[R, E, A](directory: Path)(effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    Directory.locally(directory)(effect)
+
+  private[yallmo] def directory: UIO[Path] = Directory.get
 
   /** Records the request before a provider call so timeouts retain useful local diagnostics. */
   def captureCallStarted(
@@ -62,14 +69,14 @@ object LlmDebugCapture {
     write(call, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
 
   private def write(call: LlmDebugCall, options: StandardOpenOption*): Task[Unit] =
-    ZIO.attemptBlocking {
-      Files.createDirectories(LocalDirectory)
-      Files.writeString(callPath(call), call.toJsonPretty, StandardCharsets.UTF_8, options*)
-      ()
-    }
-
-  private def callPath(call: LlmDebugCall): Path =
-    LocalDirectory.resolve(s"${call.startedAt.replaceAll("[^0-9A-Za-z.-]", "-")}-${call.id}.json")
+    for {
+      directory <- Directory.get
+      _ <- ZIO.attemptBlocking {
+        Files.createDirectories(directory)
+        val path = directory.resolve(s"${call.startedAt.replaceAll("[^0-9A-Za-z.-]", "-")}-${call.id}.json")
+        Files.writeString(path, call.toJsonPretty, StandardCharsets.UTF_8, options*)
+      }
+    } yield ()
 
   private def logFailure(label: String, error: Throwable): UIO[Unit] =
     ZIO.logWarning(s"$label failed: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")

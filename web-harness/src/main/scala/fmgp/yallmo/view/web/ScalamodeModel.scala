@@ -43,7 +43,7 @@ private[web] final case class ScalamodeResult(message: Message) {
 }
 
 private[web] final case class ScalamodeState(
-    code: String = "// List entries in the selected agent's root directory.\nfs.list(\".\").map(_.mkString(\"\\n\"))",
+    code: String = "List(1, 2, 3).map(_ * 2).sum",
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Boolean = false,
@@ -115,7 +115,7 @@ private[web] final class ScalamodeModel(
         val call = FunctionCall(
           FunctionCallId.unsafe(s"${FunctionKey.scalamode.value}-${UUID.randomUUID()}"),
           FunctionKey.scalamode,
-          Json.Obj("code" -> Json.Str(current.code), "mode" -> Json.Str("filesystem")).toJson
+          Json.Obj("code" -> Json.Str(current.code)).toJson
         )
         val input = Message(MessageData(identity.get, None, Instant.now(), MessagePayload.ToolCall(call)))
         version += 1

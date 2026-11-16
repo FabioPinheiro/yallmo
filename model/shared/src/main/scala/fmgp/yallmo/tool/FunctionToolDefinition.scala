@@ -4,11 +4,16 @@ import fmgp.yallmo.model.llm.JsonSchema
 import zio.json.*
 import zio.json.ast.Json
 
-/** A callable function exposed to a model; tool membership stays in the host-side tool catalog. */
+/** A callable function exposed to a model; tool membership stays in the host-side tool catalog.
+  *
+  * @param scalamode
+  *   optional host-authored API documentation for inspection; not a model argument or execution configuration
+  */
 final case class FunctionToolDefinition(
     name: FunctionKey,
     description: String,
-    inputSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(Map.empty, additionalProperties = true)
+    inputSchema: JsonSchema.ObjectSchema = JsonSchema.ObjectSchema(Map.empty, additionalProperties = true),
+    scalamode: Option[ScalamodeApi] = None
 ) {
   def validate: Either[String, FunctionToolDefinition] =
     for {

@@ -1,10 +1,8 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Blob, BlobId, YallmoError}
-import fmgp.yallmo.tool.ToolDefinition
-
 import fmgp.yallmo.agents.{CoachAgent, FolderStructureAgent}
-import fmgp.yallmo.fs.{FileSystem, FsRead}
+import fmgp.yallmo.fs.{FileSystem, FsRead, FsWrite}
 import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
 import fmgp.yallmo.model.som.SOMProvider
 import fmgp.yallmo.orchestration.config.{
@@ -13,10 +11,12 @@ import fmgp.yallmo.orchestration.config.{
   OAuthCredentialsConfig,
   ProviderConfig,
   ProviderId,
-  ConfiguredAgentSettings
+  ConfiguredAgentSettings,
+  HasAgentCapabilities
 }
 import fmgp.yallmo.provider.oai.{OAIAgent, OAIConfig, OAILlmProvider}
 import fmgp.yallmo.provider.openai.{ChatGPTAgent, OpenAiCodexClient}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorLive}
 import zio.*
 import zio.http.Client
 
@@ -54,7 +54,10 @@ final class AgentCatalog[-R] private (
     initializationLock: Semaphore,
     context: StaticContext[Any],
     functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]],
-    readBlob: BlobId => IO[YallmoError, Blob]
+    readBlob: BlobId => IO[YallmoError, Blob],
+    scalaCodeExecutor: ScalaCodeExecutor,
+    workspaceFilesystem: Option[FsRead],
+    workspaceFilesystemWrite: Option[FsWrite]
 ) {
 
   private var resolvedAgents = Map.empty[AgentId, ResolvedAgent]
@@ -199,18 +202,6 @@ final class AgentCatalog[-R] private (
               adapter = entry._1.asInstanceOf[Agent[Any]]
               filesystem = entry._2
               base = functionsFor(filesystem)
-              local = adapter match {
-                case scoped: HasLocalAgentFunctions => scoped.localFunctions
-                case _                              => Chunk.empty
-              }
-              localDefinitions = adapter match {
-                case scoped: HasLocalAgentFunctions => scoped.localTools
-                case _                              => Chunk.empty
-              }
-              toolDefinitions = context.tools.filterNot(tool =>
-                localDefinitions.exists(_.name == tool.name)
-              ) ++ localDefinitions
-              tools = base.filterNot(tool => local.exists(_.definition.name == tool.definition.name)) ++ local
               settings <-
                 if definition.agentType == "FolderStructureAgent" then ZIO.none
                 else
@@ -239,7 +230,7 @@ final class AgentCatalog[-R] private (
                         YallmoError.InvalidConfig(s"Agent '${AgentId.value(id)}': ${error.getMessage}")
                       )
                   } yield Some(decoded)
-              program = settings match {
+              selected = settings match {
                 case Some(value) =>
                   NativeFunctionAgent[Agent[Any]](
                     id,
@@ -249,17 +240,35 @@ final class AgentCatalog[-R] private (
                   ).bind[Any](adapter, readBlob)
                 case None => FolderAgentProgram(adapter, definition.capabilities, readBlob)
               }
-              effective <- program.configuredContext(
-                context.copy(
-                  systemPrompt = settings.fold("")(_.systemPrompt),
-                  functions = tools.map(_.definition),
-                  tools = ToolDefinition.available(toolDefinitions, tools.map(_.definition))
-                )
+              adapterPolicies = adapter match {
+                case configured: HasAgentCapabilities => Chunk(configured.capabilities)
+                case _                                => Chunk.empty
+              }
+              wired <- ToolWiringResolver.resolve(
+                id,
+                context.copy(systemPrompt = settings.fold("")(_.systemPrompt)),
+                base,
+                adapter.toolWirings,
+                selected.capabilities,
+                Chunk(definition.capabilities) ++ adapterPolicies
               )
+              // IDs were checked against the accumulated available catalog. Later narrowing must not reclassify
+              // legitimate, policy-denied IDs as typos when a runner prepares this cached generation.
+              program = new AgentInstance[Any] {
+                override val id: AgentId = selected.id
+                override val capabilities = selected.capabilities
+                override def configuredContext(current: StaticContext[Any]): IO[YallmoError, StaticContext[Any]] =
+                  ZIO.succeed(capabilities.restrict(current))
+                override def next(
+                    task: AgentTask,
+                    current: StaticContext[Any],
+                    runContext: RunContext
+                ): IO[YallmoError, AgentTurn] = selected.next(task, current, runContext)
+              }
               resolved = ResolvedAgent(
                 program,
-                effective,
-                tools.filter(function => effective.functions.exists(_.name == function.definition.name)),
+                wired.context,
+                wired.functions,
                 adapter,
                 filesystem,
                 definition.providerIds.headOption,
@@ -353,7 +362,16 @@ final class AgentCatalog[-R] private (
         for {
           provider <- singleProvider(definition, "ChatGPT")
           agent <- provider match {
-            case connection: OpenAiCodexClient => ZIO.succeed(new ChatGPTAgent(id, connection))
+            case connection: OpenAiCodexClient =>
+              ZIO.succeed(
+                new ChatGPTAgent(
+                  id,
+                  connection,
+                  scalaCodeExecutor = scalaCodeExecutor,
+                  filesystem = filesystem.orElse(workspaceFilesystem),
+                  filesystemWrite = if filesystem.nonEmpty then filesystem else workspaceFilesystemWrite
+                )
+              )
             case _ => ZIO.fail(YallmoError.InvalidConfig("ChatGPTAgent requires a ChatGPT provider"))
           }
         } yield agent
@@ -365,7 +383,16 @@ final class AgentCatalog[-R] private (
           }
           delegate <- provider match {
             case connection: OAILlmProvider    => ZIO.succeed(OAIAgent.make(id, connection))
-            case connection: OpenAiCodexClient => ZIO.succeed(new ChatGPTAgent(id, connection))
+            case connection: OpenAiCodexClient =>
+              ZIO.succeed(
+                new ChatGPTAgent(
+                  id,
+                  connection,
+                  scalaCodeExecutor = scalaCodeExecutor,
+                  filesystem = filesystem.orElse(workspaceFilesystem),
+                  filesystemWrite = if filesystem.nonEmpty then filesystem else workspaceFilesystemWrite
+                )
+              )
             case _ => ZIO.fail(YallmoError.InvalidConfig("CoachAgent requires an OAI or ChatGPT provider"))
           }
           fs <- ZIO.fromOption(filesystem).orElseFail(YallmoError.InvalidConfig("CoachAgent requires filesystem.root"))
@@ -454,17 +481,32 @@ object AgentCatalog {
     * @param agents
     *   already-initialized instances to register as-is, not configuration definitions; their IDs must be unique and
     *   absent from config.agents
+    * @param scalaCodeExecutor
+    *   shared executor captured by configured ChatGPT agents for their resolution-time Scalamode service bindings
     */
   def make[R](
       config: Config,
       agents: Chunk[Agent[R]],
       context: StaticContext[Any] = StaticContext[Any](""),
       functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
-      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+      workspaceFilesystem: Option[FsRead] = None,
+      workspaceFilesystemWrite: Option[FsWrite] = None
   ): ZIO[Client, YallmoError, AgentCatalog[R]] =
     for {
       client <- ZIO.service[Client]
-      instances <- create(config, Some(client), agents, context, functionsFor, readBlob)
+      instances <- create(
+        config,
+        Some(client),
+        agents,
+        context,
+        functionsFor,
+        readBlob,
+        scalaCodeExecutor,
+        workspaceFilesystem,
+        workspaceFilesystemWrite
+      )
     } yield instances
 
   /** Builds a registry containing only already-created agents, without requiring an HTTP client.
@@ -485,7 +527,10 @@ object AgentCatalog {
       agents: Chunk[Agent[R]],
       context: StaticContext[Any] = StaticContext[Any](""),
       functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
-      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable
+      readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+      workspaceFilesystem: Option[FsRead] = None,
+      workspaceFilesystemWrite: Option[FsWrite] = None
   ): IO[YallmoError, AgentCatalog[R]] =
     for {
       _ <- ZIO.fromEither(validateAgentIds(config, agents))
@@ -497,7 +542,10 @@ object AgentCatalog {
       lock,
       context,
       functionsFor,
-      readBlob
+      readBlob,
+      scalaCodeExecutor,
+      workspaceFilesystem,
+      workspaceFilesystemWrite
     )
 
   private def validateAgentIds[R](config: Config, agents: Chunk[Agent[R]]): Either[YallmoError, Unit] = {

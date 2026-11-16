@@ -16,7 +16,6 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
-import fmgp.rpc.RpcWebSocket
 import fmgp.yallmo.fs.{FsRead, FsError}
 import munit.FunSuite
 import zio.*
@@ -130,16 +129,8 @@ final class ConfiguredProgramSuite extends FunSuite {
               dependencies: Seq[String]
           ): Task[ExternalFunctionResult.ScalaMode] =
             used.set(true).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
-          override def executeFilesystem(
-              code: String,
-              endpoint: String,
-              timeout: Duration,
-              maxOutputBytes: Int
-          ): ZIO[FsRead & RpcWebSocket.RpcRoute, Throwable, ExternalFunctionResult.ScalaMode] =
-            used.set(true).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("unexpected")))
         }
-        route <- RpcWebSocket.route()
-        scalaTool = ScalaTool.filesystem("ws://127.0.0.1:1/rpc")
+        scalaTool = new ScalaTool()
         tools = Chunk[AgentFunction[Any]](
           ApplicationTools.bindFilesystem(new ReadFileTool, fs),
           new AgentFunction[Any] {
@@ -147,7 +138,7 @@ final class ConfiguredProgramSuite extends FunSuite {
             def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
               scalaTool
                 .execute(call)
-                .provideEnvironment(ZEnvironment[ScalaCodeExecutor, FsRead, RpcWebSocket.RpcRoute](executor, fs, route))
+                .provideEnvironment(ZEnvironment[ScalaCodeExecutor](executor))
           }
         )
         adapter = new Agent[Any] {
@@ -176,7 +167,7 @@ final class ConfiguredProgramSuite extends FunSuite {
                 .map(_.payload)
             _ <- ZIO.foreachDiscard(
               List(
-                ScalamodeToolDefinition.Execute -> """{"code":"fs.readUtf8(\"notes.txt\")","mode":"filesystem"}""",
+                ScalamodeToolDefinition.Execute -> """{"code":"1 + 1"}""",
                 FilesystemToolDefinition.ReadFile -> """{"path":"notes.txt"}"""
               )
             ) { (key, arguments) =>

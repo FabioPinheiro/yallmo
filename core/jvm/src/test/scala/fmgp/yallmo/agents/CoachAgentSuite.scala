@@ -1,11 +1,11 @@
 package fmgp.yallmo.agents
 
-import fmgp.yallmo.tool.{BashToolDefinition, FunctionCall, FunctionCallId, FunctionToolDefinition}
+import fmgp.yallmo.tool.{BashToolDefinition, CoachToolDefinition, FunctionCall, FunctionCallId, FunctionToolDefinition}
 
 import fmgp.yallmo.fs.{FileSystem, WriteMode}
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
-import fmgp.yallmo.orchestration.AgentCatalog
+import fmgp.yallmo.orchestration.{AgentCatalog, AgentTool, ToolWiring}
 import fmgp.yallmo.orchestration.config.{
   AgentConfig,
   Config,
@@ -42,6 +42,29 @@ final class CoachAgentSuite extends FunSuite {
       val id: AgentId = CoachAgentSuite.this.id
       def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = send(request)
     }
+
+  test("composes the notebook after the delegate's tool wiring without running it at construction") {
+    withWorkspace { (_, fs) =>
+      val seen = run(Ref.make(Vector.empty[String]))
+      val first: ToolWiring = tools => seen.update(_ :+ "first").as(tools)
+      val second: ToolWiring = tools => seen.update(_ :+ "second").as(tools)
+      val underlying = new Agent[Any] {
+        val id: AgentId = CoachAgentSuite.this.id
+        override def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] =
+          for {
+            initial <- first(tools)
+            result <- second(initial)
+          } yield result
+        def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = ZIO.succeed(answer)
+      }
+      val agent = makeCoach(underlying, fs)
+      assertEquals(run(seen.get), Vector.empty)
+      val tools = run(agent.toolWirings(Seq.empty))
+      assertEquals(run(seen.get), Vector("first", "second"))
+      assertEquals(tools.map(_.definition), Chunk(CoachToolDefinition))
+      assertEquals(tools.flatMap(_.functions.map(_.definition)).toSet, CoachToolDefinition.functions)
+    }
+  }
 
   test("loads approved evidence as data, preserves conversation and options, disables tools, and never writes") {
     withWorkspace { (root, fs) =>

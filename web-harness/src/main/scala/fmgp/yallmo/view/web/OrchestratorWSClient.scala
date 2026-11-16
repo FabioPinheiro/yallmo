@@ -153,6 +153,7 @@ final class OrchestratorWSClient private[web] (
     request[Empty, MessagesList.Result](MessagesList.method, Empty()).map(_.toList)
   def agents(): Future[List[String]] =
     request[Empty, AgentsList.Result](AgentsList.method, Empty()).map(_.map(AgentId.value).toList)
+  def tools(id: AgentId): Future[ToolsList.Result] = request(ToolsList.method, ToolsList.Params(id))
   def blobs(): Future[List[BlobId]] = request[Empty, BlobsList.Result](BlobsList.method, Empty()).map(_.toList)
 
   def close(): Unit = {

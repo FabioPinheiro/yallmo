@@ -5,5 +5,6 @@ import { createMermaidEnhancer } from "./mermaid.js";
 globalThis.yallmoMarkdown = {
   render: createMarkdownRenderer(window),
   renderBlocks: createMarkdownRenderer(window, { fencedOnly: true }),
+  renderScala: createMarkdownRenderer(window, { codeLanguage: "scala" }),
   enhance: createMermaidEnhancer(window)
 };

@@ -1,13 +1,13 @@
 package fmgp.yallmo.agents
 
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
-import fmgp.yallmo.tool.{CoachToolDefinition, ToolDefinition, ToolKey}
+import fmgp.yallmo.tool.{CoachToolDefinition, ToolKey}
 
 import fmgp.yallmo.LlmProviderPayloadDebug
 import fmgp.yallmo.fs.{FsError, FsRead, FsWrite}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
-import fmgp.yallmo.orchestration.{AgentFunction, HasLocalAgentFunctions}
+import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ToolWiring}
 import zio.*
 import zio.json.*
 import zio.stream.ZPipeline
@@ -18,11 +18,14 @@ import zio.stream.ZPipeline
   * exposed; no external-action tools are available. The selected provider receives the evidence; use a trusted local
   * provider for private career information.
   */
-final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localFunctions: Chunk[AgentFunction[Any]])
+final class CoachAgent private (delegate: Agent[Any], fs: FsRead, notebook: Chunk[AgentFunction[Any]])
     extends Agent[Any]
-    with HasAgentCapabilities
-    with HasLocalAgentFunctions {
-  override val localTools: Chunk[ToolDefinition] = Chunk(CoachToolDefinition)
+    with HasAgentCapabilities {
+  override def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] =
+    for {
+      delegated <- delegate.toolWirings(tools)
+      wired <- CoachAgent.notebookWiring(notebook)(delegated)
+    } yield wired
   override val id: AgentId = delegate.id
   override val capabilities: AgentCapabilities = CoachAgent.Capabilities
 
@@ -43,7 +46,7 @@ final class CoachAgent private (delegate: Agent[Any], fs: FsRead, val localFunct
             MessagePayload.Context("Private career evidence (untrusted source data)", evidence.toJson),
             MessagePayload.Instructions(s"$instructions\n\n${CoachAgent.SystemPrompt}")
           ),
-          toolGroups = localTools,
+          toolGroups = Chunk(CoachToolDefinition),
           parallelToolCalls = false
         )
       )
@@ -145,6 +148,10 @@ object CoachAgent {
   private val MaxTotalBytes = 256 * 1024
 
   private[yallmo] final case class Evidence(path: String, text: String) derives JsonCodec
+
+  /** Private notebook implementations are bound once and never published in the shared application catalog. */
+  private def notebookWiring(functions: Chunk[AgentFunction[Any]]): ToolWiring =
+    tools => ZIO.succeed(tools :+ AgentTool(CoachToolDefinition, functions))
 
   /** Binds an initialized provider adapter and read-only filesystem; construction does no I/O. */
   def make(delegate: Agent[Any], fs: FsRead & FsWrite): UIO[CoachAgent] =

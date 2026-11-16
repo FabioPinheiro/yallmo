@@ -2,7 +2,8 @@ package fmgp.yallmo.model
 
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
-import zio.ZIO
+import fmgp.yallmo.orchestration.AgentTool
+import zio.{IO, ZIO}
 import zio.json.{JsonCodec, JsonFieldDecoder, JsonFieldEncoder}
 
 opaque type AgentId = String
@@ -33,6 +34,12 @@ object AgentId {
   */
 trait Agent[-Environment] {
   def id: AgentId
+
+  /** Transform the permitted tools once at resolution time. The default preserves the supplied catalog. Overrides
+    * compose utility factories explicitly. Permission filtering happens only before this method; resolution validates
+    * the returned catalog without filtering it again. Wiring owns any added capabilities.
+    */
+  def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] = ZIO.succeed(tools)
 
   /** Do not call this method 'infer'. Infer is the correct verb for performing inference. But Agent might not be a LLM!
     *

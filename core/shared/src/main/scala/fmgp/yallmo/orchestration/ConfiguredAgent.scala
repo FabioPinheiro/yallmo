@@ -1,7 +1,5 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.ToolDefinition
-
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.{AgentCapabilities, HasAgentCapabilities}
@@ -12,22 +10,13 @@ private[orchestration] class ConfiguredAgent(
     delegate: Agent[Any],
     val capabilities: AgentCapabilities
 ) extends Agent[Any]
-    with HasAgentCapabilities
-    with HasLocalAgentFunctions {
-  override val localFunctions: Chunk[AgentFunction[Any]] = delegate match {
-    // Keep the complete private catalog until policy validation; filtering here would hide valid-but-denied IDs.
-    case scoped: HasLocalAgentFunctions => scoped.localFunctions
-    case _                              => Chunk.empty
-  }
-  override val localTools: Chunk[ToolDefinition] = delegate match {
-    case scoped: HasLocalAgentFunctions => scoped.localTools
-    case _                              => Chunk.empty
-  }
+    with HasAgentCapabilities {
+  override def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] =
+    delegate.toolWirings(tools)
   override val id: AgentId = delegate.id
 
   override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] = {
-    val catalog = request.toolGroups.filterNot(tool => localTools.exists(_.name == tool.name)) ++ localTools
-    val filtered = capabilities.filterRequest(request.copy(toolGroups = catalog))
+    val filtered = capabilities.filterRequest(request)
     delegate.turn(filtered).flatMap { response =>
       val forbidden = response.output.exists {
         case MessagePayload.ToolCall(call) =>

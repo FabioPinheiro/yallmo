@@ -4,8 +4,6 @@ import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
 import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
 import zio.*
-import fmgp.rpc.RpcWebSocket
-import fmgp.yallmo.fs.FsRead
 
 /** One-shot restricted Scala evaluation through isolated Scala CLI compilation and a ZIOApp runner.
   *
@@ -34,46 +32,24 @@ object ScalaTool {
 
   val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 
-  /** Caller-owned route and selected read capability are required only by the explicitly enabled variant. */
-  def filesystem(
-      endpoint: String,
+  /** Code-only binding: the service is a host descriptor, not an environment requirement or a model argument. */
+  def withServices(
+      service: ScalamodeService,
       timeout: Duration = 45.seconds,
       maxOutputBytes: Int = 64 * 1024
-  ): AgentFunction[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] = {
+  ): AgentFunction[ScalaCodeExecutor] = {
     require(timeout > Duration.Zero, "timeout must be positive")
     require(maxOutputBytes > 0, "maxOutputBytes must be positive")
-    new AgentFunction[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead] {
-      override val definition = filesystemDefinition
-      override def execute(
-          call: ExternalFunctionCall
-      ): ZIO[ScalaCodeExecutor & RpcWebSocket.RpcRoute & FsRead, YallmoError, ExternalFunctionResult] =
-        for {
-          parsed <- ZIO
-            .attempt {
-              val args = ujson.read(call.argumentsJson).obj
-              require(
-                args.keySet.subsetOf(Set("code", "mode")) && args.contains("code"),
-                "Expected code and optional mode"
-              )
-              val mode = args.get("mode").map(_.str).getOrElse("pure")
-              require(mode == "pure" || mode == "filesystem", "Expected pure or filesystem mode")
-              (args("code").str, mode)
-            }
-            .mapError(error => YallmoError.InvalidToolArguments(call.functionKey, error.getMessage))
-          result <- executeWith(
-            call.copy(argumentsJson = ujson.write(ujson.Obj("code" -> parsed._1))),
-            definition.name
-          ) { code =>
-            ZIO.serviceWithZIO[ScalaCodeExecutor] { executor =>
-              if parsed._2 == "filesystem" then executor.executeFilesystem(code, endpoint, timeout, maxOutputBytes)
-              else executor.execute(code, timeout, maxOutputBytes)
-            }
-          }
-        } yield result
+    new AgentFunction[ScalaCodeExecutor] {
+      override val definition = ScalamodeToolDefinition.withServices(service.inspections)
+      override def execute(call: ExternalFunctionCall) = executeWith(call, definition.name) { code =>
+        ZIO.serviceWithZIO[ScalaCodeExecutor](_.executeWithServices(code, service, timeout, maxOutputBytes))
+      }
     }
   }
 
-  /** Shared argument/error boundary for the two Scala tools, independent of their execution backend. */
+  /** Shared argument/error boundary for default and service-bound Scala tools, independent of their execution backend.
+    */
   private[tool] def executeWith[R, A](call: ExternalFunctionCall, functionKey: FunctionKey)(
       execute: String => RIO[R, A]
   ): ZIO[R, YallmoError, A] =
@@ -96,8 +72,7 @@ object ScalaTool {
         .mapError(error => YallmoError.ToolExecutionFailed(functionKey, error.getMessage, error))
     } yield result
 
-  val definition: FunctionToolDefinition = ScalamodeToolDefinition.Pure
-  val filesystemDefinition: FunctionToolDefinition = ScalamodeToolDefinition.Filesystem
+  val definition: FunctionToolDefinition = ScalamodeToolDefinition.Default
 
   // Deliberately conservative, including inside literals/comments. These checks protect compiler configuration.
   // Restricted execution relies on compiler safe mode, not an API blacklist.

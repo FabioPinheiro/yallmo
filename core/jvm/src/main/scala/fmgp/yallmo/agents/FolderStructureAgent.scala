@@ -3,6 +3,7 @@ package fmgp.yallmo.agents
 import fmgp.yallmo.fs.*
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse, LlmStopReason}
+import fmgp.yallmo.orchestration.AgentTool
 import zio.*
 import zio.json.*
 import zio.stream.ZStream
@@ -88,6 +89,8 @@ object FolderStructureAgent {
     val implementation = new FolderStructureAgent(id)
     new Agent[Any] {
       override val id: AgentId = implementation.id
+      override def toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]] =
+        implementation.toolWirings(tools)
       override def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
         implementation.turn(request).provideEnvironment(ZEnvironment(fs))
     }

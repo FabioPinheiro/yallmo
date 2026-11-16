@@ -128,3 +128,21 @@ test("outer Markdown example fences do not accidentally render their nested exam
     assert.equal(body.querySelector("span, .hljs"), null);
   }
 });
+
+test("Scala source files preserve exact text and never interpret embedded Markdown or HTML", () => {
+  const source = '\n  val path = "C:\\\\tmp"\r\nval example = """\n```mermaid\nflowchart LR\n A-->B\n```\n<img src=x onerror=alert(1)>\n"""';
+  const body = render(source, { codeLanguage: "scala" });
+  assert.equal(body.querySelectorAll("pre code").length, 1);
+  // HTML parsing normalizes CRLF, but otherwise the source is unchanged.
+  assert.equal(body.querySelector("code").textContent, source.replaceAll("\r\n", "\n"));
+  assert.ok(body.querySelector(".hljs-keyword"));
+  assert.equal(body.querySelector("img, script, .language-mermaid, [onerror]"), null);
+});
+
+test("Scala source files preserve empty content, trailing newlines and oversized plain source", () => {
+  for (const source of ["", "\n\n", "val n = 42", "val n = 42\n\n", "// " + "x".repeat(50001)]) {
+    const body = render(source, { codeLanguage: "scala" });
+    assert.equal(body.querySelector("code").textContent, source);
+    if (source.length > 50000) assert.equal(body.querySelector(".hljs"), null);
+  }
+});

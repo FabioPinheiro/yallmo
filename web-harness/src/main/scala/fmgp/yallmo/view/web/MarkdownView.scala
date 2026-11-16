@@ -15,6 +15,7 @@ private[web] object MarkdownView {
   private object Browser extends js.Object {
     def render(source: String): dom.DocumentFragment = js.native
     def renderBlocks(source: String): dom.DocumentFragment = js.native
+    def renderScala(source: String): dom.DocumentFragment = js.native
     def enhance(host: dom.Element): js.Function0[Unit] = js.native
   }
 
@@ -23,7 +24,10 @@ private[web] object MarkdownView {
   /** Render code fences but preserve all other tool/log output as literal, whitespace-preserving text. */
   def blocks(source: String): HtmlElement = component(source, fencedOnly = true)
 
-  private def component(source: String, fencedOnly: Boolean): HtmlElement = {
+  /** Render source directly: Markdown fences inside Scala strings/comments must remain part of the file. */
+  def scalaCode(source: String): HtmlElement = component(source, fencedOnly = false, scalaCode = true)
+
+  private def component(source: String, fencedOnly: Boolean, scalaCode: Boolean = false): HtmlElement = {
     var cancelEnhancement: js.Function0[Unit] = () => ()
     div(
       cls := "markdown-view",
@@ -32,7 +36,10 @@ private[web] object MarkdownView {
         host.textContent = ""
         host.classList.remove("markdown-fallback")
         try {
-          val fragment = if fencedOnly then Browser.renderBlocks(source) else Browser.render(source)
+          val fragment =
+            if scalaCode then Browser.renderScala(source)
+            else if fencedOnly then Browser.renderBlocks(source)
+            else Browser.render(source)
           val _ = host.appendChild(fragment)
           cancelEnhancement = Browser.enhance(host)
         } catch {

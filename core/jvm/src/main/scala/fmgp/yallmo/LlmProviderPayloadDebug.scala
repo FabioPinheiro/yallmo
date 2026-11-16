@@ -14,7 +14,6 @@ import java.util.UUID
   * references.
   */
 object LlmProviderPayloadDebug {
-  private val LocalDirectory = Path.of("debug")
   private val Redacted = "<redacted>"
   private val SensitiveKeys = Set("encrypted_content", "encryptedContent")
   private val ScopedRequestCapture: FiberRef[Option[Path]] =
@@ -70,9 +69,10 @@ object LlmProviderPayloadDebug {
     ).unit.catchAll(logFailure).whenZIO(CaptureEnabled.get).unit
 
   private def write(turnId: String, kind: String, document: ujson.Obj): Task[Path] =
-    ZIO
-      .attemptBlocking {
-        Files.createDirectories(LocalDirectory)
+    for {
+      directory <- LlmDebugCapture.directory
+      path <- ZIO.attemptBlocking {
+        Files.createDirectories(directory)
         // Keep capture metadata first for quick inspection, and the potentially large wire payload last.
         val payload = document.value.get("payload")
         val captured = ujson.Obj("turnId" -> turnId, "capturedAt" -> Instant.now().toString)
@@ -82,7 +82,7 @@ object LlmProviderPayloadDebug {
             captured(key) = value
           }
         payload.foreach(value => captured("payload") = value)
-        val path = LocalDirectory.resolve(s"$turnId-$kind.json")
+        val path = directory.resolve(s"$turnId-$kind.json")
         Files.writeString(
           path,
           ujson.write(captured, indent = 2),
@@ -92,6 +92,7 @@ object LlmProviderPayloadDebug {
         )
         path
       }
+    } yield path
 
   private def logFailure(error: Throwable): UIO[Unit] =
     ZIO.logWarning(s"provider payload debug capture failed: ${error.getMessage}")

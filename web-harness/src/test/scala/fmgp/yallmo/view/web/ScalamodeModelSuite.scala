@@ -54,15 +54,15 @@ final class ScalamodeModelSuite extends FunSuite {
     }
   }
 
-  test("the default example lists the selected root using filesystem mode") {
+  test("the default example is a computation requiring no bound services") {
     val h = new Harness
     val code = h.model.state.now().code
-    assert(code.contains("""fs.list(".")"""))
+    assertEquals(code, "List(1, 2, 3).map(_ * 2).sum")
     h.model.run()
     val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
     assertEquals(
       call.argumentsJson.fromJson[Json],
-      Right(Json.Obj("code" -> Json.Str(code), "mode" -> Json.Str("filesystem")))
+      Right(Json.Obj("code" -> Json.Str(code)))
     )
   }
 
@@ -80,7 +80,7 @@ final class ScalamodeModelSuite extends FunSuite {
     assertEquals(call.name, FunctionKey.scalamode)
     assertEquals(
       call.argumentsJson.fromJson[Json],
-      Right(Json.Obj("code" -> Json.Str("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)"), "mode" -> Json.Str("filesystem")))
+      Right(Json.Obj("code" -> Json.Str("ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)")))
     )
     h.model.code("next draft")
     val response = h.response()

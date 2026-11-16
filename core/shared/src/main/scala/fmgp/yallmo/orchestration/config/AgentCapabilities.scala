@@ -27,7 +27,11 @@ final case class AgentCapabilities(
     }
 
   /** Resolve against the application's available context, rejecting typos before removing capabilities. */
-  def resolve[R](id: AgentId, available: StaticContext[R]): Either[YallmoError, StaticContext[R]] = {
+  def resolve[R](id: AgentId, available: StaticContext[R]): Either[YallmoError, StaticContext[R]] =
+    validateIds(id, available).map(_ => restrict(available))
+
+  /** Validate explicit IDs and catalog uniqueness without restricting the context or trusted wiring output. */
+  def validateIds[R](id: AgentId, available: StaticContext[R]): Either[YallmoError, Unit] = {
     def check[A](kind: String, allowed: Option[Set[A]], known: Set[A]): Either[YallmoError, Unit] =
       val unknown = allowed.getOrElse(Set.empty) -- known
       Either.cond(
@@ -51,10 +55,12 @@ final case class AgentCapabilities(
       _ <- check("tools", tools, available.tools.map(_.name).toSet)
       _ <- check("functions", functions, available.functions.map(_.name).toSet)
       _ <- check("skills", skills, available.skills.map(_.key).toSet)
-    } yield restrict(available)
+    } yield ()
   }
 
-  /** Reapply a validated policy to an already narrowed context without treating removed IDs as configuration typos. */
+  /** Filter without ID validation, before trusted wiring or for already narrowed contexts. Validate explicit IDs with
+    * validateIds against the complete available catalog, not an intermediate stage's execution catalog.
+    */
   def restrict[R](available: StaticContext[R]): StaticContext[R] = {
     val permitted = available.functions.filter(function => allowsFunction(function.name, available.tools))
     available.copy(

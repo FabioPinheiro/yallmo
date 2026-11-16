@@ -59,6 +59,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
     SessionsGet.method,
     MessagesList.method,
     AgentsList.method,
+    ToolsList.method,
     BlobsList.method,
     BlobsRead.method,
     EventsSubscribe.method,
@@ -207,6 +208,16 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
             decode[Empty](params) *> domain(master.listAgentIds).flatMap { values =>
               encode((values ++ Chunk.fromIterable(humans.values).flatMap(actors)).distinct.sortBy(AgentId.value))
             }
+          case ToolsList.method =>
+            for {
+              request <- decode[ToolsList.Params](params)
+              selection <- configured.application.resolve(request.agentId).mapError {
+                case _: YallmoError.UnknownAgent =>
+                  JsonRpc.Error(ErrorCode.NotFound, "No configured tool context for this agent")
+                case _ => JsonRpc.Error(ErrorCode.Rejected, "Agent tool context unavailable")
+              }
+              result <- encode(ToolsList.from(selection.context.tools))
+            } yield result
           case BlobsList.method =>
             decode[Empty](params) *> domain(master.listBlobIds).flatMap(values => encode(values.sortBy(_.value)))
           case BlobsUpload.method =>

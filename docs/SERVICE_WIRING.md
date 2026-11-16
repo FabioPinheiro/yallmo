@@ -51,7 +51,7 @@ in `fmgp.yallmo.server`; moving the website classes does not change HTTP paths, 
 ## Startup and selection
 
 1. Main opens the server storage capability and one shared `SdlcService` for both tools and HTTP inspection.
-2. `ServerApplication.open`/`openRpc` canonicalizes the existing storage root and acquires the scoped process/OS lease.
+2. `ServerApplication.open` canonicalizes the existing storage root and acquires the scoped process/OS lease.
    Failed composition releases the lease immediately. Both entrypoints require a configuration path and return a
    `ServerExecutionService` backend; the RPC/WebSocket host derives its master from that backend.
 3. Configured startup loads the configuration snapshot and evaluates workspace tool availability. Captured HTTP/tool
@@ -81,9 +81,9 @@ For the agent-tool flow and tool/dependency table, see [Agent tool wiring](SERVI
 
 | Tools | Bound dependency / policy |
 | --- | --- |
-| `readFile`, `listFiles` | Configured agent `FsRead` when present, otherwise workspace; **independent of Scala RPC wiring** |
+| `readFile`, `listFiles` | Configured agent `FsRead` when present, otherwise workspace; **independent of Scalamode service opt-in** |
 | `bash`, `repositoryChanges` | Workspace working directory and process services; agent read roots do not redirect them |
-| `scalamode` | Restricted executor by default; filesystem effects require a caller-owned trusted RPC route/endpoint **and** the selected `FsRead` (agent root, else workspace) |
+| `scalamode` | Code-only restricted executor. ChatGPT defaults bind hello plus rooted filesystem reads/mutations when both native read/list functions are permitted; private roots override workspace. The executor owns an invocation-scoped loopback listener. Custom bindings and partial grants are preserved. |
 | SDLC tools | One shared server-storage `SdlcService`, never an agent/workspace planning store |
 | Coach private tools | Bound only to that Coach's notebook/filesystem; matching private keys replace shared keys for that selection |
 

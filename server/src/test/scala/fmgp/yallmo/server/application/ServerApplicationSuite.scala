@@ -358,13 +358,14 @@ final class ServerApplicationSuite extends FunSuite {
             "sessions.get",
             "messages.list",
             "agents.list",
+            "tools.list",
             "blobs.list",
             "blobs.read",
             "events.subscribe",
             "events.unsubscribe"
           )
         )
-        assertEquals(result.methods.size, 9)
+        assertEquals(result.methods.size, 10)
         assertEquals(result.notifications, List(EventsUpdate.method))
         assertEquals(result.identity.role, Role.Viewer)
         failures.foreach(reply =>

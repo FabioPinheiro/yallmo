@@ -103,7 +103,9 @@ object ConfigFile {
         )
     } yield ()
 
-  /** Validate capability IDs once the application's complete, unfiltered local catalogs are available. */
+  /** Validate capability IDs only when complete catalogs (including agent-local wiring outputs) are available. A shared
+    * startup/base catalog alone cannot validate IDs introduced during selected-agent resolution.
+    */
   def validateCapabilities[R](
       config: Config,
       available: fmgp.yallmo.orchestration.StaticContext[R]

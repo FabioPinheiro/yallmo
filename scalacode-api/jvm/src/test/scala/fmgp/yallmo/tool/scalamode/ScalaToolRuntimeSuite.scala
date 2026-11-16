@@ -1,4 +1,4 @@
-package fmgp.yallmo.scalacode
+package fmgp.yallmo.tool.scalamode
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
@@ -40,6 +40,31 @@ final class ScalaToolRuntimeSuite extends FunSuite {
     assertEquals(run(effect), 2)
     assert(finalized)
     assert(run(ScalaToolRuntime.evaluate { throw new IllegalStateException("construction") }.exit).isFailure)
+  }
+
+  test("compiled pure runner preserves typed failures, lazy evaluation and finalizers") {
+    var finalized = false
+    var evaluated = false
+    val effect: ZIO[Any, String | Throwable, Unit] = ScalaToolRuntime.runPure { _ =>
+      evaluated = true
+      ScalaToolRuntime.evaluate(ZIO.fail("expected").ensuring(ZIO.succeed { finalized = true }))
+    }
+    assert(!evaluated)
+    assertEquals(run(effect.either), Left("expected"))
+    assert(evaluated)
+    assert(finalized)
+  }
+
+  test("compiled native read contract maps every infrastructure error without transport details") {
+    import fmgp.rpc.*
+    for code <- RpcError.Code.values do {
+      val client = NativeReadToolsRuntime.contract.client(new RpcConnection {
+        def call(serviceId: String, version: Int, method: String, arguments: Chunk[Json]) = ZIO.fail(RpcError(code))
+        def close = ZIO.unit
+      })
+      assertEquals(run(client.readFile("a").either), Left(ReadToolError("RpcError", code.toString)))
+      assertEquals(run(client.listFiles("a").either), Left(ReadToolError("RpcError", code.toString)))
+    }
   }
 
   test("runtime logger writes structured JSON lines with escaping, annotations and failure causes") {

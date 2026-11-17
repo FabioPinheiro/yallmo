@@ -29,19 +29,20 @@ The `scalamode` agent tool accepts only a `code` string. Unknown fields, includi
 The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
 
 ```json
-{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"12\n"}},"logs":[],"exitCode":0,"truncated":false,"compilationTime":1200,"executionTime":250,"totalTime":1500}
+{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"12\n"}},"logs":[],"exitCode":0,"truncated":false,"compilationTime":1200,"executionTime":250,"totalTime":1500,"executionSetupTime":100}
 ```
 
 `ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
 Host-measured timings use a monotonic clock and are integer **milliseconds**:
 - `compilationTime`: the explicit `scala-cli compile` phase, including CLI startup and dependency resolution.
 - `executionTime`: the `scala-cli run` phase and runtime-log collection, including CLI/JVM startup and any run-stage compilation; not just snippet evaluation. Zero when compilation fails or times out.
+- `executionSetupTime`: optional launch-to-evaluation time, included within `executionTime`. The trusted runtime creates an empty marker immediately before evaluating plain code or constructing/running its returned effect, after RPC connection when applicable. The host polls every 5 ms using its own monotonic clock, so the measurement includes observation/scheduling delay. It is absent if evaluation is not observed (including startup failure/timeout, older outputs and custom runners without instrumentation); marker-write failure never changes the program outcome.
 - `totalTime`: the complete executor invocation, including validation, source setup, both phases, diagnostics and temporary-directory cleanup (excluding RPC registration/transport).
 Failures and timeouts retain elapsed phase timings. Missing timing fields decode as zero for older saved outputs;
 custom executors and host failures without measurements also default to zero.
 `CompilationError(diagnostics)` contains formatted retained diagnostics when the explicit `scala-cli compile` stage
 fails, including compiler setup/dependency-resolution failures. Only successful compilation proceeds to execution.
-The completed stage distinguishes compilation from execution even if output is truncated; no start-marker file is used.
+The completed stage distinguishes compilation from execution even if output is truncated; the setup-timing marker is diagnostic only and never determines the result type or consumes the output/log budget.
 `TimedOut(diagnostics)` represents the compilation/execution deadline being exceeded, including pre-Main timeouts;
 retained diagnostics remain available through `output`. `Executed(value)` represents an execution **attempt**, not
 guaranteed success: runtime exceptions and host infrastructure/validation failures carry actionable text here.
@@ -97,7 +98,7 @@ for {
 The default executor executes a returned `ZIO[Any, E, A]` and returns its success value (`2\n` above), while ordinary values still work unchanged. The snippet result type is inferred so the trusted runner selects a typed evaluation overload; there are no runtime type tests or casts to recover effects from `Any`. Typed failures, defects and finalizers are handled by ZIOApp. No runtime, environment service lookup or ambient I/O constructors are exposed. Existing restrictions on automatic `CanFail` materialization still apply.
 
 - Requires Scala CLI on PATH as `scala-cli`, plus a local JDK. REPL startup advertises it only when `scala-cli --version` succeeds.
-- Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.1` compiler with `--offline --jvm system --server=false`. Do not add `--quiet`: it also suppresses Scala CLI dependency-resolution errors, so an offline cache miss can otherwise return exit 1 with no diagnostics. This matches the main project's Scala version. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
+- Runs `scala-cli compile .` followed by `scala-cli run . --main-class ScalaToolMain -- <log-byte-limit>` in one isolated temporary directory per call. The second command can reuse Scala CLI's compilation cache. Both share a single deadline and retention budget, using the hard-coded `3.10.1` compiler with `--offline --jvm system` and Scala CLI's default Bloop compilation server. Scala CLI starts/reuses the background server; the pre-compilation log reports `backend=bloop` (configuration, not a liveness check). Do not add `--quiet`: it also suppresses Scala CLI dependency-resolution errors, so an offline cache miss can otherwise return exit 1 with no diagnostics. This matches the main project's Scala version. The compiler and its dependencies must already be in the Scala CLI/Coursier cache; calls do not perform a latest-nightly lookup.
 - Compiles the snippet with `scala.language.experimental.safe`, capture checking and modularity. The compiled `scalacode-api` module and host-configured dependencies are supplied, not the application classpath. The separate trusted `Main.scala` extends `ZIOAppDefault`: `run` evaluates the snippet and prints its returned value with `Console.printLine`. `bootstrap` replaces default loggers with a scoped JSON file logger. No handwritten unsafe runtime launch or global stdout redirection is used. Safe mode remains scoped to `Snippet.scala`, not the trusted runner; model-supplied directives are still rejected.
 - No user-supplied dependencies, directives, annotations, Unicode source escapes, backticks or compiler safety overrides. The small validator intentionally also rejects these inside strings/comments; it is not a Scala parser or an API blacklist.
 - Defaults: 45-second process deadline (including compilation), 128 MiB evaluation heap, 64 KiB shared retention budget for the result and logs, 65,536 source characters. Output beyond the cap is drained and discarded, not written to an unbounded log. Timeout/cancellation kills the process tree; temporary source/build files are removed.
@@ -145,13 +146,13 @@ warmup=$(mktemp -d)
 printf 'object Warmup { val value = 1 + 1 }\n' > "$warmup/Warmup.scala"
 scala-cli compile "$warmup" \
   --scala 3.10.1 \
-  --jvm system --server=false \
+  --jvm system \
   --dependency dev.zio::zio:2.1.27 \
   --dependency dev.zio::zio-json:1.1.1
 rm -rf "$warmup"
 ```
 
-RPC service bindings additionally need the pinned streams/HTTP dependencies described below. A cache warmed as root or under a different `COURSIER_CACHE` is not necessarily available to the service. This provisioning step requires repository/network access; tool invocations remain offline.
+The default Bloop server and its dependencies must also be cached for offline startup. RPC service bindings additionally need the pinned streams/HTTP dependencies described below. A cache warmed as root or under a different `COURSIER_CACHE` is not necessarily available to the service. This provisioning step requires repository/network access; tool invocations remain offline.
 
 ### Safety review / inspiration
 

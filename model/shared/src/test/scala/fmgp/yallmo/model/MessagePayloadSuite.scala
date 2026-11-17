@@ -52,7 +52,8 @@ final class MessagePayloadSuite extends FunSuite {
       Seq("connected", "disconnected"),
       compilationTime = 1200L,
       executionTime = 250L,
-      totalTime = 1500L
+      totalTime = 1500L,
+      executionSetupTime = Some(100L)
     )
     val json = output.toJson
     assertEquals(json.fromJson[ScalaModeOutput], Right(output))
@@ -63,6 +64,7 @@ final class MessagePayloadSuite extends FunSuite {
     assert(json.contains("\"compilationTime\":1200"))
     assert(json.contains("\"executionTime\":250"))
     assert(json.contains("\"totalTime\":1500"))
+    assert(json.contains("\"executionSetupTime\":100"))
     assert(!json.contains("\"output\""))
     assert(!json.contains("ScalaModeOutput"))
     assertEquals(
@@ -71,12 +73,14 @@ final class MessagePayloadSuite extends FunSuite {
     )
   }
 
-  test("Scala outputs without timing fields decode with zero defaults") {
+  test("Scala outputs without timing fields decode with zero defaults and no setup measurement") {
     val json = """{"callId":"call-1","name":"scalamode","result":{"Executed":{"value":"42"}}}"""
     assertEquals(
       json.fromJson[FunctionCallOutput],
       Right(ScalaModeOutput(callId, ScalaModeResult.Executed("42")))
     )
+    assertEquals(json.fromJson[ScalaModeOutput].toOption.get.executionSetupTime, None)
+    assert(!ScalaModeOutput(callId, ScalaModeResult.Executed("42")).toJson.contains("executionSetupTime"))
   }
 
   test("name exclusively dispatches subtypes and malformed scalamode never falls back") {
@@ -104,7 +108,8 @@ final class MessagePayloadSuite extends FunSuite {
       exitCode = 137,
       compilationTime = 120L,
       executionTime = 300L,
-      totalTime = 450L
+      totalTime = 450L,
+      executionSetupTime = Some(200L)
     )
     assertEquals(output.output, "deadline exceeded")
     assertEquals(Message.ToolOutput(output).contentStr, "deadline exceeded")

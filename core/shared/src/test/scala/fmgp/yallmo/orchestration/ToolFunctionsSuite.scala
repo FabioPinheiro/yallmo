@@ -1,6 +1,13 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, SdlcToolDefinition, ToolDefinition, ToolKey}
+import fmgp.yallmo.tool.{
+  FunctionKey,
+  FunctionToolDefinition,
+  ScalamodeServiceApi,
+  SdlcToolDefinition,
+  ToolDefinition,
+  ToolKey
+}
 import fmgp.yallmo.tool.scalamode.ScalamodeToolDefinition
 
 import fmgp.yallmo.model.*
@@ -32,7 +39,9 @@ final class ToolFunctionsSuite extends FunSuite {
     assertEquals(ToolDefinition.available(context.tools, Chunk(read, write)), Chunk(planning))
     val bound = read.copy(description = "Read from the selected private root")
     assertEquals(ToolDefinition.available(context.tools, Chunk(bound)).head.functions, Set(bound))
-    val service = ScalamodeToolDefinition.withServices("math.twice(value: Int): Int")
+    val service = ScalamodeToolDefinition.withServices(
+      Seq(ScalamodeServiceApi("math", Seq("example.MathApi"), "math.twice(value: Int): Int"))
+    )
     assertEquals(
       ToolDefinition
         .available(Chunk(ScalamodeToolDefinition), Chunk(service))

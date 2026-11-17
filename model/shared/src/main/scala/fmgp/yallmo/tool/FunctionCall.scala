@@ -58,6 +58,9 @@ enum ScalaModeResult derives JsonCodec {
 
 /** Host-measured elapsed times are milliseconds. Execution includes Scala CLI/JVM startup and any run-stage
   * compilation; total also includes source setup, diagnostics and cleanup. Unmeasured/skipped times default to zero.
+  * executionSetupTime measures child launch until the host observes snippet evaluation starting (including polling
+  * delay); None means evaluation was not observed, including older results. It is part of executionTime, not
+  * additional.
   */
 final case class ScalaModeOutput(
     callId: FunctionCallId,
@@ -67,7 +70,8 @@ final case class ScalaModeOutput(
     truncated: Boolean = false,
     compilationTime: Long = 0L,
     executionTime: Long = 0L,
-    totalTime: Long = 0L
+    totalTime: Long = 0L,
+    executionSetupTime: Option[Long] = None
 ) extends FunctionCallOutput {
   def name: FunctionKey = FunctionKey.scalamode
   def output: String = result.output
@@ -99,7 +103,8 @@ object ScalaModeOutput {
       truncated: Boolean = false,
       compilationTime: Long = 0L,
       executionTime: Long = 0L,
-      totalTime: Long = 0L
+      totalTime: Long = 0L,
+      executionSetupTime: Option[Long] = None
   ) derives JsonCodec
 
   given JsonCodec[ScalaModeOutput] = summon[JsonCodec[Fields]].transformOrFail(
@@ -115,7 +120,8 @@ object ScalaModeOutput {
           fields.truncated,
           fields.compilationTime,
           fields.executionTime,
-          fields.totalTime
+          fields.totalTime,
+          fields.executionSetupTime
         ),
         "ScalaModeOutput requires name=scalamode"
       ),
@@ -130,7 +136,8 @@ object ScalaModeOutput {
         output.truncated,
         output.compilationTime,
         output.executionTime,
-        output.totalTime
+        output.totalTime,
+        output.executionSetupTime
       )
   )
 }

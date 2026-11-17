@@ -20,6 +20,10 @@ final class AgentToolWiringsSuite extends FunSuite {
   private def tool(key: ToolKey, functions: AgentFunction[Any]*): AgentTool[Any] =
     AgentTool(ToolDefinition(key, functions.map(_.definition).toSet), Chunk.fromIterable(functions))
 
+  private val customDefinition = ScalamodeToolDefinition.withServices(
+    Seq(ScalamodeServiceApi("custom", Seq("example.CustomApi"), "Custom service"))
+  )
+
   private val originalScala = function(ScalamodeToolDefinition.Default) // Environment-bound wrappers are not ScalaTool.
   private val scalamode = tool(ToolKey.Scalamode, originalScala)
   private val reads = tool(ToolKey.Filesystem, function(FilesystemToolDefinition.ReadFileDefinition))
@@ -62,7 +66,7 @@ final class AgentToolWiringsSuite extends FunSuite {
     val wiring = AgentToolWirings.withHelloWorld(executor)
     val missing = Seq(other, reads)
     assert(run(wiring(missing)) eq missing)
-    val custom = Seq(tool(ToolKey.Scalamode, function(ScalamodeToolDefinition.withServices("Custom"))))
+    val custom = Seq(tool(ToolKey.Scalamode, function(customDefinition)))
     assert(run(wiring(custom)) eq custom)
     val wired = run(wiring(Seq(scalamode)))
     assert(run(wiring(wired)) eq wired)
@@ -87,7 +91,7 @@ final class AgentToolWiringsSuite extends FunSuite {
   }
 
   test("withFilesystem preserves custom service-bound Scalamode even when native reads are available") {
-    val custom = tool(ToolKey.Scalamode, function(ScalamodeToolDefinition.withServices("Custom service")))
+    val custom = tool(ToolKey.Scalamode, function(customDefinition))
     val input = Seq(other, custom, reads)
     run(ZIO.scoped(for {
       route <- RpcWebSocket.route()
@@ -149,7 +153,7 @@ final class AgentToolWiringsSuite extends FunSuite {
         function(FilesystemToolDefinition.ReadFileDefinition),
         function(FilesystemToolDefinition.ListFilesDefinition)
       )
-      custom = tool(ToolKey.Scalamode, function(ScalamodeToolDefinition.withServices("Custom")))
+      custom = tool(ToolKey.Scalamode, function(customDefinition))
       _ <- ZIO.foreachDiscard(List(Seq(scalamode), Seq(reads, scalamode), Seq(filesystem), Seq(filesystem, custom))) {
         input => readWrite(input).map(output => assert(output eq input))
       }
@@ -192,7 +196,7 @@ final class AgentToolWiringsSuite extends FunSuite {
     assert(wired.head eq other)
     assert(wired(1) eq filesystem)
     assert(run(defaults(wired)) eq wired)
-    val custom = Seq(filesystem, tool(ToolKey.Scalamode, function(ScalamodeToolDefinition.withServices("Custom"))))
+    val custom = Seq(filesystem, tool(ToolKey.Scalamode, function(customDefinition)))
     assert(run(defaults(custom)) eq custom)
     val missing = Seq(other, filesystem)
     assert(run(defaults(missing)) eq missing)

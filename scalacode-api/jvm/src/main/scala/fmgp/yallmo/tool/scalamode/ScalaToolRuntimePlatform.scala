@@ -10,6 +10,15 @@ import zio.json.*
 /** JVM-only transport bootstrap and bounded file logging for the trusted runner. */
 private[scalamode] trait ScalaToolRuntimePlatform {
 
+  /** Optional host timing signal, independent of stdout/log budgets. Repeated evaluation keeps the first marker; absent
+    * configuration or a failed write must not change the submitted program's behavior.
+    */
+  protected def markExecutionStarted: UIO[Unit] = ZIO.attemptBlocking {
+    Option(java.lang.System.getProperty(ScalaToolRuntime.ExecutionMarkerProperty)).foreach { path =>
+      Files.createFile(Path.of(path))
+    }
+  }.ignore
+
   /** Compiled bindings select their concrete contract, not a registry or reflective service type. Connection and
     * credentials remain local to this unsafe runner; scope exit closes the connection on every outcome.
     */

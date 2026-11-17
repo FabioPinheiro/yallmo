@@ -119,7 +119,7 @@ final class AgentRunnerSuite extends FunSuite:
         truncated = true
       ),
       ExternalFunctionResult.ScalaMode(ScalaModeResult.TimedOut("deadline exceeded"), exitCode = 137)
-    ).map(_.copy(compilationTime = 1200L, executionTime = 250L, totalTime = 1500L))
+    ).map(_.copy(compilationTime = 1200L, executionTime = 250L, totalTime = 1500L, executionSetupTime = Some(100L)))
     val agent = TestAgent[Any](CoordinatorId, (_, _, _) => ZIO.dieMessage("must not infer"))
     runZIO(ZIO.foreach(results) { result =>
       val tool = new AgentFunction[Any] {
@@ -142,7 +142,8 @@ final class AgentRunnerSuite extends FunSuite:
               result.truncated,
               result.compilationTime,
               result.executionTime,
-              result.totalTime
+              result.totalTime,
+              result.executionSetupTime
             )
           )
         )

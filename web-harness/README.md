@@ -217,8 +217,12 @@ The page sends an ordinary `agents.invoke` message containing
 stdout/result, compiler/runtime diagnostics, typed timeout outcomes, exit code and truncation metadata.
 The result panel shows `compilationTime`, `executionTime` and `totalTime` in milliseconds (`ms`), including failures
 and timeouts. Execution time includes Scala CLI/JVM startup, not only snippet evaluation; total time also includes
-executor setup and cleanup. Skipped or unmeasured timings display `0 ms`.
-The default example is `List(1, 2, 3).map(_ * 2).sum`, a computation that needs no bound services.
+executor setup and cleanup. Skipped or unmeasured timings display `0 ms`. The additional optional
+`executionSetupTime` measures execution launch until the host observes snippet evaluation starting, including
+CLI/JVM/ZIO startup, RPC connection when used, and a small polling/scheduling delay. It is part of `executionTime`,
+not additional time. Missing setup measurements display `Not measured`, including older saved results and attempts
+that never reach evaluation.
+The default example is `ZIO.succeed(List(1, 2, 3).map(_ * 2).sum)`, a ZIO program that needs no bound services.
 The browser sends only code; any extra API must be explicitly bound by the selected agent/host.
 Editor text is treated only as text; no Markdown/HTML is executed by the browser.
 

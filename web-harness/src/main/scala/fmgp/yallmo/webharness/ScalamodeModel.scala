@@ -33,6 +33,7 @@ private[webharness] final case class ScalamodeResult(message: Message) {
           Field("compilationTime", s"${value.compilationTime} ms"),
           Field("executionTime", s"${value.executionTime} ms"),
           Field("totalTime", s"${value.totalTime} ms"),
+          Field("executionSetupTime", value.executionSetupTime.fold("Not measured")(ms => s"$ms ms")),
           Field("exitCode", value.exitCode.toString),
           Field("truncated", value.truncated.toString)
         ),
@@ -43,7 +44,10 @@ private[webharness] final case class ScalamodeResult(message: Message) {
 }
 
 private[webharness] final case class ScalamodeState(
-    code: String = "List(1, 2, 3).map(_ * 2).sum",
+    code: String = """for {
+        |  aux = List(1, 2, 3)
+        |  ret <- ZIO.succeed(aux.map(_ * 2).sum)
+        |} yield ret""".stripMargin,
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Boolean = false,

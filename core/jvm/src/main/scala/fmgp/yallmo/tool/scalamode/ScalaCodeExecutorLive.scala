@@ -12,7 +12,7 @@ import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong}
 import scala.jdk.CollectionConverters.*
 
 /** Trusted host boundary for Scala CLI. Compiler errors and runtime failures are ordinary command results.
@@ -139,6 +139,7 @@ object ScalaCodeExecutorLive {
               }
               deadline <- ZIO.succeed(java.lang.System.nanoTime() + timeout.toNanos)
               remaining <- ZIO.succeed(new AtomicInteger(maxOutputBytes))
+              setupTime <- ZIO.succeed(new AtomicLong(-1L))
               classpath = service.fold(apiClasspath)(
                 serviceClasspath
               )
@@ -163,7 +164,8 @@ object ScalaCodeExecutorLive {
                       directory,
                       deadline,
                       remaining,
-                      bootstrap
+                      bootstrap,
+                      Some(setupTime)
                     )
                     fileLogs <- readRuntimeLogs(directory, remaining)
                     // Runtime stdout is a returned value, never a trusted-source diagnostic channel.
@@ -185,7 +187,11 @@ object ScalaCodeExecutorLive {
                 service.map(config => servicePreamble(config).count(_ == '\n'))
               ),
               compiled
-            ).copy(compilationTime = compilationDuration.toMillis, executionTime = executionDuration.toMillis)
+            ).copy(
+              compilationTime = compilationDuration.toMillis,
+              executionTime = executionDuration.toMillis,
+              executionSetupTime = Option.when(setupTime.get() >= 0L)(setupTime.get())
+            )
           }
           .onInterrupt(ZIO.logInfo("Scala CLI cancelled; process cleanup completed"))).timed
         .map { case (duration, output) => output.copy(totalTime = duration.toMillis) }
@@ -197,13 +203,19 @@ object ScalaCodeExecutorLive {
       directory: Path,
       deadline: Long,
       remaining: AtomicInteger,
-      bootstrap: Option[(String, RpcToken)]
+      bootstrap: Option[(String, RpcToken)],
+      setupTime: Option[AtomicLong] = None
   ): Task[CommandOutput] =
     if java.lang.System.nanoTime() >= deadline then ZIO.succeed(CommandOutput(-1, true, "", false))
     else
       ZIO.scoped {
         for {
           stopping <- ZIO.succeed(new AtomicBoolean(false))
+          // Only the runtime receives the marker property. Never reuse a file left by compilation.
+          _ <- ZIO.when(setupTime.nonEmpty)(
+            ZIO.attemptBlocking(Files.deleteIfExists(directory.resolve(ScalaToolRuntime.ExecutionStartedFile)))
+          )
+          launchedAt <- ZIO.succeed(java.lang.System.nanoTime())
           process <- ZIO.acquireRelease(ZIO.attemptBlocking {
             val builder = new ProcessBuilder(command*)
               .directory(directory.toFile)
@@ -247,6 +259,18 @@ object ScalaCodeExecutorLive {
               } finally input.close()
               (bytes.toString(UTF_8), truncated)
             }
+          // Observe with the host's monotonic clock: nanoTime values from different JVMs are not comparable.
+          setup <- ZIO.foreach(setupTime) { measured =>
+            ZIO
+              .attemptBlockingInterrupt {
+                val marker = directory.resolve(ScalaToolRuntime.ExecutionStartedFile)
+                while process.isAlive && !Files.exists(marker) do Thread.sleep(5)
+                if Files.exists(marker) then
+                  measured.set(TimeUnit.NANOSECONDS.toMillis(java.lang.System.nanoTime() - launchedAt))
+              }
+              .ignore
+              .forkScoped
+          }
           output <- captureOutput(process.getInputStream).forkScoped
           diagnostics <- captureOutput(process.getErrorStream).forkScoped
           // The deadline runs concurrently with stdin delivery. Killing the child unblocks a pipe write;
@@ -270,6 +294,7 @@ object ScalaCodeExecutorLive {
                 }
               }(ZIO.attemptBlocking(stop(process, stopping)).orDie)
             )
+          _ <- ZIO.foreachDiscard(setup)(_.join)
           captured <- output.join
           logs <- diagnostics.join
           status = s"Scala process finished stage=${command.lift(1).getOrElse("unknown")} " +
@@ -360,6 +385,7 @@ object ScalaCodeExecutorLive {
     Seq(executable, "run", ".", "--main-class", "ScalaToolMain") ++
       compilerArguments(scalaVersion, offline, dependencies, classpath) ++ Seq(
         "--java-opt=-Xmx128m",
+        s"--java-opt=-D${ScalaToolRuntime.ExecutionMarkerProperty}=${ScalaToolRuntime.ExecutionStartedFile}",
         "--java-opt=--enable-native-access=ALL-UNNAMED",
         "--java-opt=--sun-misc-unsafe-memory-access=allow",
         "--",
@@ -382,18 +408,18 @@ object ScalaCodeExecutorLive {
       classpath: String
   ): Seq[String] = Seq(
     // --quiet also hides dependency-resolution failures (including offline cache misses), not just progress.
+    "--power",
     "--scala",
     scalaVersion,
     "--jvm",
     "system",
-    "--server=false",
     "--classpath",
     classpath, // Only the selected API/capability artifacts, never the application classpath.
     "--scalac-option=-language:experimental.captureChecking",
     "--scalac-option=-language:experimental.modularity",
     "--scalac-option=-color:never"
   ) ++ (dependencies ++ RuntimeDependencies).distinct.flatMap(dependency => Seq("--dependency", dependency)) ++
-    Option.when(offline)(Seq("--power", "--offline", "--suppress-experimental-warning")).toSeq.flatten
+    Option.when(offline)(Seq("--offline", "--suppress-experimental-warning")).toSeq.flatten
 
   private val purePreamble =
     "import scala.language.experimental.safe\n" +

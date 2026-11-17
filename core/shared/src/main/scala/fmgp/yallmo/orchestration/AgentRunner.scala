@@ -280,7 +280,8 @@ final class AgentRunner[R](
             value.truncated,
             value.compilationTime,
             value.executionTime,
-            value.totalTime
+            value.totalTime,
+            value.executionSetupTime
           )
         case ExternalFunctionResult.Generic(text) =>
           ScalaModeOutput(call.id, ScalaModeResult.Executed(text), exitCode = 1)

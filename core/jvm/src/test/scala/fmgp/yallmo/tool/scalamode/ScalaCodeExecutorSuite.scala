@@ -46,12 +46,47 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     }
   }
 
+  test("execution setup measures launch to the marker without including the generated program") {
+    withFakeCli(s"sleep 0.15; touch ${ScalaToolRuntime.ExecutionStartedFile}; sleep 0.3; printf 42") { executable =>
+      val result = execute(executable)
+      assertEquals(result.output, "42")
+      val setup = result.executionSetupTime.getOrElse(fail("missing setup timing"))
+      assert(setup >= 120L, result.toString)
+      assert(setup <= result.executionTime - 200L, result.toString)
+    }
+  }
+
+  test("setup stays unmeasured without a runtime marker, even if compilation leaves one") {
+    withFakeCli("printf execution-started", compileBody = s"touch ${ScalaToolRuntime.ExecutionStartedFile}") {
+      executable =>
+        val result = execute(executable)
+        assertEquals(result.output, "execution-started")
+        assertEquals(result.executionSetupTime, None)
+    }
+  }
+
+  test("runtime failures, timeouts and output truncation retain an observed setup timing") {
+    for body <- List("sleep 0.1; exit 2", "sleep 60", "printf 123456789") do
+      withFakeCli(s"sleep 0.05; touch ${ScalaToolRuntime.ExecutionStartedFile}; $body") { executable =>
+        val result = execute(executable, timeout = 400.millis, limit = 4)
+        assert(result.executionSetupTime.exists(_ >= 30L), result.toString)
+        assert(result.executionSetupTime.exists(_ <= result.executionTime), result.toString)
+        if body == "sleep 60" then assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
+        else if body.contains("exit") then assertEquals(result.exitCode, 2)
+        else {
+          assertEquals(result.output, "1234")
+          assert(result.truncated)
+        }
+      }
+  }
+
   test("compilation failure records elapsed time without an execution phase") {
     withFakeCli("printf 'must not run'", compileBody = "sleep 0.1; exit 1") { executable =>
       val result = execute(executable)
       assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
       assert(result.compilationTime >= 80L, result.toString)
       assertEquals(result.executionTime, 0L)
+      assertEquals(result.executionSetupTime, None)
       assert(result.totalTime >= result.compilationTime, result.toString)
     }
   }
@@ -78,6 +113,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val result = execute(executable, timeout = 300.millis)
       assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
       assert(result.executionTime > 0L, result.toString)
+      assertEquals(result.executionSetupTime, None)
       assert(result.totalTime >= result.compilationTime + result.executionTime, result.toString)
     }
   }
@@ -124,9 +160,15 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assert(ScalaCodeExecutorLive.snippet("api").contains("import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}"))
   }
 
-  test("CLI arguments include pinned ZIO in both offline and online modes") {
-    for offline <- List(true, false) do {
-      val arguments = ScalaCodeExecutorLive.arguments(offline = offline)
+  test("compile and run arguments include power mode and pinned ZIO without changing offline selection") {
+    for {
+      offline <- List(true, false)
+      arguments <- List(
+        ScalaCodeExecutorLive.compileArguments(offline = offline),
+        ScalaCodeExecutorLive.arguments(offline = offline)
+      )
+    } do {
+      assertEquals(arguments.count(_ == "--power"), 1)
       val dependencyIndex = arguments.indexOf("--dependency")
       assert(dependencyIndex >= 0)
       assertEquals(arguments(dependencyIndex + 1), "dev.zio::zio:2.1.27")
@@ -758,7 +800,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test(
-    "command runs isolated Scala source files with Scala 3.10.1 offline, no build server, and the safety flags"
+    "command runs isolated Scala source files with Scala 3.10.1 offline, default Bloop server, and the safety flags"
   ) {
     val arguments = ScalaCodeExecutorLive.arguments()
     assertEquals(arguments.take(3), Seq("scala-cli", "run", "."))
@@ -767,11 +809,16 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.1")
     assert(arguments.contains("--power") && arguments.contains("--offline"))
     assertEquals(arguments(arguments.indexOf("--jvm") + 1), "system")
-    assert(arguments.contains("--server=false"))
+    for command <- List(ScalaCodeExecutorLive.compileArguments(), arguments) do
+      assert(!command.exists(_.startsWith("--server")), "keep Scala CLI's default Bloop server enabled")
     assert(arguments.contains("--scalac-option=-language:experimental.captureChecking"))
     assert(arguments.contains("--scalac-option=-language:experimental.modularity"))
     assert(arguments.contains("--scalac-option=-color:never"))
     assert(arguments.contains("--java-opt=-Xmx128m"))
+    val markerOption =
+      s"--java-opt=-D${ScalaToolRuntime.ExecutionMarkerProperty}=${ScalaToolRuntime.ExecutionStartedFile}"
+    assert(arguments.contains(markerOption))
+    assert(!ScalaCodeExecutorLive.compileArguments().contains(markerOption))
     assert(arguments.contains("--java-opt=--enable-native-access=ALL-UNNAMED"))
     assert(arguments.contains("--java-opt=--sun-misc-unsafe-memory-access=allow"))
     assert(ScalaCodeExecutorLive.snippet("42").startsWith("import scala.language.experimental.safe\n"))

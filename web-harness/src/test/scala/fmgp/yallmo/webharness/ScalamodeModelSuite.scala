@@ -54,12 +54,20 @@ final class ScalamodeModelSuite extends FunSuite {
     }
   }
 
-  test("the default example is a computation requiring no bound services") {
+  test("the default example is a ZIO computation requiring no bound services") {
     val h = new Harness
     val code = h.model.state.now().code
-    assertEquals(code, "List(1, 2, 3).map(_ * 2).sum")
+    assertEquals(
+      code,
+      """for {
+        |  aux = List(1, 2, 3)
+        |  ret <- ZIO.succeed(aux.map(_ * 2).sum)
+        |} yield ret""".stripMargin
+    )
     h.model.run()
+    assertEquals(h.requests.size, 1)
     val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
+    assertEquals(call.name, FunctionKey.scalamode)
     assertEquals(
       call.argumentsJson.fromJson[Json],
       Right(Json.Obj("code" -> Json.Str(code)))
@@ -117,7 +125,8 @@ final class ScalamodeModelSuite extends FunSuite {
         outcome,
         compilationTime = 1200L,
         executionTime = 250L,
-        totalTime = 1500L
+        totalTime = 1500L,
+        executionSetupTime = Some(100L)
       )
       val result = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(output))))
       assertEquals(
@@ -128,6 +137,7 @@ final class ScalamodeModelSuite extends FunSuite {
           ToolResultContent.Field("totalTime", "1500 ms")
         )
       )
+      assert(result.fields.get.metadata.contains(ToolResultContent.Field("executionSetupTime", "100 ms")))
       assertEquals(result.output, outcome.output)
     }
   }
@@ -144,6 +154,7 @@ final class ScalamodeModelSuite extends FunSuite {
         ToolResultContent.Field("totalTime", "0 ms")
       )
     )
+    assert(result.fields.get.metadata.contains(ToolResultContent.Field("executionSetupTime", "Not measured")))
   }
 
   test("typed compilation diagnostics and metadata are displayed without parsing returned JSON") {

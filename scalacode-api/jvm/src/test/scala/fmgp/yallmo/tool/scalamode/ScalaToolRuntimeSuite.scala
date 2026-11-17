@@ -33,6 +33,34 @@ final class ScalaToolRuntimeSuite extends FunSuite {
     assertEquals(run(ScalaToolRuntime.evaluate(ZIO.fail("expected")).either), Left("expected"))
   }
 
+  test("the optional setup marker precedes plain and effect evaluation without changing failures") {
+    val directory = Files.createTempDirectory("scalamode-setup-marker-")
+    val marker = directory.resolve(ScalaToolRuntime.ExecutionStartedFile)
+    val property = ScalaToolRuntime.ExecutionMarkerProperty
+    val previous = Option(java.lang.System.getProperty(property))
+    try {
+      java.lang.System.setProperty(property, marker.toString)
+      assertEquals(run(ScalaToolRuntime.evaluate { assert(Files.exists(marker)); 42 }), 42)
+      Files.delete(marker)
+      val failure = ScalaToolRuntime.evaluate {
+        assert(Files.exists(marker))
+        ZIO.fail("expected")
+      }
+      assertEquals(run(failure.either), Left("expected"))
+      // Repeated evaluations and failed marker writes must not fail the program.
+      assertEquals(run(ScalaToolRuntime.evaluate(43)), 43)
+      java.lang.System.setProperty(property, directory.resolve("missing/marker").toString)
+      assertEquals(run(ScalaToolRuntime.evaluate(44)), 44)
+    } finally {
+      previous match {
+        case Some(value) => java.lang.System.setProperty(property, value)
+        case None        => java.lang.System.clearProperty(property)
+      }
+      Files.deleteIfExists(marker)
+      Files.delete(directory)
+    }
+  }
+
   test("evaluation suspends effect construction and preserves finalizers") {
     var finalized = false
     val effect = ScalaToolRuntime.evaluate(ZIO.succeed(2).ensuring(ZIO.succeed { finalized = true }))

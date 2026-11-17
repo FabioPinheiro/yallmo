@@ -28,9 +28,20 @@ final class ScalaToolSuite extends ZSuite {
     assertEquals(ScalamodeToolDefinition.name, ToolKey.Scalamode)
     assertEquals(ScalamodeToolDefinition.functions, Set(ScalaTool.definition))
     assertEquals(ScalaTool.definition.validate, Right(ScalaTool.definition))
-    val bound = ScalamodeToolDefinition.withServices("math.twice(value: Int): Int")
+    val services = Vector(
+      ScalamodeServiceApi(
+        parameter = "math",
+        apiTypes = Vector("example.MathApi"),
+        description = "Arithmetic helpers",
+        scalaApi = Some("trait MathApi { def twice(value: Int): Int }")
+      )
+    )
+    val bound = ScalamodeToolDefinition.withServices(services)
     assertEquals(bound.inputSchema, ScalaTool.definition.inputSchema)
     assertEquals(bound.validate, Right(bound))
+    assertEquals(bound.scalamode, Some(ScalamodeApi(ScalamodeToolDefinition.BuiltinApi, services)))
+    assert(bound.description.contains(services.head.description))
+    assert(bound.description.contains(services.head.scalaApi.get))
     assertEquals(
       ToolDefinition
         .available(zio.Chunk(ScalamodeToolDefinition), zio.Chunk(bound))
@@ -38,6 +49,33 @@ final class ScalaToolSuite extends ZSuite {
         .functions,
       Set(bound)
     )
+  }
+
+  test("service metadata preserves order and supports APIs without interface source") {
+    val services = Vector(
+      ScalamodeServiceApi("math", Vector("example.MathApi"), "Arithmetic helpers"),
+      ScalamodeServiceApi(
+        "text",
+        Vector("example.TextApi"),
+        "Text helpers",
+        Some("trait TextApi { def upper(value: String): String }")
+      )
+    )
+    val bound = ScalamodeToolDefinition.withServices(services)
+    assertEquals(bound.scalamode.get.services, services)
+    assert(
+      bound.description.endsWith(
+        "Arithmetic helpers\nText helpers\nScala API:\ntrait TextApi { def upper(value: String): String }"
+      )
+    )
+    assertEquals(bound.inputSchema, ScalaTool.definition.inputSchema)
+  }
+
+  test("an empty service sequence advertises only the restricted builtins") {
+    val bound = ScalamodeToolDefinition.withServices(Seq.empty)
+    assertEquals(bound.scalamode, ScalaTool.definition.scalamode)
+    assertEquals(bound.inputSchema, ScalaTool.definition.inputSchema)
+    assertEquals(bound.validate, Right(bound))
   }
 
   testZ("pure code is forwarded and its result is returned")(ZIO.suspendSucceed {

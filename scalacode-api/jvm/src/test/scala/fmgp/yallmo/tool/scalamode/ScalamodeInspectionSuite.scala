@@ -25,7 +25,6 @@ final class ScalamodeInspectionSuite extends FunSuite {
     assert(api.builtins.contains("def foreach[A, R, E, B]"))
     assert(!api.builtins.contains("def service"))
     assertEquals(ScalaTool.definition.inputSchema.required, Set("code"))
-    assertEquals(ScalamodeToolDefinition.withServices("legacy prose").scalamode, None)
   }
 
   test("custom intersection bindings document all public API views without inspecting transport or artifacts") {

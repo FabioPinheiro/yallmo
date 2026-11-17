@@ -74,7 +74,8 @@ object ExternalFunctionResult {
       truncated: Boolean = false,
       compilationTime: Long = 0L,
       executionTime: Long = 0L,
-      totalTime: Long = 0L
+      totalTime: Long = 0L,
+      executionSetupTime: Option[Long] = None
   ) extends ExternalFunctionResult {
     def output: String = result.output
     def text: String = output

@@ -462,6 +462,111 @@ final class ScalamodeServiceSuite extends FunSuite {
     }
   }
 
+  test("layer reuses one local listener with isolated scoped tickets across concurrent and sequential executions") {
+    val directory = Files.createTempDirectory("scalamode-shared-listener-")
+    val executable = directory.resolve("scala-cli.sh")
+    Files.writeString(
+      executable,
+      s"""#!/bin/sh
+         |if [ "$$1" = compile ]; then exit 0; fi
+         |read endpoint
+         |read ticket
+         |name=$$(sed -n 's/.*listener-test-\\([a-z]*\\).*/\\1/p' Snippet.scala)
+         |printf '%s\n%s\n' "$$endpoint" "$$ticket" > '$directory/'"$$name.tmp"
+         |mv '$directory/'"$$name.tmp" '$directory/'"$$name"
+         |while [ ! -f '$directory/'"$$name.release" ]; do sleep 0.01; done
+         |printf 42
+         |""".stripMargin
+    )
+    assert(executable.toFile.setExecutable(true))
+    def service(value: String): ScalamodeService = new ScalamodeService {
+      val apiDocs = "Test greeting"
+      val binding = ScalamodeService.Binding(
+        parameter = "greeter",
+        apiTypes = Seq("fmgp.yallmo.scalacode.fixture.GreetingApi"),
+        runner = "fmgp.yallmo.scalacode.fixture.GreetingRuntime.run",
+        artifacts = Seq(classOf[GreetingApi])
+      )
+      override val localRpcBinding = Some(GreetingRuntime.contract.bind(new GreetingApi {
+        def greet(name: String) = ZIO.succeed(s"$value:$name")
+      }))
+    }
+    def bootstrap(name: String): Task[(String, RpcToken)] =
+      for {
+        _ <- ZIO
+          .attempt(Files.exists(directory.resolve(name)))
+          .repeat(Schedule.spaced(10.millis) && Schedule.recurWhile[Boolean](!_))
+        lines <- ZIO.attempt(Files.readAllLines(directory.resolve(name)))
+        token <- ZIO.fromEither(RpcToken.parse(lines.get(1)))
+      } yield (lines.get(0), token)
+    def release(name: String): Task[Unit] = ZIO.attempt(Files.writeString(directory.resolve(s"$name.release"), "")).unit
+    try {
+      val endpoint = run(
+        ZIO
+          .scoped {
+            for {
+              environment <- ScalaCodeExecutorLive.layer(executable.toString).build
+              executor = environment.get[ScalaCodeExecutor]
+              first <- executor
+                .executeWithServices("42 // listener-test-first", service("first"), 20.seconds, 1024)
+                .forkScoped
+              second <- executor
+                .executeWithServices("42 // listener-test-second", service("second"), 20.seconds, 1024)
+                .forkScoped
+              a <- bootstrap("first")
+              b <- bootstrap("second")
+              _ <- ZIO.attempt {
+                assertEquals(a._1, b._1)
+                assert(a._2.exportSecret != b._2.exportSecret)
+              }
+              firstConnection <- RpcWebSocket.connect(a._1, a._2)
+              secondConnection <- RpcWebSocket.connect(b._1, b._2)
+              firstReply <- GreetingRuntime.contract.client(firstConnection).greet("Ada")
+              secondReply <- GreetingRuntime.contract.client(secondConnection).greet("Ada")
+              cancelled <- first.interrupt
+              closed <- GreetingRuntime.contract.client(firstConnection).greet("closed").either
+              surviving <- GreetingRuntime.contract.client(secondConnection).greet("still open")
+              _ <- release("second")
+              completed <- second.join
+              third <- executor
+                .executeWithServices("42 // listener-test-third", service("third"), 20.seconds, 1024)
+                .forkScoped
+              c <- bootstrap("third")
+              _ <- release("third")
+              last <- third.join
+              denied <- RpcWebSocket.connect(c._1, c._2).either
+              _ <- ZIO.attempt {
+                assertEquals(firstReply, "first:Ada")
+                assertEquals(secondReply, "second:Ada")
+                assert(cancelled.isInterrupted)
+                assert(closed.isLeft)
+                assertEquals(surviving, "second:still open")
+                assertEquals(completed.output, "42")
+                assertEquals(last.output, "42")
+                assertEquals(c._1, a._1)
+                assert(c._2.exportSecret != a._2.exportSecret && c._2.exportSecret != b._2.exportSecret)
+                assert(denied.isLeft, "an unclaimed ticket must be revoked when its execution ends")
+              }
+            } yield a._1
+          }
+          .timeoutFail(new Exception("shared listener test deadline"))(35.seconds)
+      )
+      val socket = new java.net.Socket()
+      try {
+        val uri = java.net.URI.create(endpoint)
+        intercept[java.net.ConnectException](
+          socket.connect(new java.net.InetSocketAddress(uri.getHost, uri.getPort), 1000)
+        )
+      } finally socket.close()
+    } finally {
+      val paths = Files.walk(directory)
+      try {
+        import scala.jdk.CollectionConverters.*
+        paths.iterator().asScala.toList.reverse.foreach(Files.deleteIfExists(_))
+      } finally paths.close()
+    }
+  }
+
   test("real child constructs a custom non-filesystem RPC proxy from an explicit concrete contract") {
     withLive { executor =>
       ZIO.scoped {

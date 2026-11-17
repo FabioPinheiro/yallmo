@@ -8,8 +8,8 @@ import fmgp.yallmo.fs.{FsRead, FsWrite}
   * Use AgentToolWirings.withService after tool filtering, or ScalaTool.withServices directly. These factories do not
   * infer permission from native read tools: granting FsRead or FsWrite is a separate trusted host decision. For exact
   * delegation of filtered native read/list functions, retain AgentToolWirings.withFilesystem instead. Overloads without
-  * a route use an executor-owned invocation-scoped loopback listener; explicit route overloads retain caller-owned
-  * listener lifetime.
+  * a route use executor-provided loopback RPC with invocation-scoped tickets; the live executor layer reuses one
+  * listener. Explicit route overloads retain caller-owned listener lifetime.
   */
 object FilesystemService {
 

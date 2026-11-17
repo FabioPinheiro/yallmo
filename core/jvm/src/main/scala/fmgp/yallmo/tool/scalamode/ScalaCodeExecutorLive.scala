@@ -27,18 +27,41 @@ object ScalaCodeExecutorLive {
   import ScalaCodeExecutor.ScalaVersion
   val live: ULayer[ScalaCodeExecutor] = layer()
 
-  /** Executable, compiler version and offline mode are trusted host configuration, never tool arguments. */
+  /** One lazily started loopback listener per layer lifetime; tickets and child connections remain invocation-scoped.
+    * Executable, compiler version and offline mode are trusted host configuration, never tool arguments.
+    */
   def layer(
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
       offline: Boolean = true
-  ): ULayer[ScalaCodeExecutor] = ZLayer.succeed(make(executable, scalaVersion, offline))
+  ): ULayer[ScalaCodeExecutor] = ZLayer.scoped {
+    for {
+      scope <- ZIO.service[Scope]
+      listener <- localListener.provideEnvironment(ZEnvironment(scope)).memoize
+    } yield makeExecutor(executable, scalaVersion, offline, listener)
+  }
 
-  /** Construct a resource-free executor description for explicitly bound agent services. No process starts here. */
+  /** Resource-free compatibility constructor. Prefer `layer` for application-owned listener reuse. Explicit RPC
+    * bindings already reuse their caller's listener; local bindings here acquire a listener per invocation.
+    */
   def make(
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
       offline: Boolean = true
+  ): ScalaCodeExecutor = makeExecutor(executable, scalaVersion, offline, localListener)
+
+  private def localListener: ZIO[Scope, Throwable, (RpcWebSocket.RpcRoute, String)] =
+    for {
+      route <- RpcWebSocket.route()
+      server <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
+      port <- Server.install(route.routes).provideEnvironment(server)
+    } yield (route, s"ws://127.0.0.1:$port/rpc")
+
+  private def makeExecutor(
+      executable: String,
+      scalaVersion: String,
+      offline: Boolean,
+      listener: ZIO[Scope, Throwable, (RpcWebSocket.RpcRoute, String)]
   ): ScalaCodeExecutor = new ScalaCodeExecutor {
     override def isAvailable: UIO[Boolean] = LocalProcess.isAvailable(executable)
 
@@ -64,11 +87,7 @@ object ScalaCodeExecutorLive {
           case Some(binding) => ZIO.some(binding)
           case None          =>
             ZIO.foreach(services.localRpcBinding) { dispatcher =>
-              for {
-                route <- RpcWebSocket.route()
-                server <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
-                port <- Server.install(route.routes).provideEnvironment(server)
-              } yield ScalamodeService.RpcBinding(s"ws://127.0.0.1:$port/rpc", route, dispatcher)
+              listener.map { case (route, endpoint) => ScalamodeService.RpcBinding(endpoint, route, dispatcher) }
             }
         }
         bootstrap <- ZIO.foreach(transport) { binding =>

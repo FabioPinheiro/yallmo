@@ -27,8 +27,10 @@ Pure-call defaults remain `ScalaTool.DefaultDependencies`; deadlines/output limi
 
 The contracts, service inspection, tool validation, hello-world wiring, native RPC contract derivation and pure
 runner helpers are shared with Scala.js. Custom executors can implement the same interface on either platform;
-the Scala CLI/process engine remains JVM-only. Default filesystem services use an executor-owned, invocation-scoped
-loopback RPC listener. Explicit route overloads and native exact-delegation wiring retain caller-owned listeners;
+the Scala CLI/process engine remains JVM-only. Default filesystem services use executor-provided loopback RPC.
+`ScalaCodeExecutorLive.live` / `.layer(...)` lazily start one listener per layer lifetime, shared across executions;
+service dispatchers, single-use tickets and connections remain invocation-scoped. The application already shares this
+layer through `ApplicationTools.live`. Explicit route overloads and native exact-delegation wiring retain caller-owned listeners;
 sharing the API does not install a browser transport or grant browser filesystem access. JS `runRpc` and logger `bootstrap`
 fail through their effect/layer error channels without evaluating submitted callbacks.
 The API artifact contains host-facing factories, but they are **not** safe snippet capabilities.
@@ -118,8 +120,12 @@ wiring. With both native filesystem functions permitted it binds `fs` and retain
 filesystem grant it binds only hello. Missing Scalamode and existing custom bindings are preserved. Catalog-created
 agents receive their private filesystem when configured, otherwise the server workspace. **Permitting both native
 filesystem functions and Scalamode therefore enables rooted mutations when that root has an FsWrite capability.**
-A read-only embedded root remains read-only. Resolution opens no listener and executes no snippet; the JVM executor
-owns the local listener, ticket, connection and cleanup for each filesystem invocation.
+A read-only embedded root remains read-only. Resolution opens no listener and executes no snippet. Keep the live
+executor layer alive for the application lifetime: the first local-service execution starts its shared listener, and
+layer shutdown closes it. Each invocation owns only its ticket, connection and service-work cleanup. Pure executions
+and explicit caller-owned routes do not start this listener. The resource-free `ScalaCodeExecutorLive.make(...)`
+compatibility constructor has no application scope and retains per-invocation listeners for local bindings; embedded
+applications wanting reuse should build `.layer(...)` once and keep its scope alive while using the executor.
 
 `Binding.constants` supports additional reviewed pure singleton parameters (such as `hello`) using validated names
 and `.type` references only, not injected source. All parameters share the same model/inspector projection.

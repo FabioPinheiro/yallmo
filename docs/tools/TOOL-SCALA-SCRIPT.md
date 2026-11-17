@@ -193,9 +193,13 @@ host descriptor type; neither the executor nor `ScalaTool` derives an RPC contra
 `scalamode` ID, **code-only** schema and public API docs. No source implementation or transport is a model argument.
 Custom executors retain their unsupported-service default. Ordinary `execute` remains a value/environment-free
 effect path. ChatGPTAgent resolution installs the rooted filesystem service when both native filesystem functions
-are permitted, retaining hello alongside fs. No listener starts at construction/selection: local filesystem bindings
-start an executor-owned loopback listener only for the invocation and close it on every exit. The existing UI/server
-RPC endpoint is unchanged.
+are permitted, retaining hello alongside fs. No listener starts at construction/selection. The application's shared
+`ScalaCodeExecutorLive.live` / `.layer(...)` lazily starts one loopback listener on the first local-service execution
+and closes it at layer shutdown. Concurrent and sequential executions reuse it, with independently scoped dispatchers,
+single-use tickets and connections; one execution's cleanup does not close the listener or other executions.
+Keep the layer scope alive while using its executor. The resource-free `.make(...)` compatibility constructor retains
+per-invocation listeners for local bindings; explicit caller-owned routes are unchanged. The existing UI/server RPC
+endpoint is unchanged.
 
 ### Compiled binding contract and thin generated glue
 

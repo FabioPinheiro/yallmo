@@ -22,7 +22,9 @@ trait ScalamodeService {
   def binding: ScalamodeService.Binding
   def rpcBinding: Option[ScalamodeService.RpcBinding] = None
 
-  /** Executor-owned, invocation-scoped loopback transport. No listener is opened during service construction. */
+  /** Executor-provided loopback transport with invocation-scoped authority. The live layer shares its listener across
+    * executions; no listener is opened during service construction.
+    */
   def localRpcBinding: Option[RpcDispatcher] = None
 }
 

@@ -184,7 +184,7 @@ nor server runtime, protocol, core or model. The [module diagram](../README.md#m
 | --- | --- |
 | [ControlAction / KeyboardControls](../client-harness/shared/src/main/scala/fmgp/yallmo/clientharness/KeyboardControls.scala) | Stable command `id`, separate `webLabel` / `terminalLabel`, optional `shortcut`; normalized `KeyInput`, modes, modifier/IME/repeat guards, submission, menu direction and website command search. |
 | [DictationKeyboard](../client-harness/shared/src/main/scala/fmgp/yallmo/clientharness/DictationKeyboard.scala) | Shared stop/discard decisions, held-key suppression and matching Space-release consumption; effects are callbacks. |
-| [WebKeyboard](../web-harness/src/main/scala/fmgp/yallmo/view/web/WebKeyboard.scala) | DOM event/focus adapter, menu rendering and browser effects. App registers guarded actions; ViewRoute maps routes; VoiceModel translates capture phases to keyboard modes. |
+| [WebKeyboard](../web-harness/src/main/scala/fmgp/yallmo/webharness/WebKeyboard.scala) | DOM event/focus adapter, menu rendering and browser effects. App registers guarded actions; ViewRoute maps routes; VoiceModel translates capture phases to keyboard modes. |
 | [TerminalControlBindings](../repl/src/main/scala/fmgp/yallmo/repl/terminal/TerminalControlBindings.scala) | JLine adapter; widget names derive from keymap + action ID, never display labels or additional name arguments. |
 
 IDs are explicit machine names, independent of enum names and display wording. Footer action hints use `terminalLabel`;

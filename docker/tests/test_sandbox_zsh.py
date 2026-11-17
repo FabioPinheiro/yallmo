@@ -1,4 +1,4 @@
-"""Optional Zsh mixin tests: synthetic history only; no host credentials or Docker daemon."""
+"""Optional shell mixin tests: synthetic history only; no host credentials or Docker daemon."""
 import os
 from pathlib import Path
 import re
@@ -28,6 +28,8 @@ class ZshKitTests(unittest.TestCase):
         self.assertIn("FROM ${YALLMO_IMAGE}", dockerfile)
         self.assertIn("apt-get install -y --no-install-recommends zsh", dockerfile)
         self.assertIn("COPY zshrc /usr/share/yallmo-zsh/zshrc", dockerfile)
+        self.assertIn("COPY bash-history.bash /usr/share/yallmo-zsh/bash-history.bash", dockerfile)
+        self.assertIn("/bin/bash -n /tmp/bash-history.bash", dockerfile)
         self.assertNotIn("COPY --chown=1000:1000 zshrc /home/agent/.zshrc", dockerfile)
         self.assertIn("/bin/zsh --version", dockerfile)
         self.assertIn("/bin/zsh -n /tmp/zshrc", dockerfile)
@@ -95,11 +97,16 @@ class ZshKitTests(unittest.TestCase):
         kit = yaml.safe_load((ZSH / "kit.yaml").read_text())
         self.assertEqual(kit["kind"], "mixin")
         self.assertEqual(kit["dockerfile"], "./kit.dockerfile")
-        capabilities = {item["type"]: item["config"] for item in kit["capabilities"]}
-        volume = capabilities["com.docker.sandbox/volume@1"]
-        self.assertEqual(volume, {"path": "/home/agent/.zsh-data", "size": "512m",
-                                  "tmpfs": False, "mode": "0700"})
-        hook = capabilities["com.docker.sandbox/lifecycle@1"]["install"][0]
+        volumes = [item["config"] for item in kit["capabilities"]
+                   if item["type"] == "com.docker.sandbox/volume@1"]
+        self.assertEqual(volumes, [
+            {"path": "/home/agent/.zsh-data", "size": "512m", "tmpfs": False, "mode": "0700"},
+        ])
+        lifecycle = next(item["config"] for item in kit["capabilities"]
+                         if item["type"] == "com.docker.sandbox/lifecycle@1")
+        self.assertEqual(len(lifecycle["install"]), 2)
+        hook = lifecycle["install"][0]
+        self.assertEqual(hook["command"][-1], "/home/agent/.zsh-data")
         self.assertEqual(hook["user"], "0")
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "state"
@@ -109,11 +116,13 @@ class ZshKitTests(unittest.TestCase):
             command[-1] = str(state)
             first = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(first.returncode, 0, first.stderr)
-            history = state / "zsh_history"
-            history.write_text("synthetic-history-only\n")
+            for shell in ("zsh", "bash"):
+                (state / f"{shell}_history").write_text(f"synthetic-{shell}-history-only\n")
             second = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(history.read_text(), "synthetic-history-only\n")
+            for shell in ("zsh", "bash"):
+                self.assertEqual((state / f"{shell}_history").read_text(),
+                                 f"synthetic-{shell}-history-only\n")
             self.assertEqual(state.stat().st_mode & 0o777, 0o700)
 
     @unittest.skipUnless(exclude_paths, "Docker SDK required for build-context checks")
@@ -121,13 +130,15 @@ class ZshKitTests(unittest.TestCase):
         patterns = [line for line in (ZSH / ".dockerignore").read_text().splitlines()
                     if line and not line.startswith("#")]
         with tempfile.TemporaryDirectory() as temporary:
-            for name in ("kit.yaml", "kit.dockerfile", "zshrc", "zsh-data/zsh_history", ".env"):
+            for name in ("kit.yaml", "kit.dockerfile", "zshrc", "bash-history.bash",
+                         "zsh-data/zsh_history", "zsh-data/bash_history", ".env"):
                 path = Path(temporary) / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("synthetic-sentinel\n")
             included = set(exclude_paths(temporary, patterns, dockerfile="kit.dockerfile"))
-            self.assertTrue({"kit.yaml", "kit.dockerfile", "zshrc"} <= included)
+            self.assertTrue({"kit.yaml", "kit.dockerfile", "zshrc", "bash-history.bash"} <= included)
             self.assertNotIn("zsh-data/zsh_history", included)
+            self.assertNotIn("zsh-data/bash_history", included)
             self.assertNotIn(".env", included)
 
     @unittest.skipUnless(shutil.which("zsh"), "Zsh runtime checked during the kit image build")
@@ -145,6 +156,109 @@ class ZshKitTests(unittest.TestCase):
             self.assertEqual(result.stdout.splitlines(),
                              [str(Path(temporary) / ".zsh-data/zsh_history"), "synthetic-sentinel"])
             self.assertTrue(list((Path(temporary) / ".zsh-data").glob("zcompdump-*")))
+
+
+class BashHistoryTests(unittest.TestCase):
+    def run_bash(self, home, script, setup="", interactive=True):
+        rc = home / ".bashrc"
+        rc.write_text(setup + "\nsource " + shlex.quote(str(ZSH / "bash-history.bash")) + "\n")
+        args = ["bash", "--noprofile"]
+        if interactive:
+            args += ["--rcfile", str(rc), "-i"]
+        else:
+            args += ["--norc"]
+        # Do not inherit real shell history, credentials or startup scripts.
+        env = {"HOME": str(home), "PATH": os.environ["PATH"], "TERM": "dumb"}
+        result = subprocess.run(args, input=script, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    @unittest.skipUnless(yaml, "PyYAML required for kit descriptor checks")
+    def test_lifecycle_appends_bash_config_once_without_replacing_local_edits(self):
+        kit = yaml.safe_load((ZSH / "kit.yaml").read_text())
+        lifecycle = next(item["config"] for item in kit["capabilities"]
+                         if item["type"] == "com.docker.sandbox/lifecycle@1")
+        hook = lifecycle["install"][1]
+        self.assertEqual(hook["user"], "1000")
+        source = "source /usr/share/yallmo-zsh/bash-history.bash"
+        for existing in (None, "# synthetic local settings without trailing newline"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as temporary:
+                rc = Path(temporary) / ".bashrc"
+                if existing is not None:
+                    rc.write_text(existing)
+                for _ in range(2):
+                    result = subprocess.run(hook["command"], env={**os.environ, "HOME": temporary},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                content = rc.read_text()
+                self.assertEqual(content.splitlines().count(source), 1)
+                if existing is not None:
+                    self.assertTrue(content.startswith(existing + "\n"))
+
+    def test_preserves_string_array_and_unset_prompt_hooks_without_duplication(self):
+        setups = (
+            ("unset PROMPT_COMMAND", []),
+            ("PROMPT_COMMAND='printf string-hook'", ["printf string-hook"]),
+            ("PROMPT_COMMAND=('printf first-hook' 'printf second-hook')",
+             ["printf first-hook", "printf second-hook"]),
+        )
+        for setup, hooks in setups:
+            with self.subTest(setup=setup), tempfile.TemporaryDirectory() as temporary:
+                # Capture the array in a file because interactive prompts run the hooks too.
+                home = Path(temporary)
+                script = (f"source {shlex.quote(str(ZSH / 'bash-history.bash'))}\n"
+                          "printf '%s\\n' \"${PROMPT_COMMAND[@]}\" > \"$HOME/hooks\"\n"
+                          "exit\n")
+                self.run_bash(home, script, setup=setup)
+                self.assertEqual((home / "hooks").read_text().splitlines(),
+                                 hooks + ["_yallmo_bash_history_sync"])
+
+    def test_history_is_written_at_each_prompt_and_loaded_in_new_sessions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            # Neither legacy Bash history nor Zsh history should be imported or changed.
+            (home / ".bash_history").write_text("synthetic-legacy-bash\n")
+            zsh_state = home / ".zsh-data"
+            zsh_state.mkdir()
+            (zsh_state / "zsh_history").write_text(": 1712345678:0;synthetic-zsh\n")
+            output = self.run_bash(home, "echo synthetic-prompt-command\ncat \"$HISTFILE\"\n"
+                                   "printf '%s\\n' \"$HISTFILE\" \"$HISTSIZE\" \"$HISTFILESIZE\"\n"
+                                   "shopt -q histappend || exit 1\nexit\n")
+            self.assertIn("echo synthetic-prompt-command", output)
+            self.assertIn(str(home / ".zsh-data/bash_history") + "\n100000\n100000\n", output)
+            output = self.run_bash(home, "history\nexit\n")
+            self.assertIn("echo synthetic-prompt-command", output)
+            self.assertNotIn("synthetic-legacy-bash", output)
+            self.assertNotIn("synthetic-zsh", output)
+            self.assertEqual((home / ".bash_history").read_text(), "synthetic-legacy-bash\n")
+            self.assertEqual((zsh_state / "zsh_history").read_text(),
+                             ": 1712345678:0;synthetic-zsh\n")
+
+    def test_sync_imports_another_live_sessions_commands(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            # A nested interactive Bash runs while the parent is still alive.
+            script = ("history -s synthetic-parent-command\n"
+                      "_yallmo_bash_history_sync\n"
+                      "bash --noprofile --rcfile \"$HOME/.bashrc\" -i -c "
+                      "'history -s synthetic-child-command; _yallmo_bash_history_sync'\n"
+                      "_yallmo_bash_history_sync\nhistory\nexit\n")
+            output = self.run_bash(home, script)
+            self.assertIn("synthetic-parent-command", output)
+            self.assertRegex(output, r"(?m)^\s*\d+\s+synthetic-child-command$")
+            history = (home / ".zsh-data/bash_history").read_text().splitlines()
+            self.assertIn("synthetic-parent-command", history)
+            self.assertIn("synthetic-child-command", history)
+
+    def test_noninteractive_sourcing_does_not_enable_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            output = self.run_bash(
+                home, f"HISTFILE=unchanged\nsource {shlex.quote(str(ZSH / 'bash-history.bash'))}\n"
+                "printf '%s\\n' \"$HISTFILE\"\ndeclare -F _yallmo_bash_history_sync && exit 1\nexit 0\n",
+                interactive=False)
+            self.assertEqual(output, "unchanged\n")
+            self.assertFalse((home / ".zsh-data").exists())
 
 
 class ZshLauncherTests(unittest.TestCase):

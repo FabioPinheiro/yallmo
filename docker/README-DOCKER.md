@@ -68,7 +68,7 @@ The environment composes three kits:
 - `kit-pi/` — mixin: Pi, extensions, Playwright/MCP, public configuration templates
   and `prepare.py`. Removing it leaves a working Yallmo development shell; also
   remove the `/home/agent/.pi` mount from the environment when omitting this kit.
-- `kit-zsh/` — optional mixin: Zsh configuration and private persistent history.
+- `kit-zsh/` — optional mixin: Zsh configuration and separate private persistent Bash/Zsh histories.
 
 The `pi/`, `workspace/` and `yallmo-workspace/` directories remain user-managed
 state beside the kits. No existing profile contents are rewritten by this split.
@@ -205,10 +205,7 @@ is not mounted or synced.
 `zshrc` at `/usr/share/yallmo-zsh/zshrc`, and declares a private 512 MiB persistent
 volume at `/home/agent/.zsh-data`. SBX's `lifecycle.files` feature generates an
 agent-owned `/home/agent/.zshrc` that sources the bundled config; `overwrite: false`
-preserves an existing `.zshrc` rather than replacing local edits. Those local edits
-are sandbox-local, whereas history and completion caches live in the persistent
-volume. No host bind mount is needed. The workload still defaults to Bash without
-this opt-in.
+preserves an existing `.zshrc` rather than replacing local edits.
 
 Select all three kits and Zsh with the following configuration. On the **host**,
 update the kit sources in `docker/yallmo-sandbox/sbxenv.yaml` (preserve its other fields):
@@ -251,10 +248,6 @@ excluded from the Zsh build context. Its history is **not** read or imported aut
 migrate it explicitly after reviewing it for secrets. The kit preserves your prompt,
 completion and keybinding preferences, expands home paths correctly, and leaves
 SBX-managed GitHub credentials untouched.
-
-To return to Bash, set `YALLMO_SHELL: /bin/bash`; removing the optional kit also
-requires recreation. Zsh's history remains separate from the host-mounted Pi,
-coding and Yallmo workspaces.
 
 ### Upgrade an existing sandbox
 

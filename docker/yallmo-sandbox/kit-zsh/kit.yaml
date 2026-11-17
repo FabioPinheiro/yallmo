@@ -1,7 +1,7 @@
 # syntax=docker/sandbox-kit:3
 schemaVersion: "3"
 kind: mixin
-displayName: Zsh with private persistent history
+displayName: Zsh and Bash with private persistent history
 dockerfile: ./kit.dockerfile
 args:
   image:
@@ -28,3 +28,14 @@ capabilities:
         # The volume is mounted before this hook. Never truncate/import history.
         - command: [install, -d, -o, "1000", -g, "1000", -m, "0700", /home/agent/.zsh-data]
           user: "0"
+        # Bash usually already has a .bashrc. Append once instead of replacing it.
+        - command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              config='source /usr/share/yallmo-zsh/bash-history.bash'
+              if ! grep -Fqx -- "$config" "$HOME/.bashrc" 2>/dev/null; then
+                printf '\n# Persistent Bash history from the shell kit.\n%s\n' "$config" >> "$HOME/.bashrc"
+              fi
+          user: "1000"

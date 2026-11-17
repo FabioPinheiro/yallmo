@@ -19,12 +19,14 @@ RUN set -eu; \
              cp -a "$file" "/out$parent/"; \
            fi; \
          done
-COPY zshrc /tmp/zshrc
+COPY zshrc bash-history.bash /tmp/
 RUN /bin/zsh --version \
-    && /bin/zsh -n /tmp/zshrc
+    && /bin/zsh -n /tmp/zshrc \
+    && /bin/bash -n /tmp/bash-history.bash
 
 # A mixin contributes only runtime files; keep the workload's user and entrypoint.
 FROM scratch
 COPY --from=zsh-build /out/ /
 # lifecycle.files creates the agent-owned .zshrc that sources this public config.
 COPY zshrc /usr/share/yallmo-zsh/zshrc
+COPY bash-history.bash /usr/share/yallmo-zsh/bash-history.bash

@@ -17,7 +17,7 @@ Implemented plan records now live in `lixo/completed/`; moving them does not clo
 - [x] Review test and check all test that extends FunSuite or `Unsafe.unsafe { unsafe ?=> ... }` and use munit-zio lib!
 - [ ] TerminalVoiceModeStatus.remoteConnection Remove!
 - [x] Rename web harness package to `fmgp.yallmo.webharness`
-- [ ] Review ServerApplication graceful-shutdown See https://zio.dev/reference/core/zioapp#graceful-shutdown-timeout
+- [x] Review ServerApplication graceful-shutdown See https://zio.dev/reference/core/zioapp#graceful-shutdown-timeout
 - [ ] [Local RAG demo](RAG.md)
 
 ### REPL

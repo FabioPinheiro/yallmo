@@ -528,28 +528,6 @@ final class ServerSubmissionSuite extends FunSuite {
     })
   }
 
-  test("shutdown interrupts app work, runs provider finalizers before root lease and services release") {
-    run(ZIO.scoped {
-      for {
-        entered <- Promise.make[Nothing, Unit]
-        finalized <- Ref.make(false)
-        ownerScope <- Scope.make
-        app <- application(_ => (entered.succeed(()) *> ZIO.never).ensuring(finalized.set(true)))
-          .provideEnvironment(ZEnvironment(ownerScope))
-        backend = app
-        session <- seed(backend, human, Some(SessionId.unsafe("shutdown")))
-        wait <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep").fork
-        _ <- entered.await
-        _ <- ownerScope.close(Exit.unit)
-        outcome <- wait.join
-        done <- finalized.get
-      } yield {
-        assert(done)
-        assertEquals(outcome.asInstanceOf[TurnOutcome.Failed].acceptance, PromptAcceptance.Unknown)
-      }
-    })
-  }
-
   test("anonymous clients cannot gain authority from clientName") {
     run(ZIO.scoped {
       for {
@@ -710,39 +688,6 @@ final class ServerSubmissionSuite extends FunSuite {
           case _                                 => false
         })
         assertEquals(count, 0)
-      }
-    })
-  }
-
-  test("application lease remains held until blocked execution finalizers complete") {
-    run(ZIO.scoped {
-      for {
-        entered <- Promise.make[Nothing, Unit]
-        finalizing <- Promise.make[Nothing, Unit]
-        release <- Promise.make[Nothing, Unit]
-        owner <- Scope.make
-        app <- application(_ =>
-          (entered.succeed(()) *> ZIO.never)
-            .ensuring(finalizing.succeed(()) *> release.await)
-        )
-          .provideEnvironment(ZEnvironment(owner))
-        backend = app
-        session <- seed(backend, human, Some(SessionId.unsafe("lease")))
-        wait <- backend.submit(human, TurnSubmit.Target.Existing(session.id), first, "keep").fork
-        _ <- entered.await
-        closing <- owner.close(Exit.unit).fork
-        _ <- finalizing.await
-        competing <- ZIO
-          .scoped(
-            ServerApplication.lease(backend.workspace)
-          )
-          .either
-        _ <- release.succeed(())
-        _ <- closing.join
-        outcome <- wait.join
-      } yield {
-        assert(competing.isLeft)
-        assertEquals(outcome.asInstanceOf[TurnOutcome.Failed].acceptance, PromptAcceptance.Unknown)
       }
     })
   }

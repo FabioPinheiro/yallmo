@@ -138,7 +138,7 @@ Visible history is preserved; the client never sends continuation offsets or sto
 
 A short root-local filesystem mutation mutex coordinates publication/snapshot capture, **not provider/tool execution**.
 Nonwaiting same-session turn exclusion rejects Busy; independent sessions execute concurrently. There is no global
-agent/run gate. Work/finalizers stop before root lease/tools release on shutdown; already-closed scope cannot hang waits.
+agent/run gate. Already-closed scope cannot hang waits.
 There is no status/cancel API, run registry, command ledger, deduplication, replay or exactly-once/crash transaction claim.
 Legacy/uncooperative separate storage owners still must not write the same root concurrently.
 
@@ -446,7 +446,7 @@ sbt 'server/bundle'
 Server tests cover real WebSocket reads/errors, shared-master visibility, blob chunks, request correlation, timeout,
 close/scope cleanup, protocol/fragment bounds, SPA asset boundaries, unrestricted trusted Host/Origin access, removed REST routes, CLI
 options, configured composition/tool availability, service lifetime, viewer guards and configured REPL/browser execution, concurrent independent turns, Busy/head conflict, detached
-completion, shutdown/closed-scope delivery and overload, standalone root
+completion, closed-scope delivery and overload, standalone root
 lease contention/cleanup/aliases, connection-ID logging and INFO/DEBUG/TRACE/OFF filtering. Frontend tests cover shared-domain wire decoding, hash navigation, text/tool formatting, socket lifecycle,
 reconnect without replay, deadlines, out-of-order replies and partial-download validation.
 

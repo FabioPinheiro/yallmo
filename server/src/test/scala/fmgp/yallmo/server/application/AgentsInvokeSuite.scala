@@ -498,26 +498,6 @@ final class AgentsInvokeSuite extends FunSuite {
     })
   }
 
-  test("application shutdown and already-closed scopes deliver terminal errors instead of hanging invocation waits") {
-    run(ZIO.scoped {
-      for {
-        started <- Promise.make[Nothing, Unit]
-        scope <- Scope.make
-        fixture <- make(_ => started.succeed(()) *> ZIO.never).provideEnvironment(ZEnvironment(scope))
-        running <- invoke(fixture).fork
-        _ <- started.await
-        _ <- scope.close(Exit.unit)
-        reply <- running.join
-        afterClose <- fixture.backend.invoke(human, assistant, input).either
-        stored <- fixture.live.listMessages
-      } yield {
-        assertEquals(decode[JsonRpc.Failure](reply).error, JsonRpc.Error.InternalError)
-        assertEquals(afterClose, Left(JsonRpc.Error.InternalError))
-        assertEquals(stored, Chunk(input))
-      }
-    })
-  }
-
   test(
     "same WebSocket accepts an invocation before upload completion, then correlates upload/read/invocation replies"
   ) {

@@ -12,6 +12,8 @@ import fmgp.yallmo.tool.sdlc.SdlcService
   * Embedded applications should supply their configured backend instead.
   */
 object MainServer extends ZIOAppDefault {
+  override def gracefulShutdownTimeout: Duration = 20.seconds
+
   private val Levels = "trace|debug|info|warning|error|fatal|off"
   private val Usage =
     s"Usage: server/run --storage <existing-directory> --config <path> [--workspace <existing-directory>] [--port <1-65535>] [--log-level <$Levels>]"

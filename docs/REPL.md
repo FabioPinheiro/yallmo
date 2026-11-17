@@ -115,8 +115,8 @@ before **manual resend**. If the first reply was lost, the ID may not be known: 
 saved conversation. Unknown outcomes (including InternalError) block another prompt until explicit recovery.
 No automatic submit retry, replay, deduplication, exactly-once, run registry, status or cancel API exists.
 Closing/Ctrl+C only abandons the local wait; accepted application-owned work survives disconnect. Restart the client
-and resume to observe durable completion. Server shutdown stops work/finalizers before releasing storage/tools/lease;
-a terminal Unknown outcome may carry the best safe snapshot, never a rollback guarantee.
+and resume to observe durable completion. A terminal Unknown outcome may carry the best safe snapshot, never a rollback
+guarantee.
 
 Public snapshots/deltas render original role/content/author/tool/blob references with unsafe display controls removed.
 Bodies retain multiline text/tabs and normalize carriage returns; metadata stays single-line. Failed reads retain

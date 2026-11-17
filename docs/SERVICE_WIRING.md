@@ -166,9 +166,8 @@ Client connection scope: interruptible wait only
 
 Same-session submissions receive nonwaiting Busy rejection. `expectedHead` is checked before prompt submission; core/storage
 still retain their independent fences/CAS semantics. Independent sessions/invocations need not serialize. Storage has short
-root-local mutation locks, never a lock around inference/tool work. Admitted operations outlive caller disconnect; application
-shutdown interrupts and finalizes them before tool services/storage ownership are released. Results are not retained in a
-new run registry. Embedded `make`/`workspace` factories open their own single master but do not claim the standalone lease.
+root-local mutation locks, never a lock around inference/tool work. Admitted operations outlive caller disconnect.
+Results are not retained in a new run registry. Embedded `make`/`workspace` factories open their own single master but do not claim the standalone lease.
 
 See [mental model](MENTAL_MODEL.md), [capabilities](Capabilities_Architecture.md), and [server guide](../server/README-SERVER.md).
 Regression coverage: `AgentCatalogSuite`, `ResolvedAgentSuite`, `ServerCompositionSuite`, `ConfiguredProgramSuite`, `ServerSubmissionSuite`,

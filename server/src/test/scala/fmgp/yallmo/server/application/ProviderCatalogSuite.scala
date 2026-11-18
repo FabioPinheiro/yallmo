@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.model.{User, UserId}
 import fmgp.yallmo.orchestration.config.{Config, ConfigDocument, OAuthCredentialsConfig, ProviderConfig, ProviderId}
 import fmgp.yallmo.provider.openai.OpenAiCodexClient
 import munit.FunSuite
@@ -62,6 +63,9 @@ final class ProviderCatalogSuite extends FunSuite {
     withFile { (jsonPath, _) =>
       val path = jsonPath.resolveSibling("synthetic.yaml")
       val yaml = """# Operator configuration
+users:
+  Alice:
+    secretHash: 'pbkdf2-sha256$600000$5071be5d35e6a8a3274c320fd9630622$c9a2eec774d1b4f2a71879335dc71e7ebf655d762385791a69b407f34a4e92e1'
 agents:
   assistant: # agent note
     agentType: OAIAgent
@@ -97,6 +101,16 @@ futureRoot: preserved # root note
       run(catalog.updateChatGptCredentials(id("account"), credentials))
       val text = Files.readString(path)
       val after = ConfigDocument.parse(path, text).toOption.get
+      assertEquals(after.config.users, before.config.users)
+      assertEquals(
+        after.config.users(UserId("Alice")),
+        User(
+          UserId("Alice"),
+          "pbkdf2-sha256$600000$5071be5d35e6a8a3274c320fd9630622$c9a2eec774d1b4f2a71879335dc71e7ebf655d762385791a69b407f34a4e92e1"
+        )
+      )
+      assert(!text.contains("id:"))
+      assertEquals(after.config.toJson.fromJson[Config], Right(after.config))
       assertEquals(after.config.providers(id("account")), ProviderConfig.ChatGPT(Some(credentials)))
       assertEquals(after.config.providers(id("new-account")), ProviderConfig.ChatGPT())
       assertEquals(after.config.providers(id("new-local")), ProviderConfig.OAI("http://localhost:8000/v1"))

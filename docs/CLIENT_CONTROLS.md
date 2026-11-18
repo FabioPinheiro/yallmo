@@ -55,7 +55,7 @@ The global command shortcut and native navigation/activation controls also work 
 | `s` | Choose conversation | Focuses the conversation list and expands mobile navigation when needed. |
 | `n` | New conversation | Uses the same optional name and capability/busy checks as its button. |
 | `r` | Reload current view | In Chat, reloads history; never resends a prompt. |
-| `u` | Change username | Focuses the name field; Reconnect must explicitly apply it. |
+| `u` | Show username | Focuses the authenticated username label; log out to switch accounts. |
 | `m` | Focus Dictation / Stop | Does **not** start recording by itself; activate the focused button with `Enter` or `Space`. |
 | `Tab` / `Shift+Tab` | Next / previous control | Native navigation works throughout the website. |
 | `Enter` / `Space` on a button | Activate that control | While recording, Space stops dictation rather than activating another button. |

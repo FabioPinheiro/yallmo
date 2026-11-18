@@ -1,6 +1,10 @@
 # Sanitized snapshot of the selected project-root yallmo.yaml agents. NO saved credentials or expiry copied.
 # Public sentinel values come from sbxenv.yaml, not from the host token store.
 # expiresAtMillis=0 is intentional: the exact sentinel pair never refreshes locally; Docker owns real refresh.
+users:
+  root:
+    # python3 -c 'import getpass, hashlib, secrets; p = getpass.getpass("Password: "); s = secrets.token_bytes(16); print("pbkdf2-sha256$600000$" + s.hex() + "$" + hashlib.pbkdf2_hmac("sha256", p.encode("utf-8"), s, 600000, dklen=32).hex())'
+    secretHash: 'pbkdf2-sha256$600000$9f8e6147b93dc021359005bad7146dcf$2e9b8471bf7a493cdc92d1b636101f11e3fa9ac5f3abf331f9ea8717b554bc11'
 agents:
   Transcriber:
     agentType: OAIAgent

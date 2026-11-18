@@ -283,8 +283,8 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
           MessagePayload.AudioAttachment(blob, AudioFormat.Wav),
           Chunk[Byte](0, 1, -1)
         )
-        port <- new OrchestratorWSServer(backend).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         _ <- client.loadSession(session)
         _ <- client.readBlob(blob)
         _ <- client.close
@@ -295,7 +295,12 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
         }
       } yield ()
     })
-    messages.asScala.toVector
+    val lines = messages.asScala.toVector
+    assert(
+      !lines.exists(_.contains(TestWebSession.password)),
+      "HTTP login credentials must never enter logs, even at TRACE"
+    )
+    lines
   }
 
   private def run[A](effect: ZIO[Any, Any, A]): A =

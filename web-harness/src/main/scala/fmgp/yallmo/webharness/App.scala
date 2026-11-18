@@ -18,7 +18,7 @@ object App {
 
   def main(args: Array[String]): Unit = {
     val _ = args
-    renderOnDomContentLoaded(dom.document.getElementById("app"), application())
+    renderOnDomContentLoaded(dom.document.getElementById("app"), LoginView(application))
   }
 
   private def load[A](request: => Future[A]): Signal[LoadState[A]] =
@@ -30,7 +30,7 @@ object App {
       )
       .startWith(LoadState.Loading)
 
-  private def application(): HtmlElement = {
+  private def application(username: String, logout: () => Unit, checkSession: () => Unit): HtmlElement = {
     val notifications = new UiNotifications
     val speech = new MessageSpeech(MessageSpeech.browserPlayback, notifications.publish)
     val disconnected = new EventBus[Throwable]
@@ -59,7 +59,6 @@ object App {
       notifications.publish,
       () => speech.stop()
     )
-    val humanName = Var("fabio")
     val connection = Var("Connecting…")
     val connecting = Var(false)
     val connected = Var(false)
@@ -67,7 +66,6 @@ object App {
     val route = Var(ViewRoute.parse(dom.window.location.hash))
     val refresh = new EventBus[Unit]
     val refreshes = refresh.events.startWith(())
-    var claimedUser = OrchestratorWSClient.claimedUser("fabio")
     var intentionalClose = false
     var mounted = false
     def close(): Unit = {
@@ -81,8 +79,7 @@ object App {
       intentionalClose = false
     }
     def connect(): Unit = {
-      val requestedUser = OrchestratorWSClient.claimedUser(humanName.now())
-      if requestedUser.nonEmpty && !connecting
+      if !connecting
           .now() && chat.state.now().pending.isEmpty && !chat.state
           .now()
           .voiceBusy && !scalamode.state.now().pending && branch.state.now().pending.isEmpty && !providers.state
@@ -91,12 +88,7 @@ object App {
       then {
         connecting.set(true)
         connection.set("Connecting…")
-        if requestedUser != claimedUser then {
-          chat.disable()
-          close()
-          claimedUser = requestedUser
-        }
-        client.connect(claimedUser).onComplete {
+        client.connect().onComplete {
           case scala.util.Success(info) if mounted =>
             connecting.set(false)
             val graphOwnsInventory = route.now() == ViewRoute.Graph
@@ -107,8 +99,7 @@ object App {
             providers.configure(info)
             refresh.emit(())
             connected.set(true)
-            connection.set(if OrchestratorWSClient.canChat(info) then
-              s"Trusted operator · ${UserId.value(info.identity.id)}"
+            connection.set(if OrchestratorWSClient.canChat(info) then s"Signed in · ${UserId.value(info.identity.id)}"
             else "Read only")
           case scala.util.Failure(error) if mounted =>
             connected.set(false)
@@ -221,6 +212,7 @@ object App {
           scalamode.disable()
           branch.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
+          checkSession()
           if !connecting.now() then notifications.publish(UiNotice(s"Disconnected: ${error.getMessage}", "error"))
         }
       },
@@ -273,37 +265,20 @@ object App {
         cls := "main-column",
         div(
           cls := "toolbar",
-          input(
-            cls := "username",
-            idAttr := "username",
-            aria.label := "Username",
-            title := "Claimed author name (not authentication). Reconnect to apply.",
-            value <-- humanName.signal,
-            onInput.mapToValue --> humanName.writer
-          ),
+          span(cls := "username", idAttr := "username", tabIndex := 0, username),
+          button(typ := "button", "Log out", onClick --> (_ => { close(); logout() })),
           span(cls := "connection-status", role := "status", child.text <-- connection.signal),
           ChatView.agentSelect(chat, scalamode.state.signal.map(_.pending).combineWith(branchBusy).map(_ || _)),
           button(
             typ := "button",
             "Reconnect",
             idAttr := "reconnect",
-            disabled <-- humanName.signal
-              .combineWith(
-                connecting.signal,
-                chat.state.signal,
-                scalamode.state.signal,
-                providers.state.signal,
-                branchBusy
-              )
-              .map { case (name, busy, state, scalaState, providerState, branchPending) =>
-                OrchestratorWSClient
-                  .claimedUser(name)
-                  .isEmpty || busy || state.pending.nonEmpty || state.voiceBusy || scalaState.pending || providerState.busy || branchPending
+            disabled <-- connecting.signal
+              .combineWith(chat.state.signal, scalamode.state.signal, providers.state.signal, branchBusy)
+              .map { case (busy, state, scalaState, providerState, branchPending) =>
+                busy || state.pending.nonEmpty || state.voiceBusy || scalaState.pending || providerState.busy || branchPending
               },
-            title <-- humanName.signal.map(name =>
-              if OrchestratorWSClient.claimedUser(name).isEmpty then "Enter a username to reconnect."
-              else "Apply username and refresh connection state."
-            ),
+            title := "Refresh connection state.",
             onClick --> (_ => connect())
           ),
           keyboard.view()

@@ -29,13 +29,18 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
   private def actors(user: UserId): Chunk[AgentId] =
     ownership.getOrElse(user, Chunk(UserId.chatAgent(user), UserId.websiteAgent(user)))
 
-  def openConnection: UIO[Connection] =
+  /** Trusted in-process adapter only. Network transports must bind an authenticated principal. */
+  def openConnection: UIO[Connection] = makeConnection(None)
+
+  def openAuthenticatedConnection(user: UserId): UIO[Connection] = makeConnection(Some(user))
+
+  private def makeConnection(principal: Option[UserId]): UIO[Connection] =
     for {
       state <- Ref.Synchronized.make[ConnectionState](ConnectionState.Uninitialized)
       uploads <- Ref.make(Map.empty[BlobId, BlobUploader])
       active <- Ref.make(Option.empty[ActiveEvents])
       changed <- Queue.sliding[Unit](1)
-    } yield new Connection(UUID.randomUUID(), state, uploads, active, changed)
+    } yield new Connection(UUID.randomUUID(), principal, state, uploads, active, changed)
 
   def disconnect(connection: Connection): UIO[Unit] =
     connection.state.modifyZIO { _ =>
@@ -121,16 +126,20 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
   private def invoke(method: String, params: Json.Obj, connection: Connection): IO[JsonRpc.Error, Json] =
     if method == Initialize.method then
       decode[Initialize.Params](params).flatMap { request =>
+        val userId = connection.principal.orElse(request.userId)
         connection.state.modifyZIO { current =>
           for {
+            _ <- ZIO
+              .fail(JsonRpc.Error(ErrorCode.Forbidden, "Identity does not match authenticated user"))
+              .when(connection.principal.nonEmpty && request.userId.exists(id => !connection.principal.contains(id)))
             _ <- current match {
               case ConnectionState.Closed => ZIO.fail(JsonRpc.Error(ErrorCode.Unauthorized, "Connection closed"))
-              case ConnectionState.Initialized(id) if id != request.userId =>
+              case ConnectionState.Initialized(id) if id != userId =>
                 ZIO.fail(JsonRpc.Error(ErrorCode.Conflict, "Initialized identity cannot change"))
               case _ => ZIO.unit
             }
             registered <- domain(master.listAgentIds)
-            owned = request.userId.fold(Chunk.empty[AgentId])(actors)
+            owned = userId.fold(Chunk.empty[AgentId])(actors)
             _ <- ZIO.foreachDiscard(owned.filter(registered.contains)) { id =>
               for {
                 known <- configured.application.isUser(id)
@@ -143,11 +152,11 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
               Initialize.Result(
                 instanceId,
                 Identity(
-                  request.userId.getOrElse(UserId("local-viewer")),
-                  if request.userId.nonEmpty then Role.Operator else Role.Viewer,
+                  userId.getOrElse(UserId("local-viewer")),
+                  if userId.nonEmpty then Role.Operator else Role.Viewer,
                   owned
                 ),
-                if request.userId.nonEmpty then
+                if userId.nonEmpty then
                   methods ++ List(
                     TurnSubmit.method,
                     BranchesSubmit.method,
@@ -167,7 +176,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
               )
             )
             _ <- ZIO.when(current == ConnectionState.Uninitialized) {
-              ZIO.foreachDiscard(request.userId) { id =>
+              ZIO.foreachDiscard(userId) { id =>
                 ZIO.succeed {
                   ownership.getOrElseUpdate(id, owned)
                   humans.put(connection.id, id)
@@ -175,7 +184,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                   ZIO.logInfo(s"Viewer identity registered userId=${escapedHumanId(id)}")
               }
             }
-          } yield (result, ConnectionState.Initialized(request.userId))
+          } yield (result, ConnectionState.Initialized(userId))
         }.uninterruptible
       }
     else
@@ -576,6 +585,7 @@ private[server] object OrchestratorRpc {
 
   final class Connection private[OrchestratorRpc] (
       val id: UUID,
+      private[OrchestratorRpc] val principal: Option[UserId],
       private[OrchestratorRpc] val state: Ref.Synchronized[ConnectionState],
       private[server] val uploads: Ref[Map[BlobId, BlobUploader]],
       private[OrchestratorRpc] val active: Ref[Option[ActiveEvents]],

@@ -6,14 +6,77 @@ no additional runtime/storage owner or runner/service is created.
 HTTP serves static assets, WebSocket upgrades and read-only SDLC inspection;
 conversation/blob requests still use JSON-RPC, not REST endpoints.
 
-**Trusted environment only; access is assumed already authenticated outside this server.** A configured backend and
-initialized claimed human `userId` enable Operator with `turn.submit`, `branches.submit`, `agents.invoke`,
-`blobs.upload`, `diagnostics.request` and provider catalog/login methods,
-including browser and remote-machine clients. Anonymous connections remain read-only. Host, Origin, peer address and
-`clientName` do not grant or restrict access. There is no server authentication or Origin allowlist. Anyone who can
-reach the listener (including through a browser or proxy) can claim an author, execute configured agents/tools,
-and replace provider credentials.
-User names are impersonable metadata/authorship, **not authenticated identities**. Never expose it publicly.
+## Web authentication
+
+The standalone host requires at least one configured user; an empty/missing `users` mapping stops startup.
+Embedded `OrchestratorWSServer` instances also fail closed on the network without users (only assets/login stay public).
+Trusted direct in-process `OrchestratorRpc.openConnection` callers retain their existing initialization policy;
+no network endpoint uses that policy.
+
+In your **private**, gitignored `yallmo.yaml` (JSON supports the same structure):
+
+```yaml
+users:
+  Fabio:
+    secretHash: '${YALLMO_FABIO_PASSWORD_HASH}'
+```
+
+Set that variable in the **server process** to a generated hash, or put the generated string directly in `secretHash`.
+The preferred format is `pbkdf2-sha256$600000$<32 lowercase hex salt>$<64 lowercase hex hash>`: JDK
+`PBKDF2WithHmacSHA256`, exactly **600000 iterations**, a fresh cryptographically random **16-byte salt** per password hash,
+and a **256-bit** derived key. The salt is nonsecret and stored alongside the hash in this one string; login reads that
+stored salt, never generates a new one. Generate it with Python's standard library from an interactive terminal
+(the password is hidden and never placed on the command line or in shell history):
+
+```sh
+python3 -c 'import getpass, hashlib, secrets; p = getpass.getpass("Password: "); s = secrets.token_bytes(16); print("pbkdf2-sha256$600000$" + s.hex() + "$" + hashlib.pbkdf2_hmac("sha256", p.encode("utf-8"), s, 600000, dklen=32).hex())'
+```
+
+Copy the output into the private config or server environment. Use a nonblank password of at most 1024 UTF-16 code units
+(JVM characters); no Unicode normalization is applied. Names are case-sensitive, nonblank and at most 128 characters.
+Loading uses the existing `${NAME}` expansion and never rewrites references with values. Restart to apply credential changes.
+Each user requires a `secretHash` string; missing or malformed/unsupported hashes fail config validation.
+The mapping key (for example `Fabio`) supplies the model's `User.id: UserId`; do not repeat `id` inside the credential.
+The removed plaintext `secret` field is rejected, including alongside `secretHash`.
+Keep config/environment and process memory private; hashes still permit offline guessing.
+
+**Fixed-salt compatibility:** existing `pbkdf2-sha256$600000$yallmo$<64 lowercase hex hash>` strings remain accepted,
+using the literal UTF-8 salt `yallmo`. They are weaker: identical passwords produce identical hashes, allowing attackers
+to reuse guessing work across users/installations. To replace one, rerun the interactive command above with the normal
+password, replace `secretHash` (or its server environment variable), then restart; this generates a new random salt.
+New hashes should always use random salts. Use long, strong, unique passwords and HTTPS; hashing does not protect passwords
+in transit. Login always sends the **normal password**, not the stored hash, over HTTPS. The server derives on ZIO's
+blocking executor and compares fixed-length digests in constant time.
+Oversized passwords are rejected before the KDF; unknown users receive the same KDF work as configured accounts.
+Temporary password character arrays are cleared where practical, but JVM/JSON strings cannot be reliably erased.
+There is no password recovery, account management, MFA or per-user resource isolation. Every authenticated account is an
+**Operator**, including provider administration and powerful configured tools; only provision trusted operators.
+This is not a multi-tenant auth system.
+
+Open the website and sign in before any app views or WebSocket are mounted. `POST /auth/login` accepts JSON
+`{username,password}`; `GET /auth/session` restores only `{username}`; `POST /auth/logout` revokes the cookie's session.
+Login/logout require an exact same-origin `Origin` and `X-Yallmo-CSRF: 1`; there is no CORS access. `/rpc` requires a valid
+session **before upgrade** and exact same-origin Origin. RPC initialize may omit `userId`, but cannot claim a different
+user. All non-static HTTP routes (including SDLC) require the same cookie; assets/index/login remain public.
+Same-origin comparisons use the original `Host`, not untrusted forwarded headers. **Preserve Host and Origin** at your
+reverse proxy; Vite proxies `/auth`, `/rpc` and `/api/sdlc` without rewriting Host/Origin, so localhost:5173 works without
+a permissive origin exception. Non-browser safe HTTP reads can omit Origin; WebSockets cannot.
+
+Cookies are opaque 256-bit random tokens, host-only, `HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` for HTTPS login
+Origins. **Terminate/enforce HTTPS at a trusted reverse proxy for remote use**, preserve the browser's HTTPS Origin, and
+block direct unencrypted access to the backend. Do not rely on forwarded-proto headers or run a remote HTTP login.
+The backend listener itself is plain HTTP on `0.0.0.0`. Use HTTP only for private local development.
+Passwords never enter browser storage, URLs, RPC payloads or application logs. Sessions are bounded to 1024 per host,
+expire after eight hours (not sliding), and are lost on restart. Login admission is globally limited to five attempts/sec;
+failed credentials get the same empty 401 response. Add edge rate limiting for an internet-facing deployment.
+Logout and expiry close active sockets and prevent new RPC admission; already-admitted application work is **not cancelled**.
+
+The JVM client's `OrchestratorWSClient.connect(..., userId = Some(UserId("Fabio")), password = Some(secret))` uses the same
+HTTP login and session-cookie handshake. The connected REPL reads optional `YALLMO_PASSWORD` from its process environment;
+set it privately (do not place secrets on command lines or in shell history) and use `--user-name Fabio`. Environment values
+are plaintext and may be visible to privileged processes. Without credentials, the standalone host rejects the upgrade;
+there is no anonymous viewer or public-operator fallback. The JVM client does not persist credentials/cookies or auto-retry
+login, and its session expires under the same rules as a browser session.
 
 ## Connected terminal prompts
 
@@ -53,14 +116,14 @@ into the private callback field. The localhost page may fail to load; copy its a
 then wait for **Login saved and active**. Future requests use the new credentials immediately; no restart or agent
 reselection is needed. Already-running requests keep their previous binding. No model request is needed to log in.
 
-This uses the same application WebSocket and server-owned OAuth/atomic config persistence, not HTTP login endpoints.
+Provider OAuth uses the authenticated application WebSocket and server-owned atomic config persistence; it is separate from web-account HTTP login.
 Tokens never return to the browser. Login replaces only the affected runtime provider and lazily rebinds its dependent
 agents, preserving filesystem capabilities and leaving other providers/users untouched. A save-only fallback reports
 `restartRequired: true` if that provider cannot be activated in the startup snapshot (e.g. added externally after
 startup). Saves and activation are serialized so concurrent logins cannot leave disk and runtime out of order.
 This feature does not add profile editing or general configuration reload. Credentials configured
 is not a validity check; automatic refresh during inference remains separate and memory-only. Keep the server private:
-its existing Operator role is a claimed identity, not authentication or a separate administrative authorization boundary.
+every signed-in user is an Operator; provider management has no separate administrative role.
 See [protocol details](PROTOCOL.md#provider-administration-and-browser-login).
 
 The connected REPL exposes the same server login through its provider picker, using terminal-private hidden callback
@@ -232,7 +295,7 @@ The client-only REPL requires `--user-name <id>` and accepts optional `--agent <
 The default endpoint is `ws://127.0.0.1:8080/rpc`; there is no embedded application or local execution fallback.
 It never loads `yallmo.json`, probes tools, constructs providers or acquires local audio/login services.
 `--config`/`--storage` belong to server startup; the REPL rejects them and `--transcriber-agent`.
-Claimed human IDs use `user-<user-name>` and are sufficient authorship for this trusted-environment deployment, not authentication.
+Authenticated human actors use `user-<username>`; network identity comes from the HTTP session, never a client claim.
 The provider picker exposes server listing and private ChatGPT login when all four provider methods are negotiated;
 provider creation/editing, voice and interactive human transport remain pending. Configured prompts and session/history
 commands use standalone server storage. Existing embedded adapters, audio/voice and debug implementations and their tests are retained for follow-up

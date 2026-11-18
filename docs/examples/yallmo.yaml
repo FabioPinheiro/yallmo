@@ -1,5 +1,8 @@
 # Secret-free example. Copy to a private, gitignored file and choose an installed model.
-# The configured filesystem root must exist when the agent is first used.
+users: 
+  root:
+    # python3 -c 'import getpass, hashlib, secrets; p = getpass.getpass("Password: "); s = secrets.token_bytes(16); print("pbkdf2-sha256$600000$" + s.hex() + "$" + hashlib.pbkdf2_hmac("sha256", p.encode("utf-8"), s, 600000, dklen=32).hex())'
+    secretHash: 'pbkdf2-sha256$600000$9f8e6147b93dc021359005bad7146dcf$2e9b8471bf7a493cdc92d1b636101f11e3fa9ac5f3abf331f9ea8717b554bc11'
 browserAudioPort: 5180
 agents:
   assistant:

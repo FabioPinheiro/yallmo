@@ -8,8 +8,8 @@ import zio.json.*
 
 /** Read-only HTTP inspection of the server's full planning snapshots, not the LLM projections.
   *
-  * Same trusted-environment policy as the host: no authentication or Origin restriction. Planning text is sensitive;
-  * never expose this listener publicly. Requests do not invoke agents or mutate planning/conversation storage.
+  * Mounted behind the host session/Origin checks. Planning text is sensitive; callers mounting these routes elsewhere
+  * must supply the same access control. Requests do not invoke agents or mutate planning/conversation storage.
   */
 final class SdlcHttpRoutes(service: SdlcService) {
   val routes: Routes[Any, Nothing] = Routes(

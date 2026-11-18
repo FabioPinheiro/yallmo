@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration.config
 
-import fmgp.yallmo.model.{AgentId, YallmoError}
+import fmgp.yallmo.model.{AgentId, User, UserId, YallmoError}
 import munit.FunSuite
 import zio.{Config as _, *}
 import zio.json.*
@@ -33,7 +33,7 @@ final class ConfigFileSuite extends FunSuite {
       assertEquals(initial.providers, Map.empty)
       assertEquals(
         initial.toJson.fromJson[zio.json.ast.Json.Obj].toOption.get.fields.map(_._1).toSet,
-        Set("agents", "providers", "browserAudioPort")
+        Set("agents", "providers", "browserAudioPort", "users")
       )
       assertEquals(initial.browserAudioPort, 5180)
       assert("\"browserAudioPort\"\\s*:\\s*5180".r.findFirstIn(Files.readString(path)).nonEmpty)
@@ -43,6 +43,66 @@ final class ConfigFileSuite extends FunSuite {
       val before = Files.readString(path)
       assertEquals(run(ConfigFile.loadOrInitialize(path)), initial)
       assertEquals(Files.readString(path), before)
+    }
+  }
+
+  test("web secretHash accepts random salts and legacy yallmo, resolves env references and requires secretHash") {
+    // Python hashlib.pbkdf2_hmac('sha256', b'test-secret', bytes.fromhex(salt), 600000, dklen=32).hex()
+    val salt = "5071be5d35e6a8a3274c320fd9630622"
+    val hash =
+      s"pbkdf2-sha256$$600000$$$salt$$c9a2eec774d1b4f2a71879335dc71e7ebf655d762385791a69b407f34a4e92e1"
+    val legacyHash = "pbkdf2-sha256$600000$yallmo$a55328c40930bb6b784148df64e01cbcfdf4ed8c893457a61b574322eb854b97"
+    val path = Path.of("web-users.yaml")
+    assertEquals(ConfigDocument.parse(path, "agents: {}").toOption.get.config.users, Map.empty)
+    val yaml = "users: { Alice: { secretHash: '${WEB_HASH}' } }"
+    val loaded = ConfigDocument.parse(path, yaml, Map("WEB_HASH" -> hash)).toOption.get
+    assertEquals(loaded.config.users, Map(UserId("Alice") -> User(UserId("Alice"), hash)))
+    assert(loaded.json.toJson.contains("${WEB_HASH}"))
+    assertEquals(loaded.config.toJson.fromJson[Config], Right(loaded.config))
+    assert(!loaded.config.toJson.contains("\"id\""))
+    assert(ConfigFile.validate(Config(users = Map(UserId("Bob") -> User(UserId("Alice"), hash)))).isLeft)
+    for accepted <- List(hash, legacyHash) do
+      assert(ConfigDocument.parse(path, s"users: { Alice: { secretHash: '$accepted' } }").isRight)
+
+    val malformed = List(
+      "",
+      " ",
+      hash.replace("pbkdf2-sha256", "sha256"),
+      hash.replace("600000", "1"),
+      hash.replace("600000", "999999999999999999999999"),
+      hash.replace(salt, ""),
+      hash.replace(salt, salt.dropRight(1)),
+      hash.replace(salt, salt + "0"),
+      hash.replace(salt, "a" * 10000),
+      hash.replace(salt, salt.dropRight(1) + "g"),
+      hash.replace(salt, salt.toUpperCase(java.util.Locale.ROOT)),
+      hash.replace(salt, "other-salt"),
+      hash.replace(salt, salt + "$extra"),
+      legacyHash.replace("yallmo", "YALLMO"),
+      hash.toUpperCase(java.util.Locale.ROOT),
+      hash.dropRight(1),
+      hash + "0",
+      hash.dropRight(1) + "g",
+      "a" * 10000
+    )
+    val documents = malformed.map(value => s"users: { Alice: { secretHash: '$value' } }") ++ List(
+      s"users: { Alice: { secret: 'private-test-secret', secretHash: '$hash' } }",
+      s"users: { Alice: { secret: '', secretHash: '$hash' } }",
+      "users: { Alice: { secretHash: 42 } }",
+      "users: { Alice: { secretHash: '${MISSING_HASH}' } }",
+      "users: { Alice: {} }",
+      "users: { Alice: { secret: 'private-test-secret' } }",
+      s"users: { ' ': { secretHash: '$hash' } }",
+      s"users: { '${"a" * 129}': { secretHash: '$hash' } }",
+      s"users: { ' Alice': { secretHash: '$hash' } }",
+      s"users: { Alice: { secretHash: '$hash', unexpected: true } }",
+      s"users: { Alice: { id: Bob, secretHash: '$hash' } }",
+      s"users: { Alice: { id: Alice, secretHash: '$hash' } }"
+    )
+    documents.foreach { text =>
+      val error = ConfigDocument.parse(path, text, Map.empty).left.toOption.get.getMessage
+      assert(!error.contains("private-test-secret"))
+      assert(!error.contains(hash))
     }
   }
 

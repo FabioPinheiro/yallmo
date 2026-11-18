@@ -208,8 +208,8 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
-        port <- new OrchestratorWSServer(app).start(0)
-        client <- OrchestratorWSClient.connect(
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -224,7 +224,7 @@ final class ServerSubmissionSuite extends FunSuite {
         stored <- app.application.master.loadSession(created.id)
         count <- calls.get
         _ <- client.close
-        again <- OrchestratorWSClient.connect(
+        again <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -456,9 +456,9 @@ final class ServerSubmissionSuite extends FunSuite {
         release <- Promise.make[Nothing, Unit]
         finished <- Promise.make[Nothing, Unit]
         app <- application(_ => (entered.succeed(()) *> release.await.as(answer)).ensuring(finished.succeed(()).unit))
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -469,7 +469,7 @@ final class ServerSubmissionSuite extends FunSuite {
         pendingCapture <- client.providerRequest(session.id)
         _ <- client.close
         lost <- wait.await
-        observer <- OrchestratorWSClient.connect(
+        observer <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -501,8 +501,8 @@ final class ServerSubmissionSuite extends FunSuite {
         release <- Promise.make[Nothing, Unit]
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(answer))
-        port <- new OrchestratorWSServer(app).start(0)
-        client <- OrchestratorWSClient.connect(
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -634,8 +634,8 @@ final class ServerSubmissionSuite extends FunSuite {
         entered <- Promise.make[Nothing, Unit]
         release <- Promise.make[Nothing, Unit]
         app <- application(_ => entered.succeed(()) *> release.await.as(answer))
-        port <- new OrchestratorWSServer(app).start(0)
-        client <- OrchestratorWSClient.connect(
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -698,7 +698,7 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         calls <- Ref.make(0)
         app <- application(_ => calls.update(_ + 1).as(answer))
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         environment <- (ZLayer.succeed(Client.Config.default.webSocketConfig(RpcWire.webSocketConfig)) ++
           ZLayer.succeed(
             zio.http.netty.NettyConfig.defaultWithFastShutdown
@@ -745,8 +745,12 @@ final class ServerSubmissionSuite extends FunSuite {
             } yield ()
           }
           .withConfig(RpcWire.webSocketConfig)
+        cookie <- TestWebSession.cookie(port, AgentId.value(human).stripPrefix("user-"))
         _ <- socket
-          .connect(s"ws://127.0.0.1:$port/rpc", Headers(Header.Custom("Origin", "https://browser.internal:9443")))
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            Headers(Header.Custom("Cookie", cookie), Header.Custom("Origin", s"http://127.0.0.1:$port"))
+          )
           .provideSomeEnvironment[Scope](_.add(environment.get[Client]))
         initialized <- replies.take
         submitted <- replies.take
@@ -803,9 +807,9 @@ final class ServerSubmissionSuite extends FunSuite {
               ZIO.when(n == OrchestratorWSServer.MaxConnectionWorkers)(allEntered.succeed(()))
             ) *> release.await.as(answer)
         )
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -819,7 +823,7 @@ final class ServerSubmissionSuite extends FunSuite {
         overflow <- client.listSessions.either
         stopped <- ZIO.foreach(waits)(_.await)
         _ <- release.succeed(())
-        observer <- OrchestratorWSClient.connect(
+        observer <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -978,9 +982,9 @@ final class ServerSubmissionSuite extends FunSuite {
               .as(answer)
           )
         )
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         endpoint = s"ws://127.0.0.1:$port/rpc"
-        client <- OrchestratorWSClient.connect(
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -994,7 +998,7 @@ final class ServerSubmissionSuite extends FunSuite {
         secondCapture <- client.providerRequest(two.id)
         bodies <- seen.get
         _ <- client.close
-        observer <- OrchestratorWSClient.connect(
+        observer <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -1090,8 +1094,8 @@ final class ServerSubmissionSuite extends FunSuite {
         path = backend.workspace.resolve("logs").resolve("debug").resolve(s"$turnId-request.json")
         _ <- ZIO.attemptBlocking(Files.writeString(path, "x" * (DiagnosticsRequest.MaxCaptureBytes + 1)))
         large <- backend.providerRequest(session.id).either
-        port <- new OrchestratorWSServer(app).start(0)
-        client <- OrchestratorWSClient.connect(
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(human).stripPrefix("user-")))
         )
@@ -1365,7 +1369,7 @@ final class ServerSubmissionSuite extends FunSuite {
       for {
         _ <- MainServer.configureLogging(LogLevel.Trace, capture).build
         app <- application(_ => ZIO.dieMessage("Upload must never invoke a provider"))
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         channelReady <- Promise.make[Nothing, WebSocketChannel]
         replies <- Queue.unbounded[String]
         socket = Handler.webSocket { channel =>
@@ -1377,7 +1381,13 @@ final class ServerSubmissionSuite extends FunSuite {
           }
         }
         environment <- Client.default.build
-        _ <- socket.connect(s"ws://127.0.0.1:$port/rpc").provideSomeEnvironment[Scope](_.add(environment.get[Client]))
+        cookie <- TestWebSession.cookie(port, AgentId.value(human).stripPrefix("user-"))
+        _ <- socket
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            Headers(Header.Custom("Cookie", cookie), Header.Custom("Origin", s"http://127.0.0.1:$port"))
+          )
+          .provideSomeEnvironment[Scope](_.add(environment.get[Client]))
         channel <- channelReady.await
         send = (method: String, params: Json) =>
           channel.send(
@@ -1443,7 +1453,7 @@ final class ServerSubmissionSuite extends FunSuite {
             ),
           config.copy(providers = config.providers.updated(ProviderId.unsafe("account"), ProviderConfig.ChatGPT()))
         )
-        port <- new OrchestratorWSServer(app).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(app)
         ready <- Promise.make[Nothing, WebSocketChannel]
         replies <- Queue.unbounded[String]
         socket = Handler.webSocket { channel =>
@@ -1455,7 +1465,13 @@ final class ServerSubmissionSuite extends FunSuite {
           }
         }
         http <- Client.default.build
-        _ <- socket.connect(s"ws://127.0.0.1:$port/rpc").provideSomeEnvironment[Scope](_.add(http.get[Client]))
+        cookie <- TestWebSession.cookie(port, AgentId.value(human).stripPrefix("user-"))
+        _ <- socket
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            Headers(Header.Custom("Cookie", cookie), Header.Custom("Origin", s"http://127.0.0.1:$port"))
+          )
+          .provideSomeEnvironment[Scope](_.add(http.get[Client]))
         channel <- ready.await
         send = (method: String, params: Json) =>
           channel.send(

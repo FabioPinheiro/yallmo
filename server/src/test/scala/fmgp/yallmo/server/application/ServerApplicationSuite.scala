@@ -14,7 +14,8 @@ import fmgp.yallmo.orchestration.config.{
   ProviderConfig,
   ProviderId
 }
-import fmgp.yallmo.server.{OrchestratorRpc, MainServer, OrchestratorWSClient, OrchestratorWSServer}
+import fmgp.yallmo.server.TestWebSession
+import fmgp.yallmo.server.{OrchestratorRpc, MainServer}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import java.nio.channels.FileChannel
@@ -392,14 +393,14 @@ final class ServerApplicationSuite extends FunSuite {
             )
             services <- probes()
             application <- ServerApplication.open(root, path).provideSomeLayer[Scope](services.layer)
-            port <- new OrchestratorWSServer(application).start(0)
+            port <- fmgp.yallmo.server.TestWebSession.start(application)
             endpoint = s"ws://127.0.0.1:$port/rpc"
             failures <- ZIO.foreach(List(first, second))(id =>
-              OrchestratorWSClient
+              fmgp.yallmo.server.TestWebSession
                 .connect(endpoint, userId = Some(UserId(AgentId.value(id).stripPrefix("user-"))))
                 .either
             )
-            observer <- OrchestratorWSClient.connect(endpoint)
+            observer <- fmgp.yallmo.server.TestWebSession.connect(endpoint)
             ids <- observer.listAgentIds
             registered <- application.application.master.listAgentIds
             calls <- services.calls.get
@@ -414,8 +415,8 @@ final class ServerApplicationSuite extends FunSuite {
                 )
               )
             )
-            assertEquals(ids, Chunk(AgentId("user-first"), AgentId("user-second")))
-            assertEquals(registered, ids)
+            assertEquals(ids.toSet, Set(AgentId("user-first"), AgentId("user-second")) ++ TestWebSession.observerActors)
+            assertEquals(registered.toSet, ids.toSet -- TestWebSession.observerActors)
             assert(!calls.exists(_.contains("execute")))
           }
         }
@@ -452,10 +453,10 @@ final class ServerApplicationSuite extends FunSuite {
                 hostClosedWithServices.set(http && tools)
               })
               application <- ServerApplication.open(root, path)
-              port <- new OrchestratorWSServer(application).start(0)
+              port <- fmgp.yallmo.server.TestWebSession.start(application)
               // Resolve lazily after open, without contacting the configured endpoint.
               _ <- application.application.resolve(first)
-              connection <- OrchestratorWSClient
+              connection <- fmgp.yallmo.server.TestWebSession
                 .connect(s"ws://127.0.0.1:$port/rpc")
                 .mapError(error => new AssertionError(error.toString))
               ids <- connection.listAgentIds.mapError(error => new AssertionError(error.toString))
@@ -466,7 +467,7 @@ final class ServerApplicationSuite extends FunSuite {
               assert(live)
               assert(liveTools)
               assert(tools)
-              assertEquals(ids.toSet, Set(first))
+              assertEquals(ids.toSet, Set(first) ++ TestWebSession.observerActors)
             }
           }
           .provideLayer(client ++ toolLayer)

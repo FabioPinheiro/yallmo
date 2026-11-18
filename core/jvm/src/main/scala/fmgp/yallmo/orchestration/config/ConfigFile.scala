@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration.config
 
-import fmgp.yallmo.model.{AgentId, YallmoError}
+import fmgp.yallmo.model.{AgentId, UserId, YallmoError}
 import zio.{Config as _, *}
 import zio.json.*
 
@@ -117,6 +117,20 @@ object ConfigFile {
 
   def validate(config: Config): Either[YallmoError, Unit] =
     for {
+      _ <- Either.cond(
+        config.users.forall { case (id, user) =>
+          val name = UserId.value(id)
+          id == user.id && name.nonEmpty && name.length <= 128 && name == name.trim && !name.exists(
+            Character.isISOControl
+          ) &&
+          (user.secretHash.length == 118 || user.secretHash.length == 92) &&
+          user.secretHash.matches("pbkdf2-sha256\\$600000\\$(?:[0-9a-f]{32}|yallmo)\\$[0-9a-f]{64}")
+        },
+        (),
+        YallmoError.InvalidConfig(
+          "Web users require a nonblank name matching User.id (up to 128 characters) and secretHash (pbkdf2-sha256$600000$<32 lowercase hex salt>$<64 lowercase hex hash>; legacy salt yallmo is also accepted)"
+        )
+      )
       _ <- Either.cond(
         config.browserAudioPort >= 1 && config.browserAudioPort <= 65535,
         (),

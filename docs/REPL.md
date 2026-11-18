@@ -17,7 +17,7 @@ sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
 sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
-`--user-name <id>` is required; the claimed `UserId` sent to the server is `<id>`, not authentication. Chat requests explicitly act as the owned `user-<id>` actor.
+`--user-name <id>` is required and must match the server account; set `YALLMO_PASSWORD` privately in the client process environment for HTTP login. The session cookie is memory-only; use WSS/HTTPS remotely. See [authentication](../server/README-SERVER.md#web-authentication). Chat requests explicitly act as the owned `user-<id>` actor.
 `--agent <id>` is optional. Without a selection prompts cause no writes/session creation; use the agent picker to choose.
 `--log-level` defaults to `warning`. `--config`/`--storage` are server-only. `--transcriber-agent` is rejected while
 connected voice integration is pending; it never activates a local fallback.
@@ -37,12 +37,12 @@ sbt 'server/run --storage ./server-storage --config ./private/server.json --work
 sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```
 
-**Trusted environment only:** access is assumed already authenticated outside the server; there is no server authentication.
-Configured server + initialized claimed human enables Operator with `turn.submit` and
-`diagnostics.request`, for REPL and browser clients regardless of Origin or peer address. Required `--user-name` supplies
-an impersonable claimed author, **not an authenticated identity**. Host/Origin are unrestricted; anonymous clients stay
-read-only. Keep all access paths trusted and never expose/proxy publicly. The listener always binds to `0.0.0.0`
-for trusted Docker/multi-machine access (see [server deployment](../server/README.md#production)).
+The standalone server requires a configured user and HTTP session login before WebSocket upgrade. Use
+`--user-name <account>` with `YALLMO_PASSWORD` set privately in the REPL process environment (not a command-line argument).
+The JVM adapter uses the same `/auth/login` cookie flow as the browser; no password or cookie is persisted.
+All configured accounts are Operators; clients cannot rebind the authenticated user through RPC initialize.
+Use WSS/HTTPS for remote access and preserve Host/Origin at a trusted reverse proxy; keep unencrypted backend access
+private. Missing users stop standalone startup. See [authentication/deployment](../server/README-SERVER.md#web-authentication).
 Server startup requires `--config`; the client notice/help/completions reflect negotiated connection capabilities.
 
 An override endpoint must be a `ws`/`wss` URI with no credentials, query or fragment. No address discovery, local

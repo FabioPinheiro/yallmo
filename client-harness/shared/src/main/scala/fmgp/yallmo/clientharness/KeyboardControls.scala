@@ -30,7 +30,7 @@ enum ControlAction(val id: String, val webLabel: String, val terminalLabel: Stri
   case Reload extends ControlAction("reload", "Reload current view / history", "reload", Some("r"))
   case ReloadConversations
       extends ControlAction("reload-conversations", "Reload conversations", "reload conversations", None)
-  case Username extends ControlAction("username", "Change username", "username", Some("u"))
+  case Username extends ControlAction("username", "Show username", "username", Some("u"))
   case Reconnect extends ControlAction("reconnect", "Reconnect", "reconnect", None)
   case Dictation extends ControlAction("dictation", "Focus dictation / Stop recording", "browser mic", Some("m"))
   case StopSpeech extends ControlAction("stop-speech", "Stop reading aloud", "stop speech", None)

@@ -19,6 +19,9 @@ import munit.FunSuite
 import zio.{Config as _, *}
 
 final class ConnectedReplIntegrationSuite extends FunSuite {
+  // Precomputed random-salt PBKDF2-HMAC-SHA256 for test-only-password (600000 iterations, 256 bits).
+  private val secretHash =
+    "pbkdf2-sha256$600000$5e4cc277bd4608c3d6156f176056cab9$7db75a63d7d1f3b7378107b336b0aaed7014d26f883abf6e2c3d602831b68a37"
   private val agentId = AgentId("server-agent")
   private val human = AgentId("user-claimed-human")
   private val id = SessionId.unsafe("server-session")
@@ -62,7 +65,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           )
           .mapError(new IllegalArgumentException(_))
         _ <- ZIO.scoped {
-          ReplMain.launch(
+          launchAuthenticated(
             options,
             app =>
               for {
@@ -87,11 +90,16 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           )
         }
         _ <- removed.await
+        _ <- ZIO.sleep(210.millis) // Login admission also applies to reconnects.
         observer <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc")
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            userId = Some(UserId("observer")),
+            password = Some("test-only-password")
+          )
           .mapError(error => new Exception(error.toString))
         ids <- observer.listAgentIds.mapError(error => new Exception(error.toString))
-      } yield assertEquals(ids, Chunk(agentId))
+      } yield assertEquals(ids.toSet, Set(agentId, AgentId("user-observer"), AgentId("web-user-observer")))
     })
   }
 
@@ -100,12 +108,10 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     val port = socket.getLocalPort
     socket.close()
     run(ZIO.scoped {
-      ReplMain
-        .launch(
-          ReplLaunchOptions("human", server = s"ws://127.0.0.1:$port/rpc"),
-          _ => ZIO.dieMessage("terminal must not start")
-        )
-        .either
+      launchAuthenticated(
+        ReplLaunchOptions("human", server = s"ws://127.0.0.1:$port/rpc"),
+        _ => ZIO.dieMessage("terminal must not start")
+      ).either
         .map { result =>
           assertEquals(
             result.left.toOption.map(_.getMessage),
@@ -119,17 +125,15 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         calls <- Ref.make(0)
-        result <- ReplMain
-          .launch(
-            ReplLaunchOptions("human"),
-            _ => ZIO.dieMessage("terminal must not start"),
-            connect = (endpoint, user) => {
-              assertEquals(endpoint, "ws://127.0.0.1:8080/rpc")
-              assertEquals(user, UserId("human"))
-              calls.update(_ + 1) *> ZIO.fail(fmgp.yallmo.server.OrchestratorClient.Error.Disconnected)
-            }
-          )
-          .either
+        result <- launchAuthenticated(
+          ReplLaunchOptions("human"),
+          _ => ZIO.dieMessage("terminal must not start"),
+          connect = (endpoint, user) => {
+            assertEquals(endpoint, "ws://127.0.0.1:8080/rpc")
+            assertEquals(user, UserId("human"))
+            calls.update(_ + 1) *> ZIO.fail(fmgp.yallmo.server.OrchestratorClient.Error.Disconnected)
+          }
+        ).either
         attempts <- calls.get
       } yield {
         assertEquals(attempts, 1)
@@ -144,12 +148,10 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
   test("invalid direct username is rejected before connecting") {
     for name <- List("", " ", "\t\n") do
       run(ZIO.scoped {
-        ReplMain
-          .launch(
-            ReplLaunchOptions(name, server = "not-an-endpoint"),
-            _ => ZIO.dieMessage("terminal must not start")
-          )
-          .either
+        launchAuthenticated(
+          ReplLaunchOptions(name, server = "not-an-endpoint"),
+          _ => ZIO.dieMessage("terminal must not start")
+        ).either
           .map(result => assertEquals(result.left.toOption.map(_.getMessage), Some("Invalid --user-name.")))
       })
   }
@@ -163,7 +165,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           .fromEither(ReplLaunchOptions.parse(Chunk("--user-name=claimed-human")))
           .mapError(new IllegalArgumentException(_))
         entered <- Ref.make(false)
-        _ <- ReplMain.launch(
+        _ <- launchAuthenticated(
           options,
           app =>
             ZIO.succeed {
@@ -175,7 +177,8 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
             OrchestratorWSClient.connect(
               s"ws://127.0.0.1:$port/rpc",
               userId = Some(user),
-              clientName = "yallmo-repl"
+              clientName = "yallmo-repl",
+              password = Some("test-only-password")
             )
           }
         )
@@ -201,7 +204,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           terminal.setSize(new org.jline.terminal.Size(120, 35))
           terminal
         })(terminal => ZIO.attempt(terminal.close()).ignore)
-        _ <- ReplMain.launch(
+        _ <- launchAuthenticated(
           ReplLaunchOptions("human", server = s"ws://127.0.0.1:$port/rpc"),
           app => TerminalRepl.runConnectedWithTerminal(app, terminal)
         )
@@ -231,7 +234,7 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
           terminal.setSize(new org.jline.terminal.Size(120, 35))
           terminal
         })(terminal => ZIO.attempt(terminal.close()).ignore)
-        _ <- ReplMain.launch(
+        _ <- launchAuthenticated(
           ReplLaunchOptions(
             "claimed-human",
             agentId = Some(AgentId("bob")),
@@ -272,7 +275,11 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         app <- configured(_ => calls.update(_ + 1) *> entered.succeed(()) *> release.await.as(providerAnswer))
         port <- new OrchestratorWSServer(app).start(0)
         client <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))),
+            password = Some("test-only-password")
+          )
           .mapError(error => new Exception(error.toString))
         connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
         created <- connected.submit(connected.initialState, "/new detached")
@@ -285,8 +292,13 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         _ <- client.close
         lost <- wait.join
         _ <- release.succeed(())
+        _ <- ZIO.sleep(210.millis) // Login admission also applies to reconnects.
         observer <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))),
+            password = Some("test-only-password")
+          )
           .mapError(error => new Exception(error.toString))
         reconnected <- ConnectedReplApplication.make(observer, human, Some(AgentId("bob")))
         resumed <- reconnected.submit(reconnected.initialState, "/session resume detached")
@@ -387,7 +399,11 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         cached <- app.application.resolve(AgentId("bob"))
         port <- new OrchestratorWSServer(app).start(0)
         client <- OrchestratorWSClient
-          .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))))
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            userId = Some(UserId(AgentId.value(human).stripPrefix("user-"))),
+            password = Some("test-only-password")
+          )
           .mapError(error => new Exception(error.toString))
         connected <- ConnectedReplApplication.make(client, human, Some(AgentId("bob")))
         providers = connected.connectedProviders.get
@@ -457,6 +473,17 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
     s"http://localhost:1455/auth/callback?code=$code&state=$state"
   }
 
+  private def launchAuthenticated(
+      options: ReplLaunchOptions,
+      terminal: ConnectedReplApplication => Task[Unit],
+      connect: (String, UserId) => ZIO[
+        Scope,
+        fmgp.yallmo.server.OrchestratorClient.Error,
+        fmgp.yallmo.server.OrchestratorClient
+      ] = (endpoint, user) =>
+        OrchestratorWSClient.connect(endpoint, userId = Some(user), password = Some("test-only-password"))
+  ): ZIO[Scope, Throwable, Unit] = ReplMain.launch(options, terminal, connect)
+
   private def providerAnswer =
     Response.text("""{"choices":[{"message":{"role":"assistant","content":"server answer"},"finish_reason":"stop"}]}""")
 
@@ -484,7 +511,20 @@ final class ConnectedReplIntegrationSuite extends FunSuite {
         ),
         providers = Map(provider -> ProviderConfig.OAI("http://fake.invalid/v1"))
       )
-      path <- ZIO.attemptBlocking(Files.writeString(root.resolve("private-config.json"), configuration(config).toJson))
+      path <- ZIO.attemptBlocking(
+        Files.writeString(
+          root.resolve("private-config.json"),
+          configuration(config)
+            .copy(users =
+              Map(
+                UserId("claimed-human") -> User(UserId("claimed-human"), secretHash),
+                UserId("human") -> User(UserId("human"), secretHash),
+                UserId("observer") -> User(UserId("observer"), secretHash)
+              )
+            )
+            .toJson
+        )
+      )
       service <- ServerApplication
         .open(root, path, Some(root))
         .provideSomeLayer[Scope](ZLayer.succeed(fakeClient(respond)) ++ tools)

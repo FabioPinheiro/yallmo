@@ -275,7 +275,7 @@ final class ConnectedReplApplicationSuite extends FunSuite {
       assertEquals(app.agentChoices.map(_.id), Vector(agent)); assert(human.isLeft)
       assert(viewer.connectedReadOnly); assert(partial.canSubmit)
       assertEquals(client.calls, Vector.empty)
-      assert(app.notice.contains("trusted local, unauthenticated"))
+      assert(app.notice.contains("Connected Operator"))
     })
   }
 

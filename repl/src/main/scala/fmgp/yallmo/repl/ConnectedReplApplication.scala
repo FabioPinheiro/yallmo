@@ -218,9 +218,9 @@ final class ConnectedReplApplication private (
 
 object ConnectedReplApplication {
   val Notice =
-    "Connected READ-ONLY: session list/resume/history and agent preference only. User name is unauthenticated metadata. No local provider configuration or voice."
+    "Connected READ-ONLY: session list/resume/history and agent preference only. No local provider configuration or voice."
   val OperatorNotice =
-    "Connected trusted local, unauthenticated: prompts execute on the configured server; /new prepares a local draft. Claimed user names are impersonable; never expose publicly. No local provider configuration or voice."
+    "Connected Operator: prompts execute on the configured server; /new prepares a local draft. The standalone server authenticates the account before connecting. No local provider configuration or voice."
   val Unsupported =
     "Unavailable in connected read-only mode: prompts, /new, /tools, /debug, providers/login and voice/TTS."
   val OperatorUnsupported =

@@ -29,11 +29,17 @@ is rejected before networking, even without `--server`. `--config`/`--storage` r
 `--server` are rejected. Connection failure exits without local fallback or autodiscovery. Without `--server`, the client connects to
 `ws://127.0.0.1:8080/rpc`; it never starts an embedded application. See [REPL semantics](REPL.md#server-connection).
 
-## Trusted Docker or multi-machine access FIXME
+## Authenticated browser / Docker / multi-machine access
 
-Access is assumed already authenticated externally: the server has no authentication or Host/Origin restrictions.
-Anyone who can reach it can claim a user and execute configured agents/tools. Never expose it publicly; trust every
-client, browser origin and proxy with access. Preserve the real browser Origin; no rewriting or permission opt-in is needed.
+Configure `users.<username>.secretHash` in your private YAML/JSON config before starting the standalone server.
+Generate a fresh random-salt hash with the interactive
+Python command in the [authentication guide](../server/README-SERVER.md#web-authentication). The nonsecret salt is stored in
+`secretHash`; login uses the normal password, not the stored hash. Existing fixed-salt `yallmo` hashes remain compatible;
+regenerate with that command, replace the configured value and restart to use a random salt.
+Missing users stop startup; no public Operator or anonymous WebSocket fallback exists. Open the web harness and sign in.
+For the connected REPL, supply the same username and set `YALLMO_PASSWORD` privately in its process environment.
+Do not put secrets in command lines/history. Use HTTPS for remote access, preserve Host/Origin through proxies,
+and block direct unencrypted backend access. See [authentication and deployment details](../server/README-SERVER.md#web-authentication).
 
 ## Initialize server configuration
 
@@ -48,7 +54,7 @@ The file may contain OAuth secrets: do not print or share it. String values may 
 with `${NAME}`; missing variables fail loading. `$${NAME}` is literal. Loading and unrelated catalog edits retain the
 references on disk, not their values. See [environment-reference rules](CONFIG_AGENT_PROVIDER.md#environment-references).
 
-`--user-name <id>` is required by the client and sent as claimed human ID `user-<id>`, not authentication.
+`--user-name <id>` is required by the terminal client and must match its authenticated account. Chat acts as `user-<id>`.
 The server alone owns tools, providers and durable storage. Provider listing/login is available in the web harness
 and negotiated connected REPL; terminal provider creation, voice and human-interaction integration remain pending. There is no legacy in-process REPL fallback.
 

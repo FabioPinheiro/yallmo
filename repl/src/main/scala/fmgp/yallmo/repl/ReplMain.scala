@@ -37,7 +37,12 @@ object ReplMain extends ZIOAppDefault {
       options: ReplLaunchOptions,
       terminal: ConnectedReplApplication => Task[Unit] = TerminalRepl.runConnectedSystem,
       connect: (String, UserId) => ZIO[Scope, OrchestratorClient.Error, OrchestratorClient] = (endpoint, user) =>
-        OrchestratorWSClient.connect(endpoint, userId = Some(user), clientName = "yallmo-repl")
+        OrchestratorWSClient.connect(
+          endpoint,
+          userId = Some(user),
+          clientName = "yallmo-repl",
+          password = sys.env.get("YALLMO_PASSWORD")
+        )
   ): ZIO[Scope, Throwable, Unit] =
     for {
       user <- ZIO

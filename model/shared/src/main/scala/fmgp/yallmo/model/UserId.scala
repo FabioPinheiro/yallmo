@@ -12,7 +12,7 @@ object UserId {
   def apply(value: String): UserId = from(value).fold(message => throw new IllegalArgumentException(message), identity)
   def value(id: UserId): String = id
 
-  /** Default actors provisioned by the trusted-local server policy. */
+  /** Default actors provisioned for a user by the server. */
   def chatAgent(id: UserId): AgentId = AgentId("user-" + value(id))
   def websiteAgent(id: UserId): AgentId = AgentId("web-user-" + value(id))
 

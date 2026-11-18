@@ -1,9 +1,9 @@
 # Yallmo wire protocol
 
-**Implemented: viewer reads and configured execution for trusted browser and REPL clients.**
-Access is assumed already authenticated outside this server; it performs no authentication or Host/Origin checks.
-Keep all direct/proxied access inside a trusted environment, never public. Claimed user names are impersonable.
-The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access.
+**Implemented: authenticated HTTP sessions and configured execution for browser and JVM clients.**
+Log in using `POST /auth/login` before opening `/rpc`; the session cookie and same-origin Origin are validated before upgrade.
+See [web authentication](README-SERVER.md#web-authentication) for endpoints, CSRF/proxy requirements and deployment limits.
+The listener binds to `0.0.0.0`; expose it remotely only behind an HTTPS-enforcing trusted reverse proxy.
 
 DTOs live in [`YallmoProtocol.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/protocol/YallmoProtocol.scala)
 and envelopes in [`JsonRpc.scala`](../protocol/shared/src/main/scala/fmgp/yallmo/server/jsonrpc/JsonRpc.scala).
@@ -14,7 +14,8 @@ Provider administration and browser OAuth use JSON-RPC on the same WebSocket. Ge
 
 ## Connection and capabilities
 
-Send `initialize` first. Initialization binds the user and advertises capabilities; it is **not authentication**.
+Send `initialize` first after the authenticated upgrade. It advertises capabilities; HTTP login already bound the principal.
+An omitted `userId` uses the session user; a different claimed ID is Forbidden, including on first initialize.
 Client and server share one current contract. There is no application protocol version field, version negotiation or
 backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"`.
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
@@ -24,10 +25,9 @@ Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invok
 `providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
 The server requires a configured backend; standalone startup requires `--config`. There is no viewer-only server mode.
 
-Operator requires a nonempty initialized claimed `userId`, irrespective of Origin or peer
-address. Anonymous connections remain Viewer. `clientName` is never authority; a browser uses its real Origin and
-claims a human ID in the existing `initialize` params. No permission opt-in or Origin allowlist is required. Anyone
-with network access can claim an author and execute configured agents/tools, so public deployment is unsupported.
+All configured web accounts are Operators. No anonymous network Viewer or arbitrary claimed-ID login is available.
+`clientName` is never authority. Trusted direct in-process RPC callers may still initialize as Viewer or Operator;
+that internal contract is not exposed by the WebSocket host.
 
 Initialize result `configuredAgentIds`, when present, is the safe executable-assistant selection catalog. `agents.list`
 also contains human/presence IDs and is **not** an executable catalog. Provider/model configuration is not exposed by this catalog; explicit operator diagnostics may show the request model.
@@ -36,7 +36,7 @@ turn request. Initialization binds a `UserId`, not a message author. `Identity =
 agentIds: [AgentId]}` advertises server-owned actors, separate from `configuredAgentIds` recipients. The trusted-local
 policy provisions `user-<UserId>` for chat and `web-user-<UserId>` for website/harness operations. Ownership mappings
 last for the handler's process lifetime and are reconstructed deterministically after restart; there is no ownership
-management or authentication API. Anonymous viewers have no owned actors.
+management API. Trusted in-process anonymous viewers have no owned actors.
 
 Every authoring request (`turn.submit`, `branches.submit`, `agents.invoke`) requires `actingAgentId`. The server
 checks it against the connected user's ownership before mutation/execution; `agents.invoke` additionally requires
@@ -356,7 +356,7 @@ reads/listing rather than assuming a safe retry. Browser dictation uses these co
 servers to initialized Operators; anonymous clients get Forbidden and unconfigured servers return MethodNotFound.
 Params have exactly `agentId` (recipient), `input` (full Message) and `actingAgentId` (owned actor). Extra params, including `sessionId`,
 `expectedHead` and `resetContinuation`, are InvalidParams. Message hash/field validation happens during decoding.
-The input author must match the explicitly selected owned actor (Forbidden otherwise); this is still not authentication.
+The input author must match the explicitly selected owned actor (Forbidden otherwise); network identity is already authenticated by the session.
 
 Input and output payloads are not restricted by the transport or Orchestrator: the configured recipient determines what
 it supports and returns. An optional parent must already exist, but does not implicitly load parent history.
@@ -423,8 +423,7 @@ files are absent; symlinks and corrupt/unreadable captures are rejected with san
 There is no pagination, persistence index or arbitrary-file read API.
 
 Existing capture redaction protects encrypted provider continuations and refuses inline audio. **This is not a general
-secret scrubber:** conversation/tool text and model details remain sensitive. Never expose this unauthenticated
-trusted-environment listener publicly. The REPL displays documents only on explicit `/debug request`.
+secret scrubber:** conversation/tool text and model details remain sensitive. Limit authenticated access to trusted operators and use HTTPS for remote deployment. The REPL displays documents only on explicit `/debug request`.
 
 ## Sessionless branch submission
 

@@ -42,10 +42,10 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         backend <- live
         master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
-        port <- new OrchestratorWSServer(backend).start(0)
-        first <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
-        second <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
-        legacy <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        first <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
+        second <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
+        legacy <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         baseline <- first.subscribeEvents("first")
         other <- second.subscribeEvents("second")
         saved <- master.append(sessionId, author, Chunk(MessagePayload.User("pushed")))
@@ -88,8 +88,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       for {
         backend <- live
         master = backend.application.master
-        port <- new OrchestratorWSServer(backend).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         scope = SubscriptionScope.Session(sessionId)
         baseline <- client.subscribeEvents("scoped", scope)
         _ <- master.createSession(SessionId.unsafe("other"), Chunk(author))
@@ -139,7 +139,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             } yield ()
           else reply(channel, request.id, Json.Arr())
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         baseline <- client.subscribeEvents("early")
         listed <- client.listSessions
         early <- client.nextEventUpdate
@@ -186,7 +186,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
               )
             } yield ()
           }
-          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
           _ <- client.subscribeEvents("checked")
           result <- client.nextEventUpdate.either
         } yield assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
@@ -218,7 +218,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           }
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         result <- client.subscribeEvents("overflow").either
       } yield assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
     })
@@ -242,7 +242,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       run(ZIO.scoped {
         for {
           port <- peer { (channel, _) => channel.send(ChannelEvent.Read(WebSocketFrame.Text(invalid))) }
-          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
           failure <- client.listSessions.either
         } yield assertEquals(failure, Left(OrchestratorClient.Error.InvalidResponse))
       })
@@ -254,8 +254,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         backend <- live
         master = backend.application.master
         _ <- master.createSession(sessionId, Chunk(author))
-        port <- new OrchestratorWSServer(backend).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         info <- client.initialize()
         sessions <- client.listSessions
         before <- client.loadSession(sessionId)
@@ -266,14 +266,14 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         // Stay below the connection's nonwaiting worker bound; overload behavior is tested separately.
         concurrent <- ZIO.foreachPar(1 to 20)(_ => client.loadSession(sessionId)).withParallelism(4)
       } yield {
-        assertEquals(info.identity.role, Role.Viewer)
+        assertEquals(info.identity.role, Role.Operator)
         assertEquals(info.notifications, List(EventsUpdate.method))
-        assert(!info.methods.contains(TurnSubmit.method))
+        assert(info.methods.contains(TurnSubmit.method))
         assertEquals(sessions.map(_.id), Chunk(sessionId))
         assertEquals(before.messages, Chunk.empty)
         assertEquals(after.messages.map(_.content), Chunk("Hello"))
         assertEquals(messages, after.messages)
-        assertEquals(agents, Chunk(author))
+        assertEquals(agents.toSet, Set(author) ++ TestWebSession.observerActors)
         assertEquals(concurrent.map(_.messages.size).toSet, Set(1))
       }
     })
@@ -293,18 +293,19 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         _ <- MainServer.configureLogging(LogLevel.Info, capture).build
         backend <- live
         master = backend.application.master
-        port <- new OrchestratorWSServer(backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
         endpoint = s"ws://127.0.0.1:$port/rpc"
         browser <- raw(port)
         _ <- initialize(browser)
-        observer <- OrchestratorWSClient.connect(endpoint)
+        observer <- fmgp.yallmo.server.TestWebSession.connect(endpoint)
         initial <- observer.listAgentIds
         alice = AgentId("user-alice")
         bob = AgentId("user-bob")
         pair <- ZIO.foreachPar(1 to 2)(_ =>
-          OrchestratorWSClient.connect(endpoint, userId = Some(UserId(AgentId.value(alice).stripPrefix("user-"))))
+          fmgp.yallmo.server.TestWebSession
+            .connect(endpoint, userId = Some(UserId(AgentId.value(alice).stripPrefix("user-"))))
         )
-        other <- OrchestratorWSClient.connect(
+        other <- fmgp.yallmo.server.TestWebSession.connect(
           endpoint,
           userId = Some(UserId(AgentId.value(bob).stripPrefix("user-"))),
           clientName = "connected-repl"
@@ -324,7 +325,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         _ <- browser.send(JsonRpc.Request(Json.Str("browser"), AgentsList.method, Empty()).toJson)
         browserIds <- browser.read
       } yield {
-        assertEquals(initial, Chunk(author))
+        assertEquals(initial.toSet, Set(author) ++ TestWebSession.observerActors)
         assertEquals(
           bound.identity,
           Identity(
@@ -333,17 +334,23 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             Chunk(bob, UserId.websiteAgent(UserId(AgentId.value(bob).stripPrefix("user-"))))
           )
         )
-        assertEquals(all.toSet, Set(alice, bob, author, AgentId("web-user-alice"), AgentId("web-user-bob")))
+        assertEquals(
+          all.toSet,
+          Set(alice, bob, author, AgentId("web-user-alice"), AgentId("web-user-bob")) ++ TestWebSession.observerActors
+        )
         assertEquals(retained, all)
-        assertEquals(isolated.toSet, Set(bob, author, AgentId("web-user-bob")))
-        assertEquals(finalIds, Chunk(author))
+        assertEquals(isolated.toSet, Set(bob, author, AgentId("web-user-bob")) ++ TestWebSession.observerActors)
+        assertEquals(finalIds.toSet, Set(author) ++ TestWebSession.observerActors)
         assertEquals(registered, Chunk(author))
-        assertEquals(decode[JsonRpc.Success[Chunk[AgentId]]](browserIds).result, Chunk(author))
+        assertEquals(
+          decode[JsonRpc.Success[Chunk[AgentId]]](browserIds).result.toSet,
+          Set(author) ++ TestWebSession.observerActors
+        )
       }
     })
   }
 
-  test("aborted and rejected-frame sockets remove presence and identity logs escape terminal controls") {
+  test("aborted and rejected-frame authenticated sockets remove presence") {
     val identities = new LinkedBlockingQueue[String]()
     val capture = ZLogger.default.map { line =>
       if line.contains("Viewer identity") then identities.offer(line)
@@ -356,12 +363,13 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       for {
         _ <- MainServer.configureLogging(LogLevel.Info, capture).build
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
-        observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        observer <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
+        _ <- identityLog // authenticated observer registration
         _ <- ZIO.foreachDiscard(List(false, true)) { rejectFrame =>
           for {
-            socket <- raw(port)
-            label = AgentId("evil\n\u001b[31m\u009b2J")
+            socket <- raw(port, user = "alice")
+            label = AgentId("alice")
             _ <- socket.send(
               JsonRpc
                 .Request(
@@ -379,15 +387,13 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             absent <- observer.listAgentIds
           } yield {
             assert(present.contains(AgentId("user-" + AgentId.value(label))))
-            assertEquals(absent, Chunk(author))
+            assertEquals(absent.toSet, Set(author) ++ TestWebSession.observerActors)
             assert(registration.contains("registered"))
             assert(removal.contains("removed"))
             List(registration, removal).foreach { line =>
               assert(!line.contains('\u001b'))
               assert(!line.contains('\u009b'))
               assert(!line.contains("evil\n"))
-              assert(line.contains("\\u001b"))
-              assert(line.contains("\\u009b"))
             }
           }
         }
@@ -395,12 +401,12 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
-  test("raw sockets retain their initialized human or anonymous identity on every reinitialize") {
+  test("raw sockets retain their authenticated principal on every reinitialize") {
     run(ZIO.scoped {
       for {
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
-        human <- raw(port)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        human <- raw(port, user = "alice")
         alice = AgentId("user-alice")
         replies <- ZIO.foreach(List(Some(alice), Some(alice), Some(AgentId("user-bob")), None)) { id =>
           human.send(
@@ -439,13 +445,14 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         )
         assertEquals(replies(1), replies.head)
         assertEquals(
-          replies.drop(2).map(decode[JsonRpc.Failure](_).error.code),
-          List(ErrorCode.Conflict, ErrorCode.Conflict)
+          List(decode[JsonRpc.Failure](replies(2)).error.code),
+          List(ErrorCode.Forbidden)
         )
-        assertEquals(decode[JsonRpc.Failure](added).error.code, ErrorCode.Conflict)
+        assertEquals(decode[JsonRpc.Success[Initialize.Result]](replies(3)).result.identity.id, UserId("alice"))
+        assertEquals(decode[JsonRpc.Failure](added).error.code, ErrorCode.Forbidden)
         assertEquals(
           decode[JsonRpc.Success[Chunk[AgentId]]](ids).result.toSet,
-          Set(alice, author, AgentId("web-user-alice"))
+          Set(alice, author, AgentId("web-user-alice")) ++ TestWebSession.observerActors
         )
       }
     })
@@ -467,8 +474,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           )
         )
-        port <- new OrchestratorWSServer(backend).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         messages <- client.listMessages
         missing <- client.loadSession(SessionId.unsafe("missing")).either
       } yield {
@@ -493,8 +500,8 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           MessagePayload.AudioAttachment(blob, AudioFormat.Wav),
           Chunk[Byte](0, 1, -1)
         )
-        port <- new OrchestratorWSServer(backend).start(0)
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         listed <- client.listBlobIds
         first <- client.readBlob(blob, 0, 2)
         last <- client.readBlob(blob, 2, 2)
@@ -519,7 +526,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
         socket <- raw(port)
         _ <- socket.send("""{"jsonrpc":"2.0","id":"before","method":"sessions.list","params":{}}""")
         before <- socket.read
@@ -535,7 +542,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         collision <- socket.read
         _ <- socket.send("""{"jsonrpc":"2.0","id":"after-failure","method":"agents.list","params":{}}""")
         unauthorized <- socket.read
-        observer <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        observer <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         unpolluted <- observer.listAgentIds
         _ <- initialize(socket)
         _ <- socket.send("""{"jsonrpc":"2.0","id":"write","method":"sessions.create","params":{}}""")
@@ -545,9 +552,9 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         isolated <- other.read
       } yield {
         assertEquals(decode[JsonRpc.Failure](before).error.code, ErrorCode.Unauthorized)
-        assertEquals(decode[JsonRpc.Failure](collision).error.code, ErrorCode.Conflict)
+        assertEquals(decode[JsonRpc.Failure](collision).error.code, ErrorCode.Forbidden)
         assertEquals(decode[JsonRpc.Failure](unauthorized).error.code, ErrorCode.Unauthorized)
-        assertEquals(unpolluted, Chunk(author))
+        assertEquals(unpolluted.toSet, Set(author) ++ TestWebSession.observerActors)
         assertEquals(decode[JsonRpc.Failure](write).error, JsonRpc.Error.MethodNotFound)
         assertEquals(decode[JsonRpc.Failure](isolated).error.code, ErrorCode.Unauthorized)
       }
@@ -558,7 +565,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
         socket <- raw(port)
         _ <- initialize(socket)
         _ <- socket.send("{} {}")
@@ -586,11 +593,11 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     })
   }
 
-  test("fragmented text is assembled and arbitrary browser origins are accepted") {
+  test("fragmented text is assembled and foreign browser origins are rejected") {
     run(ZIO.scoped {
       for {
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
         socket <- raw(port)
         _ <- socket.send(
           """{"jsonrpc":"2.0","id":"utf8","method":"initialize","params":{"clientName":"""",
@@ -598,10 +605,10 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         )
         _ <- socket.send("日本🙂\"}}", true)
         reply <- socket.read
-        browser <- raw(port, Some("https://browser.internal:9443"))
-        _ <- initialize(browser)
+        browser <- raw(port, Some("https://browser.internal:9443")).either
       } yield {
         assertEquals(decode[JsonRpc.Success[Initialize.Result]](reply).id, Json.Str("utf8"))
+        assert(browser.isLeft)
       }
     })
   }
@@ -635,7 +642,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             )
           }
         )
-        client <- OrchestratorWSClient.connect(
+        client <- fmgp.yallmo.server.TestWebSession.connect(
           s"ws://127.0.0.1:$port/rpc",
           userId = Some(UserId(AgentId.value(alice).stripPrefix("user-"))),
           clientName = "repl"
@@ -718,7 +725,9 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             },
             onClose = closed.succeed(()).unit
           )
-          result <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId("alice"))).either
+          result <- fmgp.yallmo.server.TestWebSession
+            .connect(s"ws://127.0.0.1:$port/rpc", userId = Some(UserId("alice")))
+            .either
           _ <- closed.await.timeoutFail(new AssertionError("Failed initialize leaked its socket"))(3.seconds)
         } yield {
           if mode == "rejected" then
@@ -749,7 +758,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
               _ <- reply(channel, id, Json.Arr())
             } yield ()
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         sessions <- client.listSessions.fork
         _ <- first.get.repeatUntil(_.isDefined)
         agents <- client.listAgentIds
@@ -768,7 +777,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           if request.method == SessionsList.method then ZIO.sleep(750.millis) *> reply(channel, request.id, Json.Arr())
           else reply(channel, request.id, Json.Arr(Json.Str("still-connected")))
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc", 500.millis)
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc", 500.millis)
         timedOut <- client.listSessions.either
         agents <- client.listAgentIds
       } yield {
@@ -790,7 +799,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                abandoned.await.flatMap(id => reply(channel, id, Json.Arr())) *>
                  reply(channel, request.id, Json.Arr(Json.Str("still-connected"))))
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         wait <- client.listSessions.fork
         _ <- abandoned.await
         _ <- wait.interrupt
@@ -807,7 +816,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         port <- peer { (channel, _) => channel.shutdown }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         pending <- client.listSessions.either
         _ <- client.close
         after <- client.listSessions.either
@@ -826,7 +835,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
           if request.method == SessionsList.method then seen.update(_ + 1)
           else reply(channel, request.id, Json.Arr(Json.Str("available")))
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         pending <- ZIO.foreach(1 to 128)(_ => client.listSessions.fork)
         _ <- seen.get.repeatUntil(_ == 128)
         overflow <- client.listAgentIds.either
@@ -846,7 +855,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         port <- peer { (channel, _) => channel.send(ChannelEvent.Read(WebSocketFrame.Text("{bad"))) }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         result <- client.listSessions.either
       } yield assertEquals(result, Left(OrchestratorClient.Error.InvalidResponse))
     })
@@ -856,13 +865,15 @@ final class OrchestratorWebSocketSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         backend <- live
-        port <- new OrchestratorWSServer(backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(backend)
         scope <- Scope.make
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc").provideEnvironment(ZEnvironment(scope))
+        client <- fmgp.yallmo.server.TestWebSession
+          .connect(s"ws://127.0.0.1:$port/rpc")
+          .provideEnvironment(ZEnvironment(scope))
         _ <- scope.close(Exit.unit)
         closed <- client.listSessions.either
         invalid <- ZIO.foreach(List("http://localhost/rpc", "ws://user:secret@localhost/rpc", "not a URL")) { url =>
-          OrchestratorWSClient.connect(url).either
+          fmgp.yallmo.server.TestWebSession.connect(url).either
         }
       } yield {
         assertEquals(closed, Left(OrchestratorClient.Error.Disconnected))
@@ -882,7 +893,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
             channel.send(ChannelEvent.Read(WebSocketFrame.Continuation(bytes.take(2), false))) *>
             channel.send(ChannelEvent.Read(WebSocketFrame.Continuation(bytes.drop(2), true)))
         }
-        client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+        client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
         agents <- client.listAgentIds
       } yield assertEquals(agents, Chunk(AgentId("日本🙂")))
     })
@@ -908,7 +919,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
                 )
             }
           }
-          client <- OrchestratorWSClient.connect(s"ws://127.0.0.1:$port/rpc")
+          client <- fmgp.yallmo.server.TestWebSession.connect(s"ws://127.0.0.1:$port/rpc")
           pending <- client.listAgentIds.either
           after <- client.listAgentIds.either
         } yield {
@@ -988,7 +999,7 @@ final class OrchestratorWebSocketSuite extends FunSuite {
       ZIO.attemptBlocking(Option(messages.poll(100, TimeUnit.MILLISECONDS)))
   }
 
-  private def raw(port: Int, origin: Option[String] = None): ZIO[Scope, Throwable, Raw] =
+  private def raw(port: Int, origin: Option[String] = None, user: String = "observer"): ZIO[Scope, Throwable, Raw] =
     for {
       http <- ZIO.acquireRelease(ZIO.attempt(JHttpClient.newHttpClient()))(client =>
         ZIO.attemptBlocking(client.close()).ignore
@@ -1005,9 +1016,11 @@ final class OrchestratorWebSocketSuite extends FunSuite {
         }
         override def onError(socket: JWebSocket, error: Throwable): Unit = { messages.offer(Left(error)); () }
       }
+      cookie <- TestWebSession.cookie(port, user)
       socket <- ZIO.acquireRelease(ZIO.attemptBlocking {
         val builder = http.newWebSocketBuilder().connectTimeout(java.time.Duration.ofSeconds(3))
-        origin.foreach(value => builder.header("Origin", value))
+        builder.header("Cookie", cookie)
+        builder.header("Origin", origin.getOrElse(s"http://127.0.0.1:$port"))
         builder.buildAsync(URI.create(s"ws://127.0.0.1:$port/rpc"), listener).get(3, TimeUnit.SECONDS)
       })(socket => ZIO.succeed(socket.abort()))
     } yield new Raw(socket, messages)

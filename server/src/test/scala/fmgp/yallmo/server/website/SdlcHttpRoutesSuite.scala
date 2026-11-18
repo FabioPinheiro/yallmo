@@ -1,7 +1,6 @@
 package fmgp.yallmo.server.website
 
 import fmgp.yallmo.server.application.TestServerApplication
-import fmgp.yallmo.server.OrchestratorWSServer
 
 import fmgp.yallmo.tool.SdlcToolDefinition
 
@@ -175,19 +174,24 @@ final class SdlcHttpRoutesSuite extends FunSuite {
       service <- SdlcService.make(fs, fs)
       backend <- TestServerApplication.make()
       master = backend.application.master
-      port <- new OrchestratorWSServer(backend, sdlc = Some(service)).start(0)
+      port <- fmgp.yallmo.server.TestWebSession.start(backend, Some(service))
     } yield Fixture(root, fs, service, master, port)
 
   private def request(port: Int, path: String, method: String = "GET"): Task[HttpResponse[String]] =
-    ZIO.attemptBlocking {
-      http.send(
-        HttpRequest
-          .newBuilder(URI.create(s"http://127.0.0.1:$port$path"))
-          .timeout(java.time.Duration.ofSeconds(5))
-          .method(method, HttpRequest.BodyPublishers.noBody())
-          .build(),
-        HttpResponse.BodyHandlers.ofString()
-      )
+    fmgp.yallmo.server.TestWebSession.cookie(port).flatMap { cookie =>
+      ZIO.attemptBlocking {
+        http.send(
+          HttpRequest
+            .newBuilder(URI.create(s"http://127.0.0.1:$port$path"))
+            .header("Cookie", cookie)
+            .header("Origin", s"http://127.0.0.1:$port")
+            .timeout(java.time.Duration.ofSeconds(5))
+            .method(method, HttpRequest.BodyPublishers.noBody())
+            .build(),
+          HttpResponse.BodyHandlers.ofString()
+        )
+      }
+
     }
 
   private def run[E, A](effect: ZIO[Any, E, A]): A =

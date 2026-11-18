@@ -41,6 +41,8 @@ final class ServerApplication private (
 
   val browserAudioPort: Int = config.browserAudioPort
 
+  private[server] val webUsers = config.users
+
   /** Display projection only: no provider definitions, credentials, prompts or filesystem roots. */
   def agentSummaries: Vector[AgentSummary] =
     config.agents.toVector.sortBy(pair => AgentId.value(pair._1)).map { case (id, definition) =>

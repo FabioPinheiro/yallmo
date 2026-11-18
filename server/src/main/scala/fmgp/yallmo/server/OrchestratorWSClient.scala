@@ -9,7 +9,7 @@ import fmgp.yallmo.server.protocol.YallmoProtocol.given
 import java.net.URI
 import scala.util.Try
 import zio.*
-import zio.http.{ChannelEvent, Handler, Status, WebSocketChannel, WebSocketFrame}
+import zio.http.{Body, ChannelEvent, Client, Handler, Request, Status, URL, WebSocketChannel, WebSocketFrame}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -265,17 +265,19 @@ object OrchestratorWSClient {
   )
 
   /** Opens and initializes one connection. Scope exit closes it and fails all pending requests. A deadline abandons the
-    * local wait only; it never cancels server execution. Turn waits have no read deadline. userId is an impersonable
-    * local claim, not authentication; configured loopback non-browser hosts may grant operator capabilities.
+    * local wait only; it never cancels server execution. Turn waits have no read deadline. When password is supplied,
+    * log in over HTTP first; the returned cookie and password are never persisted. Otherwise custom/mock endpoints may
+    * handle authentication externally; the standalone host rejects unauthenticated upgrades.
     */
   def connect(
       endpoint: String,
       requestTimeout: Duration = 15.seconds,
       userId: Option[UserId] = None,
-      clientName: String = "yallmo-jvm"
+      clientName: String = "yallmo-jvm",
+      password: Option[String] = None
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     ZIO.acquireRelease(Scope.make)(_.close(Exit.unit)).flatMap { scope =>
-      connectInScope(endpoint, requestTimeout, userId, clientName)
+      connectInScope(endpoint, requestTimeout, userId, clientName, password)
         .provideEnvironment(ZEnvironment(scope))
         .onError(_ => scope.close(Exit.unit))
     }
@@ -284,7 +286,8 @@ object OrchestratorWSClient {
       endpoint: String,
       requestTimeout: Duration,
       userId: Option[UserId],
-      clientName: String
+      clientName: String,
+      password: Option[String]
   ): ZIO[Scope, Error, OrchestratorWSClient] =
     for {
       _ <- ZIO.fail(Error.InvalidEndpoint).unless(validEndpoint(endpoint) && requestTimeout > Duration.Zero)
@@ -293,6 +296,37 @@ object OrchestratorWSClient {
       ready <- Promise.make[Error, WebSocketChannel]
       _ <- ZIO.addFinalizer(disconnect(state, Error.Disconnected))
       http <- OrchestratorWSClientTransport.layer.build.map(_.get[zio.http.Client]).mapError(Error.Transport.apply)
+      uri = URI.create(endpoint)
+      origin = s"${if uri.getScheme == "wss" then "https" else "http"}://${uri.getRawAuthority}"
+      cookie <- ZIO
+        .foreach(password) { secret =>
+          for {
+            user <- ZIO.fromOption(userId).orElseFail(Error.InvalidEndpoint)
+            url <- ZIO.fromEither(URL.decode(s"$origin/auth/login")).orElseFail(Error.InvalidEndpoint)
+            response <- Client
+              .batched(
+                Request
+                  .post(url, Body.fromString(Map("username" -> UserId.value(user), "password" -> secret).toJson))
+                  .addHeader("Content-Type", "application/json")
+                  .addHeader("Origin", origin)
+                  .addHeader("X-Yallmo-CSRF", "1")
+              )
+              .provideEnvironment(ZEnvironment(http))
+              .orElseFail(Error.InvalidResponse)
+            _ <- ZIO
+              .fail(Error.Remote(JsonRpc.Error(ErrorCode.Unauthorized, s"Login failed (HTTP ${response.status.code})")))
+              .unless(response.status == Status.Ok)
+            cookie <- ZIO
+              .fromOption(
+                response.headers.iterator
+                  .find(_.headerName.equalsIgnoreCase("Set-Cookie"))
+                  .map(_.renderedValue.takeWhile(_ != ';'))
+              )
+              .orElseFail(Error.InvalidResponse)
+          } yield cookie
+        }
+        .timeoutFail(Error.RequestTimedOut)(requestTimeout)
+      socketClient = cookie.fold(http)(value => http.addHeader("Cookie", value).addHeader("Origin", origin))
       app = Handler
         .webSocket { channel =>
           val reject = (code: Int, reason: String) =>
@@ -335,7 +369,7 @@ object OrchestratorWSClient {
         }
         .withConfig(RpcWire.webSocketConfig.handshakeTimeout(Duration.fromMillis(requestTimeout.toMillis.max(1L))))
       channel <- (for {
-        response <- http.uri(URI.create(endpoint)).socket(app).mapError(Error.Transport.apply)
+        response <- socketClient.uri(URI.create(endpoint)).socket(app).mapError(Error.Transport.apply)
         _ <- ZIO.fail(Error.InvalidResponse).unless(response.status == Status.SwitchingProtocols)
         // socket returns the HTTP response before Netty has necessarily validated the upgrade.
         channel <- ready.await

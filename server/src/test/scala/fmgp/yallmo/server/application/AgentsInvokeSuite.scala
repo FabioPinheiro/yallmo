@@ -510,7 +510,7 @@ final class AgentsInvokeSuite extends FunSuite {
         fixture <- make(request =>
           request.body.asString.flatMap(body => sent.succeed(body)) *> calls.update(_ + 1).as(answer)
         )
-        port <- new OrchestratorWSServer(fixture.backend).start(0)
+        port <- fmgp.yallmo.server.TestWebSession.start(fixture.backend)
         connected <- Promise.make[Nothing, WebSocketChannel]
         replies <- Queue.unbounded[String]
         socket = Handler.webSocket { channel =>
@@ -522,7 +522,13 @@ final class AgentsInvokeSuite extends FunSuite {
           }
         }
         environment <- Client.default.build
-        _ <- socket.connect(s"ws://127.0.0.1:$port/rpc").provideSomeEnvironment[Scope](_.add(environment.get[Client]))
+        cookie <- TestWebSession.cookie(port, "human")
+        _ <- socket
+          .connect(
+            s"ws://127.0.0.1:$port/rpc",
+            Headers(Header.Custom("Cookie", cookie), Header.Custom("Origin", s"http://127.0.0.1:$port"))
+          )
+          .provideSomeEnvironment[Scope](_.add(environment.get[Client]))
         channel <- connected.await
         send = (id: String, method: String, params: Json) =>
           channel.send(

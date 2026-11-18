@@ -1,6 +1,6 @@
 # Web harness
 
-Scala.js / Laminar session inspector and trusted-browser chat. See [the server guide](../server/README.md) for development,
+Scala.js / Laminar session inspector and authenticated browser chat. See [the server guide](../server/README.md) for development,
 production bundling, embedding, API documentation and security boundaries.
 For keyboard shortcuts, modes and dictation keys, use the [client controls quick reference](../docs/CLIENT_CONTROLS.md).
 
@@ -138,7 +138,7 @@ network loss makes the outcome uncertain. Reload providers before starting anoth
 Cancel discards only a still-pending attempt, not an exchange already underway. New provider creation, endpoint editing,
 logout and general configuration reload are intentionally excluded. Successful login updates only the selected
 provider's live credentials and lazily rebinds its dependent agents, preserving their existing filesystem capabilities. Automatic token refresh is not the Reconnect button: it
-already occurs during inference and remains memory-only. The server's claimed Operator identity is not authentication;
+already occurs during inference and remains memory-only. Every authenticated account is an Operator;
 restrict this administrative interface to trusted users and use HTTPS/WSS or a secure tunnel for remote access.
 
 ## SDLC inspection
@@ -194,8 +194,8 @@ SDLC reads do **not** use `OrchestratorWSClient`, RPC initialization, a selected
 The existing application shell still attempts its ordinary WebSocket connection for other views; a disconnected status
 or connection notification does not block SDLC HTTP reads. Reconnect can also refresh the active page.
 Standalone server startup creates the shared SDLC service and serves both HTTP endpoints, even without an agent
-configuration. Data comes from `<--storage>/sdlc/tasks.jsonl` and `intents.jsonl`. HTTP inspection follows the trusted-host
-policy, with no WebSocket identity or agent allowlist required; keep this sensitive read surface private. Vite's
+configuration. Data comes from `<--storage>/sdlc/tasks.jsonl` and `intents.jsonl`. HTTP inspection requires the authenticated session cookie,
+but no connected WebSocket or agent allowlist; keep this sensitive read surface private. Vite's
 HTTP development proxy forwards these same-origin requests to the backend.
 
 Focused checks: `sbt 'webHarness/testOnly *Sdlc*Suite'` and `npm --prefix web-harness/vite test`.
@@ -299,14 +299,22 @@ limit/discard/navigation behavior. These are **not real microphone, OS permissio
 Manual acceptance still requires an actual audio-capable Transcriber and microphone: grant/deny permission, speak,
 stop/discard, reach the limit, edit the draft while waiting, navigate/disconnect, and verify actual transcript quality.
 
-## Chat (trusted browser)
+## Login and chat
 
-Open **Chat** (`#/chat`) from the full-height left sidebar. Each page load defaults to `fabio` and connects once
-as `UserId("fabio")`. Chat explicitly acts as `user-fabio`; voice and scalamode act as `web-user-fabio`,
-invoking configured recipients over that same connection without creating implicit sessions or reconnecting. Edit the compact toolbar's **Username** and press **Reconnect** to apply it; typing never disconnects.
-With an unchanged name, Reconnect reuses the connected socket and refreshes state. Empty names disable Reconnect;
-pending turns and connection setup also block it. Claimed authorship is **not authentication**: every reachable
-client can claim a name and execute configured agents/tools. Keep the backend and Vite proxy on trusted networks.
+Configure `users.<username>.secretHash` in the private server YAML/JSON and sign in with the username/password form.
+Generate the stored PBKDF2 hash using the [authentication guide](../server/README-SERVER.md#web-authentication).
+No application views or WebSocket mount before login/session restoration succeeds. Credentials are sent only in the
+same-origin HTTP login body, never saved in browser persistence or URLs. An HttpOnly, SameSite cookie restores the
+session on reload. The toolbar shows the server-authenticated username as a label, not an editable identity claim.
+**Log out** revokes the session, closes sockets and returns to login; log out to switch accounts. Sessions expire after
+eight hours or server restart. A closed socket rechecks the session and returns to login if it has expired.
+
+Chat (`#/chat`) acts as `user-<username>`; voice/scalamode act as `web-user-<username>` on the same authenticated connection.
+Reconnect refreshes connection state without changing identity. Existing pending-work guards still apply.
+All accounts have Operator privileges, not per-user resource isolation. Use HTTPS for remote access, strong unique
+login secrets and trusted operators. See [server authentication](../server/README-SERVER.md#web-authentication) for
+plaintext-storage implications, endpoints, expiry, CSRF and Host/Origin-preserving proxies. Vite proxies `/auth` along
+with `/rpc` and SDLC to keep local development same-origin without an allow-all exception.
 
 Choose an agent in the shared toolbar from the configured IDs advertised by `initialize` (not the mixed runtime
 registry in Agents). Send behavior and shortcuts are defined in the [client controls guide](../docs/CLIENT_CONTROLS.md#website-keys).

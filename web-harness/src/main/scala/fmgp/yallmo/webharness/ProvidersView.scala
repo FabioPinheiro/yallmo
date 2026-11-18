@@ -18,7 +18,7 @@ private[webharness] object ProvidersView {
       ),
       p(
         cls := "muted",
-        "Administrative access: use only on a private, trusted server. Usernames are not authentication."
+        "Administrative access: every signed-in user can manage provider credentials. Use only with trusted operators."
       ),
       button(
         typ := "button",

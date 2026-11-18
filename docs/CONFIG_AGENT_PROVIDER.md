@@ -19,14 +19,15 @@ There is no OS-name, first-agent or default-selection fallback, nor client-local
 emits a sanitized warning; use `--user-name` and `--agent` for client preferences. There is no current CLI transcription
 selection. Raw catalog edits preserve arbitrary unknown file fields without making them active server settings.
 
-Configured trusted-environment prompt execution is enabled: the server alone owns providers, tools, config and durable
-storage. There is no authentication or Host/Origin restriction: a nonempty claimed human ID enables Operator on a
-configured backend, including browser connections. Usernames are impersonable authorship, not authentication;
-restrict direct/proxied access to trusted users and never expose this server publicly. Anonymous connections remain
-viewers. Operators receive execution, upload, diagnostic and provider catalog/login methods. The web harness offers
-[ChatGPT login](../web-harness/README.md#providers-and-chatgpt-login); the connected terminal offers the same server-side
-flow through its provider picker with hidden callback input and no local OAuth/config access.
-Voice/human-interaction transport and other diagnostics remain pending remotely.
+The server alone owns providers, tools, config and durable storage. Network access requires a configured account
+(`users.<username>.secretHash`) and HTTP session login before the `/rpc` upgrade; client-supplied user IDs cannot impersonate
+other accounts. All authenticated users are Operators with execution, upload, diagnostics and provider administration.
+The browser presents a login page; the connected REPL uses `YALLMO_PASSWORD` plus `--user-name`. Empty/missing users stop
+standalone startup. Prefer random-salt `secretHash` values: `pbkdf2-sha256$600000$<32 lowercase hex salt>$<64 lowercase hex hash>`.
+The nonsecret salt is stored with the hash and read at login. Fixed-salt `yallmo` hashes remain compatible; use the interactive
+Python command in [web authentication](../server/README-SERVER.md#web-authentication) to regenerate, replace the value and
+restart. That guide also covers credential storage, HTTPS, cookie, Origin/CSRF and reverse-proxy requirements.
+Direct trusted in-process RPC usage is unchanged.
 
 ```sh
 mkdir -p ./server-storage

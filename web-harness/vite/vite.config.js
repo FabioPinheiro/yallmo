@@ -24,14 +24,18 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     strictPort: true,
     proxy: {
+      "/auth": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: false, // The server validates browser Origin against the original Host.
+      },
       "/api/sdlc": {
         target: "http://127.0.0.1:8080",
-        changeOrigin: true,
+        changeOrigin: false,
       },
       "/rpc": {
         target: "ws://127.0.0.1:8080",
         ws: true,
-        changeOrigin: true,
+        changeOrigin: false,
         rewriteWsOrigin: false, // Forward the browser's real Origin unchanged.
       },
     },

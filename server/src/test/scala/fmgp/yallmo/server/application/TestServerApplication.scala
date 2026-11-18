@@ -14,11 +14,12 @@ import zio.http.Client
 private[server] object TestServerApplication {
   def make(
       agents: Chunk[Agent[Any]] = Chunk.empty,
-      storageRoot: Option[Path] = None
+      storageRoot: Option[Path] = None,
+      config: Config = Config()
   ): ZIO[Scope, YallmoError, ServerExecutionService] =
     for {
       client <- Client.default.build.orDie
-      application <- ServerApplication.make(Config(), agents, storageRoot).provideEnvironment(client)
+      application <- ServerApplication.make(config, agents, storageRoot).provideEnvironment(client)
       scope <- ZIO.service[Scope]
       inFlight <- Ref.make(Set.empty[SessionId])
       continuations <- Ref.make(Map.empty[SessionId, (AgentId, Set[ProviderContinuation])])

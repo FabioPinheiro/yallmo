@@ -8,8 +8,8 @@ import zio.*
 import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.tool.sdlc.SdlcService
 
-/** Standalone trusted-environment WebSocket/SPA host; execution requires a configured backend and claimed human ID.
-  * Embedded applications should supply their configured backend instead.
+/** Standalone authenticated WebSocket/SPA host; execution requires a configured backend and web login. Embedded
+  * applications should supply their configured backend instead.
   */
 object MainServer extends ZIOAppDefault {
   override def gracefulShutdownTimeout: Duration = 20.seconds
@@ -64,6 +64,13 @@ object MainServer extends ZIOAppDefault {
               Some(sdlc),
               manualJs
             )
+          _ <- ZIO
+            .fail(
+              new IllegalArgumentException(
+                "Configure at least one users.<username>.secretHash before starting the web server"
+              )
+            )
+            .when(configured.application.webUsers.isEmpty)
           bound <- new OrchestratorWSServer(configured, Some(sdlc))
             .start(options.port)
           _ <- ZIO.logInfo(s"Orchestrator listening at http://0.0.0.0:$bound (JSON-RPC WebSocket: /rpc)") // loopback

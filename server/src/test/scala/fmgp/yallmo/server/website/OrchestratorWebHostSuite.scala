@@ -1,7 +1,7 @@
 package fmgp.yallmo.server.website
 
 import fmgp.yallmo.server.application.TestServerApplication
-import fmgp.yallmo.server.{MainServer, OrchestratorWSServer}
+import fmgp.yallmo.server.MainServer
 
 import java.net.{InetSocketAddress, Socket, URI}
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
@@ -17,7 +17,7 @@ final class OrchestratorWebHostSuite extends FunSuite {
   private def start: ZIO[Scope, Throwable, Int] =
     for {
       backend <- TestServerApplication.make()
-      port <- new OrchestratorWSServer(backend).start(0)
+      port <- fmgp.yallmo.server.TestWebSession.start(backend)
     } yield port
 
   test("the WebSocket host serves packaged SPA assets and security headers") {
@@ -127,8 +127,7 @@ final class OrchestratorWebHostSuite extends FunSuite {
           finally socket.close()
         }.either
       } yield {
-        assertEquals(response.statusCode(), 405)
-        assertEquals(response.headers().firstValue("Allow").orElse(""), "GET")
+        assertEquals(response.statusCode(), 403)
         assert(refused.isLeft)
       }
     }
@@ -150,10 +149,14 @@ final class OrchestratorWebHostSuite extends FunSuite {
   }
 
   private def get(port: Int, path: String, headers: List[(String, String)] = Nil): Task[HttpResponse[String]] =
-    ZIO.attemptBlocking {
-      val request = HttpRequest.newBuilder(URI.create(s"http://127.0.0.1:$port$path"))
-      headers.foreach { case (name, value) => request.header(name, value) }
-      http.send(request.GET().build(), HttpResponse.BodyHandlers.ofString())
+    fmgp.yallmo.server.TestWebSession.cookie(port).flatMap { cookie =>
+      ZIO.attemptBlocking {
+        val request = HttpRequest.newBuilder(URI.create(s"http://127.0.0.1:$port$path"))
+        request.header("Cookie", cookie)
+        headers.foreach { case (name, value) => request.header(name, value) }
+        http.send(request.GET().build(), HttpResponse.BodyHandlers.ofString())
+      }
+
     }
 
   private def run[A](effect: ZIO[Any, Any, A]): A =

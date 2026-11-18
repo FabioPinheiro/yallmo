@@ -340,3 +340,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 
 .graph-composer-parent { font-weight: 600; margin-bottom: .5rem; overflow-wrap: anywhere; }
 .graph-composer p { margin: .4rem 0 0; }
+
+/* Public login screen; credentials never enter the authenticated application model. */
+.login { max-width: 26rem; margin: 12vh auto 1rem; padding: 1.5rem; display: grid; gap: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.login label { display: grid; gap: .4rem; }
+.login input { width: 100%; font: inherit; padding: .7rem; color: var(--text); background: var(--background); border: 1px solid var(--control-border); border-radius: 7px; }
+.login-error { margin: 1rem; color: var(--error-text); }

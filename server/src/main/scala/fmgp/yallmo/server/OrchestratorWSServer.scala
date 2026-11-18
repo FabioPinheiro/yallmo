@@ -1,37 +1,42 @@
 package fmgp.yallmo.server
 
+import fmgp.yallmo.model.{User, UserId}
 import fmgp.yallmo.server.application.ServerExecutionService
 import fmgp.yallmo.server.website.{SdlcHttpRoutes, WebAssets}
 import fmgp.yallmo.tool.sdlc.SdlcService
 import zio.*
 import zio.http.*
 
-/** JSON-RPC WebSocket adapter and SPA host over the configured application. Construction starts nothing. Configured
-  * clients claiming a human ID can execute regardless of Origin or peer address. No authentication or Host/Origin
-  * restrictions: deploy only in a trusted environment.
-  */
+/** Authenticated JSON-RPC/HTTP host. Construction starts nothing; only SPA assets and login are public. */
 final class OrchestratorWSServer(
     configured: ServerExecutionService,
-    sdlc: Option[SdlcService] = None
+    sdlc: Option[SdlcService] = None,
+    users: Option[Map[UserId, User]] = None
 ) {
   private val rpc = new OrchestratorRpc(configured)
+  private val auth = new WebAuth(users.getOrElse(configured.application.webUsers))
+  private val protectedRoutes = sdlc.fold(Routes.empty)(service => new SdlcHttpRoutes(service).routes)
 
-  private val hostRoutes: Routes[Any, Nothing] = Routes(
+  val routes: Routes[Any, Nothing] = Routes(
     RoutePattern.any -> handler { (_: Path, request: Request) =>
+      val path = request.path.encode
       val response =
-        if request.method != Method.GET then
-          ZIO.succeed(Response.status(Status.MethodNotAllowed).addHeader("Allow", "GET"))
-        else if request.path.encode == "/rpc" then socket(request).toResponse
-        else WebAssets.response(request)
+        if path.startsWith("/auth/") then auth.endpoint(request)
+        else if request.method == Method.GET && (path == "/" || path == "/index.html" || path.startsWith("/assets/"))
+        then WebAssets.response(request)
+        else if !WebAuth.sameOrigin(request, required = path == "/rpc" || request.method != Method.GET) then
+          ZIO.succeed(Response.status(Status.Forbidden))
+        else
+          auth.session(request).flatMap {
+            case None => ZIO.succeed(Response.status(Status.Unauthorized))
+            case Some(session) if path == "/rpc" && request.method == Method.GET => socket(request, session).toResponse
+            case Some(_) if request.method != Method.GET                         =>
+              ZIO.succeed(Response.status(Status.MethodNotAllowed).addHeader("Allow", "GET"))
+            case Some(_) => ZIO.scoped(protectedRoutes.runZIO(request))
+          }
       response.map(WebAssets.secure(request, _))
     }
   )
-
-  /** Specific SDLC HTTP routes precede the SPA/WebSocket fallback. No RPC connection is needed to inspect a plan. */
-  val routes: Routes[Any, Nothing] = sdlc match {
-    case Some(service) => new SdlcHttpRoutes(service).routes ++ hostRoutes
-    case None          => hostRoutes
-  }
 
   def start(port: Int = 8080): ZIO[Scope, Throwable, Int] =
     for {
@@ -39,7 +44,7 @@ final class OrchestratorWSServer(
       server <- Server
         .defaultWith(
           _.binding("0.0.0.0", port)
-            .disableRequestStreaming(1024)
+            .disableRequestStreaming(8192)
             .maxHeaderSize(8192)
             .gracefulShutdownTimeout(1.second)
         )
@@ -47,10 +52,11 @@ final class OrchestratorWSServer(
       bound <- Server.install(routes).provideEnvironment(server)
     } yield bound
 
-  private def socket(request: Request): WebSocketApp[Any] = Handler
+  private def socket(request: Request, session: WebAuth.Session): WebSocketApp[Any] = Handler
     .webSocket { channel =>
       ZIO.scoped {
-        rpc.openConnection
+        rpc
+          .openAuthenticatedConnection(session.user)
           .flatMap { connection =>
             ZIO.logAnnotate("connectionId", connection.id.toString) {
               for {
@@ -60,6 +66,9 @@ final class OrchestratorWSServer(
                 workers <- Ref.make(0)
                 workerScope <- ZIO.service[Scope]
                 send = (frame: WebSocketFrame) => writes.withPermit(channel.send(ChannelEvent.Read(frame)))
+                _ <- (auth.untilRevoked(session) *>
+                  send(WebSocketFrame.Close(1008, Some("Session expired"))).timeout(1.second).ignore *>
+                  rpc.disconnect(connection) *> channel.shutdown).forkScoped
                 // One scoped sender, not a long-lived request worker. A stalled socket cannot hold a mutation open.
                 _ <- (rpc
                   .nextNotification(connection)
@@ -101,6 +110,8 @@ final class OrchestratorWSServer(
                           message =>
                             ZIO.foreachDiscard(message) { input =>
                               val work = for {
+                                valid <- auth.valid(session)
+                                _ <- ZIO.interrupt.unless(valid)
                                 _ <- ZIO.logDebug(s"RPC incoming bytes=${RpcWire.size(input)}")
                                 // Encode as a JSON string to escape control characters/newlines in untrusted input.
                                 _ <- ZIO.logTrace(s"RPC incoming payload=${RpcWire.tracePayload(input)}")

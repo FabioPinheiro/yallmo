@@ -61,6 +61,7 @@ lazy val root = project
     clientHarnessJS,
     repl,
     server,
+    linkerWorker,
     webHarness
   )
   .settings(
@@ -189,6 +190,8 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .jvmSettings(
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-http" % "3.11.6",
+      // Benchmark-only retained fast linker; never part of the submitted snippet's reviewed classpath.
+      "org.scala-js" %% "scalajs-linker" % "1.22.0" % Test,
       "org.yaml" % "snakeyaml" % "2.4",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
       // 1.53.0 pulled Jackson 2.17.2 with the reported DoS/deserialization CVEs; 1.80.0 uses fixed 2.18.11.
@@ -326,6 +329,15 @@ lazy val webHarness = project
     },
   )
 
+/** Isolated compiler tooling. Its Runtime jars are nested resources, never snippet compile/link libraries. */
+lazy val linkerWorker = project
+  .in(file("linker-worker"))
+  .settings(
+    name := "yallmo-linker-worker",
+    publish / skip := true,
+    libraryDependencies += "org.scala-js" %% "scalajs-linker" % "1.22.0",
+  )
+
 lazy val server = project
   .in(file("server"))
   .dependsOn(coreJVM, protocolJVM)
@@ -339,6 +351,45 @@ lazy val server = project
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
+    // Explicit, isolated worker tooling, not the server/core/test runtime classpath.
+    Compile / resourceGenerators += Def.task {
+      Def.uncached {
+        val converter = fileConverter.value
+        val jars = (linkerWorker / Runtime / fullClasspathAsJars).value
+          .map(entry => converter.toPath(entry.data).toFile).distinct
+        val output = (Compile / resourceManaged).value / "scalamode-linker"
+        IO.delete(output)
+        IO.createDirectory(output)
+        val products = jars.zipWithIndex.map { case (jar, index) =>
+          val target = output / f"$index%04d-${jar.getName}"
+          IO.copyFile(jar, target)
+          target
+        }
+        val manifest = output / "classpath.txt"
+        IO.write(manifest, products.map(_.getName).mkString("\n"))
+        products :+ manifest
+      }
+    }.taskValue,
+    // Only the reviewed JS IR libraries: no linker, frontend build, JVM/test or application classpath.
+    Compile / resourceGenerators += Def.task {
+      Def.uncached {
+        val converter = fileConverter.value
+        val products = Seq(
+          (scalaCodeApiJS / Compile / packageBin).value,
+          (filesystemJS / Compile / packageBin).value,
+          (rpcJS / Compile / packageBin).value,
+          (modelJS / Compile / packageBin).value,
+        )
+        val output = (Compile / resourceManaged).value / "scalamode-js"
+        IO.delete(output)
+        products.map { product =>
+          val source = converter.toPath(product).toFile
+          val target = output / s"scala-${scalaVersion.value}" / source.getName
+          IO.copyFile(source, target)
+          target
+        }
+      }
+    }.taskValue,
     Compile / resourceGenerators += Def.task {
       Def.uncached {
         val assets = (LocalRootProject / baseDirectory).value / "web-harness/vite/dist"

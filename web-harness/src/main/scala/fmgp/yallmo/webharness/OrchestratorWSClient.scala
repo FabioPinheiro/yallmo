@@ -95,6 +95,9 @@ final class OrchestratorWSClient private[webharness] (
       .flatMap(id => request(SessionsGet.method, SessionsGet.Params(id)))
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
   def submitBranch(params: BranchesSubmit.Params): Future[BranchOutcome] = request(BranchesSubmit.method, params)
+  def scalamodeCapabilities(): Future[ScalamodeCapabilities.Result] =
+    request(ScalamodeCapabilities.method, Empty())
+
   def invokeAgent(params: AgentsInvoke.Params): Future[Message] = request(AgentsInvoke.method, params)
   def uploadBlob(params: BlobsUpload.Params): Future[BlobsUpload.Result] = request(BlobsUpload.method, params)
   def providers(): Future[ProvidersList.Result] = request(ProvidersList.method, Empty())

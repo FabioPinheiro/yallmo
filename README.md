@@ -68,12 +68,42 @@ use the selected agent read root when configured, otherwise workspace, independe
 - [System One / Jev decision protocol](docs/system_one/System_One_Overview.md)
 - [Conversation graph](docs/CONVERSATION_GRAPH.md) — interactive session/message DAG inspector with live 2-second snapshot polling and unnamed branch composer.
 
+## Scalamode
+
+Scalamode evaluates restricted Scala snippets and returns the last expression's value. The public LLM tool accepts
+only `{"code":"1 + 1"}`; backend selection is not a tool argument. Model-driven execution and the default JVM path
+keep their existing selected-agent bindings, permissions and approval rules.
+
+The operator **Scalamode** webpage has an execution dropdown: **JVM (`jvm`)** is the default; **JS / Node (`js-node`)**
+is an explicit, server-side pure playground. It supports plain values and environment-free ZIO effects only—no
+filesystem, hello, custom services, RPC, streaming or extra dependency grants. Selected-agent permissions and approval
+still apply on every Run, with no fallback to JVM. A future `js-browser` backend is **not implemented**. Compiler
+restrictions and reviewed APIs are defense in depth, **not an OS sandbox**.
+
+The JS / Node page backend retains a server-scoped incremental fast linker for repeated runs and source edits,
+but launches a **fresh Node process for every evaluation**; definitions are not available to subsequent submissions,
+and runtime state does not persist.
+The first link and links after a reset are slower. Compilation timing includes linking; execution timing includes
+Node initialization/bootstrap and cleanup, not just evaluation (`executionSetupTime`, when present, is a subset).
+
+Trusted startup extracts four bundled, reviewed JS API products (`scalacode-api`, `model`, `filesystem`, `rpc`) and
+isolated linker tooling into server-owned scoped temporary storage, cleaned up at shutdown. Durable `--storage`
+remains application data, not a compiler/artifact root. There are no `--scalamode-js-root` or `--scalamode-node`
+executable configuration options: `node` and `scala-cli` must be on PATH, and the pinned compiler and dependency
+caches must be provisioned for offline use. Bundling the reviewed APIs does **not** provision those full caches.
+Use the normal server startup described in [Setup and running](docs/HOW_TO_RUN.md).
+
+See the [Scalamode tool contract](docs/tools/TOOL-SCALA-SCRIPT.md) and
+[reviewed API and host boundaries](scalacode-api/README-SCALACODE.md) for details.
+
 ## Project layout
 
-- `model/` — JVM/JS provider-neutral models and orchestration state.
+- `model/` — JVM/JS provider-neutral models and orchestration state; owns the canonical [ScalaCodeExecutor](model/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala) contract and defaults.
 - `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
-- `scalacode-api/` — JVM/JS runtime API for restricted Scala snippets; no application-module dependencies.
-- `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG.
+- `scalacode-api/` — reviewed JVM/JS snippet API and optional `ScalaCodeExecutorServices` capability; depends on model/filesystem/rpc, never core/server.
+- `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG. `core/jvm` owns [ScalaCodeExecutorJVM](core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala) and `ScalaCodeExecutorNodeIncremental`.
+- [linker-worker/](linker-worker/) — isolated JVM compiler/linker tooling; never evaluates submitted snippets.
+- `rpc/` — standalone JVM/JS typed contracts, codecs and derivation for unary/streaming RPC; WebSocket transport is JVM-only, with no JS transport implemented.
 - `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
 - `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
 - `repl/` — the JVM interactive terminal client and lazy scoped browser audio bridge.
@@ -83,8 +113,9 @@ use the selected agent read root when configured, otherwise workspace, independe
 
 ### Module dependencies
 
-Arrows point from a module to its direct build dependencies. JVM/JS labels select the matching cross-project variant;
-the root project only aggregates these modules.
+Solid arrows point from a module to its direct code dependencies; the dashed arrow denotes build-time resource
+packaging, not a code dependency. JVM/JS labels select the matching cross-project variant; the root project only
+aggregates these modules.
 
 ```mermaid
 flowchart BT
@@ -95,13 +126,20 @@ flowchart BT
     web -->|JS| protocol["protocol · JVM / JS"]
     server -->|JVM| core
     server -->|JVM| protocol
+    server -.->|bundled tooling| linker["linker-worker · JVM"]
     core --> model["model · JVM / JS"]
     core --> filesystem["filesystem · JVM / JS"]
     core --> scalaApi["scalacode-api · JVM / JS"]
+    core --> rpc["rpc · JVM / JS"]
+    scalaApi --> model
+    scalaApi --> filesystem
+    scalaApi --> rpc
     protocol --> model
 ```
 
 This is a build graph, not a deployment diagram: the connected REPL and website communicate with a separately running
 server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
-`scalacode-api` has no application-module dependencies; restricted snippets compile against it and Scala/ZIO, not the whole host classpath.
+`scalacode-api` depends on model/filesystem/rpc, not core/server. Restricted snippets use reviewed API artifacts and
+pinned dependencies, never the whole application classpath. The server bundles the four JS API products and isolated
+linker tooling as resources; bundling tooling does not make it a snippet compile/link dependency.
 `browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.

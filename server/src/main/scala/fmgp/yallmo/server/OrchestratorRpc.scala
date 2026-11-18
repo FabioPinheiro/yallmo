@@ -154,6 +154,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                     DiagnosticsRequest.method,
                     BlobsUpload.method,
                     AgentsInvoke.method,
+                    ScalamodeCapabilities.method,
                     ProvidersList.method,
                     ProvidersLoginStart.method,
                     ProvidersLoginComplete.method,
@@ -258,11 +259,13 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
               outcome <- configured.submitBranch(author, request.parentId, request.agentId, request.task.prompt)
               result <- encode(outcome)
             } yield result
+          case ScalamodeCapabilities.method =>
+            operator(state) *> decode[Empty](params) *> encode(configured.application.manualJs.capabilities)
           case AgentsInvoke.method =>
             for {
               request <- decode[AgentsInvoke.Params](params)
               author <- acting(state, request.actingAgentId)
-              response <- configured.invoke(author, request.agentId, request.input)
+              response <- configured.invoke(author, request.agentId, request.input, request.scalamodeExecution)
               result <- encode(response)
             } yield result
           case ProvidersList.method =>

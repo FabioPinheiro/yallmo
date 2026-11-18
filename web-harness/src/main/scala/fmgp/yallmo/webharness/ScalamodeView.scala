@@ -2,6 +2,7 @@ package fmgp.yallmo.webharness
 
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.model.AgentId
+import fmgp.yallmo.server.protocol.YallmoProtocol.ScalamodeExecution
 
 private[webharness] object ScalamodeView {
   def apply(model: ScalamodeModel, selectedAgent: Signal[Option[AgentId]]): HtmlElement = {
@@ -26,6 +27,28 @@ private[webharness] object ScalamodeView {
           onInput.mapToValue --> model.code
         )
       ),
+      label(
+        "Execution",
+        select(
+          idAttr := "scalamode-execution",
+          aria.label := "Scalamode execution",
+          value <-- state.map(_.execution.wire),
+          disabled <-- state.map(s => !s.enabled || s.pending || s.branchBusy),
+          onChange.mapToValue --> (value => ScalamodeExecution.values.find(_.wire == value).foreach(model.execution)),
+          option(value := "jvm", "JVM — selected agent binding"),
+          option(
+            value := "js-node",
+            disabled <-- state.map(s => !s.jsNodeAvailable),
+            "JS / Node — pure playground (retained linker)"
+          )
+        )
+      ),
+      p(cls := "muted", child.text <-- state.map(_.jsReason)),
+      p(
+        cls := "muted",
+        hidden <-- state.map(_.execution != ScalamodeExecution.JsNode),
+        "Pure playground: selected agent permissions/approval still apply; its hello/filesystem APIs and other services are NOT available. Custom bindings are unsupported. Server-scoped incremental linker; cold first link, fresh Node process on every Run. No runtime state is retained."
+      ),
       div(
         cls := "composer-actions",
         button(
@@ -44,6 +67,13 @@ private[webharness] object ScalamodeView {
           sectionTag(
             cls := "message scalamode-result",
             h2(result.title),
+            p(
+              cls := "muted",
+              result.execution match {
+                case ScalamodeExecution.JVM    => "JVM — selected agent binding"
+                case ScalamodeExecution.JsNode => "JS / Node — pure playground (retained linker); no agent services"
+              }
+            ),
             result.fields match {
               case Some(fields) =>
                 div(

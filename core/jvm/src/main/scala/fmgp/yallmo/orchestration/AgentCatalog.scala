@@ -16,7 +16,7 @@ import fmgp.yallmo.orchestration.config.{
 }
 import fmgp.yallmo.provider.oai.{OAIAgent, OAIConfig, OAILlmProvider}
 import fmgp.yallmo.provider.openai.{ChatGPTAgent, OpenAiCodexClient}
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorLive}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorJVM}
 import zio.*
 import zio.http.Client
 
@@ -490,7 +490,7 @@ object AgentCatalog {
       context: StaticContext[Any] = StaticContext[Any](""),
       functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
       readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
-      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorJVM.make(),
       workspaceFilesystem: Option[FsRead] = None,
       workspaceFilesystemWrite: Option[FsWrite] = None
   ): ZIO[Client, YallmoError, AgentCatalog[R]] =
@@ -528,7 +528,7 @@ object AgentCatalog {
       context: StaticContext[Any] = StaticContext[Any](""),
       functionsFor: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
       readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
-      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorJVM.make(),
       workspaceFilesystem: Option[FsRead] = None,
       workspaceFilesystemWrite: Option[FsWrite] = None
   ): IO[YallmoError, AgentCatalog[R]] =

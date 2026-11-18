@@ -43,7 +43,8 @@ object App {
     )
     val chat = new ChatModel(client, notifications.publish)
     val selectedAgent = chat.state.signal.map(_.current.agent).distinct
-    val scalamode = new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent)
+    val scalamode =
+      new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent, () => client.scalamodeCapabilities())
     val branch = new GraphBranchModel(
       client.submitBranch,
       () => chat.state.now().current.agent,

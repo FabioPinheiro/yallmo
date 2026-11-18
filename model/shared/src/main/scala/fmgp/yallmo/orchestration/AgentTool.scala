@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.scalamode.ScalamodeFunction
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.{ToolDefinition, FunctionToolDefinition}
 import zio.*
@@ -31,5 +32,17 @@ object AgentTool {
   def group[R](definitions: Chunk[ToolDefinition], functions: Chunk[AgentFunction[R]]): Chunk[AgentTool[R]] =
     ToolDefinition.available(definitions, functions.map(_.definition)).map { definition =>
       AgentTool(definition, functions.filter(function => definition.functions.contains(function.definition)))
+    }
+}
+
+object AgentFunction {
+  def provideEnvironment[R](tool: AgentFunction[R], environment: ZEnvironment[R]): AgentFunction[Any] =
+    ScalamodeFunction.from(tool) match {
+      case Some(integrated) => ScalamodeFunction.provideEnvironment(integrated, environment)
+      case None             =>
+        new AgentFunction[Any] {
+          val definition = tool.definition
+          def execute(call: ExternalFunctionCall) = tool.execute(call).provideEnvironment(environment)
+        }
     }
 }

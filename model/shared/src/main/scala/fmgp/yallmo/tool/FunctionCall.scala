@@ -56,11 +56,12 @@ enum ScalaModeResult derives JsonCodec {
   }
 }
 
-/** Host-measured elapsed times are milliseconds. Execution includes Scala CLI/JVM startup and any run-stage
-  * compilation; total also includes source setup, diagnostics and cleanup. Unmeasured/skipped times default to zero.
-  * executionSetupTime measures child launch until the host observes snippet evaluation starting (including polling
-  * delay); None means evaluation was not observed, including older results. It is part of executionTime, not
-  * additional.
+/** Host-measured elapsed times are milliseconds. Execution includes child startup/bootstrap, evaluation, process
+  * cleanup and log collection (plus Scala CLI/run-stage compilation on JVM). The opt-in Node backend charges linking to
+  * compilationTime. Total also includes source setup, diagnostics and directory cleanup. Unmeasured/skipped times
+  * default to zero. executionSetupTime measures child launch until the host observes snippet evaluation starting
+  * (including polling delay); None means evaluation was not observed, including older results. It is part of
+  * executionTime, not additional.
   */
 final case class ScalaModeOutput(
     callId: FunctionCallId,

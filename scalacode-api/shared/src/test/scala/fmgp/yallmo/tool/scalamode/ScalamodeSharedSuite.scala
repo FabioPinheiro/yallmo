@@ -18,7 +18,7 @@ final class ScalamodeSharedSuite extends ZSuite {
   }
 
   testZ("service metadata and service-bound execution work with a portable executor")(ZIO.suspendSucceed {
-    val executor = new ScalaCodeExecutor {
+    val executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
       def isAvailable = ZIO.succeed(true)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
         ZIO.dieMessage("Expected service-bound execution")
@@ -72,7 +72,7 @@ final class ScalamodeSharedSuite extends ZSuite {
 
   testZ("hello service wiring and execution work without platform services or a separate native tool")(
     ZIO.suspendSucceed {
-      val executor = new ScalaCodeExecutor {
+      val executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
         def isAvailable = ZIO.succeed(true)
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           ZIO.dieMessage("Expected service-bound execution")
@@ -87,10 +87,7 @@ final class ScalamodeSharedSuite extends ZSuite {
           ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("Hello world"))
         }
       }
-      val original = new AgentFunction[Any] {
-        val definition = ScalaTool.definition
-        def execute(call: ExternalFunctionCall) = ZIO.dieMessage("Expected replacement")
-      }
+      val original = AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
       val input = Seq(AgentTool(ScalamodeToolDefinition, Chunk(original)))
       for {
         tools <- AgentToolWirings.withHelloWorld(executor)(input)

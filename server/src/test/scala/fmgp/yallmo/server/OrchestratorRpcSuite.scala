@@ -101,13 +101,14 @@ final class OrchestratorRpcSuite extends ZSuite {
             "diagnostics.request",
             "blobs.upload",
             "agents.invoke",
+            "scalamode.capabilities",
             "providers.list",
             "providers.login.start",
             "providers.login.complete",
             "providers.login.cancel"
           )
         )
-        assertEquals(result.methods.size, 19)
+        assertEquals(result.methods.size, 20)
         assertEquals(result.notifications, List(EventsUpdate.method))
         assertEquals(error(changed).code, ErrorCode.Conflict)
         assertEquals(error(removed).code, ErrorCode.Conflict)

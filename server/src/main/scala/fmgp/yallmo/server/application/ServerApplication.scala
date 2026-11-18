@@ -15,7 +15,7 @@ import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
 import scala.collection.immutable.VectorMap
 import zio.json.ast.Json
 import java.util.concurrent.ConcurrentHashMap
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorLive}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorJVM}
 import zio.*
 import zio.http.Client
 
@@ -31,7 +31,8 @@ final class ServerApplication private (
     val catalog: AgentCatalog[Any],
     config: Config,
     availableContext: StaticContext[Any],
-    val availability: ToolAvailability
+    val availability: ToolAvailability,
+    val manualJs: ManualJsScalamode
 ) {
   import ServerApplication.*
 
@@ -91,8 +92,17 @@ final class ServerApplication private (
         ZIO.logError(s"Unable to load agent '${displayText(AgentId.value(id))}': ${displayText(error.getMessage)}")
       )
 
-  def invoke(input: Message, selection: ResolvedAgent): IO[YallmoError, Message] =
-    master.invoke(input, AgentRunner.invocation(selection))
+  def invoke(
+      input: Message,
+      selection: ResolvedAgent,
+      manual: Option[ScalaCodeExecutor] = None
+  ): IO[YallmoError, Message] =
+    (ZIO
+      .fail(YallmoError.InvalidMessage("Manual pure execution requires an explicit Scalamode ToolCall"))
+      .when(manual.nonEmpty && !(input.payload match {
+        case fmgp.yallmo.model.MessagePayload.ToolCall(call) => call.name == fmgp.yallmo.tool.FunctionKey.scalamode
+        case _                                               => false
+      })) *> master.invoke(input, AgentRunner.invocation(selection, manual)))
 
   def submitBranch(
       author: AgentId,
@@ -138,8 +148,9 @@ object ServerApplication {
       workspaceFilesystem: Option[FsRead] = None,
       selectedFunctions: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
       toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions,
-      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
-      workspaceFilesystemWrite: Option[FsWrite] = None
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorJVM.make(),
+      workspaceFilesystemWrite: Option[FsWrite] = None,
+      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
   ): ZIO[Client, YallmoError, ServerApplication] =
     for {
       context = StaticContext[Any](
@@ -182,7 +193,8 @@ object ServerApplication {
       catalog,
       config,
       context,
-      ToolAvailability.from(availableFunctions.map(_.definition), Chunk.empty, toolDefinitions)
+      ToolAvailability.from(availableFunctions.map(_.definition), Chunk.empty, toolDefinitions),
+      manualJs
     )
 
   /** Configuration file boundary for retained embedded callers; the captured client must outlive the application. */
@@ -204,17 +216,14 @@ object ServerApplication {
       storageRoot: Option[Path],
       workspace: Path,
       services: ULayer[ApplicationTools.Environment] = ApplicationTools.live,
-      sharedSdlc: Option[SdlcService] = None
+      sharedSdlc: Option[SdlcService] = None,
+      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
   ): ZIO[Scope & Client, YallmoError, ServerApplication] =
     for {
       environment <- services.build
       startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc).provideEnvironment(environment)
       tools = startup.functions.map { tool =>
-        new AgentFunction[Any] {
-          val definition = tool.definition
-          def execute(call: ExternalFunctionCall): IO[YallmoError, ExternalFunctionResult] =
-            tool.execute(call).provideEnvironment(environment)
-        }
+        AgentFunction.provideEnvironment(tool, environment)
       }
       application <- make(
         config,
@@ -224,14 +233,16 @@ object ServerApplication {
         startup.filesystem,
         fs => ApplicationTools.selected(tools, fs),
         scalaCodeExecutor = environment.get[ScalaCodeExecutor],
-        workspaceFilesystemWrite = startup.filesystemWrite
+        workspaceFilesystemWrite = startup.filesystemWrite,
+        manualJs = manualJs
       )
     } yield new ServerApplication(
       application.master,
       application.catalog,
       config,
       application.context(None),
-      startup.availability
+      startup.availability,
+      manualJs
     )
 
   type ToolEnvironment = ApplicationTools.Environment
@@ -251,22 +262,24 @@ object ServerApplication {
       storage: Path,
       configPath: Path,
       workspace: Option[Path] = None,
-      sharedSdlc: Option[SdlcService] = None
+      sharedSdlc: Option[SdlcService] = None,
+      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
-    openConfigured(storage, configPath, workspace, sharedSdlc)
+    openConfigured(storage, configPath, workspace, sharedSdlc, manualJs)
 
   private def openConfigured(
       storage: Path,
       configPath: Path,
       workspace: Option[Path],
-      sharedSdlc: Option[SdlcService]
+      sharedSdlc: Option[SdlcService],
+      manualJs: ManualJsScalamode
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     ZIO.uninterruptibleMask { restore =>
       for {
         parent <- ZIO.service[Scope]
         // Failed opens release ownership immediately, even if the caller catches the failure in a longer-lived scope.
         ownership <- parent.fork
-        application <- restore(compose(storage, configPath, workspace, sharedSdlc))
+        application <- restore(compose(storage, configPath, workspace, sharedSdlc, manualJs))
           .provideSomeEnvironment[Scope & Environment](_.add[Scope](ownership))
           .onExit {
             case Exit.Success(_) => ZIO.unit
@@ -279,7 +292,8 @@ object ServerApplication {
       storage: Path,
       configPath: Path,
       workspace: Option[Path],
-      sharedSdlc: Option[SdlcService]
+      sharedSdlc: Option[SdlcService],
+      manualJs: ManualJsScalamode
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     for {
       root <- existingDirectory(storage, "Storage directory must already exist and be accessible")
@@ -297,7 +311,8 @@ object ServerApplication {
           Some(root),
           selectedWorkspace,
           ZLayer.succeedEnvironment(environment),
-          sharedSdlc
+          sharedSdlc,
+          manualJs
         )
         .mapError(error =>
           new IllegalStateException(

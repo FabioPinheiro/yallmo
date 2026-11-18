@@ -2,7 +2,7 @@ package fmgp.yallmo.tool.scalamode
 
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
-import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
+import fmgp.yallmo.orchestration.*
 import zio.*
 
 /** One-shot restricted Scala evaluation through isolated Scala CLI compilation and a ZIOApp runner.
@@ -15,11 +15,27 @@ final class ScalaTool(
     timeout: Duration = 45.seconds,
     maxOutputBytes: Int = 64 * 1024,
     dependencies: Seq[String] = ScalaTool.DefaultDependencies
-) extends AgentFunction[ScalaCodeExecutor] {
+) extends ScalamodeFunction[ScalaCodeExecutor] {
   require(timeout > Duration.Zero, "timeout must be positive")
   require(maxOutputBytes > 0, "maxOutputBytes must be positive")
 
   override val definition: FunctionToolDefinition = ScalaTool.definition
+
+  override def bindDefaultScalamode(replacement: ScalamodeFunction[Any]) = {
+    val pure = Option.when(replacement.manualScalamode.nonEmpty)(manualScalamode).flatten
+    Some(new ScalamodeFunction[Any] {
+      val definition = replacement.definition
+      def execute(call: ExternalFunctionCall) = replacement.execute(call)
+      override def manualScalamode = pure
+    })
+  }
+
+  override def manualScalamode: Option[ManualScalamode[Any]] = Some(new ManualScalamode[Any] {
+    def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor) =
+      ScalaTool.executeWith(call, definition.name)(code =>
+        executor.execute(code, timeout, maxOutputBytes, dependencies)
+      )
+  })
 
   override def execute(call: ExternalFunctionCall): ZIO[ScalaCodeExecutor, YallmoError, ExternalFunctionResult] =
     ScalaTool
@@ -30,7 +46,7 @@ final class ScalaTool(
 
 object ScalaTool {
 
-  val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
+  val DefaultDependencies: Seq[String] = ScalaCodeExecutor.DefaultDependencies
 
   /** Code-only binding: the service is a host descriptor, not an environment requirement or a model argument. */
   def withServices(

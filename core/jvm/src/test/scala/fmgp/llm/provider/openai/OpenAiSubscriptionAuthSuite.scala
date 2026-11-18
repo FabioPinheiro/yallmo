@@ -427,7 +427,7 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
             )
         )
         provider <- OpenAiCodexClient.make(Some(inferenceCredentials)).provideEnvironment(ZEnvironment(client))
-        executor = new ScalaCodeExecutor {
+        executor: ScalaCodeExecutor = new ScalaCodeExecutor with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
           def isAvailable = ZIO.succeed(true)
           def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
             ZIO.dieMessage("Expected service execution")
@@ -442,10 +442,7 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
             ExternalFunctionResult.ScalaMode(fmgp.yallmo.tool.ScalaModeResult.Executed("Hello world"))
           }
         }
-        original = new AgentFunction[Any] {
-          val definition = ScalaTool.definition
-          def execute(call: ExternalFunctionCall) = ZIO.dieMessage("Expected replacement")
-        }
+        original = AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
         base = Seq(AgentTool(ScalamodeToolDefinition, Chunk(original)))
         defaultAgent = new ChatGPTAgent(AgentId("default"), provider, scalaCodeExecutor = executor)
         compositions <- Ref.make(0)

@@ -264,6 +264,43 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
+  test("manual JS capability and invocation envelope never modify the code-only Message") {
+    val h = new Harness()
+    val input = Message(
+      MessageData(
+        AgentId("web-user-human"),
+        None,
+        Instant.EPOCH,
+        Message.ToolCall(
+          fmgp.yallmo.tool.FunctionCall(
+            fmgp.yallmo.tool.FunctionCallId.unsafe("pure"),
+            fmgp.yallmo.tool.FunctionKey.scalamode,
+            """{"code":"42"}"""
+          )
+        )
+      )
+    )
+    for {
+      _ <- h.initialize()
+      discovery = h.client.scalamodeCapabilities()
+      capability <- h.awaitRequest(ScalamodeCapabilities.method)
+      _ = assertEquals(capability.params.toJson, "{}")
+      _ = h.reply(capability, ScalamodeCapabilities.Result(true, "pure only"))
+      available <- discovery
+      invoked = h.client.invokeAgent(
+        AgentsInvoke.Params(AgentId("assistant"), input, input.agentId, Some(ScalamodeExecution.JsNode))
+      )
+      request <- h.awaitRequest(AgentsInvoke.method)
+      _ = assertEquals(decode[AgentsInvoke.Params](request.params.toJson).input, input)
+      _ = assertEquals(
+        decode[AgentsInvoke.Params](request.params.toJson).scalamodeExecution,
+        Some(ScalamodeExecution.JsNode)
+      )
+      _ = h.client.close()
+      _ <- invoked.failed
+    } yield assert(available.jsNodeAvailable)
+  }
+
   test("agents.invoke uses Message codecs without a read deadline, while generic upload commands remain bounded") {
     val h = new Harness(timeout = 30)
     val input = Message(MessageData(AgentId("human"), None, Instant.EPOCH, Message.User("hello")))

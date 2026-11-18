@@ -54,7 +54,7 @@ final class FilesystemServiceCompilerSuite extends FunSuite {
         assertEquals(deleted.output, "()\n", deleted.toString)
         assert(missing.result.isInstanceOf[ScalaModeResult.CompilationError], missing.toString)
       })
-      .provide(ScalaCodeExecutorLive.layer(executable.get))
+      .provide(ScalaCodeExecutorJVM.layer(executable.get))
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
   }
 }

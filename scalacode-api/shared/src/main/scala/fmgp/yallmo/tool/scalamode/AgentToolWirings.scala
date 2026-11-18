@@ -22,7 +22,9 @@ object AgentToolWirings {
     filesystem match {
       case Some(read)
           if Set(FilesystemToolDefinition.ReadFile, FilesystemToolDefinition.ListFiles).subsetOf(permitted) =>
-        withService(FilesystemService.default(read, filesystemWrite), executor)(tools)
+        withServiceInternal(FilesystemService.default(read, filesystemWrite), executor, 45.seconds, 64 * 1024, true)(
+          tools
+        )
       case _ => withHelloWorld(executor)(tools)
     }
   }
@@ -31,39 +33,47 @@ object AgentToolWirings {
     * service bindings are preserved. Reapplying the wiring is an identity operation.
     */
   def withHelloWorld(executor: ScalaCodeExecutor): ToolWiring =
-    withService(HelloWorldService, executor)
+    withServiceInternal(HelloWorldService, executor, 45.seconds, 64 * 1024, true)
 
-  /** Replace only the permitted default Scalamode function, preserving tool order and unrelated functions. */
+  /** Rebind only explicitly integrated built-in defaults, retaining guards. Opaque/default-looking custom closures are
+    * not replaceable. Arbitrary service bindings do not opt into the manual pure playground.
+    */
   def withService(
       service: ScalamodeService,
       executor: ScalaCodeExecutor,
       timeout: Duration = 45.seconds,
       maxOutputBytes: Int = 64 * 1024
+  ): ToolWiring = withServiceInternal(service, executor, timeout, maxOutputBytes, false)
+
+  private def withServiceInternal(
+      service: ScalamodeService,
+      executor: ScalaCodeExecutor,
+      timeout: Duration,
+      maxOutputBytes: Int,
+      purePlayground: Boolean
   ): ToolWiring = tools => {
     val bound = ScalaTool.withServices(service, timeout, maxOutputBytes)
-    val function = new AgentFunction[Any] {
+    val function = new ScalamodeFunction[Any] {
       val definition = bound.definition
       def execute(call: ExternalFunctionCall) = bound.execute(call).provideEnvironment(ZEnvironment(executor))
+      override def manualScalamode =
+        if purePlayground then new ScalaTool(timeout, maxOutputBytes).manualScalamode
+        else None
     }
-    def isDefault(tool: AgentTool[Any]): Boolean =
-      tool.name == ToolKey.Scalamode && tool.definition.functions.contains(ScalamodeToolDefinition.Default) &&
-        tool.functions.exists(_.definition == ScalamodeToolDefinition.Default)
-
-    if !tools.exists(isDefault) then ZIO.succeed(tools)
+    val replacements = tools
+      .filter(_.name == ToolKey.Scalamode)
+      .flatMap(_.functions)
+      .flatMap(existing =>
+        ScalamodeFunction.from(existing).flatMap(_.bindDefaultScalamode(function)).map(existing -> _)
+      )
+      .toMap
+    if replacements.isEmpty then ZIO.succeed(tools)
     else
       ZIO.succeed(tools.map { tool =>
-        if !isDefault(tool) then tool
+        if tool.name != ToolKey.Scalamode then tool
         else {
-          val functions = tool.functions.map(existing =>
-            if existing.definition == ScalamodeToolDefinition.Default then function else existing
-          )
-          val definition = ToolDefinition(
-            tool.name,
-            tool.definition.functions.map(existing =>
-              if existing == ScalamodeToolDefinition.Default then function.definition else existing
-            )
-          )
-          AgentTool(definition, functions)
+          val functions = tool.functions.map(existing => replacements.getOrElse(existing, existing))
+          AgentTool(ToolDefinition(tool.name, functions.map(_.definition).toSet), functions)
         }
       })
   }

@@ -273,6 +273,28 @@ object YallmoProtocol {
     type Result = Empty
   }
 
+  enum ScalamodeExecution(val wire: String) {
+    case JVM extends ScalamodeExecution("jvm")
+    case JsNode extends ScalamodeExecution("js-node")
+  }
+  object ScalamodeExecution {
+    given JsonCodec[ScalamodeExecution] = JsonCodec.string.transformOrFail(
+      value =>
+        ScalamodeExecution.values
+          .find(_.wire == value)
+          .toRight("scalamodeExecution must be jvm or js-node when supplied"),
+      _.wire
+    )
+  }
+
+  /** Read-only operator capability discovery, separate from strict legacy initialize codecs. */
+  object ScalamodeCapabilities {
+    val method = "scalamode.capabilities"
+    type Params = Empty
+    @jsonNoExtraFields
+    final case class Result(jsNodeAvailable: Boolean, reason: String) derives JsonCodec
+  }
+
   object AgentsInvoke {
     val method: String = "agents.invoke"
 
@@ -281,7 +303,25 @@ object YallmoProtocol {
       * must exist but does not load history.
       */
     @jsonNoExtraFields
-    final case class Params(agentId: AgentId, input: Message, actingAgentId: AgentId) derives JsonCodec
+    final case class Params(
+        agentId: AgentId,
+        input: Message,
+        actingAgentId: AgentId,
+        scalamodeExecution: Option[ScalamodeExecution] = None
+    )
+    object Params {
+      private val derived = DeriveJsonCodec.gen[Params]
+      given JsonCodec[Params] = JsonCodec(
+        derived.encoder,
+        JsonDecoder[Json].mapOrFail {
+          case value: Json.Obj if value.fields.exists { case (key, field) =>
+                key == "scalamodeExecution" && field == Json.Null
+              } =>
+            Left("scalamodeExecution must be jvm or js-node when supplied")
+          case value => derived.decoder.fromJsonAST(value)
+        }
+      )
+    }
     type Result = Message
   }
 

@@ -214,7 +214,9 @@ final class AgentsInvokeSuite extends FunSuite {
               else answer
             },
           configuration = enabled,
-          tools = Chunk(tool)
+          tools = Chunk(tool),
+          toolDefinitions = ApplicationTools.ToolDefinitions :+ fmgp.yallmo.tool
+            .ToolDefinition(fmgp.yallmo.tool.ToolKey.unsafe("echo"), Set(tool.definition))
         )
         reply <- invoke(fixture)
         sent <- requests.get
@@ -583,6 +585,386 @@ final class AgentsInvokeSuite extends FunSuite {
     })
   }
 
+  private def scalaRequest(code: String = "42", arguments: Option[String] = None): Message =
+    Message(
+      input.data.copy(payload =
+        Message.ToolCall(
+          FunctionCall(
+            FunctionCallId.unsafe("manual-scala"),
+            FunctionKey.scalamode,
+            arguments.getOrElse(ujson.write(ujson.Obj("code" -> code)))
+          )
+        )
+      )
+    )
+
+  private def pure(fixture: Fixture, message: Message): UIO[String] =
+    call(
+      fixture.rpc,
+      fixture.connection,
+      AgentsInvoke.method,
+      AgentsInvoke.Params(assistant, message, human, Some(ScalamodeExecution.JsNode))
+    )
+
+  private def scalaConfiguration(serviceBound: Boolean, permitted: Boolean = true): Config = {
+    val enabled =
+      definition.copy(capabilities = AgentCapabilities(functions = Some(if permitted then Set(FunctionKey.scalamode)
+      else Set.empty)))
+    if !serviceBound then config.copy(agents = Map(assistant -> enabled))
+    else {
+      val encoded = java.util.Base64.getUrlEncoder
+        .withoutPadding()
+        .encodeToString(
+          """{"https://api.openai.com/auth":{"chatgpt_account_id":"fake"}}""".getBytes(
+            java.nio.charset.StandardCharsets.UTF_8
+          )
+        )
+      config.copy(
+        agents = Map(assistant -> enabled.copy(agentType = "ChatGPTAgent")),
+        providers = Map(
+          providerId -> ProviderConfig.ChatGPT(
+            Some(OAuthCredentialsConfig(s"header.$encoded.signature", "fake-refresh", Long.MaxValue))
+          )
+        )
+      )
+    }
+  }
+
+  test("manual selector rejects inapplicable and unconfigured requests before persistence, without inference") {
+    run(ZIO.scoped(for {
+      fixture <- make(_ => ZIO.dieMessage("No inference"))
+      invalid <- ZIO.foreach(
+        List(
+          input,
+          Message(
+            input.data.copy(payload =
+              Message.ToolCall(FunctionCall(FunctionCallId.unsafe("other"), FunctionKey.unsafe("other"), "{}"))
+            )
+          ),
+          Message(input.data.copy(payload = Message.Assistant("answer")))
+        )
+      ) { message =>
+        ZIO.foreach(ScalamodeExecution.values.toList)(mode =>
+          call(
+            fixture.rpc,
+            fixture.connection,
+            AgentsInvoke.method,
+            AgentsInvoke.Params(assistant, message, human, Some(mode))
+          )
+        )
+      }
+      spoofed <- pure(fixture, Message(scalaRequest().data.copy(agentId = AgentId("spoofed"))))
+      foreignActor <- call(
+        fixture.rpc,
+        fixture.connection,
+        AgentsInvoke.method,
+        AgentsInvoke.Params(assistant, scalaRequest(), AgentId("foreign"), Some(ScalamodeExecution.JsNode))
+      )
+      unconfigured <- pure(fixture, scalaRequest())
+      capability <- call(fixture.rpc, fixture.connection, ScalamodeCapabilities.method, Empty())
+      stored <- fixture.live.listMessages
+      viewer <- fixture.rpc.openConnection
+      _ <- initialize(fixture.rpc, viewer, None)
+      forbidden <- call(
+        fixture.rpc,
+        viewer,
+        AgentsInvoke.method,
+        AgentsInvoke.Params(assistant, scalaRequest(), human, Some(ScalamodeExecution.JsNode))
+      )
+      _ <- fixture.rpc.disconnect(viewer)
+    } yield {
+      assert(invalid.flatten.forall(_.contains("explicit Scalamode ToolCall")))
+      assertEquals(decode[JsonRpc.Failure](spoofed).error.code, ErrorCode.Forbidden)
+      assertEquals(decode[JsonRpc.Failure](foreignActor).error.code, ErrorCode.Forbidden)
+      assert(unconfigured.contains("not configured"))
+      assert(!decode[JsonRpc.Success[ScalamodeCapabilities.Result]](capability).result.jsNodeAvailable)
+      assertEquals(decode[JsonRpc.Failure](forbidden).error.code, ErrorCode.Forbidden)
+      assertEquals(stored, Chunk.empty)
+    }))
+  }
+
+  for serviceBound <- List(false, true) do
+    test(
+      s"manual pure preserves selected-agent approval/schema/denial and JVM binding (default services=$serviceBound)"
+    ) {
+      run(ZIO.scoped(for {
+        approvals <- Ref.make(0)
+        pureCalls <- Ref.make(Vector.empty[String])
+        jvmCalls <- Ref.make(0)
+        deny <- Ref.make(false)
+        jvm: fmgp.yallmo.tool.scalamode.ScalaCodeExecutor = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
+          with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
+          def isAvailable = ZIO.succeed(true)
+          def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+            jvmCalls.update(_ + 1).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("jvm")))
+          override def executeWithServices[R <: fmgp.yallmo.tool.scalamode.ScalamodeService](
+              code: String,
+              service: R,
+              timeout: Duration,
+              maxOutputBytes: Int
+          ) =
+            jvmCalls.update(_ + 1).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("jvm-services")))
+        }
+        node: fmgp.yallmo.tool.scalamode.ScalaCodeExecutor = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
+          with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
+          def isAvailable = ZIO.succeed(true)
+          def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+            pureCalls.update(_ :+ code).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("42")))
+          override def executeWithServices[R <: fmgp.yallmo.tool.scalamode.ScalamodeService](
+              code: String,
+              service: R,
+              timeout: Duration,
+              maxOutputBytes: Int
+          ) = ZIO.dieMessage("No services in pure mode")
+        }
+        manual <- ManualJsScalamode.checked(node)
+        builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
+        guarded = FunctionApproval.guard(
+          builtin,
+          new FunctionApproval[Any] {
+            def approve(definition: FunctionToolDefinition, call: ExternalFunctionCall) =
+              approvals.update(_ + 1) *> deny.get
+                .flatMap(value => ZIO.fail(YallmoError.InvalidConfig("Approval denied")).when(value))
+                .unit
+          }
+        )
+        fixture <- make(
+          _ => ZIO.dieMessage("No inference"),
+          configuration = scalaConfiguration(serviceBound),
+          tools = Chunk(guarded),
+          manualJs = manual,
+          scalaExecutor = jvm
+        )
+        malformed <- pure(fixture, scalaRequest(arguments = Some("{}")))
+        before <- approvals.get
+        _ <- deny.set(true)
+        rejected <- pure(fixture, scalaRequest())
+        _ <- deny.set(false)
+        request = scalaRequest()
+        successful <- pure(fixture, request)
+        normal <- invoke(fixture, scalaRequest("43"))
+        binding <- fixture.runtime.resolve(assistant)
+        denied <- make(
+          _ => ZIO.dieMessage("No inference"),
+          configuration = scalaConfiguration(serviceBound, false),
+          tools = Chunk(guarded),
+          manualJs = manual,
+          scalaExecutor = jvm
+        )
+        notPermitted <- pure(denied, scalaRequest())
+        count <- pureCalls.get
+        normalCount <- jvmCalls.get
+        gates <- approvals.get
+        stored <- fixture.live.listMessages
+        sessions <- fixture.live.listSessions
+      } yield {
+        assert(malformed.contains("InvalidToolArguments"))
+        assertEquals(before, 0)
+        assert(rejected.contains("Approval denied"))
+        val response = decode[JsonRpc.Success[Message]](successful).result
+        assertEquals(response.parentId, Some(request.id))
+        assertEquals(response.agentId, assistant)
+        assertEquals(
+          response.payload.asInstanceOf[MessagePayload.ToolOutput].output.callId,
+          FunctionCallId.unsafe("manual-scala")
+        )
+        assertEquals(count, Vector("42"))
+        assertEquals(normalCount, 1)
+        assertEquals(gates, 3)
+        assert(normal.contains(if serviceBound then "jvm-services" else "jvm"))
+        assert(notPermitted.contains("ToolUnavailableToAgent"))
+        assertEquals(binding.functions.head.definition.scalamode.get.services.nonEmpty, serviceBound)
+        assert(stored.contains(request) && stored.contains(response))
+        assert(!request.toJson.contains("js-node"))
+        assertEquals(sessions, Chunk.empty)
+      }))
+    }
+
+  test("custom default-looking closures, opaque wrappers and custom services are never substituted for pure mode") {
+    run(ZIO.scoped(for {
+      calls <- Ref.make(0)
+      executor = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          ZIO.dieMessage("No pure execution")
+      }
+      manual <- ManualJsScalamode.checked(executor)
+      custom = new AgentFunction[Any] {
+        val definition = fmgp.yallmo.tool.scalamode.ScalaTool.definition
+        def execute(call: ExternalFunctionCall) = calls.update(_ + 1).as(ExternalFunctionResult("custom JVM"))
+      }
+      _ <- ZIO.foreachDiscard(
+        List(
+          custom,
+          new AgentFunction[Any] {
+            val definition = custom.definition
+            def execute(call: ExternalFunctionCall) = custom.execute(call)
+          },
+          AgentFunction.provideEnvironment(
+            fmgp.yallmo.tool.scalamode.ScalaTool.withServices(fmgp.yallmo.tool.scalamode.HelloWorldService),
+            ZEnvironment(executor)
+          )
+        )
+      ) { function =>
+        for {
+          fixture <- make(
+            _ => ZIO.dieMessage("No inference"),
+            configuration = scalaConfiguration(true),
+            tools = Chunk(function),
+            manualJs = manual,
+            scalaExecutor = executor
+          )
+          result <- pure(fixture, scalaRequest())
+        } yield assert(result.contains("does not support JS / Node playground"))
+      }
+      fixture <- make(
+        _ => ZIO.dieMessage("No inference"),
+        configuration = scalaConfiguration(true),
+        tools = Chunk(custom)
+      )
+      jvm <- invoke(fixture, scalaRequest())
+      count <- calls.get
+    } yield {
+      assert(jvm.contains("custom JVM"))
+      assertEquals(count, 1)
+    }))
+  }
+
+  test("manual pure work is request-local, survives disconnect and is finalized by application shutdown") {
+    run(ZIO.scoped(for {
+      started <- Promise.make[Nothing, Unit]
+      release <- Promise.make[Nothing, Unit]
+      stopped <- Promise.make[Nothing, Unit]
+      node = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          (started.succeed(()) *> release.await.as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(code))))
+            .ensuring(stopped.succeed(()))
+      }
+      jvm: fmgp.yallmo.tool.scalamode.ScalaCodeExecutor = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
+        with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          ZIO.succeed(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("jvm-" + code)))
+        override def executeWithServices[R <: fmgp.yallmo.tool.scalamode.ScalamodeService](
+            code: String,
+            service: R,
+            timeout: Duration,
+            maxOutputBytes: Int
+        ) =
+          execute(code, timeout, maxOutputBytes, Seq.empty)
+      }
+      manual <- ManualJsScalamode.checked(node)
+      builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
+      fixture <- make(
+        _ => ZIO.dieMessage("No inference"),
+        configuration = scalaConfiguration(true),
+        tools = Chunk(builtin),
+        manualJs = manual,
+        scalaExecutor = jvm
+      )
+      generation <- fixture.runtime.resolve(assistant)
+      pending <- pure(fixture, scalaRequest()).fork
+      _ <- started.await
+      concurrent <- invoke(fixture, scalaRequest("43"))
+      _ = assert(concurrent.contains("jvm-43"))
+      _ <- pending.interrupt
+      _ <- fixture.rpc.disconnect(fixture.connection)
+      _ <- release.succeed(())
+      _ <- stopped.await
+      saved <- fixture.live.listMessages.repeatUntil(_.exists(_.parentId.contains(scalaRequest().id)))
+      after <- fixture.runtime.resolve(assistant)
+      _ = assert(generation eq after)
+      _ = assertEquals(saved.size, 4)
+      shutdown <- Scope.make
+      entered <- Promise.make[Nothing, Unit]
+      finalized <- Promise.make[Nothing, Unit]
+      blocking = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          (entered.succeed(()) *> ZIO.never).ensuring(finalized.succeed(()))
+      }
+      blockedManual <- ManualJsScalamode.checked(blocking)
+      blocked <- make(
+        _ => ZIO.dieMessage("No inference"),
+        configuration = scalaConfiguration(false),
+        tools = Chunk(builtin),
+        manualJs = blockedManual
+      ).provideEnvironment(ZEnvironment(shutdown))
+      waiter <- pure(blocked, scalaRequest()).fork
+      _ <- entered.await
+      _ <- shutdown.close(Exit.unit)
+      _ <- finalized.await
+      outcome <- waiter.join
+    } yield {
+      assertEquals(decode[JsonRpc.Failure](outcome).error, JsonRpc.Error.InternalError)
+    }))
+  }
+
+  test("runtime failure is sanitized and never silently falls back to JVM") {
+    run(ZIO.scoped(for {
+      node = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          ZIO.fail(new IllegalStateException("/private/artifacts credentials"))
+      }
+      manual <- ManualJsScalamode.checked(node)
+      builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(node))
+      fixture <- make(
+        _ => ZIO.dieMessage("No inference"),
+        configuration = scalaConfiguration(false),
+        tools = Chunk(builtin),
+        manualJs = manual
+      )
+      result <- pure(fixture, scalaRequest())
+    } yield {
+      assert(result.contains("no JVM fallback"))
+      assert(!result.contains("/private"))
+      assert(!result.contains("credentials"))
+    }))
+  }
+
+  test("provisioned live manual JVM and JS / Node execute without agent services") {
+    assume(
+      sys.env.contains("YALLMO_TEST_JS_ROOT"),
+      "Set YALLMO_TEST_JS_ROOT to reviewed staged artifacts for live integration"
+    )
+    run(ZIO.scoped(for {
+      manual <- ManualJsScalamode.provision(Path.of(sys.env("YALLMO_TEST_JS_ROOT")))
+      _ = assert(manual.capabilities.jsNodeAvailable, manual.capabilities.reason)
+      jvm = fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM.make()
+      builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
+      fixture <- make(
+        _ => ZIO.dieMessage("No inference"),
+        configuration = scalaConfiguration(true),
+        tools = Chunk(builtin),
+        manualJs = manual,
+        scalaExecutor = jvm
+      )
+      normal <- invoke(fixture, scalaRequest("40 + 2"))
+      js <- pure(fixture, scalaRequest("ZIO.succeed(40 + 2)"))
+      noHello <- pure(fixture, scalaRequest("hello.helloWorld"))
+      noFs <- pure(fixture, scalaRequest("fs.list(\".\")"))
+    } yield {
+      for response <- List(normal, js) do {
+        val output = decode[JsonRpc.Success[Message]](response).result.payload
+          .asInstanceOf[MessagePayload.ToolOutput]
+          .output
+          .asInstanceOf[ScalaModeOutput]
+        assertEquals(output.exitCode, 0)
+        assert(output.output.contains("42"))
+        assert(output.result.isInstanceOf[ScalaModeResult.Executed])
+      }
+      for response <- List(noHello, noFs) do {
+        val output = decode[JsonRpc.Success[Message]](response).result.payload
+          .asInstanceOf[MessagePayload.ToolOutput]
+          .output
+          .asInstanceOf[ScalaModeOutput]
+        assert(output.result.isInstanceOf[ScalaModeResult.CompilationError])
+      }
+    }))
+  }
+
   private final case class Fixture(
       runtime: ServerApplication,
       backend: ServerExecutionService,
@@ -596,11 +978,23 @@ final class AgentsInvokeSuite extends FunSuite {
       respond: Request => Task[Response],
       root: Option[Path] = None,
       configuration: Config = config,
-      tools: Chunk[AgentFunction[Any]] = Chunk.empty
+      tools: Chunk[AgentFunction[Any]] = Chunk.empty,
+      manualJs: ManualJsScalamode = ManualJsScalamode.disabled,
+      scalaExecutor: fmgp.yallmo.tool.scalamode.ScalaCodeExecutor =
+        fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM.make(),
+      toolDefinitions: Chunk[fmgp.yallmo.tool.ToolDefinition] = ApplicationTools.ToolDefinitions
   ): ZIO[Scope, YallmoError, Fixture] =
     for {
       runtime <- ServerApplication
-        .make(configuration, Chunk.empty, root, tools)
+        .make(
+          configuration,
+          Chunk.empty,
+          root,
+          tools,
+          scalaCodeExecutor = scalaExecutor,
+          manualJs = manualJs,
+          toolDefinitions = toolDefinitions
+        )
         .provide(ZLayer.succeed(fakeClient(respond)))
       scope <- ZIO.service[Scope]
       inFlight <- Ref.make(Set.empty[SessionId])

@@ -90,7 +90,7 @@ final class ServerCompositionSuite extends FunSuite {
         events <- Ref.make(Vector.empty[String])
         alive <- Ref.make(false)
         executions <- Ref.make(0)
-        executor = new ScalaCodeExecutor {
+        executor: ScalaCodeExecutor = new ScalaCodeExecutor with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
           def isAvailable = ZIO.succeed(true)
           def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
             ZIO.dieMessage("Expected the bound hello service")
@@ -171,7 +171,7 @@ final class ServerCompositionSuite extends FunSuite {
       events <- Ref.make(Vector.empty[String])
       alive <- Ref.make(false)
       executions <- Ref.make(0)
-      executor = new ScalaCodeExecutor {
+      executor: ScalaCodeExecutor = new ScalaCodeExecutor with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
         def isAvailable = ZIO.succeed(true)
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           ZIO.dieMessage("Expected default services")

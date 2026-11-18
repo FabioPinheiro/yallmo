@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeFunction}
 import fmgp.yallmo.tool.{
   FunctionCall,
   FunctionCallId,
@@ -73,19 +74,26 @@ final class AgentRunner[R](
       agent: AgentInstance[R],
       staticContext: StaticContext[R],
       budget: AgentBudget,
-      resolved: Boolean
+      resolved: Boolean,
+      manualScalamode: Option[ScalaCodeExecutor] = None
   ): AgentInvocation[R] =
     new AgentInvocation[R] {
       override val agentId: AgentId = agent.id
       override private[orchestration] def invoke(input: MessagePayload): ZIO[R, YallmoError, MessagePayload] =
         (for {
           _ <- ZIO.fromEither(budget.validate)
+          _ <- ZIO
+            .fail(YallmoError.InvalidMessage("Manual pure execution requires an explicit Scalamode ToolCall"))
+            .when(manualScalamode.nonEmpty && !(input match {
+              case MessagePayload.ToolCall(call) => call.name == FunctionKey.scalamode
+              case _                             => false
+            }))
           result <- input match {
             case MessagePayload.ToolCall(call) =>
               for {
                 _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                result <- executeAction(agent, call, context)
+                result <- executeAction(agent, call, context, manualScalamode)
               } yield result
             case _: MessagePayload.Reasoning =>
               ZIO.fail(
@@ -243,7 +251,8 @@ final class AgentRunner[R](
   private def executeAction(
       agent: AgentInstance[R],
       functionCall: FunctionCall,
-      staticContext: StaticContext[R]
+      staticContext: StaticContext[R],
+      manualScalamode: Option[ScalaCodeExecutor] = None
   ): ZIO[R, YallmoError, MessagePayload] = {
     val call = ExternalFunctionCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
     val execute =
@@ -259,7 +268,22 @@ final class AgentRunner[R](
           ZIO
             .fromOption(functions.get(call.functionKey))
             .orElseFail(YallmoError.UnknownTool(call.functionKey))
-            .flatMap(_.execute(call))
+            .flatMap { function =>
+              manualScalamode match {
+                case None           => function.execute(call)
+                case Some(executor) =>
+                  ZIO
+                    .fromOption(ScalamodeFunction.from(function).flatMap(_.manualScalamode))
+                    .orElseFail(
+                      YallmoError.ToolExecutionFailed(
+                        call.functionKey,
+                        "Selected Scalamode implementation does not support JS / Node playground; use JVM",
+                        new UnsupportedOperationException("JS / Node playground unsupported")
+                      )
+                    )
+                    .flatMap(_.execute(call, executor))
+              }
+            }
         )
 
     execute.fold(
@@ -311,9 +335,9 @@ object AgentRunner {
     new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
       .executionWithContext(requestProgram(agent.program), agent.context, AgentBudget.default, resolved = true)
 
-  def invocation(agent: ResolvedAgent): AgentInvocation[Any] =
+  def invocation(agent: ResolvedAgent, manualScalamode: Option[ScalaCodeExecutor] = None): AgentInvocation[Any] =
     new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
-      .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true)
+      .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true, manualScalamode)
 
   val LogAnnotationKey = "agentRunnerId"
 }

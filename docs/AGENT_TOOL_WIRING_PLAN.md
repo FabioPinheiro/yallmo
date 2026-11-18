@@ -14,16 +14,19 @@
 - Startup application validation still checks all configured agents against startup-available definitions, including
   Coach's notebook definitions. Later-stage support does not bypass that check. Lower-level configured turns require
   supplied membership metadata and do not execute wiring per turn. Trusted closures are not an authority sandbox.
-- Shared `ScalamodeToolDefinition` and JVM `ScalaTool`, `ScalaCodeExecutor`, `ScalamodeService` and
+- Canonical pure `ScalaCodeExecutor`, defaults and compiler pin belong to shared model. Shared
+  `ScalamodeToolDefinition`, `ScalaTool`, `ScalamodeService`, `ScalaCodeExecutorServices` capability/extension and
   `AgentToolWirings` belong to scalacode-api. The package remains `fmgp.yallmo.tool.scalamode`.
-  API depends on model/filesystem/rpc, never core/server (including tests). Core alone owns `ScalaCodeExecutorLive`,
+  API depends on model/filesystem/rpc, never core/server (including tests). Core alone owns `ScalaCodeExecutorJVM`,
   process/source/classpath/diagnostic machinery and general host execution helpers.
 - Services select compiled `Binding(parameter, apiTypes, runner, artifacts, errorType, dependencies)` metadata,
   not implementation source. Fixed safe glue preserves inferred value/effect types and calls compiled runners.
   Service classpaths include reviewed API/model/filesystem/rpc anchors and explicit narrow artifacts, never the
   application classpath. The compiler/dependencies stay pinned and offline; HTTP services retain host security pins.
 - `ScalaTool.withServices(service)` is non-generic and code-only; executor `executeWithServices[R <: ScalamodeService]`
-  remains explicit/generic. Optional concrete `RpcBinding` is caller-owned, scoped and independently authorized.
+  is an API extension dispatching only to opted-in `ScalaCodeExecutorServices` implementations. Custom service
+  overrides need that mixin; selective external callers import the extension explicitly. Base-only executors fail
+  unsupported without pure fallback. Optional concrete `RpcBinding` is caller-owned, scoped and independently authorized.
   No automatic abstract-R RPC derivation, effect casts or reflection.
 
 ## Validation-only wiring cleanup
@@ -245,7 +248,7 @@ service bindings are preserved. There is no separate hello tool/function key and
 
 AgentCatalog passes its executor to configured ChatGPT adapters (including Coach delegates). ServerApplication.workspace
 passes the original configured executor through to the catalog, rather than silently replacing injected executors.
-Standalone construction uses `ScalaCodeExecutorLive.make()`, a resource-free description with no eager compilation.
+Standalone construction uses `ScalaCodeExecutorJVM.make()`, a resource-free description with no eager compilation.
 Resolution filtering remains only before wiring. Existing resolved generations require an application restart to
 pick up changed code. Filesystem services still require explicit composition and a caller-owned existing listener.
 

@@ -7,7 +7,7 @@ Runtime API for restricted `scalamode` snippets, separate from the application c
 - Shared sources: `shared/src/main/scala`.
 - Artifact: `yallmo-scalacode-api`
 - Packages: `fmgp.yallmo.tool.scalamode`
-- Dependencies: matching model, filesystem and rpc CrossProjects plus Scala/ZIO, upickle 4.3.2 for shared tool argument parsing, and Scala.js java-time compatibility. No core or server dependency (including tests); runtime file logging and WebSocket bootstrap stay in JVM sources.
+- Dependencies: matching model, filesystem and rpc CrossProjects plus Scala/ZIO, upickle 4.3.2 for shared tool argument parsing, and Scala.js java-time compatibility. No core or server dependency (including tests); WebSocket bootstrap stays in JVM sources. File logging has JVM and explicitly opted-in Node implementations.
 
 ## Host-facing contracts and module boundary
 
@@ -15,24 +15,39 @@ The package `fmgp.yallmo.tool.scalamode` is preserved across the source relocati
 
 | Source set | Ownership |
 | --- | --- |
-| API shared | `ScalaToolApi`, `ScalamodeToolDefinition`, `ScalaCodeExecutor` interface and constants, `ScalamodeService` and binding metadata, `ScalaTool` and argument validation, `AgentToolWirings`, native read contracts/codecs and `NativeReadToolsRuntime`, and pure `ScalaToolRuntime` evaluation. |
-| API platform-specific | `ScalamodePlatform.RpcRoute` aliases the existing `RpcWebSocket.RpcRoute` on JVM and is an unavailable placeholder handle on JS. `ScalaToolRuntimePlatform` provides JVM WebSocket/stdin bootstrap and file logging; JS entry points fail explicitly with `UnsupportedOperationException`. |
-| Core JVM only | `ScalaCodeExecutorLive.live` / `.layer(...)`: Scala CLI/process engine, generated source, classpath assembly, diagnostics, cleanup. `LocalProcess` and `CommandOutput` stay core-only too. |
+| Model shared | Canonical `ScalaCodeExecutor` pure execution/availability contract, default dependencies and compiler pin. |
+| API shared | `ScalaToolApi`, `ScalamodeToolDefinition`, `ScalaCodeExecutorServices` capability and `executeWithServices` extension, `ScalamodeService` and binding metadata, `ScalaTool` and argument validation, `AgentToolWirings`, native read contracts/codecs and `NativeReadToolsRuntime`, and pure `ScalaToolRuntime` evaluation. |
+| API platform-specific | `ScalamodePlatform.RpcRoute` aliases the existing `RpcWebSocket.RpcRoute` on JVM and is an unavailable placeholder handle on JS. `ScalaToolRuntimePlatform` provides JVM WebSocket/stdin bootstrap and file logging. JS RPC and non-Node bootstrap fail explicitly with `UnsupportedOperationException`; an explicitly opted-in trusted Node runner supports bounded file logging and the execution marker. |
+| Core JVM only | `ScalaCodeExecutorJVM.live` / `.layer(...)`: Scala CLI/process engine, generated source, classpath assembly, diagnostics, cleanup. `LocalProcess` and `CommandOutput` stay core-only too. |
 
-`ApplicationTools.live` uses `ScalaCodeExecutorLive.live`. Host callers configuring the executable use
-`ScalaCodeExecutorLive.layer(...)`; custom executors and consumer environments still use the API interface
-`ScalaCodeExecutor`. `executeWithServices[R <: ScalamodeService]` and compiled `Binding` metadata are unchanged.
-The executor's constants and service dependency defaults are API-local, with no API reference back to the live engine.
-Pure-call defaults remain `ScalaTool.DefaultDependencies`; deadlines/output limits are unchanged.
+`ApplicationTools.live` uses `ScalaCodeExecutorJVM.live`. Host callers configuring the executable use
+`ScalaCodeExecutorJVM.layer(...)`; custom executors and consumer environments still use the canonical model interface
+`ScalaCodeExecutor` at the same FQN. Service-aware implementations additionally mix in the API-only
+`ScalaCodeExecutorServices` capability (self-typed to the canonical executor); it declares only
+`executeWithServices[R <: ScalamodeService]`, not another pure execution contract. Callers with selective imports
+must add `import fmgp.yallmo.tool.scalamode.executeWithServices`. Base-only executors fail with
+`UnsupportedOperationException("Service Scala execution is not enabled")`, without pure fallback or transport access.
+Existing custom service overrides need the capability mixin; moving the trait between artifacts requires rebuilding
+consumers. Compiled `Binding` metadata and API-owned service dependency pins are unchanged.
+Pure-call defaults have one model owner, `ScalaCodeExecutor.DefaultDependencies`; `ScalaTool.DefaultDependencies`
+forwards to it. Deadlines/output limits are unchanged. The operator hook also accepts this canonical executor,
+while preserving approval, original tool limits and sanitized JS / Node failures without JVM fallback.
 
 The contracts, service inspection, tool validation, hello-world wiring, native RPC contract derivation and pure
 runner helpers are shared with Scala.js. Custom executors can implement the same interface on either platform;
 the Scala CLI/process engine remains JVM-only. Default filesystem services use executor-provided loopback RPC.
-`ScalaCodeExecutorLive.live` / `.layer(...)` lazily start one listener per layer lifetime, shared across executions;
+`ScalaCodeExecutorJVM.live` / `.layer(...)` lazily start one listener per layer lifetime, shared across executions;
 service dispatchers, single-use tickets and connections remain invocation-scoped. The application already shares this
 layer through `ApplicationTools.live`. Explicit route overloads and native exact-delegation wiring retain caller-owned listeners;
 sharing the API does not install a browser transport or grant browser filesystem access. JS `runRpc` and logger `bootstrap`
-fail through their effect/layer error channels without evaluating submitted callbacks.
+without Node opt-in fail through their effect/layer error channels without evaluating submitted callbacks.
+
+The JVM host can explicitly select `ScalaCodeExecutorJVM.Backend.Node` with exactly four reviewed Scala.js library/IR
+products for **pure values/environment-free effects only**. It compiles/links separately before launching a fresh Node
+child and preserves existing timing/result fields. All service bindings (including hello) and extra dependency grants
+are rejected before listener/ticket/process acquisition; application defaults and the public code-only schema remain
+unchanged. See [Node PoC instructions, measurements and limitations](../docs/tools/SCALAMODE-NODE-POC.md).
+Node is not a sandbox; no compiler safety restrictions were relaxed and no Node capability facade was added.
 The API artifact contains host-facing factories, but they are **not** safe snippet capabilities.
 `FilesystemModes` adds narrow `assumeSafe` accessors for immutable mutation-mode values, not filesystem authority.
 Real compiler probes reject acquiring executor services, constructing broader
@@ -56,7 +71,7 @@ snippet compiler. The host supplies Trace evidence. For example, `ZIO.succeed(1 
 runner executes returned environment-free effects, retaining inferred types rather than recovering effects from
 `Any` with casts. Plain values still work. Direct `import zio.ZIO`, runtime access and ambient I/O remain rejected.
 
-Core's `ScalaCodeExecutorLive` supplies this module's classes directory or JAR to Scala CLI and imports `ScalaToolApi` as
+Core's `ScalaCodeExecutorJVM` supplies this module's classes directory or JAR to Scala CLI and imports `ScalaToolApi` as
 `tool`, along with its members. No API source resource is copied into snippets. Both `core` variants depend
 on the matching API variant; compilation and execution remain JVM-only.
 
@@ -123,7 +138,7 @@ filesystem functions and Scalamode therefore enables rooted mutations when that 
 A read-only embedded root remains read-only. Resolution opens no listener and executes no snippet. Keep the live
 executor layer alive for the application lifetime: the first local-service execution starts its shared listener, and
 layer shutdown closes it. Each invocation owns only its ticket, connection and service-work cleanup. Pure executions
-and explicit caller-owned routes do not start this listener. The resource-free `ScalaCodeExecutorLive.make(...)`
+and explicit caller-owned routes do not start this listener. The resource-free `ScalaCodeExecutorJVM.make(...)`
 compatibility constructor has no application scope and retains per-invocation listeners for local bindings; embedded
 applications wanting reuse should build `.layer(...)` once and keep its scope alive while using the executor.
 

@@ -22,10 +22,13 @@ trait ToolDefinition {
 | `ToolDefinition` | Declares a tool's name and the functions it exposes. Contains no execution logic. |
 | `FunctionToolDefinition` | A function's name, description and input schema. The same type is used in declarations, orchestration and native model requests. |
 | `AgentFunction[R]` | Binds one `FunctionToolDefinition` to an `execute` implementation and its required environment. |
+| `ScalamodeFunction[R]` | Scalamode-specific subtype owning explicit default-rebinding and pure-playground opt-in hooks. |
 | `AgentTool[R]` | Groups bound `AgentFunction[R]` implementations under a `ToolDefinition`. |
 | `ToolWiring` | Alias for one ordinary function: `Seq[AgentTool[Any]] => IO[YallmoError, Seq[AgentTool[Any]]]`. |
 
 `AgentFunction`, `AgentTool` and the top-level `ToolWiring` alias live together in shared `model`, retaining the `fmgp.yallmo.orchestration` package. `Agent.toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]]` defaults to `ZIO.succeed(tools)`. Agents compose utility functions explicitly inside this method; there is no wiring wrapper, extra agent hierarchy or local-function marker trait.
+
+`AgentFunction` exposes only `definition` and `execute`. Scalamode integration lives in `fmgp.yallmo.tool.scalamode.ScalamodeFunction` and `ManualScalamode`, also in shared `model`. Environment binding and approval guards preserve that explicit integration; opaque wrappers do not acquire it from a matching name or schema.
 
 The built-in objects in [the model's tool declarations][declarations] implement `ToolDefinition` and own their function keys and schemas. `FunctionKey` itself contains no built-in catalog or tool back-reference. Membership comes from `ToolDefinition.functions`, never from parsing a name prefix.
 
@@ -173,10 +176,13 @@ Each row below is one callable function. A function must be both available and p
 
 ### Opt-in Scalamode read-service stage
 
-The shared `ScalamodeToolDefinition` and JVM `ScalaTool`, `ScalamodeService`, `ScalaCodeExecutor` interface/defaults
-and wiring factory belong to **scalacode-api**, retaining `fmgp.yallmo.tool.scalamode`. The module depends only on
+The canonical `ScalaCodeExecutor` pure contract/defaults/compiler pin belong to **shared model**. Shared
+`ScalamodeToolDefinition`, `ScalaTool`, `ScalamodeService`, the API-only `ScalaCodeExecutorServices` capability/extension
+and wiring factory belong to **scalacode-api**, retaining `fmgp.yallmo.tool.scalamode`. Service overrides opt into the
+capability; external selective callers import `fmgp.yallmo.tool.scalamode.executeWithServices`. Base-only executors
+reject services without pure fallback. The API module depends only on
 model/filesystem/rpc (plus pinned libraries), never core/server. Core alone owns
-[`ScalaCodeExecutorLive`](../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorLive.scala):
+[`ScalaCodeExecutorJVM`](../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala):
 `ApplicationTools.live` installs `.live`, and explicitly configured host/test construction uses `.layer(...)`.
 Process execution/compiler/source/diagnostic helpers stay core-only, outside every child classpath. The child API
 still owns its small compiled runners. API factories/interfaces on the child classpath grant no ambient safe

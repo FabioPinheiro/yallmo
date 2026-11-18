@@ -2,22 +2,40 @@
 
 The restricted `ScalaTool` (`scalamode`) is registered by `ApplicationTools`. Agent capability allowlists control access to registered tools.
 
+The default/model/service path remains JVM. The operator Scalamode page can explicitly select **JS / Node (`js-node`) with a
+server-scoped incremental linker** (pure-only: no services), provisioned through `ManualJsScalamode.provisionBundled`. It rejects all service
+bindings and extra dependency grants, checks selected-agent permission/approval on every invocation, and starts a
+fresh Node child for every evaluation. See [operator lifecycle and restrictions](SCALAMODE-OPERATOR-PLAYGROUND.md)
+and [actual page-route measurements](SCALAMODE-PRODUCTION-INCREMENTAL.md). This is not an OS sandbox.
+The resource-free `ScalaCodeExecutorJVM.Backend.Node` constructor remains a fresh-build compatibility/control path.
+The [fresh Node PoC](SCALAMODE-NODE-POC.md) and [retained-linker lab](SCALAMODE-NODE-INCREMENTAL.md) are historical
+experiments, not descriptions of the current page backend.
+
 Module ownership (the package remains `fmgp.yallmo.tool.scalamode`):
 
 - Shared API declaration: [ScalamodeToolDefinition](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeToolDefinition.scala).
-- JVM API: [ScalaTool](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala),
-  [ScalaCodeExecutor interface/defaults](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala),
-  [ScalamodeService](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeService.scala) and
-  [AgentToolWirings](../../scalacode-api/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/AgentToolWirings.scala).
-- Core host only: [ScalaCodeExecutorLive](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorLive.scala)
+- Shared model: [ScalaCodeExecutor interface/defaults](../../model/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala).
+- Shared API: [ScalaTool](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaTool.scala),
+  [ScalaCodeExecutorServices capability/extension](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorServices.scala),
+  [ScalamodeService](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeService.scala) and
+  [AgentToolWirings](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/AgentToolWirings.scala).
+- Core host only: [ScalaCodeExecutorJVM](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala)
   owns Scala CLI/process execution, generated source, classpaths and diagnostics. `LocalProcess` and `CommandOutput` also stay in core. None is on the child classpath; the small compiled child runners remain in API.
 
-`ApplicationTools.live` supplies `ScalaCodeExecutorLive.live`; custom trusted configuration uses
-`ScalaCodeExecutorLive.layer(executable, scalaVersion = ScalaCodeExecutor.ScalaVersion, offline = true)`.
+`ApplicationTools.live` supplies `ScalaCodeExecutorJVM.live`; custom trusted configuration uses
+`ScalaCodeExecutorJVM.layer(executable, scalaVersion = ScalaCodeExecutor.ScalaVersion, offline = true)`.
 Consumers/custom test doubles still require or implement `ScalaCodeExecutor`, not a new service type.
-The API depends on model/filesystem/rpc, never core/server. Its JVM JSON argument parsing uses the same pinned upickle
-as core. Scala.js can use the shared definition; execution/service/wiring factories remain JVM-only.
-Relocation changes module ownership and the live factory name, not packages, suite names, callable IDs or JSON formats.
+The API depends on model/filesystem/rpc, never core/server. Its shared JSON argument parsing uses the same pinned upickle
+as core. Scala.js can use the shared contracts and service/wiring factories; host execution remains core JVM-only.
+Relocation changes module ownership and the host factory name, not packages, callable IDs or tool input schemas.
+Service-overriding custom executors must add `with ScalaCodeExecutorServices`; selective external callers import
+`fmgp.yallmo.tool.scalamode.executeWithServices`. Base-only executors continue to reject services explicitly.
+
+The operator-only selector uses `scalamodeExecution: "js-node"` (enum `JsNode`), with capability field
+`jsNodeAvailable`. Rebuild/deploy browser and server together: the old `js-pure` value, `js`, `js-browser` and
+explicit null are rejected; no browser backend is implemented. Omitted selectors retain byte-compatible JVM defaults.
+The JS / Node route remains pure-only (no selected-agent services), never falls back to JVM, and still enforces
+selected-agent permissions, approval, output limits and lifecycle cleanup. This selector is not a tool input field.
 
 The `scalamode` agent tool accepts only a `code` string. Unknown fields, including the retired `mode` field
 (with either former value), are rejected; there is no compatibility branch:
@@ -34,8 +52,8 @@ The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
 
 `ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
 Host-measured timings use a monotonic clock and are integer **milliseconds**:
-- `compilationTime`: the explicit `scala-cli compile` phase, including CLI startup and dependency resolution.
-- `executionTime`: the `scala-cli run` phase and runtime-log collection, including CLI/JVM startup and any run-stage compilation; not just snippet evaluation. Zero when compilation fails or times out.
+- `compilationTime`: the explicit `scala-cli compile` phase on JVM, including CLI startup and dependency resolution. The opt-in Node backend uses a separate `package --js` phase, charging compilation **and linking** here.
+- `executionTime`: the `scala-cli run` phase on JVM, including CLI/JVM startup and any run-stage compilation; on Node, the direct fresh Node child's launch/bootstrap/evaluation/cleanup. Includes runtime-log collection, not just snippet evaluation. Zero when compilation/linking fails or times out.
 - `executionSetupTime`: optional launch-to-evaluation time, included within `executionTime`. The trusted runtime creates an empty marker immediately before evaluating plain code or constructing/running its returned effect, after RPC connection when applicable. The host polls every 5 ms using its own monotonic clock, so the measurement includes observation/scheduling delay. It is absent if evaluation is not observed (including startup failure/timeout, older outputs and custom runners without instrumentation); marker-write failure never changes the program outcome.
 - `totalTime`: the complete executor invocation, including validation, source setup, both phases, diagnostics and temporary-directory cleanup (excluding RPC registration/transport).
 Failures and timeouts retain elapsed phase timings. Missing timing fields decode as zero for older saved outputs;
@@ -195,7 +213,7 @@ host descriptor type; neither the executor nor `ScalaTool` derives an RPC contra
 Custom executors retain their unsupported-service default. Ordinary `execute` remains a value/environment-free
 effect path. ChatGPTAgent resolution installs the rooted filesystem service when both native filesystem functions
 are permitted, retaining hello alongside fs. No listener starts at construction/selection. The application's shared
-`ScalaCodeExecutorLive.live` / `.layer(...)` lazily starts one loopback listener on the first local-service execution
+`ScalaCodeExecutorJVM.live` / `.layer(...)` lazily starts one loopback listener on the first local-service execution
 and closes it at layer shutdown. Concurrent and sequential executions reuse it, with independently scoped dispatchers,
 single-use tickets and connections; one execution's cleanup does not close the listener or other executions.
 Keep the layer scope alive while using its executor. The resource-free `.make(...)` compatibility constructor retains

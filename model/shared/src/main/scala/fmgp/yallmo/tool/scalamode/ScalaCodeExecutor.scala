@@ -23,18 +23,8 @@ trait ScalaCodeExecutor {
       code: String,
       timeout: Duration,
       maxOutputBytes: Int,
-      dependencies: Seq[String] = ScalaTool.DefaultDependencies
+      dependencies: Seq[String] = ScalaCodeExecutor.DefaultDependencies
   ): Task[ExternalFunctionResult.ScalaMode]
-
-  /** Explicit host-authored service context. Existing custom executors remain source compatible. */
-  @scala.annotation.nowarn("msg=unused explicit parameter")
-  def executeWithServices[R <: ScalamodeService](
-      code: String,
-      services: R,
-      timeout: Duration,
-      maxOutputBytes: Int
-  ): Task[ExternalFunctionResult.ScalaMode] =
-    ZIO.fail(new UnsupportedOperationException("Service Scala execution is not enabled"))
 
 }
 
@@ -42,14 +32,5 @@ object ScalaCodeExecutor {
   // Pin the compiler to the main build's release; use its local cache without resolving a floating version.
   val ScalaVersion: String = "3.10.1"
 
-  private[tool] val ServiceDependencies = Seq(
-    "dev.zio::zio-streams:2.1.27",
-    "dev.zio::zio-json:1.1.1",
-    "dev.zio::zio-http:3.11.6",
-    // Match the host build's security pins rather than zio-http's older transitive versions.
-    "org.bouncycastle:bcprov-jdk18on:1.86",
-    "org.bouncycastle:bcpkix-jdk18on:1.86",
-    "org.bouncycastle:bcutil-jdk18on:1.86"
-  )
-
+  val DefaultDependencies: Seq[String] = Seq("dev.zio::zio:2.1.27")
 }

@@ -38,10 +38,10 @@ final class ScalamodeServiceSuite extends FunSuite {
     def execute(call: ExternalFunctionCall) =
       ZIO.succeed(ExternalFunctionResult(value + ":" + ujson.read(call.argumentsJson)("path").str))
   }
-  private def catalog(functions: Chunk[AgentFunction[Any]]): Chunk[AgentTool[Any]] =
+  private def catalog(functions: Chunk[AgentFunction[Any]], executor: ScalaCodeExecutor): Chunk[AgentTool[Any]] =
     AgentTool.group(
       Chunk(FilesystemToolDefinition, ScalamodeToolDefinition),
-      functions :+ native(ScalaTool.definition, "unused")
+      functions :+ AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
     )
 
   private def proxy(service: ScalamodeService): NativeReadTools = {
@@ -68,7 +68,7 @@ final class ScalamodeServiceSuite extends FunSuite {
     intercept[IllegalArgumentException](binding.copy(apiTypes = Seq.empty))
     def location(cls: Class[?]) =
       java.nio.file.Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath.toString
-    val paths = ScalaCodeExecutorLive.serviceClasspath(binding).split(java.io.File.pathSeparator).toSet
+    val paths = ScalaCodeExecutorJVM.serviceClasspath(binding).split(java.io.File.pathSeparator).toSet
     assertEquals(
       paths,
       Set(
@@ -80,17 +80,21 @@ final class ScalamodeServiceSuite extends FunSuite {
       )
     )
     assert(paths.contains(location(classOf[ScalaCodeExecutor])))
-    assert(!paths.contains(location(ScalaCodeExecutorLive.getClass)))
-    val apiArtifact = new java.net.URLClassLoader(
-      Array(classOf[ScalaCodeExecutor].getProtectionDomain.getCodeSource.getLocation),
-      ClassLoader.getPlatformClassLoader
-    )
-    try {
-      assert(apiArtifact.getResource("fmgp/yallmo/tool/scalamode/ScalaTool.class") != null)
-      for name <- List("scalamode/ScalaCodeExecutorLive", "LocalProcess", "CommandOutput") do
-        assertEquals(apiArtifact.getResource(s"fmgp/yallmo/tool/$name.class"), null)
-    } finally apiArtifact.close()
-    val main = ScalaCodeExecutorLive.serviceMain(binding)
+    assert(!paths.contains(location(ScalaCodeExecutorJVM.getClass)))
+    assertEquals(location(classOf[ScalaCodeExecutor]), location(classOf[YallmoError]))
+    assertNotEquals(location(classOf[ScalaCodeExecutor]), location(classOf[ScalaTool]))
+    for anchor <- List(classOf[ScalaTool], classOf[ScalaCodeExecutor]) do {
+      val artifact = new java.net.URLClassLoader(
+        Array(anchor.getProtectionDomain.getCodeSource.getLocation),
+        ClassLoader.getPlatformClassLoader
+      )
+      try {
+        assert(artifact.getResource(anchor.getName.replace('.', '/') + ".class") != null)
+        for name <- List("scalamode/ScalaCodeExecutorJVM", "LocalProcess", "CommandOutput") do
+          assertEquals(artifact.getResource(s"fmgp/yallmo/tool/$name.class"), null)
+      } finally artifact.close()
+    }
+    val main = ScalaCodeExecutorJVM.serviceMain(binding)
     assert(main.contains(binding.runner))
     assert(main.contains("ScalaToolRuntime.evaluate(ScalaToolSnippet.result(math)"))
     assert(!main.contains("readLine"))
@@ -98,8 +102,10 @@ final class ScalamodeServiceSuite extends FunSuite {
     assert(!main.contains("connect"))
   }
 
-  test("withServices captures a custom descriptor, uses code-only schema, and preserves old custom executors") {
-    val executor = new ScalaCodeExecutor {
+  test(
+    "withServices captures a custom descriptor, uses code-only schema, and dispatches through the canonical executor capability"
+  ) {
+    val executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
       def isAvailable = ZIO.succeed(true)
       def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
         ZIO.dieMessage("wrong path")
@@ -214,7 +220,7 @@ final class ScalamodeServiceSuite extends FunSuite {
       for {
         route <- RpcWebSocket.route()
         captured <- Ref.make(List.empty[String])
-        executor = new ScalaCodeExecutor {
+        executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
           def isAvailable = ZIO.succeed(true)
           def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
             ZIO.dieMessage("wrong path")
@@ -233,7 +239,7 @@ final class ScalamodeServiceSuite extends FunSuite {
         }
         wire = AgentToolWirings.withFilesystem(executor, route, "ws://localhost:1/rpc")
         outputs <- ZIO.foreach(List("agent-a", "agent-b"))(label =>
-          wire(catalog(Chunk(native(ReadFileTool.definition, label))))
+          wire(catalog(Chunk(native(ReadFileTool.definition, label)), executor))
         )
         _ <- ZIO.foreachDiscard(outputs)(tools =>
           tools
@@ -263,7 +269,7 @@ final class ScalamodeServiceSuite extends FunSuite {
     val executable = Files.createTempFile("scalamode-service-cli-", ".sh")
     try {
       assert(executable.toFile.setExecutable(true))
-      val line = ScalaCodeExecutorLive.servicePreamble(ArithmeticService.binding).count(_ == '\n') + 2
+      val line = ScalaCodeExecutorJVM.servicePreamble(ArithmeticService.binding).count(_ == '\n') + 2
       for setupFailure <- List(false, true) do {
         val diagnostics = if setupFailure then "Main.scala:3:1\n3 |private bootstrap implementation\n  |^"
         else s"Snippet.scala:$line:1\n$line |missing(value)\n  |^"
@@ -273,7 +279,7 @@ final class ScalamodeServiceSuite extends FunSuite {
             .serviceWithZIO[ScalaCodeExecutor](
               _.executeWithServices("val value = 1\nmissing(value)", ArithmeticService, 2.seconds, 4096)
             )
-            .provide(ScalaCodeExecutorLive.layer(executable.toString))
+            .provide(ScalaCodeExecutorJVM.layer(executable.toString))
         )
         if setupFailure then {
           assertEquals(result.output, "Trusted Scalamode setup failed; contact the host.")
@@ -285,7 +291,7 @@ final class ScalamodeServiceSuite extends FunSuite {
       val bounded = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.executeWithServices("42", ArithmeticService, 2.seconds, 4))
-          .provide(ScalaCodeExecutorLive.layer(executable.toString))
+          .provide(ScalaCodeExecutorJVM.layer(executable.toString))
       )
       assertEquals(bounded.output, "1234")
       assert(bounded.truncated)
@@ -296,7 +302,7 @@ final class ScalamodeServiceSuite extends FunSuite {
       val warning = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.executeWithServices("42", ArithmeticService, 2.seconds, 4096))
-          .provide(ScalaCodeExecutorLive.layer(executable.toString))
+          .provide(ScalaCodeExecutorJVM.layer(executable.toString))
       )
       assertEquals(warning.output, "42")
       assert(!warning.logs.mkString.contains("bootstrap implementation"))
@@ -315,7 +321,7 @@ final class ScalamodeServiceSuite extends FunSuite {
         val literal = run(
           ZIO
             .serviceWithZIO[ScalaCodeExecutor](_.executeWithServices("42", ArithmeticService, 2.seconds, 4096))
-            .provide(ScalaCodeExecutorLive.layer(executable.toString))
+            .provide(ScalaCodeExecutorJVM.layer(executable.toString))
         )
         assertEquals(literal.output, literalData)
         assert(!literal.logs.mkString.contains("bootstrap implementation"))
@@ -346,7 +352,7 @@ final class ScalamodeServiceSuite extends FunSuite {
       run(ZIO.scoped {
         for {
           route <- RpcWebSocket.route()
-          executor <- ZIO.service[ScalaCodeExecutor].provide(ScalaCodeExecutorLive.layer(executable.toString))
+          executor <- ZIO.service[ScalaCodeExecutor].provide(ScalaCodeExecutorJVM.layer(executable.toString))
           service = AgentToolWirings.readService(
             Chunk(native(ReadFileTool.definition, "selected")),
             route,
@@ -413,7 +419,7 @@ final class ScalamodeServiceSuite extends FunSuite {
               }
               executor <- ZIO
                 .service[ScalaCodeExecutor]
-                .provide(ScalaCodeExecutorLive.layer(if stage == "launch" then executable.toString + ".missing"
+                .provide(ScalaCodeExecutorJVM.layer(if stage == "launch" then executable.toString + ".missing"
                 else executable.toString))
               task = executor.executeWithServices(
                 "reads.readFile(\"x\")",
@@ -505,7 +511,7 @@ final class ScalamodeServiceSuite extends FunSuite {
         ZIO
           .scoped {
             for {
-              environment <- ScalaCodeExecutorLive.layer(executable.toString).build
+              environment <- ScalaCodeExecutorJVM.layer(executable.toString).build
               executor = environment.get[ScalaCodeExecutor]
               first <- executor
                 .executeWithServices("42 // listener-test-first", service("first"), 20.seconds, 1024)
@@ -603,15 +609,12 @@ final class ScalamodeServiceSuite extends FunSuite {
   private def withLive[A](body: ScalaCodeExecutor => Task[A]): A = {
     val executable = sys.env.get("YALLMO_TEST_SCALA_CLI")
     assume(executable.nonEmpty, "Set YALLMO_TEST_SCALA_CLI for real pinned compiler / child RPC checks")
-    run(ZIO.serviceWithZIO[ScalaCodeExecutor](body).provide(ScalaCodeExecutorLive.layer(executable.get)))
+    run(ZIO.serviceWithZIO[ScalaCodeExecutor](body).provide(ScalaCodeExecutorJVM.layer(executable.get)))
   }
 
   test("real pinned compiler runs the hello service inside Scalamode") {
     withLive { executor =>
-      val original = new AgentFunction[Any] {
-        val definition = ScalaTool.definition
-        def execute(call: ExternalFunctionCall) = ZIO.dieMessage("Expected the service-bound replacement")
-      }
+      val original = AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
       for {
         tools <- AgentToolWirings.withHelloWorld(executor)(Seq(AgentTool(ScalamodeToolDefinition, Chunk(original))))
         bound = tools.head.functions.head
@@ -664,7 +667,7 @@ final class ScalamodeServiceSuite extends FunSuite {
               "fmgp.yallmo.tool.scalamode.ScalamodeService.RpcBinding(\"ws://localhost:1/rpc\", null, null)",
               "fmgp.yallmo.tool.scalamode.ScalaTool.validate(\"1\")",
               "fmgp.yallmo.tool.scalamode.ScalaTool.executeWith(null, null)(_ => ZIO.succeed(42))",
-              "fmgp.yallmo.tool.scalamode.ScalaCodeExecutorLive.layer()",
+              "fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM.layer()",
               "fmgp.yallmo.fs.FileSystem.open(\".\")",
               "new fmgp.yallmo.fs.FileSystem(null)",
               "java.nio.file.Files.readString(java.nio.file.Path.of(\"/etc/passwd\"))",
@@ -729,7 +732,7 @@ final class ScalamodeServiceSuite extends FunSuite {
           }
           service = AgentToolWirings.readService(reads, route, s"ws://127.0.0.1:$port/rpc")
           wired <- AgentToolWirings.withFilesystem(executor, route, s"ws://127.0.0.1:$port/rpc", 120.seconds)(
-            catalog(reads)
+            catalog(reads, executor)
           )
           result <- wired
             .flatMap(_.functions)

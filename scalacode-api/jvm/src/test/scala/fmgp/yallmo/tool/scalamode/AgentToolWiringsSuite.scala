@@ -24,12 +24,12 @@ final class AgentToolWiringsSuite extends FunSuite {
     Seq(ScalamodeServiceApi("custom", Seq("example.CustomApi"), "Custom service"))
   )
 
-  private val originalScala = function(ScalamodeToolDefinition.Default) // Environment-bound wrappers are not ScalaTool.
-  private val scalamode = tool(ToolKey.Scalamode, originalScala)
+  private lazy val originalScala = AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
+  private lazy val scalamode = tool(ToolKey.Scalamode, originalScala)
   private val reads = tool(ToolKey.Filesystem, function(FilesystemToolDefinition.ReadFileDefinition))
   private val other =
     tool(ToolKey.unsafe("other"), function(FunctionToolDefinition(FunctionKey.unsafe("other"), "Other")))
-  private val executor = new ScalaCodeExecutor {
+  private val executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
     def isAvailable = ZIO.succeed(true)
     def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
       ZIO.dieMessage("Expected service execution")
@@ -43,6 +43,12 @@ final class AgentToolWiringsSuite extends FunSuite {
       assertEquals(maxOutputBytes, 64 * 1024)
       ZIO.succeed(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(service.binding.apiTypes.mkString(","))))
     }
+  }
+
+  test("default wiring preserves opaque default-schema custom closures") {
+    val custom = function(ScalamodeToolDefinition.Default)
+    val input = Seq(tool(ToolKey.Scalamode, custom))
+    assert(run(AgentToolWirings.withDefaults(executor)(input)) eq input)
   }
 
   test("hello is bound only inside the existing Scalamode function, with matching inspection and code-only schema") {

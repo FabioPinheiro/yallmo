@@ -226,12 +226,31 @@ final class ServerExecutionService private[application] (
     * its wait. No session, continuation policy or session diagnostic capture is created. Accepted input survives
     * execution failure. Model-requested actions require submit instead.
     */
-  def invoke(author: AgentId, agentId: AgentId, input: Message): IO[JsonRpc.Error, Message] =
+  def invoke(
+      author: AgentId,
+      agentId: AgentId,
+      input: Message,
+      scalamodeExecution: Option[ScalamodeExecution] = None
+  ): IO[JsonRpc.Error, Message] =
     owned {
       for {
         _ <- ZIO
           .fail(JsonRpc.Error(ErrorCode.Forbidden, "Message author must match the acting agent"))
           .unless(input.agentId == author)
+        _ <- ZIO
+          .fail(JsonRpc.Error(ErrorCode.Rejected, "Scalamode execution mode requires an explicit Scalamode ToolCall"))
+          .when(scalamodeExecution.nonEmpty && !(input.payload match {
+            case MessagePayload.ToolCall(call) => call.name == fmgp.yallmo.tool.FunctionKey.scalamode
+            case _                             => false
+          }))
+        manual <- scalamodeExecution match {
+          case Some(ScalamodeExecution.JsNode) =>
+            ZIO
+              .fromOption(application.manualJs.executor)
+              .orElseFail(JsonRpc.Error(ErrorCode.Rejected, application.manualJs.capabilities.reason))
+              .map(Some(_))
+          case _ => ZIO.none
+        }
         binding <- checked(application.resolve(agentId))
         _ <- ZIO
           .fail(JsonRpc.Error(ErrorCode.Rejected, "Selected agent does not support audio input"))
@@ -240,7 +259,7 @@ final class ServerExecutionService private[application] (
               !binding.adapter.isInstanceOf[AudioAgent[?]]
           )
         _ <- checked(application.registerUser(author))
-        result <- checked(application.invoke(input, binding))
+        result <- checked(application.invoke(input, binding, manual))
       } yield result
     }()
 

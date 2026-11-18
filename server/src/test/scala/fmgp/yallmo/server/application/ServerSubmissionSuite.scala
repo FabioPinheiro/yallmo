@@ -238,7 +238,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.get.methods.size, 19)
+        assertEquals(info.get.methods.size, 20)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -602,13 +602,14 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(9),
+          info.methods.takeRight(10),
           List(
             TurnSubmit.method,
             BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
             AgentsInvoke.method,
+            ScalamodeCapabilities.method,
             ProvidersList.method,
             ProvidersLoginStart.method,
             ProvidersLoginComplete.method,
@@ -763,13 +764,14 @@ final class ServerSubmissionSuite extends FunSuite {
           )
         )
         assertEquals(
-          info.methods.takeRight(9),
+          info.methods.takeRight(10),
           List(
             TurnSubmit.method,
             BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
             AgentsInvoke.method,
+            ScalamodeCapabilities.method,
             ProvidersList.method,
             ProvidersLoginStart.method,
             ProvidersLoginComplete.method,

@@ -34,6 +34,54 @@ final class YallmoProtocolSuite extends FunSuite {
   private val agentId = AgentId("agent1")
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
+
+  test("manual Scalamode selector is optional, strict and outside persisted code-only input") {
+    val message = Message(
+      MessageData(
+        agentId,
+        None,
+        Instant.EPOCH,
+        Message.ToolCall(
+          fmgp.yallmo.tool
+            .FunctionCall(fmgp.yallmo.tool.FunctionCallId.unsafe("manual"), FunctionKey.scalamode, """{"code":"42"}""")
+        )
+      )
+    )
+    val legacy = AgentsInvoke.Params(agentId, message, agentId)
+    val expected = s"""{"agentId":${agentId.toJson},"input":${message.toJson},"actingAgentId":${agentId.toJson}}"""
+    assertEquals(legacy.toJson, expected)
+    assertEquals(expected.fromJson[AgentsInvoke.Params], Right(legacy))
+    assertEquals(ScalamodeExecution.JsNode.toJson, "\"js-node\"")
+    assertEquals(ScalamodeExecution.JVM.toJson, "\"jvm\"")
+    for value <- List("js", "js-pure", "js-browser") do
+      assert(value.toJson.fromJson[ScalamodeExecution].left.toOption.get.contains("jvm or js-node"))
+    for mode <- ScalamodeExecution.values do {
+      val params = legacy.copy(scalamodeExecution = Some(mode))
+      assertEquals(params.toJson.fromJson[AgentsInvoke.Params], Right(params))
+      assertEquals(params.toJson.fromJson[AgentsInvoke.Params].toOption.get.input, message)
+    }
+    for value <- List("\"js\"", "\"js-browser\"", "\"js-pure\"", "\"unknown\"", "{}", "42", "null") do
+      assert((expected.dropRight(1) + s""", "scalamodeExecution":$value}""").fromJson[AgentsInvoke.Params].isLeft)
+    assert(
+      (expected.dropRight(1) + """, "scalamodeExecution":null}""")
+        .fromJson[AgentsInvoke.Params]
+        .left
+        .toOption
+        .get
+        .contains("jvm or js-node")
+    )
+    assert((expected.dropRight(1) + """, "extra":true}""").fromJson[AgentsInvoke.Params].isLeft)
+    assertEquals(
+      ScalamodeCapabilities.Result(false, "not configured").toJson.fromJson[ScalamodeCapabilities.Result],
+      Right(ScalamodeCapabilities.Result(false, "not configured"))
+    )
+    assertEquals(
+      ScalamodeCapabilities.Result(true, "pure-only").toJson,
+      """{"jsNodeAvailable":true,"reason":"pure-only"}"""
+    )
+    assert("""{"jsPureAvailable":true,"reason":"legacy"}""".fromJson[ScalamodeCapabilities.Result].isLeft)
+  }
+
   test("event scopes are strict, default to all and carry observation provenance without message ownership") {
     val id = SessionId.unsafe("waiting")
     val params = EventsSubscribe.Params("nonce", SubscriptionScope.Session(id))

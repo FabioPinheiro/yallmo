@@ -5,7 +5,7 @@ import fmgp.yallmo.fs.{FsRead, FsWrite}
 import fmgp.yallmo.model.{Agent, AgentId, MessagePayload, YallmoError}
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.{AgentTool, ToolWiring}
-import fmgp.yallmo.tool.scalamode.{AgentToolWirings, ScalaCodeExecutor, ScalaCodeExecutorLive}
+import fmgp.yallmo.tool.scalamode.{AgentToolWirings, ScalaCodeExecutor, ScalaCodeExecutorJVM}
 import zio.*
 
 /** Named ChatGPT agent over a shared subscription connection.
@@ -19,7 +19,7 @@ final class ChatGPTAgent(
     val id: AgentId,
     provider: OpenAiCodexClient,
     toolWiring: ToolWiring = tools => ZIO.succeed(tools),
-    scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorLive.make(),
+    scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorJVM.make(),
     filesystem: Option[FsRead] = None,
     filesystemWrite: Option[FsWrite] = None
 ) extends Agent[Any] {

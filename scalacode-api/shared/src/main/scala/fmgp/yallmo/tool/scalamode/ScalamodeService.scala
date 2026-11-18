@@ -30,6 +30,16 @@ trait ScalamodeService {
 
 object ScalamodeService {
 
+  private[tool] val DefaultDependencies: Seq[String] = Seq(
+    "dev.zio::zio-streams:2.1.27",
+    "dev.zio::zio-json:1.1.1",
+    "dev.zio::zio-http:3.11.6",
+    // Match the host build's security pins rather than zio-http's older transitive versions.
+    "org.bouncycastle:bcprov-jdk18on:1.86",
+    "org.bouncycastle:bcpkix-jdk18on:1.86",
+    "org.bouncycastle:bcutil-jdk18on:1.86"
+  )
+
   /** Names only, never source programs. The runner is a compiled method accepting a typed API => ZIO[Any, E, A]
     * callback and printing its result. API views are intersected; singleton views may end in .type. The error type
     * supplies safe-mode CanFail evidence. Additional artifact anchors locate only reviewed API/runtime JARs or classes
@@ -41,7 +51,7 @@ object ScalamodeService {
       runner: String,
       artifacts: Seq[Class[?]] = Seq.empty,
       errorType: String = "java.lang.Throwable",
-      dependencies: Seq[String] = ScalaCodeExecutor.ServiceDependencies,
+      dependencies: Seq[String] = ScalamodeService.DefaultDependencies,
       constants: Seq[ScalamodeServiceApi] = Seq.empty
   ) {
     private val keywords = Set(

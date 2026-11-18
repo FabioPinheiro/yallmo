@@ -25,7 +25,7 @@ final class ScalamodeModelSuite extends FunSuite {
     Some(Chunk(agent))
   )
 
-  private final class Harness {
+  private final class Harness(capability: Option[ScalamodeCapabilities.Result] = None) {
     val requests = mutable.ArrayBuffer.empty[(AgentsInvoke.Params, Promise[Message])]
     var selection: Option[AgentId] = Some(agent)
     val model = new ScalamodeModel(
@@ -34,9 +34,11 @@ final class ScalamodeModelSuite extends FunSuite {
         requests += ((params, promise))
         promise.future
       },
-      () => selection
+      () => selection,
+      () => Future.successful(capability.get)
     )
-    model.configure(info)
+    model.configure(if capability.nonEmpty then info.copy(methods = info.methods :+ ScalamodeCapabilities.method)
+    else info)
 
     def response(output: String = "12\n", logs: Seq[String] = Seq.empty): Message = {
       val input = requests.last._1.input
@@ -51,6 +53,73 @@ final class ScalamodeModelSuite extends FunSuite {
           )
         )
       )
+    }
+  }
+
+  test("legacy server stays JVM and omits the optional selector") {
+    val h = new Harness
+    h.model.execution(ScalamodeExecution.JsNode)
+    h.model.run()
+    assertEquals(h.requests.head._1.scalamodeExecution, None)
+    assert(!h.requests.head._1.toJson.contains("scalamodeExecution"))
+    assert(h.model.state.now().jsReason.contains("JVM only"))
+  }
+
+  test("explicit pure choice is captured outside arguments and pending selection cannot change") {
+    val h = new Harness(Some(ScalamodeCapabilities.Result(true, "pure only")))
+    tick().flatMap { _ =>
+      h.model.execution(ScalamodeExecution.JsNode)
+      h.model.code("42")
+      h.model.run()
+      h.model.execution(ScalamodeExecution.JVM)
+      assertEquals(h.model.state.now().execution, ScalamodeExecution.JsNode)
+      assertEquals(h.requests.head._1.scalamodeExecution, Some(ScalamodeExecution.JsNode))
+      val call = h.requests.head._1.input.payload.asInstanceOf[MessagePayload.ToolCall].call
+      assertEquals(call.argumentsJson, """{"code":"42"}""")
+      h.requests.head._2.success(h.response())
+      tick().map { _ =>
+        h.model.execution(ScalamodeExecution.JVM)
+        assertEquals(h.model.state.now().result.get.execution, ScalamodeExecution.JsNode)
+        h.model.configure(info)
+        assertEquals(h.model.state.now().execution, ScalamodeExecution.JVM)
+        assert(!h.model.state.now().jsNodeAvailable)
+        assertEquals(h.requests.size, 1)
+      }
+    }
+  }
+
+  test("unavailable server reason is visible and JS cannot be selected") {
+    val h = new Harness(Some(ScalamodeCapabilities.Result(false, "Not provisioned")))
+    tick().map { _ =>
+      h.model.execution(ScalamodeExecution.JsNode)
+      assertEquals(h.model.state.now().execution, ScalamodeExecution.JVM)
+      assertEquals(h.model.state.now().jsReason, "Not provisioned")
+    }
+  }
+
+  test("capability discovery survives a pending JVM request but not connection invalidation") {
+    val discovery = Promise[ScalamodeCapabilities.Result]()
+    val response = Promise[Message]()
+    val model = new ScalamodeModel(_ => response.future, () => Some(agent), () => discovery.future)
+    val advertised = info.copy(methods = info.methods :+ ScalamodeCapabilities.method)
+    model.configure(advertised)
+    model.run()
+    discovery.success(ScalamodeCapabilities.Result(true, "Available"))
+    tick().flatMap { _ =>
+      assert(model.state.now().pending)
+      assert(model.state.now().jsNodeAvailable)
+      model.execution(ScalamodeExecution.JsNode)
+      assertEquals(model.state.now().execution, ScalamodeExecution.JVM)
+      model.disable()
+      val late = Promise[ScalamodeCapabilities.Result]()
+      val disconnected = new ScalamodeModel(_ => response.future, () => Some(agent), () => late.future)
+      disconnected.configure(advertised)
+      disconnected.configure(info)
+      late.success(ScalamodeCapabilities.Result(true, "Stale"))
+      tick().map { _ =>
+        assert(!disconnected.state.now().jsNodeAvailable)
+        assertEquals(disconnected.state.now().execution, ScalamodeExecution.JVM)
+      }
     }
   }
 
@@ -130,10 +199,11 @@ final class ScalamodeModelSuite extends FunSuite {
       )
       val result = ScalamodeResult(Message(response.data.copy(payload = Message.ToolOutput(output))))
       assertEquals(
-        result.fields.get.metadata.take(3),
+        result.fields.get.metadata.take(4),
         List(
           ToolResultContent.Field("compilationTime", "1200 ms"),
           ToolResultContent.Field("executionTime", "250 ms"),
+          ToolResultContent.Field("executionSetupTime", "100 ms"),
           ToolResultContent.Field("totalTime", "1500 ms")
         )
       )
@@ -147,10 +217,11 @@ final class ScalamodeModelSuite extends FunSuite {
     h.model.run()
     val result = ScalamodeResult(h.response())
     assertEquals(
-      result.fields.get.metadata.take(3),
+      result.fields.get.metadata.take(4),
       List(
         ToolResultContent.Field("compilationTime", "0 ms"),
         ToolResultContent.Field("executionTime", "0 ms"),
+        ToolResultContent.Field("executionSetupTime", "Not measured"),
         ToolResultContent.Field("totalTime", "0 ms")
       )
     )

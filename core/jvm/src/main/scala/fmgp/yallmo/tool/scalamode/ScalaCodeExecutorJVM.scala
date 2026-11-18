@@ -23,9 +23,17 @@ import scala.jdk.CollectionConverters.*
   * TODO: Add a separate execution-only timeout. The current timeout covers downloads, compilation and execution
   * together.
   */
-object ScalaCodeExecutorLive {
+object ScalaCodeExecutorJVM {
   import ScalaCodeExecutor.ScalaVersion
   val live: ULayer[ScalaCodeExecutor] = layer()
+
+  /** Trusted, pure-only experiment. Supply exactly the four reviewed Scala.js packageBin products, never a JVM
+    * classpath. This is not a sandbox and does not support service bindings or extra dependency grants.
+    */
+  enum Backend {
+    case JVM
+    case Node(artifacts: Seq[Path], executable: String = "node")
+  }
 
   /** One lazily started loopback listener per layer lifetime; tickets and child connections remain invocation-scoped.
     * Executable, compiler version and offline mode are trusted host configuration, never tool arguments.
@@ -33,12 +41,13 @@ object ScalaCodeExecutorLive {
   def layer(
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
-      offline: Boolean = true
+      offline: Boolean = true,
+      backend: Backend = Backend.JVM
   ): ULayer[ScalaCodeExecutor] = ZLayer.scoped {
     for {
       scope <- ZIO.service[Scope]
       listener <- localListener.provideEnvironment(ZEnvironment(scope)).memoize
-    } yield makeExecutor(executable, scalaVersion, offline, listener)
+    } yield makeExecutor(executable, scalaVersion, offline, listener, backend)
   }
 
   /** Resource-free compatibility constructor. Prefer `layer` for application-owned listener reuse. Explicit RPC
@@ -47,8 +56,9 @@ object ScalaCodeExecutorLive {
   def make(
       executable: String = "scala-cli",
       scalaVersion: String = ScalaVersion,
-      offline: Boolean = true
-  ): ScalaCodeExecutor = makeExecutor(executable, scalaVersion, offline, localListener)
+      offline: Boolean = true,
+      backend: Backend = Backend.JVM
+  ): ScalaCodeExecutor = makeExecutor(executable, scalaVersion, offline, localListener, backend)
 
   private def localListener: ZIO[Scope, Throwable, (RpcWebSocket.RpcRoute, String)] =
     for {
@@ -61,9 +71,33 @@ object ScalaCodeExecutorLive {
       executable: String,
       scalaVersion: String,
       offline: Boolean,
-      listener: ZIO[Scope, Throwable, (RpcWebSocket.RpcRoute, String)]
-  ): ScalaCodeExecutor = new ScalaCodeExecutor {
-    override def isAvailable: UIO[Boolean] = LocalProcess.isAvailable(executable)
+      listener: ZIO[Scope, Throwable, (RpcWebSocket.RpcRoute, String)],
+      backend: Backend
+  ): ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
+    override def isAvailable: UIO[Boolean] = backend match {
+      case Backend.JVM                   => LocalProcess.isAvailable(executable)
+      case Backend.Node(artifacts, node) =>
+        def available(command: String): UIO[Boolean] =
+          ZIO
+            .suspendSucceed {
+              runProcess(
+                Seq(command, "--version"),
+                Path.of("").toAbsolutePath,
+                java.lang.System.nanoTime() + 2.seconds.toNanos,
+                new AtomicInteger(1024),
+                None,
+                nodeBackend = true
+              )
+            }
+            .map(result => result.exitCode == 0 && !result.timedOut)
+            .catchAll(_ => ZIO.succeed(false))
+        ZIO
+          .attempt(nodeClasspath(artifacts, scalaVersion))
+          .foldZIO(
+            _ => ZIO.succeed(false),
+            _ => available(executable).zipWith(available(node))(_ && _)
+          )
+    }
 
     override def execute(
         code: String,
@@ -77,26 +111,32 @@ object ScalaCodeExecutorLive {
         services: R,
         timeout: Duration,
         maxOutputBytes: Int
-    ): Task[ExternalFunctionResult.ScalaMode] = ZIO.scoped {
-      for {
-        config <- ZIO.attempt(services.binding)
-        _ <- ZIO.attempt(
-          require(services.rpcBinding.isEmpty || services.localRpcBinding.isEmpty, "Choose one Scalamode RPC transport")
-        )
-        transport <- services.rpcBinding match {
-          case Some(binding) => ZIO.some(binding)
-          case None          =>
-            ZIO.foreach(services.localRpcBinding) { dispatcher =>
-              listener.map { case (route, endpoint) => ScalamodeService.RpcBinding(endpoint, route, dispatcher) }
-            }
-        }
-        bootstrap <- ZIO.foreach(transport) { binding =>
-          ZIO.attempt(validateRpcEndpoint(binding.endpoint)) *>
-            binding.route.registerScoped(binding.dispatcher, ttl = timeout).map(token => binding.endpoint -> token)
-        }
-        result <- run(code, timeout, maxOutputBytes, config.dependencies, bootstrap, Some(config))
-      } yield result
-    }
+    ): Task[ExternalFunctionResult.ScalaMode] = if backend != Backend.JVM then
+      ZIO.fail(new UnsupportedOperationException("Experimental Node backend does not support any service bindings"))
+    else
+      ZIO.scoped {
+        for {
+          config <- ZIO.attempt(services.binding)
+          _ <- ZIO.attempt(
+            require(
+              services.rpcBinding.isEmpty || services.localRpcBinding.isEmpty,
+              "Choose one Scalamode RPC transport"
+            )
+          )
+          transport <- services.rpcBinding match {
+            case Some(binding) => ZIO.some(binding)
+            case None          =>
+              ZIO.foreach(services.localRpcBinding) { dispatcher =>
+                listener.map { case (route, endpoint) => ScalamodeService.RpcBinding(endpoint, route, dispatcher) }
+              }
+          }
+          bootstrap <- ZIO.foreach(transport) { binding =>
+            ZIO.attempt(validateRpcEndpoint(binding.endpoint)) *>
+              binding.route.registerScoped(binding.dispatcher, ttl = timeout).map(token => binding.endpoint -> token)
+          }
+          result <- run(code, timeout, maxOutputBytes, config.dependencies, bootstrap, Some(config))
+        } yield result
+      }
 
     private def run(
         code: String,
@@ -109,6 +149,16 @@ object ScalaCodeExecutorLive {
       (ZIO.attempt {
         require(timeout > Duration.Zero, "timeout must be positive")
         require(maxOutputBytes > 0, "maxOutputBytes must be positive")
+        backend match {
+          case Backend.JVM                => ()
+          case Backend.Node(artifacts, _) =>
+            require(
+              dependencies.isEmpty || dependencies == ScalaTool.DefaultDependencies,
+              "Experimental Node backend does not support extra dependency grants"
+            )
+            nodeClasspath(artifacts, scalaVersion)
+            ()
+        }
       } *> ZIO
         .fail(new IllegalArgumentException("Offline mode requires an exact Scala release or full nightly version"))
         .when(
@@ -140,16 +190,28 @@ object ScalaCodeExecutorLive {
               deadline <- ZIO.succeed(java.lang.System.nanoTime() + timeout.toNanos)
               remaining <- ZIO.succeed(new AtomicInteger(maxOutputBytes))
               setupTime <- ZIO.succeed(new AtomicLong(-1L))
-              classpath = service.fold(apiClasspath)(
-                serviceClasspath
-              )
+              classpath = backend match {
+                case Backend.JVM                => service.fold(apiClasspath)(serviceClasspath)
+                case Backend.Node(artifacts, _) => nodeClasspath(artifacts, scalaVersion)
+              }
+              compileCommand = backend match {
+                case Backend.JVM     => compileArguments(executable, scalaVersion, offline, dependencies, classpath)
+                case _: Backend.Node => nodeCompileArguments(executable, offline, classpath)
+              }
+              runCommand = backend match {
+                case Backend.JVM =>
+                  arguments(executable, scalaVersion, offline, dependencies, classpath, maxOutputBytes)
+                case Backend.Node(_, node) =>
+                  Seq(node, "--max-old-space-size=128", "program.cjs", "--scalamode-node", maxOutputBytes.toString)
+              }
               _ <- ZIO.logInfo(s"Scala CLI compiling compiler=$scalaVersion offline=$offline timeout=$timeout")
               (compilationDuration, compilation) <- runProcess(
-                compileArguments(executable, scalaVersion, offline, dependencies, classpath),
+                compileCommand,
                 directory,
                 deadline,
                 remaining,
-                None
+                None,
+                nodeBackend = backend != Backend.JVM
               ).timed
               compiled = compilation.exitCode == 0 && !compilation.timedOut
               compilationDiagnostics = service.fold(compilation)(config =>
@@ -160,12 +222,13 @@ object ScalaCodeExecutorLive {
                 else
                   (for {
                     runtime <- runProcess(
-                      arguments(executable, scalaVersion, offline, dependencies, classpath, maxOutputBytes),
+                      runCommand,
                       directory,
                       deadline,
                       remaining,
                       bootstrap,
-                      Some(setupTime)
+                      Some(setupTime),
+                      nodeBackend = backend != Backend.JVM
                     )
                     fileLogs <- readRuntimeLogs(directory, remaining)
                     // Runtime stdout is a returned value, never a trusted-source diagnostic channel.
@@ -198,13 +261,15 @@ object ScalaCodeExecutorLive {
   }
 
   /** Every phase owns its process and stream readers; both phases share the deadline and byte budget. */
-  private def runProcess(
+  private[scalamode] def runProcess(
       command: Seq[String],
       directory: Path,
       deadline: Long,
       remaining: AtomicInteger,
       bootstrap: Option[(String, RpcToken)],
-      setupTime: Option[AtomicLong] = None
+      setupTime: Option[AtomicLong] = None,
+      nodeBackend: Boolean,
+      classpathOutput: Boolean = false
   ): Task[CommandOutput] =
     if java.lang.System.nanoTime() >= deadline then ZIO.succeed(CommandOutput(-1, true, "", false))
     else
@@ -219,13 +284,13 @@ object ScalaCodeExecutorLive {
           process <- ZIO.acquireRelease(ZIO.attemptBlocking {
             val builder = new ProcessBuilder(command*)
               .directory(directory.toFile)
-            // Do not let host JVM/classpath injection change the compilation or evaluated program.
-            Seq("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH").foreach(
-              builder.environment().remove
-            )
+            // Preserve JVM policy; the Node experiment additionally rejects preload/module-path injection.
+            val injectionVariables = Seq("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH") ++
+              (if nodeBackend then Seq("NODE_OPTIONS", "NODE_PATH") else Seq.empty)
+            injectionVariables.foreach(builder.environment().remove)
             builder.start()
           })(process => ZIO.attemptBlocking(stop(process, stopping)).orDie)
-          captureOutput = (input: java.io.InputStream) =>
+          captureOutput = (input: java.io.InputStream, budget: AtomicInteger) =>
             ZIO.attemptBlockingInterrupt {
               val bytes = new ByteArrayOutputStream()
               val buffer = new Array[Byte](8192)
@@ -236,7 +301,7 @@ object ScalaCodeExecutorLive {
                 def capture(available: Int): Int = {
                   val count = input.read(buffer, 0, math.min(buffer.length, available))
                   if count > 0 then {
-                    val retained = math.min(count, remaining.getAndUpdate(left => math.max(0, left - count)))
+                    val retained = math.min(count, budget.getAndUpdate(left => math.max(0, left - count)))
                     bytes.write(buffer, 0, retained)
                     truncated ||= retained < count
                   }
@@ -271,8 +336,13 @@ object ScalaCodeExecutorLive {
               .ignore
               .forkScoped
           }
-          output <- captureOutput(process.getInputStream).forkScoped
-          diagnostics <- captureOutput(process.getErrorStream).forkScoped
+          // --print-class-path is bounded compiler control data, not returned diagnostics. Never spend the user's
+          // runtime/log budget on it (nor truncate it into a different linker input).
+          output <- captureOutput(
+            process.getInputStream,
+            if classpathOutput then new AtomicInteger(64 * 1024) else remaining
+          ).forkScoped
+          diagnostics <- captureOutput(process.getErrorStream, remaining).forkScoped
           // The deadline runs concurrently with stdin delivery. Killing the child unblocks a pipe write;
           // interrupting a Java blocking write alone does not. The canceler also kills before awaiting delivery.
           completed <- ZIO
@@ -312,7 +382,7 @@ object ScalaCodeExecutorLive {
         )
       }
 
-  private def readRuntimeLogs(directory: Path, remaining: AtomicInteger): Task[(Vector[String], Boolean)] =
+  private[scalamode] def readRuntimeLogs(directory: Path, remaining: AtomicInteger): Task[(Vector[String], Boolean)] =
     ZIO.attemptBlocking {
       val path = directory.resolve(fmgp.yallmo.tool.scalamode.ScalaToolRuntime.LogFile)
       if !Files.exists(path) then (Vector.empty, false)
@@ -405,7 +475,8 @@ object ScalaCodeExecutorLive {
       scalaVersion: String,
       offline: Boolean,
       dependencies: Seq[String],
-      classpath: String
+      classpath: String,
+      runtimeDependencies: Seq[String] = RuntimeDependencies
   ): Seq[String] = Seq(
     // --quiet also hides dependency-resolution failures (including offline cache misses), not just progress.
     "--power",
@@ -418,8 +489,53 @@ object ScalaCodeExecutorLive {
     "--scalac-option=-language:experimental.captureChecking",
     "--scalac-option=-language:experimental.modularity",
     "--scalac-option=-color:never"
-  ) ++ (dependencies ++ RuntimeDependencies).distinct.flatMap(dependency => Seq("--dependency", dependency)) ++
+  ) ++ (dependencies ++ runtimeDependencies).distinct.flatMap(dependency => Seq("--dependency", dependency)) ++
     Option.when(offline)(Seq("--offline", "--suppress-experimental-warning")).toSeq.flatten
+
+  private[scalamode] def nodeCompileArguments(executable: String, offline: Boolean, classpath: String): Seq[String] =
+    Seq(executable, "package", ".", "--main-class", "ScalaToolMain", "-o", "program.cjs") ++
+      compilerArguments(
+        ScalaVersion,
+        offline,
+        Seq.empty,
+        classpath,
+        Seq("dev.zio::zio::2.1.27", "dev.zio::zio-json::1.1.1", "dev.zio::zio-streams::2.1.27")
+      ) ++ Seq(
+        "--js",
+        "--js-version",
+        "1.22.0",
+        "--js-cli-version",
+        "1.22.0.1",
+        "--js-module-kind",
+        "commonjs",
+        "--js-mode",
+        "dev"
+      )
+
+  /** Fail closed on missing/wrong platform/compiler products. Paths are a trusted host grant, not user input; IR
+    * presence is a provisioning check, not artifact authenticity verification.
+    */
+  private[scalamode] def nodeClasspath(artifacts: Seq[Path], scalaVersion: String): String = {
+    require(scalaVersion == ScalaVersion, s"Node experiment requires Scala $ScalaVersion")
+    val names = Seq("scalacode-api", "filesystem", "rpc", "model")
+      .map(name => s"yallmo-${name}_sjs1_3-2.0.0-SNAPSHOT.jar")
+      .toSet
+    require(
+      artifacts.size == names.size && artifacts.map(_.getFileName.toString).toSet == names,
+      "Expected exactly the reviewed scalacode-api/filesystem/rpc/model Scala.js packageBin products"
+    )
+    artifacts.foreach { path =>
+      require(Files.isRegularFile(path), s"Missing reviewed Scala.js artifact: $path")
+      val jar = new java.util.jar.JarFile(path.toFile)
+      try require(jar.entries().asScala.exists(_.getName.endsWith(".sjsir")), s"Missing Scala.js IR: $path")
+      finally jar.close()
+      require(
+        path.toAbsolutePath.iterator().asScala.exists(_.toString == s"scala-$ScalaVersion"),
+        s"Expected Scala $ScalaVersion package path: $path"
+      )
+    }
+    artifacts.map(_.toAbsolutePath.toString).mkString(java.io.File.pathSeparator)
+  }
 
   private val purePreamble =
     "import scala.language.experimental.safe\n" +
@@ -608,7 +724,7 @@ object ScalaCodeExecutorLive {
   private[tool] def apiClasspath: String = reviewedClasspath(Seq.empty)
 
   // ZIOApp owns the runtime, failure reporting and logger scope; stdout is only the returned value.
-  private val main = """import fmgp.yallmo.tool.scalamode.ScalaToolRuntime
+  private[scalamode] val main = """import fmgp.yallmo.tool.scalamode.ScalaToolRuntime
     |import zio.*
     |object ScalaToolMain extends ZIOAppDefault {
     |  override val bootstrap = ScalaToolRuntime.bootstrap
@@ -616,7 +732,7 @@ object ScalaCodeExecutorLive {
     |}
     |""".stripMargin
 
-  private def stop(process: Process, stopping: AtomicBoolean): Unit = {
+  private[scalamode] def stop(process: Process, stopping: AtomicBoolean): Unit = {
     stopping.set(true)
     val descendants = process.descendants()
     val children = try descendants.toList.asScala.toList

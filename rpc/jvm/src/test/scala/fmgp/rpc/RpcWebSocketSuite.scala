@@ -39,10 +39,12 @@ class RpcWebSocketSuite extends FunSuite {
   }
 
   private case class Fixture(server: RpcTestServer, dispatcher: RpcDispatcher)
-  private def serveFixture(dispatcher: RpcDispatcher, limits: RpcWebSocket.Limits = RpcWebSocket.Limits()) =
+  private def serveFixture(dispatcher: RpcDispatcher, limits: RpcWebSocketClient.Limits = RpcWebSocketClient.Limits()) =
     RpcTestServer.start(limits = limits).map(Fixture(_, dispatcher))
-  private def connectFixture(fixture: Fixture, limits: RpcWebSocket.Limits = RpcWebSocket.Limits()) =
-    fixture.server.rpc.register(fixture.dispatcher).flatMap(RpcWebSocket.connect(fixture.server.endpoint, _, limits))
+  private def connectFixture(fixture: Fixture, limits: RpcWebSocketClient.Limits = RpcWebSocketClient.Limits()) =
+    fixture.server.rpc
+      .register(fixture.dispatcher)
+      .flatMap(RpcWebSocketClient.connect(fixture.server.endpoint, _, limits))
 
   private def rawClose(port: Fixture, frames: List[WebSocketFrame]): ZIO[Scope, Throwable, Int] =
     for {
@@ -62,11 +64,10 @@ class RpcWebSocketSuite extends FunSuite {
             }
             .ensuring(channel.shutdown)
         }
-        .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
+        .withConfig(WebSocketConfig.default.forwardCloseFrames(true).subProtocol(Some(RpcHandshake.offer(token))))
       _ <- http
         .uri(URI.create(port.server.endpoint))
         .addHeader("Origin", "null")
-        .addHeader("Authorization", s"Bearer ${token.exportSecret}")
         .socket(app)
       status <- closed.await
     } yield status
@@ -170,7 +171,7 @@ class RpcWebSocketSuite extends FunSuite {
         }
         dispatcher <- ZIO.fromEither(files.bind(host).merge(calls.bind(service(ZIO.succeed(_)))))
         port <- serveFixture(dispatcher)
-        connection <- connectFixture(port, RpcWebSocket.Limits(maxPending = 1, timeout = 1.second))
+        connection <- connectFixture(port, RpcWebSocketClient.Limits(maxPending = 1, timeout = 1.second))
         typed = files.client(connection)
         timed <- typed.waitFor().either
         _ <- entered.take
@@ -232,7 +233,7 @@ class RpcWebSocketSuite extends FunSuite {
         port <- serveFixture(calls.bind(service(id => entered.offer(id) *> ZIO.never)))
         connection <- connectFixture(
           port,
-          RpcWebSocket.Limits(maxPending = 1, timeout = 1.second)
+          RpcWebSocketClient.Limits(maxPending = 1, timeout = 1.second)
         )
         client = calls.client(connection)
         pending <- client.waitFor(1).fork
@@ -257,7 +258,7 @@ class RpcWebSocketSuite extends FunSuite {
         port <- serveFixture(calls.bind(service(id => gate.await.as(id * 10))))
         connection <- connectFixture(
           port,
-          RpcWebSocket.Limits(maxPending = 1, timeout = 1.second)
+          RpcWebSocketClient.Limits(maxPending = 1, timeout = 1.second)
         )
         client = calls.client(connection)
         first <- client.waitFor(1).either
@@ -303,10 +304,10 @@ class RpcWebSocketSuite extends FunSuite {
         counts <- ZIO.foreach(1 to 3) { cycle =>
           for {
             token <- port.server.rpc.register(port.dispatcher)
-            connection <- RpcWebSocket.connectWithClient(
+            connection <- RpcWebSocketClient.connectWithClient(
               port.server.endpoint,
               token,
-              RpcWebSocket.Limits(),
+              RpcWebSocketClient.Limits(),
               clientLayer
             )
             answer <- calls.client(connection).echo(s"cycle $cycle")
@@ -331,11 +332,11 @@ class RpcWebSocketSuite extends FunSuite {
         }
         port <- serveFixture(calls.bind(service(ZIO.succeed(_))))
         token <- port.server.rpc.register(port.dispatcher)
-        failed <- RpcWebSocket
+        failed <- RpcWebSocketClient
           .connectWithClient(
             s"ws://127.0.0.1:${port.server.port}/not-rpc",
             token,
-            RpcWebSocket.Limits(),
+            RpcWebSocketClient.Limits(),
             clientLayer
           )
           .either
@@ -370,11 +371,11 @@ class RpcWebSocketSuite extends FunSuite {
               }
               .ensuring(channel.shutdown)
           }
-          .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
+          .withConfig(WebSocketConfig.default.forwardCloseFrames(true).subProtocol(Some(RpcHandshake.Protocol)))
         server <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(1.second)).build
         port <- Server.install(Routes(Method.GET / "rpc" -> handler(app.toResponse))).provideEnvironment(server)
-        token <- RpcToken.generate
-        connection <- RpcWebSocket.connect(port, token)
+        token <- RpcTokenSecurity.generate
+        connection <- RpcWebSocketClient.connect(port, token)
         client = calls.client(connection)
         first <- client.waitFor(1).either.fork
         second <- RpcTypedErrorFixtures.files.client(connection).waitFor().either.fork
@@ -414,7 +415,7 @@ class RpcWebSocketSuite extends FunSuite {
     val results = run {
       for {
         port <- serveFixture(calls.bind(service(ZIO.succeed(_))))
-        connection <- connectFixture(port, RpcWebSocket.Limits(maxFrameBytes = 256))
+        connection <- connectFixture(port, RpcWebSocketClient.Limits(maxFrameBytes = 256))
         client = calls.client(connection)
         large <- client.echo("x" * 1024).either
         small <- client.echo("ok")
@@ -427,7 +428,7 @@ class RpcWebSocketSuite extends FunSuite {
     val result = run {
       for {
         port <- serveFixture(calls.bind(service(ZIO.succeed(_), _ => "x" * 1024)))
-        connection <- connectFixture(port, RpcWebSocket.Limits(maxFrameBytes = 256))
+        connection <- connectFixture(port, RpcWebSocketClient.Limits(maxFrameBytes = 256))
         oversized <- calls.client(connection).echo("large").either
         later <- calls.client(connection).waitFor(1).either
       } yield (code(oversized), code(later))
@@ -440,14 +441,14 @@ class RpcWebSocketSuite extends FunSuite {
       for {
         port <- serveFixture(
           calls.bind(service(ZIO.succeed(_), _ => "x" * 512)),
-          limits = RpcWebSocket.Limits(maxFrameBytes = 256)
+          limits = RpcWebSocketClient.Limits(maxFrameBytes = 256)
         )
         connection <- connectFixture(port)
         oversized <- calls.client(connection).echo("large").either
         entered <- Promise.make[Nothing, Unit]
         boundedPort <- serveFixture(
           calls.bind(service(_ => entered.succeed(()) *> ZIO.never)),
-          limits = RpcWebSocket.Limits(maxPending = 1)
+          limits = RpcWebSocketClient.Limits(maxPending = 1)
         )
         bounded <- connectFixture(boundedPort)
         pending <- calls.client(bounded).waitFor(1).either.fork

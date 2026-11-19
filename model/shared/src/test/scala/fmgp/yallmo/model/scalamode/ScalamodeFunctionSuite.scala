@@ -2,7 +2,7 @@ package fmgp.yallmo.model.scalamode
 
 import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ScalaModeResult}
-import fmgp.yallmo.tool.scalamode.{ManualScalamode, ScalaCodeExecutor, ScalamodeFunction}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeFunction}
 import munit.ZSuite
 import zio.*
 
@@ -19,27 +19,29 @@ final class ScalamodeFunctionSuite extends ZSuite {
     val definition = ScalamodeFunctionSuite.this.definition
     def execute(call: ExternalFunctionCall) =
       ZIO.serviceWith[Prefix](prefix => ExternalFunctionResult(prefix.value + call.argumentsJson))
-    override def manualScalamode = Some(new ManualScalamode[Prefix] {
-      def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor) =
+    override def withExecutor(executor: ScalaCodeExecutor) = Some(new ScalamodeFunction[Prefix] {
+      val definition = integrated.definition
+      def execute(call: ExternalFunctionCall) =
         ZIO.serviceWithZIO[Prefix](prefix =>
           executor.execute(prefix.value + call.argumentsJson, 1.second, 100, Seq.empty).orDie
         )
     })
-    override def bindDefaultScalamode(replacement: ScalamodeFunction[Any]) =
+    override def bindDefaultScalamode(binding: ScalamodeFunction.DefaultBinding) = {
+      val replacement = binding.bind(ScalamodeFunction.Settings(1.second, 100, Seq.empty))
       Some(new ScalamodeFunction[Prefix] {
         val definition = replacement.definition
-        def execute(call: ExternalFunctionCall) =
-          ZIO.serviceWithZIO[Prefix](prefix =>
-            replacement.execute(call).map(output => ExternalFunctionResult(prefix.value + output.text))
-          )
+        def execute(call: ExternalFunctionCall) = ZIO.serviceWithZIO[Prefix](prefix =>
+          replacement.execute(call).map(output => ExternalFunctionResult(prefix.value + output.text))
+        )
       })
+    }
   }
 
   testZ("environment binding preserves both execution paths and explicit integration") {
     val bound: AgentFunction[Any] = AgentFunction.provideEnvironment(integrated, ZEnvironment(Prefix("bound-")))
     for {
       normal <- bound.execute(call)
-      manual <- ScalamodeFunction.from(bound).get.manualScalamode.get.execute(call, executor)
+      manual <- ScalamodeFunction.from(bound).get.withExecutor(executor).get.execute(call)
     } yield {
       assertEquals(normal.text, "bound-42")
       assertEquals(manual.text, "bound-42")
@@ -52,7 +54,13 @@ final class ScalamodeFunctionSuite extends ZSuite {
       val definition = ScalamodeFunctionSuite.this.definition
       def execute(call: ExternalFunctionCall) = ZIO.succeed(ExternalFunctionResult("replacement"))
     }
-    val rebound = ScalamodeFunction.from(bound).get.bindDefaultScalamode(replacement).get
+    val rebound = ScalamodeFunction
+      .from(bound)
+      .get
+      .bindDefaultScalamode(new ScalamodeFunction.DefaultBinding {
+        def bind(settings: ScalamodeFunction.Settings) = replacement
+      })
+      .get
     rebound.execute(call).map(output => assertEquals(output.text, "bound-replacement"))
   }
 

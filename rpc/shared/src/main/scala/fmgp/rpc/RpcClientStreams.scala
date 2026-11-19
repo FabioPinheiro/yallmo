@@ -5,7 +5,7 @@ import zio.json.ast.Json
 import zio.stream.*
 
 private[rpc] final class RpcClientStreams private (
-    limits: RpcWebSocket.Limits,
+    limits: RpcWebSocketClient.Limits,
     state: Ref[RpcClientStreams.State],
     allocate: IO[RpcError, String],
     writes: Semaphore,
@@ -217,7 +217,7 @@ private[rpc] object RpcClientStreams {
     )
   }
   def make(
-      limits: RpcWebSocket.Limits,
+      limits: RpcWebSocketClient.Limits,
       allocate: IO[RpcError, String],
       writes: Semaphore,
       send: String => IO[RpcError, Unit],

@@ -50,7 +50,10 @@ private[webharness] final case class ScalamodeState(
     code: String = """for {
         |  aux = List(1, 2, 3)
         |  ret <- ZIO.succeed(aux.map(_ * 2).sum)
-        |} yield ret""".stripMargin,
+        |} yield ret
+        |
+        |// fs.list(".").map(_.mkString("\n"))
+        |""".stripMargin,
     agents: List[AgentId] = Nil,
     enabled: Boolean = false,
     pending: Boolean = false,
@@ -58,7 +61,7 @@ private[webharness] final case class ScalamodeState(
     result: Option[ScalamodeResult] = None,
     execution: ScalamodeExecution = ScalamodeExecution.JVM,
     jsNodeAvailable: Boolean = false,
-    jsReason: String = "Server does not advertise JS / Node playground support (JVM only).",
+    jsReason: String = "Server does not advertise JS / Node backend support (JVM only).",
     notice: String = ""
 ) {
   def blockedReason(agent: Option[AgentId]): Option[String] =
@@ -103,8 +106,8 @@ private[webharness] final class ScalamodeModel(
         execution = ScalamodeExecution.JVM,
         jsNodeAvailable = false,
         jsReason =
-          if info.methods.contains(ScalamodeCapabilities.method) then "Checking JS / Node playground availability…"
-          else "Server does not advertise JS / Node playground support (JVM only)."
+          if info.methods.contains(ScalamodeCapabilities.method) then "Checking JS / Node backend availability…"
+          else "Server does not advertise JS / Node backend support (JVM only)."
       )
     )
     val configuredVersion = configurationVersion
@@ -116,7 +119,7 @@ private[webharness] final class ScalamodeModel(
           state.update(
             _.copy(
               jsNodeAvailable = false,
-              jsReason = "JS / Node playground availability could not be checked; JVM only."
+              jsReason = "JS / Node backend availability could not be checked; JVM only."
             )
           )
         case _ => ()

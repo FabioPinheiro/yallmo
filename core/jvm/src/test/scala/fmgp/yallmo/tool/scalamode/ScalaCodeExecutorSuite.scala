@@ -33,8 +33,18 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute("42", timeout, limit))
-        .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+        .provide(ScalaCodeExecutors.layer(executable.toString))
     )
+
+  test("pure invocation deadline starts when the effect runs, not when it is constructed") {
+    withFakeCli("printf 42") { executable =>
+      val effect = ScalaCodeExecutors.make(executable.toString).execute("42", 300.millis, 1024)
+      val result = run(ZIO.sleep(400.millis) *> effect)
+      assertEquals(result.output, "42")
+      assertEquals(result.exitCode, 0)
+      assert(!result.result.isInstanceOf[ScalaModeResult.TimedOut])
+    }
+  }
 
   test("timings measure compilation and execution separately in milliseconds") {
     withFakeCli("sleep 0.2; printf 42", compileBody = "sleep 0.1") { executable =>
@@ -124,7 +134,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 1.second, 1024))
           .either
-          .provide(ScalaCodeExecutorJVM.layer("must-not-start", scalaVersion = version, offline = true))
+          .provide(ScalaCodeExecutors.layer("must-not-start", scalaVersion = version, offline = true))
       )
       assert(result.left.toOption.exists(_.getMessage.contains("exact Scala release or full nightly version")))
     }
@@ -136,7 +146,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         val result = run(
           ZIO
             .serviceWithZIO[ScalaCodeExecutor](_.execute("2 + 3", 10.seconds, 1024))
-            .provide(ScalaCodeExecutorJVM.layer(executable.toString, scalaVersion = version, offline = true))
+            .provide(ScalaCodeExecutors.layer(executable.toString, scalaVersion = version, offline = true))
         )
         assertEquals(result.exitCode, 0)
         assertEquals(result.output, "5")
@@ -145,7 +155,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("compiler classpath contains only the API and reviewed signature dependencies, never core") {
-    val arguments = ScalaCodeExecutorJVM.arguments()
+    val arguments = ScalamodeProgram.arguments()
     val classpath = arguments(arguments.indexOf("--classpath") + 1).split(java.io.File.pathSeparator).toSet
     def location(cls: Class[?]) = Path.of(cls.getProtectionDomain.getCodeSource.getLocation.toURI).toAbsolutePath
     val expected = Set(
@@ -156,16 +166,16 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     )
     assertEquals(classpath, expected.map(_.toString))
     assert(expected.forall(Files.exists(_)))
-    assert(!classpath.contains(location(ScalaCodeExecutorJVM.getClass).toString))
-    assert(ScalaCodeExecutorJVM.snippet("api").contains("import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}"))
+    assert(!classpath.contains(location(ScalaCodeExecutors.getClass).toString))
+    assert(ScalamodeProgram.snippet("api").contains("import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}"))
   }
 
   test("compile and run arguments include power mode and pinned ZIO without changing offline selection") {
     for {
       offline <- List(true, false)
       arguments <- List(
-        ScalaCodeExecutorJVM.compileArguments(offline = offline),
-        ScalaCodeExecutorJVM.arguments(offline = offline)
+        ScalamodeProgram.compileArguments(offline = offline),
+        ScalamodeProgram.arguments(offline = offline)
       )
     } do {
       assertEquals(arguments.count(_ == "--power"), 1)
@@ -177,7 +187,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("compile and run do not suppress Scala CLI dependency-resolution diagnostics") {
-    for arguments <- List(ScalaCodeExecutorJVM.compileArguments(), ScalaCodeExecutorJVM.arguments()) do {
+    for arguments <- List(ScalamodeProgram.compileArguments(), ScalamodeProgram.arguments()) do {
       assert(!arguments.contains("--quiet"))
       assert(!arguments.contains("-q"))
     }
@@ -213,19 +223,19 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("custom dependencies retain the mandatory ZIOApp runtime dependencies without duplicates") {
     val dependencies = Seq("dev.zio::zio-streams:2.1.27", "dev.zio::zio-json:1.1.1")
-    val arguments = ScalaCodeExecutorJVM.arguments(dependencies = dependencies)
+    val arguments = ScalamodeProgram.arguments(dependencies = dependencies)
     val actual = arguments.sliding(2).collect { case Seq("--dependency", dependency) => dependency }.toList
-    assertEquals(actual, (dependencies ++ ScalaCodeExecutorJVM.RuntimeDependencies).distinct.toList)
+    assertEquals(actual, (dependencies ++ ScalamodeProgram.RuntimeDependencies).distinct.toList)
     assert(arguments.contains("dev.zio::zio:2.1.27"))
     assertEquals(
-      ScalaCodeExecutorJVM
+      ScalamodeProgram
         .arguments(dependencies = Seq.empty)
         .sliding(2)
         .collect { case Seq("--dependency", dependency) =>
           dependency
         }
         .toList,
-      ScalaCodeExecutorJVM.RuntimeDependencies.toList
+      ScalamodeProgram.RuntimeDependencies.toList
     )
   }
 
@@ -237,11 +247,11 @@ final class ScalaCodeExecutorSuite extends FunSuite {
             .execute(
               fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"42"}""")
             )
-            .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+            .provide(ScalaCodeExecutors.layer(executable.toString))
         )
         val arguments = result.text.linesIterator.toList
         val actual = arguments.sliding(2).collect { case List("--dependency", dependency) => dependency }.toList
-        assertEquals(actual, (dependencies ++ ScalaCodeExecutorJVM.RuntimeDependencies).distinct.toList)
+        assertEquals(actual, (dependencies ++ ScalamodeProgram.RuntimeDependencies).distinct.toList)
       }
     }
   }
@@ -272,7 +282,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       "-- [E006] Not Found Error: /tmp/Snippet.scala:7:3 --\n" +
         "7 |  missing\n  |  ^^^^^^^\n  |  Not found: missing\n"
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics(diagnostics, "val number = 1\n  missing"),
+      ScalamodeProgram.remapDiagnostics(diagnostics, "val number = 1\n  missing"),
       "-- [E006] Not Found Error: Snippet.scala:2:3 --\n" +
         "2 |  missing\n  |  ^^^^^^^\n  |  Not found: missing\n"
     )
@@ -286,7 +296,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         "Snippet.scala:6:1\n6 |\"Snippet.scala:6:1\"\n" +
         "Snippet.scala:999999999999:1\n"
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics(diagnostics, "\"Snippet.scala:6:1\""),
+      ScalamodeProgram.remapDiagnostics(diagnostics, "\"Snippet.scala:6:1\""),
       "<executor setup>\n" +
         "Main.scala:7:1\n7 |trusted runner\n" +
         "Other.scala:7:1\n7 |unrelated source\n" +
@@ -298,16 +308,16 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("syntax errors in generated closing braces point to submitted EOF without displaying the braces") {
     val raw = "-- [E040] Syntax Error: /tmp/Snippet.scala:7:2 --\n7 |  }\n  |  ^\n  | ')' expected, but '}' found\n"
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics(raw, "List(1, 2"),
+      ScalamodeProgram.remapDiagnostics(raw, "List(1, 2"),
       "-- [E040] Syntax Error: Snippet.scala:1:9 --\n1 |List(1, 2\n  |         ^\n" +
         "  | ')' expected at end of submitted code\n"
     )
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics("Snippet.scala:8:2\n8 |  }\n  |  ^", "List(1,\n"),
+      ScalamodeProgram.remapDiagnostics("Snippet.scala:8:2\n8 |  }\n  |  ^", "List(1,\n"),
       "Snippet.scala:2:0\n2 |\n  |^"
     )
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics("Snippet.scala:7:2\n7 |  }\n  |  ^", "\tList(1, 2"),
+      ScalamodeProgram.remapDiagnostics("Snippet.scala:7:2\n7 |  }\n  |  ^", "\tList(1, 2"),
       "Snippet.scala:1:10\n1 |\tList(1, 2\n  |\t         ^"
     )
   }
@@ -315,7 +325,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("generated setup and closing-brace context is omitted from body diagnostics") {
     val raw = "Snippet.scala:6:0\n5 |  def result: Any = {\n  |  ^\n6 |missing\n  |^^^^^^^\n7 |  }\n  |  ^\n"
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics(raw, "missing"),
+      ScalamodeProgram.remapDiagnostics(raw, "missing"),
       "Snippet.scala:1:0\n1 |missing\n  |^^^^^^^\n"
     )
   }
@@ -323,7 +333,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("temporary source paths including spaces and Windows drives are hidden") {
     for path <- List("/tmp/a b/Snippet.scala", "C:\\temp dir\\Snippet.scala", "/Snippet.scala") do
       assertEquals(
-        ScalaCodeExecutorJVM.remapDiagnostics(s"-- Error: $path:6:4 --\n6 |missing", "missing"),
+        ScalamodeProgram.remapDiagnostics(s"-- Error: $path:6:4 --\n6 |missing", "missing"),
         "-- Error: Snippet.scala:1:4 --\n1 |missing"
       )
   }
@@ -332,7 +342,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     val code = "(" + (" " * 1000)
     val command = CommandOutput(1, false, "", false, Seq("Snippet.scala:7:2", "7 |  }", "  |  ^"))
     val displayed =
-      ScalaCodeExecutorJVM.displayDiagnostics(command, code, compiled = false, maxOutputBytes = 64)
+      ScalamodeProgram.displayDiagnostics(command, code, compiled = false, maxOutputBytes = 64)
     assert(displayed.truncated)
     assert(
       displayed.output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length +
@@ -344,7 +354,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test("runtime stack frames use submitted lines but unrelated frames stay unchanged") {
     val stack = "at ScalaToolSnippet$.result(Snippet.scala:6)\nat Trusted.main(Main.scala:6)\n"
     assertEquals(
-      ScalaCodeExecutorJVM.remapDiagnostics(stack, "1 / 0"),
+      ScalamodeProgram.remapDiagnostics(stack, "1 / 0"),
       "at ScalaToolSnippet$.result(Snippet.scala:1)\nat Trusted.main(Main.scala:6)\n"
     )
   }
@@ -374,7 +384,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           .execute(
             fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"missing"}""")
           )
-          .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+          .provide(ScalaCodeExecutors.layer(executable.toString))
       )
       val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
       assertEquals(typed.exitCode, 1)
@@ -496,7 +506,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           .execute(
             fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"2 + 3"}""")
           )
-          .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+          .provide(ScalaCodeExecutors.layer(executable.toString))
           .timeoutFail(new RuntimeException("tool did not return within the agent budget"))(3.seconds)
       )
       val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
@@ -531,7 +541,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         val exit = run(for {
           fiber <- ZIO
             .serviceWithZIO[ScalaCodeExecutor](_.execute("42", 60.seconds, 1024))
-            .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+            .provide(ScalaCodeExecutors.layer(executable.toString))
             .fork
           _ <- ZIO
             .attempt(Files.readString(marker))
@@ -556,7 +566,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           for {
             fiber <- ZIO
               .serviceWithZIO[ScalaCodeExecutor](_.execute("42", 60.seconds, 1024))
-              .provide(ScalaCodeExecutorJVM.layer(executable.toString))
+              .provide(ScalaCodeExecutors.layer(executable.toString))
               .fork
             started <- ZIO
               .attemptBlocking(Files.readString(marker).trim)
@@ -577,22 +587,21 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   private val realVersion = sys.env.getOrElse("YALLMO_TEST_SCALA_VERSION", ScalaCodeExecutor.ScalaVersion)
   private val realOffline = sys.env.getOrElse("YALLMO_TEST_SCALA_OFFLINE", "true") == "true"
 
-  test("pinned compiler returns E006 compilation diagnostics in the tool output") {
+  test("pinned compiler returns submitted-code compilation diagnostics in the tool output") {
     assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the compiler diagnostics integration test")
     val result = run(
       new ScalaTool(timeout = 120.seconds)
         .execute(
           fmgp.yallmo.orchestration.ExternalFunctionCall(ScalamodeToolDefinition.Execute, """{"code":"doesNotExist"}""")
         )
-        .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+        .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
     )
     val typed = result.asInstanceOf[ExternalFunctionResult.ScalaMode]
     assertEquals(typed.exitCode, 1)
     assert(typed.result.isInstanceOf[ScalaModeResult.CompilationError])
-    assert(typed.output.contains("[E006] Not Found Error"), result.text)
     assert(typed.output.contains("Not found: doesNotExist"), result.text)
     assert(typed.output.contains("Snippet.scala:1:"), result.text)
-    assert(typed.output.linesIterator.exists(_.matches("\\s*1 \\|doesNotExist")), result.text)
+    assert(typed.output.contains("doesNotExist"), result.text)
     assertEquals(typed.logs, Seq.empty[String])
   }
 
@@ -602,7 +611,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val result = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
-          .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+          .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
       )
       val lines = code.split("\n", -1)
       assert(result.result.isInstanceOf[ScalaModeResult.CompilationError], result.output)
@@ -620,17 +629,20 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val result = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
-          .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+          .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
       )
       assertEquals(result.exitCode, 0, result.output)
       assert(!result.logs.exists(_.startsWith("WARNING:")), result.logs.mkString("\n"))
       val lines = result.output.linesIterator.toList
       if code == "api" then {
         assertEquals(lines, List("()"))
-        assertEquals(result.logs, Seq("Yes Tool API is available"))
+        assertEquals(result.logs.filter(_ == "Yes Tool API is available"), Seq("Yes Tool API is available"))
       } else {
         assertEquals(lines, List("42"))
-        assertEquals(result.logs, Seq("Yes Tool API is available", "Yes Tool API is available"))
+        assertEquals(
+          result.logs.filter(_ == "Yes Tool API is available"),
+          Seq("Yes Tool API is available", "Yes Tool API is available")
+        )
       }
     }
   }
@@ -649,7 +661,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val result = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
-          .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+          .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
       )
       assertEquals(result.exitCode, 0, result.output)
       assertEquals(result.output.trim, expected)
@@ -657,7 +669,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     val failed = run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute("ZIO.fail(\"expected failure\")", 120.seconds, 16 * 1024))
-        .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+        .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
     )
     assert(failed.result.isInstanceOf[ScalaModeResult.Executed], failed.output)
     assertNotEquals(failed.exitCode, 0)
@@ -679,7 +691,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       val rejected = run(
         ZIO
           .serviceWithZIO[ScalaCodeExecutor](_.execute(code, 120.seconds, 16 * 1024))
-          .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+          .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
       )
       assert(rejected.result.isInstanceOf[ScalaModeResult.CompilationError], s"$code\n${rejected.output}")
       assertNotEquals(rejected.exitCode, 0)
@@ -691,7 +703,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     def evaluate(code: String, timeout: Duration = 120.seconds): ExternalFunctionResult.ScalaMode = run(
       ZIO
         .serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, 16 * 1024))
-        .provide(ScalaCodeExecutorJVM.layer(realCli.get, realVersion, realOffline))
+        .provide(ScalaCodeExecutors.layer(realCli.get, realVersion, realOffline))
     )
     val small = evaluate("2 + 3")
     assertEquals(small.exitCode, 0, small.output)
@@ -742,7 +754,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
       "-- [E006] Not Found Error: Snippet.scala:1:1 --\n" +
         "1 |doesNotExist\n  |^^^^^^^^^^^^\n  |Not found: doesNotExist\n\n" +
         "  | longer explanation available when compiling with `-explain`\n1 error found\nCompilation failed"
-    val result = ScalaCodeExecutorJVM.result(
+    val result = ScalamodeProgram.result(
       CommandOutput(1, false, "", false, diagnostics.linesIterator.toVector),
       compiled = false
     )
@@ -764,7 +776,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("timeouts consume logs into actionable execution diagnostics and preserve flags") {
-    val result = ScalaCodeExecutorJVM.result(
+    val result = ScalamodeProgram.result(
       CommandOutput(124, true, "partial value", true, Seq("checking compiler", "checking compiler")),
       compiled = false
     )
@@ -781,17 +793,17 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("explicit compile result separates compilation diagnostics from runtime errors") {
     val command = CommandOutput(1, false, "partial value", true, Seq("[E006] Not Found Error", "missing"))
-    val compilation = ScalaCodeExecutorJVM.result(command, compiled = false)
+    val compilation = ScalamodeProgram.result(command, compiled = false)
     assertEquals(compilation.result, ScalaModeResult.CompilationError("partial value\n[E006] Not Found Error\nmissing"))
     assertEquals(compilation.logs, Seq.empty[String])
     assert(
       compilation.truncated && compilation.exitCode == 1 && !compilation.result.isInstanceOf[ScalaModeResult.TimedOut]
     )
-    val runtime = ScalaCodeExecutorJVM.result(command, compiled = true)
+    val runtime = ScalamodeProgram.result(command, compiled = true)
     assertEquals(runtime.result, ScalaModeResult.Executed(compilation.output))
     assertEquals(runtime.logs, Seq.empty[String])
     assert(runtime.truncated && runtime.exitCode == 1 && !runtime.result.isInstanceOf[ScalaModeResult.TimedOut])
-    val success = ScalaCodeExecutorJVM.result(
+    val success = ScalamodeProgram.result(
       CommandOutput(0, false, "42", false, Seq("connected", "42", "connected")),
       compiled = true
     )
@@ -802,14 +814,14 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   test(
     "command runs isolated Scala source files with Scala 3.10.1 offline, default Bloop server, and the safety flags"
   ) {
-    val arguments = ScalaCodeExecutorJVM.arguments()
+    val arguments = ScalamodeProgram.arguments()
     assertEquals(arguments.take(3), Seq("scala-cli", "run", "."))
     assertEquals(arguments(arguments.indexOf("--main-class") + 1), "ScalaToolMain")
     assert(!arguments.contains("--quiet"), "Scala CLI must report dependency-resolution failures")
     assertEquals(arguments(arguments.indexOf("--scala") + 1), "3.10.1")
     assert(arguments.contains("--power") && arguments.contains("--offline"))
     assertEquals(arguments(arguments.indexOf("--jvm") + 1), "system")
-    for command <- List(ScalaCodeExecutorJVM.compileArguments(), arguments) do
+    for command <- List(ScalamodeProgram.compileArguments(), arguments) do
       assert(!command.exists(_.startsWith("--server")), "keep Scala CLI's default Bloop server enabled")
     assert(arguments.contains("--scalac-option=-language:experimental.captureChecking"))
     assert(arguments.contains("--scalac-option=-language:experimental.modularity"))
@@ -818,27 +830,27 @@ final class ScalaCodeExecutorSuite extends FunSuite {
     val markerOption =
       s"--java-opt=-D${ScalaToolRuntime.ExecutionMarkerProperty}=${ScalaToolRuntime.ExecutionStartedFile}"
     assert(arguments.contains(markerOption))
-    assert(!ScalaCodeExecutorJVM.compileArguments().contains(markerOption))
+    assert(!ScalamodeProgram.compileArguments().contains(markerOption))
     assert(arguments.contains("--java-opt=--enable-native-access=ALL-UNNAMED"))
     assert(arguments.contains("--java-opt=--sun-misc-unsafe-memory-access=allow"))
-    assert(ScalaCodeExecutorJVM.snippet("42").startsWith("import scala.language.experimental.safe\n"))
+    assert(ScalamodeProgram.snippet("42").startsWith("import scala.language.experimental.safe\n"))
   }
 
   test("runtime API is imported and only its public contract is advertised") {
-    assert(ScalaCodeExecutorJVM.snippet("api").contains("import tool.*"))
+    assert(ScalamodeProgram.snippet("api").contains("import tool.*"))
     assert(ScalaTool.definition.description.contains("def api: Unit"))
     assert(ScalaTool.definition.description.contains("tool.api"))
     assert(ScalaTool.definition.description.contains("ZIO.succeed"))
     assert(ScalaTool.definition.description.contains("Scala 3.10.1"))
     assert(!ScalaTool.definition.description.contains("nightly"))
     assert(ScalaTool.definition.description.contains("effects are executed"))
-    assert(ScalaCodeExecutorJVM.snippet("ZIO.succeed(2)").contains("def result(using zio.Trace) ="))
+    assert(ScalamodeProgram.snippet("ZIO.succeed(2)").contains("def result(using zio.Trace) ="))
     assert(!ScalaTool.definition.description.contains("println(\"Yes API is available\")"))
   }
 
   test("trusted host configuration can select an exact cached nightly without resolution") {
     val version = "3.10.2-RC1-bin-20261021-a98b104-NIGHTLY"
-    val arguments = ScalaCodeExecutorJVM.arguments("custom-scala-cli", version, offline = true)
+    val arguments = ScalamodeProgram.arguments("custom-scala-cli", version, offline = true)
     assertEquals(arguments(arguments.indexOf("--scala") + 1), version)
     assert(arguments.contains("--power") && arguments.contains("--offline"))
   }

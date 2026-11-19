@@ -3,7 +3,7 @@ package fmgp.yallmo.server
 import java.nio.file.Path
 import java.util.Locale
 import scala.util.Try
-import fmgp.yallmo.server.application.{ServerApplication, ManualJsScalamode}
+import fmgp.yallmo.server.application.{ServerApplication, ScalaJsRuntime}
 import zio.*
 import fmgp.yallmo.fs.FileSystem
 import fmgp.yallmo.tool.sdlc.SdlcService
@@ -55,7 +55,7 @@ object MainServer extends ZIOAppDefault {
           // Exactly one planning service is shared by agent tools and HTTP routes.
           sdlc <- SdlcService.make(filesystem, filesystem)
           // Acquired before the application: its work shuts down before bundled artifacts are removed.
-          manualJs <- ManualJsScalamode.provisionBundled
+          manualJs <- ScalaJsRuntime.provisionBundled
           configured <- ServerApplication
             .open(
               storageRoot,

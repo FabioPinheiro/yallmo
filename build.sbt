@@ -154,6 +154,18 @@ lazy val scalaCodeApi = crossProject(JSPlatform, JVMPlatform)
 lazy val scalaCodeApiJVM = scalaCodeApi.jvm
 lazy val scalaCodeApiJS = scalaCodeApi.js
 
+/** Reviewed custom helper products for compiler integration tests, never production or test-framework artifacts. */
+lazy val scalamodeTestFixtures = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Pure)
+  .in(file("scalamode-test-fixtures"))
+  .dependsOn(scalaCodeApi)
+  .settings(
+    name := "yallmo-scalamode-test-fixtures",
+    publish / skip := true,
+  )
+lazy val scalamodeTestFixturesJVM = scalamodeTestFixtures.jvm
+lazy val scalamodeTestFixturesJS = scalamodeTestFixtures.js
+
 // Rooted capabilities/JSONL helpers are shared; FileSystem's NIO implementation is JVM-only.
 lazy val filesystem = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
@@ -177,7 +189,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .withoutSuffixFor(JVMPlatform)
   .crossType(CrossType.Full)
   .in(file("core"))
-  .dependsOn(model, filesystem, scalaCodeApi % "compile->compile;test->test", rpc)
+  .dependsOn(model, filesystem, scalaCodeApi, scalamodeTestFixtures % "test->compile", rpc)
   .settings(
     name := "yallmo-core",
     libraryDependencies ++= Seq(
@@ -190,8 +202,6 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
   .jvmSettings(
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-http" % "3.11.6",
-      // Benchmark-only retained fast linker; never part of the submitted snippet's reviewed classpath.
-      "org.scala-js" %% "scalajs-linker" % "1.22.0" % Test,
       "org.yaml" % "snakeyaml" % "2.4",
       "com.microsoft.onnxruntime" % "onnxruntime" % "1.22.0",
       // 1.53.0 pulled Jackson 2.17.2 with the reported DoS/deserialization CVEs; 1.80.0 uses fixed 2.18.11.
@@ -201,7 +211,29 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
     Compile / run / fork := true,
     Test / fork := true,
   )
-lazy val coreJVM = core.jvm
+lazy val coreJVM = core.jvm.settings(
+  // Explicit, isolated worker tooling, not the server/core/test runtime classpath.
+  Compile / resourceGenerators += Def.task {
+    Def.uncached {
+      val converter = fileConverter.value
+      val jars = (linkerWorker / Runtime / fullClasspathAsJars).value
+        .map(entry => converter.toPath(entry.data).toFile)
+        .distinct
+      val output = (Compile / resourceManaged).value / "scalamode-linker"
+      IO.delete(output)
+      IO.createDirectory(output)
+      val products = jars.zipWithIndex.map { case (jar, index) =>
+        val target = output / f"$index%04d-${jar.getName}"
+        IO.copyFile(jar, target)
+        target
+      }
+      val manifest = output / "classpath.txt"
+      IO.write(manifest, products.map(_.getName).mkString("\n"))
+      products :+ manifest
+    }
+  }.taskValue,
+
+)
 lazy val coreJS = core.js
 
 // Only domain values and wire codecs: no runtime, transport, credentials or HTTP dependencies.
@@ -242,7 +274,18 @@ lazy val rpc = crossProject(JSPlatform, JVMPlatform)
     Test / fork := true,
   )
 lazy val rpcJVM = rpc.jvm
-lazy val rpcJS = rpc.js
+lazy val rpcJS = rpc.js.settings(
+  // Native Scala.js client integration starts a scoped JVM test host over private stdio pipes.
+  Test / jsEnv := Def.uncached {
+    val converter = fileConverter.value
+    val classpath = (rpcJVM / Test / fullClasspath).value
+      .map(entry => converter.toPath(entry.data).toString)
+      .mkString(java.io.File.pathSeparator)
+    new org.scalajs.jsenv.nodejs.NodeJSEnv(
+      org.scalajs.jsenv.nodejs.NodeJSEnv.Config().withEnv(Map("YALLMO_RPC_TEST_CLASSPATH" -> classpath)),
+    )
+  },
+)
 
 /** ClientHarness: shared client interaction policy, independent of transports and server runtime. */
 lazy val clientHarness = crossProject(JSPlatform, JVMPlatform)
@@ -351,25 +394,6 @@ lazy val server = project
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
-    // Explicit, isolated worker tooling, not the server/core/test runtime classpath.
-    Compile / resourceGenerators += Def.task {
-      Def.uncached {
-        val converter = fileConverter.value
-        val jars = (linkerWorker / Runtime / fullClasspathAsJars).value
-          .map(entry => converter.toPath(entry.data).toFile).distinct
-        val output = (Compile / resourceManaged).value / "scalamode-linker"
-        IO.delete(output)
-        IO.createDirectory(output)
-        val products = jars.zipWithIndex.map { case (jar, index) =>
-          val target = output / f"$index%04d-${jar.getName}"
-          IO.copyFile(jar, target)
-          target
-        }
-        val manifest = output / "classpath.txt"
-        IO.write(manifest, products.map(_.getName).mkString("\n"))
-        products :+ manifest
-      }
-    }.taskValue,
     // Only the reviewed JS IR libraries: no linker, frontend build, JVM/test or application classpath.
     Compile / resourceGenerators += Def.task {
       Def.uncached {

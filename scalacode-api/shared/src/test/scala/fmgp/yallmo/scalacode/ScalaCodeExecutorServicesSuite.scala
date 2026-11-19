@@ -24,7 +24,8 @@ final class ScalaCodeExecutorServicesSuite extends ZSuite {
           code: String,
           services: R,
           timeout: Duration,
-          maxOutputBytes: Int
+          maxOutputBytes: Int,
+          dependencies: Seq[String]
       ) =
         ZIO.succeed {
           assert(services eq service)
@@ -47,17 +48,7 @@ final class ScalaCodeExecutorServicesSuite extends ZSuite {
       assert(error.isInstanceOf[UnsupportedOperationException])
       assertEquals(error.getMessage, "Service Scala execution is not enabled")
       assert(ScalaTool.DefaultDependencies eq ScalaCodeExecutor.DefaultDependencies)
-      assertEquals(
-        service.binding.dependencies,
-        Seq(
-          "dev.zio::zio-streams:2.1.27",
-          "dev.zio::zio-json:1.1.1",
-          "dev.zio::zio-http:3.11.6",
-          "org.bouncycastle:bcprov-jdk18on:1.86",
-          "org.bouncycastle:bcpkix-jdk18on:1.86",
-          "org.bouncycastle:bcutil-jdk18on:1.86"
-        )
-      )
+      assertEquals(service.binding.dependencies, Seq.empty[String])
     }
   }
 }

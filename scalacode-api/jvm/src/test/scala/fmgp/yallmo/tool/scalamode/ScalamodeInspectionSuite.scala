@@ -89,7 +89,7 @@ final class ScalamodeInspectionSuite extends FunSuite {
         Chunk(FilesystemToolDefinition, ScalamodeToolDefinition),
         Chunk(
           function(FilesystemToolDefinition.ReadFileDefinition),
-          function(ScalaTool.definition)
+          AgentFunction.provideEnvironment(new ScalaTool(), ZEnvironment(executor))
         )
       )
       wired <- AgentToolWirings.withFilesystem(executor, route, "ws://private-host:1234/rpc")(original)

@@ -1,5 +1,6 @@
 package fmgp.yallmo.tool.scalamode
 
+import fmgp.rpc.RpcToken
 import fmgp.yallmo.orchestration.ExternalFunctionResult
 import fmgp.yallmo.tool.CommandOutput
 import java.io.{FileNotFoundException, IOException, UncheckedIOException}
@@ -14,31 +15,67 @@ import zio.*
   * and diagnostics remain in private temporary storage until replacement/rotation/scope close. Whole-source replacement
   * and fresh Node children prevent definitions/results/runtime state crossing calls. This is not a sandbox.
   */
-object ScalaCodeExecutorNodeIncremental {
+private[yallmo] object ScalaJsCompiler {
   private val MaxCalls = 64
   private val MaxWorkspaceBytes = 256L * 1024 * 1024
 
-  def make(artifacts: Seq[Path]): ZIO[Scope, Throwable, ScalaCodeExecutor] =
-    makeWithToolingResources(artifacts, getClass.getClassLoader.getResourceAsStream)
+  def make(
+      artifacts: Seq[Path],
+      executable: String = "scala-cli",
+      node: String = "node"
+  ): ZIO[Scope, Throwable, ScalaCodeExecutor] =
+    makeWithToolingResources(artifacts, getClass.getClassLoader.getResourceAsStream, executable, node)
 
   private[yallmo] def makeWithToolingResources(
       artifacts: Seq[Path],
-      openResource: String => java.io.InputStream
+      openResource: String => java.io.InputStream,
+      executable: String = "scala-cli",
+      node: String = "node"
   ): ZIO[Scope, Throwable, ScalaCodeExecutor] = ZIO.uninterruptibleMask { restore =>
     for {
       ownership <- ZIO.service[Scope].flatMap(_.fork)
-      executor <- restore(open(artifacts, openResource)).provideEnvironment(ZEnvironment[Scope](ownership)).onExit {
-        case Exit.Success(_) => ZIO.unit
-        case failure         => ownership.close(failure)
-      }
+      executor <- restore(open(artifacts, openResource, executable, node))
+        .provideEnvironment(ZEnvironment[Scope](ownership))
+        .onExit {
+          case Exit.Success(_) => ZIO.unit
+          case failure         => ownership.close(failure)
+        }
     } yield executor
+  }
+
+  def probe(artifacts: Seq[Path], executable: String, node: String): UIO[Boolean] = {
+    def available(command: String, arguments: Seq[String]): UIO[Boolean] =
+      ScalamodeProcess
+        .runProcess(
+          Seq(command) ++ arguments,
+          Path.of("").toAbsolutePath,
+          java.lang.System.nanoTime() + 2.seconds.toNanos,
+          new AtomicInteger(1024),
+          None,
+          nodeBackend = true
+        )
+        .map(result => result.exitCode == 0 && !result.timedOut)
+        .catchAll(_ => ZIO.succeed(false))
+    val script = "const [major,minor]=process.versions.node.split('.').map(Number);" +
+      "if(major<22||(major===22&&minor<4)||typeof WebSocket!=='function')process.exit(1);" +
+      "const ws=new WebSocket('ws://127.0.0.1:1',['yallmo.rpc.v2','yallmo.ticket.probe']);" +
+      "ws.binaryType='arraybuffer';if(ws.binaryType!=='arraybuffer')process.exit(1);" +
+      "ws.addEventListener('error',()=>{});ws.close();"
+    ZIO
+      .attempt(ScalamodeProgram.nodeClasspath(artifacts, ScalaCodeExecutor.ScalaVersion))
+      .foldZIO(
+        _ => ZIO.succeed(false),
+        _ => available(executable, Seq("--version")).zipWith(available(node, Seq("-e", script)))(_ && _)
+      )
   }
 
   private def open(
       artifacts: Seq[Path],
-      openResource: String => java.io.InputStream
+      openResource: String => java.io.InputStream,
+      executable: String,
+      node: String
   ): ZIO[Scope, Throwable, ScalaCodeExecutor] = for {
-    classpath <- ZIO.attempt(ScalaCodeExecutorJVM.nodeClasspath(artifacts, ScalaCodeExecutor.ScalaVersion))
+    classpath <- ZIO.attempt(ScalamodeProgram.nodeClasspath(artifacts, ScalaCodeExecutor.ScalaVersion))
     root <- ZIO.acquireRelease(ZIO.attemptBlocking(Files.createTempDirectory("yallmo-js-incremental-")))(remove)
     // Finish copy/close before an interrupted provisioning scope can remove this root.
     tooling <- ZIO.attemptBlocking {
@@ -63,7 +100,9 @@ object ScalaCodeExecutorNodeIncremental {
     }.uninterruptible
     gate <- Semaphore.make(1)
     admitted <- Ref.make(0)
-    session = new Executor(root, tooling, classpath, artifacts, gate, admitted)
+    scope <- ZIO.service[Scope]
+    listener <- ScalamodeInvocation.localListener.provideEnvironment(ZEnvironment(scope)).memoize
+    session = new Executor(root, tooling, classpath, artifacts, gate, admitted, executable, node, listener)
     _ <- ZIO.addFinalizer(session.close)
   } yield session
 
@@ -90,21 +129,24 @@ object ScalaCodeExecutorNodeIncremental {
       classpath: String,
       artifacts: Seq[Path],
       gate: Semaphore,
-      admitted: Ref[Int]
+      admitted: Ref[Int],
+      executable: String,
+      node: String,
+      listener: ScalamodeInvocation.Listener
   ) extends ScalaCodeExecutor
       with ScalaCodeExecutorServices {
     private var worker: Option[Worker] = None // Access only under gate, including finalization.
 
-    def isAvailable: UIO[Boolean] =
-      ScalaCodeExecutorJVM.make(backend = ScalaCodeExecutorJVM.Backend.Node(artifacts)).isAvailable
+    def isAvailable: UIO[Boolean] = probe(artifacts, executable, node)
 
     override def executeWithServices[R <: ScalamodeService](
         code: String,
         services: R,
         timeout: Duration,
-        maxOutputBytes: Int
+        maxOutputBytes: Int,
+        dependencies: Seq[String]
     ): Task[ExternalFunctionResult.ScalaMode] =
-      ZIO.fail(new UnsupportedOperationException("JS / Node backend does not support service bindings"))
+      executeOperation(code, timeout, maxOutputBytes, dependencies, Some(services))
 
     private def discard: UIO[Unit] = ZIO.suspendSucceed {
       val previous = worker
@@ -112,7 +154,7 @@ object ScalaCodeExecutorNodeIncremental {
       ZIO.foreachDiscard(previous) { current =>
         ZIO
           .attemptBlocking {
-            try ScalaCodeExecutorJVM.stop(current.process, new AtomicBoolean(false))
+            try ScalamodeProcess.stop(current.process, new AtomicBoolean(false))
             finally {
               current.process.getOutputStream.close()
               current.process.getInputStream.close()
@@ -216,7 +258,16 @@ object ScalaCodeExecutorNodeIncremental {
           }
     } yield output
 
-    private def invocation(code: String, deadline: Long, budget: Int): Task[ExternalFunctionResult.ScalaMode] = (for {
+    private def invocation(
+        code: String,
+        deadline: Long,
+        budget: Int,
+        dependencies: Seq[String],
+        service: Option[ScalamodeService.Binding],
+        bootstrap: Option[(String, RpcToken)],
+        invocationClasspath: String
+    ): Task[ExternalFunctionResult.ScalaMode] = (for {
+      program <- ZIO.succeed(ScalamodeProgram(code, service))
       remaining <- ZIO.succeed(new AtomicInteger(budget))
       setup <- ZIO.succeed(new AtomicLong(-1L))
       (compileTime, compiledOutput) <- (for {
@@ -227,14 +278,11 @@ object ScalaCodeExecutorNodeIncremental {
           // Remove execution eligibility BEFORE compiling, even when compilation fails or is interrupted.
           Seq("program.cjs", "current.tmp", "response", ScalaToolRuntime.LogFile, ScalaToolRuntime.ExecutionStartedFile)
             .foreach(name => Files.deleteIfExists(current.directory.resolve(name)))
-          Files.writeString(current.directory.resolve("Snippet.scala"), ScalaCodeExecutorJVM.snippet(code), UTF_8)
-          Files.writeString(current.directory.resolve("Main.scala"), ScalaCodeExecutorJVM.main, UTF_8)
+          Files.writeString(current.directory.resolve("Snippet.scala"), program.snippetSource, UTF_8)
+          Files.writeString(current.directory.resolve("Main.scala"), program.mainSource, UTF_8)
         }
-        command = ScalaCodeExecutorJVM.nodeCompileArguments("scala-cli", true, classpath)
-        irCompile = Seq("scala-cli", "compile") ++ command
-          .drop(2)
-          .filterNot(Set("--main-class", "ScalaToolMain", "-o", "program.cjs")) ++ Seq("--print-class-path")
-        compilation <- ScalaCodeExecutorJVM.runProcess(
+        irCompile = ScalamodeProgram.nodeCompileArguments(executable, true, invocationClasspath, dependencies)
+        compilation <- ScalamodeProcess.runProcess(
           irCompile,
           current.directory,
           deadline,
@@ -256,26 +304,24 @@ object ScalaCodeExecutorNodeIncremental {
         discard.as(CommandOutput(-1, true, "Linker startup deadline exceeded", false))
       }.timed
       compiled = compiledOutput.exitCode == 0 && !compiledOutput.timedOut
+      diagnostics = program.compilationDiagnostics(compiledOutput, compiled)
       (executionTime, output) <-
-        if !compiled then ZIO.succeed((Duration.Zero, compiledOutput))
+        if !compiled then ZIO.succeed((Duration.Zero, diagnostics))
         else
           (for {
             current <- ZIO.fromOption(worker).orElseFail(new IOException("Linker worker lost"))
             _ <- ZIO.fail(new IOException("Linker worker exited before evaluation")).unless(current.process.isAlive)
-            runtime <- ScalaCodeExecutorJVM.runProcess(
-              Seq("node", "--max-old-space-size=128", "program.cjs", "--scalamode-node", budget.toString),
+            runtime <- ScalamodeProcess.runProcess(
+              Seq(node, "--max-old-space-size=128", "program.cjs", "--scalamode-node", budget.toString),
               current.directory,
               deadline,
               remaining,
-              None,
+              bootstrap,
               Some(setup),
               nodeBackend = true
             )
-            logs <- ScalaCodeExecutorJVM.readRuntimeLogs(current.directory, remaining)
-          } yield runtime.copy(
-            logs = compiledOutput.logs ++ runtime.logs ++ logs._1,
-            truncated = compiledOutput.truncated || runtime.truncated || logs._2
-          )).timed
+            logs <- ScalamodeProcess.readRuntimeLogs(current.directory, remaining)
+          } yield program.runtimeResult(diagnostics, runtime, logs)).timed
       _ <- if output.timedOut then discard else ZIO.unit
       _ <- ZIO.foreachDiscard(worker) { current =>
         ZIO
@@ -286,8 +332,8 @@ object ScalaCodeExecutorNodeIncremental {
           }
           .flatMap(bytes => ZIO.when(bytes > MaxWorkspaceBytes)(discard))
       }
-    } yield ScalaCodeExecutorJVM
-      .result(ScalaCodeExecutorJVM.displayDiagnostics(output, code, compiled, budget), compiled)
+    } yield program
+      .finish(output, compiled, budget, bootstrap)
       .copy(
         compilationTime = compileTime.toMillis,
         executionTime = executionTime.toMillis,
@@ -301,24 +347,29 @@ object ScalaCodeExecutorNodeIncremental {
         timeout: Duration,
         maxOutputBytes: Int,
         dependencies: Seq[String]
+    ): Task[ExternalFunctionResult.ScalaMode] = executeOperation(code, timeout, maxOutputBytes, dependencies, None)
+
+    private def executeOperation(
+        code: String,
+        timeout: Duration,
+        maxOutputBytes: Int,
+        dependencies: Seq[String],
+        services: Option[ScalamodeService]
     ): Task[ExternalFunctionResult.ScalaMode] =
       (for {
-        _ <- ZIO.attempt {
-          require(timeout > Duration.Zero && maxOutputBytes > 0, "Positive timeout/output budget required")
-          require(code.getBytes(UTF_8).length <= 256 * 1024, "JS / Node source exceeds 256KB")
-          require(
-            dependencies.isEmpty || dependencies == ScalaTool.DefaultDependencies,
-            "JS / Node does not support extra dependency grants"
-          )
-        }
-        _ <- ZIO.fromEither(ScalaTool.validate(code).left.map(new IllegalArgumentException(_)))
         deadline <- ZIO.succeed(java.lang.System.nanoTime() + timeout.toNanos)
+        _ <- ScalamodeInvocation.validate(code, timeout, maxOutputBytes)
+        service <- ZIO.attempt(services.map(_.binding))
+        platformDependencies <- ZIO.attempt(
+          ScalamodeProgram.nodeDependencies(dependencies ++ service.toSeq.flatMap(_.dependencies), service)
+        )
+        invocationClasspath <- ZIO.attempt(ScalamodeProgram.nodeServiceClasspath(classpath, service))
         output <- ZIO.uninterruptibleMask { restore =>
           admitted.modify(count => (count < 2, if count < 2 then count + 1 else count)).flatMap { accepted =>
             if !accepted then
               ZIO.succeed(
-                ScalaCodeExecutorJVM.result(
-                  ScalaCodeExecutorJVM.displayDiagnostics(
+                ScalamodeProgram.result(
+                  ScalamodeProgram.displayDiagnostics(
                     CommandOutput(-1, false, "JS / Node linker busy; try again later", false),
                     code,
                     false,
@@ -332,11 +383,25 @@ object ScalaCodeExecutorNodeIncremental {
                 gate.withPermitScoped
                   .timeout(Duration.fromNanos(math.max(0L, deadline - java.lang.System.nanoTime())))
                   .flatMap {
-                    case Some(_) => invocation(code, deadline, maxOutputBytes)
-                    case None    =>
+                    case Some(_) =>
+                      for {
+                        bootstrap <- services.fold[ZIO[Scope, Throwable, Option[(String, RpcToken)]]](ZIO.none)(
+                          ScalamodeInvocation.prepare(_, listener, deadline)
+                        )
+                        result <- invocation(
+                          code,
+                          deadline,
+                          maxOutputBytes,
+                          platformDependencies,
+                          service,
+                          bootstrap,
+                          invocationClasspath
+                        )
+                      } yield result
+                    case None =>
                       ZIO.succeed(
-                        ScalaCodeExecutorJVM.result(
-                          ScalaCodeExecutorJVM.displayDiagnostics(
+                        ScalamodeProgram.result(
+                          ScalamodeProgram.displayDiagnostics(
                             CommandOutput(-1, true, "JS / Node deadline exceeded (including queue wait)", false),
                             code,
                             false,
@@ -349,6 +414,11 @@ object ScalaCodeExecutorNodeIncremental {
               }).ensuring(admitted.update(_ - 1))
           }
         }
-      } yield output).timed.map { case (elapsed, result) => result.copy(totalTime = elapsed.toMillis) }
+      } yield output)
+        .catchSome { case _: java.util.concurrent.TimeoutException =>
+          ZIO.succeed(ScalamodeInvocation.timedOut(code, maxOutputBytes))
+        }
+        .timed
+        .map { case (elapsed, result) => result.copy(totalTime = elapsed.toMillis) }
   }
 }

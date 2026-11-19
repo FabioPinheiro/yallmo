@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorJVM, ScalaTool, ScalamodeToolDefinition}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutors, ScalaTool, ScalamodeToolDefinition}
 
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
@@ -73,7 +73,7 @@ object ApplicationTools {
   )
 
   val live: ULayer[Environment] =
-    BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutorJVM.live
+    BashExecutor.live ++ GitClient.live ++ ScalaCodeExecutors.live
 
   /** Probes requirements without executing tools and logs availability once at startup. */
   def evaluate(

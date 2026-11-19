@@ -75,7 +75,7 @@ final class AgentRunner[R](
       staticContext: StaticContext[R],
       budget: AgentBudget,
       resolved: Boolean,
-      manualScalamode: Option[ScalaCodeExecutor] = None
+      scalamodeExecutor: Option[ScalaCodeExecutor] = None
   ): AgentInvocation[R] =
     new AgentInvocation[R] {
       override val agentId: AgentId = agent.id
@@ -83,8 +83,8 @@ final class AgentRunner[R](
         (for {
           _ <- ZIO.fromEither(budget.validate)
           _ <- ZIO
-            .fail(YallmoError.InvalidMessage("Manual pure execution requires an explicit Scalamode ToolCall"))
-            .when(manualScalamode.nonEmpty && !(input match {
+            .fail(YallmoError.InvalidMessage("Backend-selected execution requires an explicit Scalamode ToolCall"))
+            .when(scalamodeExecutor.nonEmpty && !(input match {
               case MessagePayload.ToolCall(call) => call.name == FunctionKey.scalamode
               case _                             => false
             }))
@@ -93,7 +93,7 @@ final class AgentRunner[R](
               for {
                 _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                result <- executeAction(agent, call, context, manualScalamode)
+                result <- executeAction(agent, call, context, scalamodeExecutor)
               } yield result
             case _: MessagePayload.Reasoning =>
               ZIO.fail(
@@ -252,7 +252,7 @@ final class AgentRunner[R](
       agent: AgentInstance[R],
       functionCall: FunctionCall,
       staticContext: StaticContext[R],
-      manualScalamode: Option[ScalaCodeExecutor] = None
+      scalamodeExecutor: Option[ScalaCodeExecutor] = None
   ): ZIO[R, YallmoError, MessagePayload] = {
     val call = ExternalFunctionCall(functionCall.name, functionCall.argumentsJson, Some(functionCall.id))
     val execute =
@@ -269,19 +269,19 @@ final class AgentRunner[R](
             .fromOption(functions.get(call.functionKey))
             .orElseFail(YallmoError.UnknownTool(call.functionKey))
             .flatMap { function =>
-              manualScalamode match {
+              scalamodeExecutor match {
                 case None           => function.execute(call)
                 case Some(executor) =>
                   ZIO
-                    .fromOption(ScalamodeFunction.from(function).flatMap(_.manualScalamode))
+                    .fromOption(ScalamodeFunction.from(function).flatMap(_.withExecutor(executor)))
                     .orElseFail(
                       YallmoError.ToolExecutionFailed(
                         call.functionKey,
-                        "Selected Scalamode implementation does not support JS / Node playground; use JVM",
-                        new UnsupportedOperationException("JS / Node playground unsupported")
+                        "Selected Scalamode implementation does not support executor rebinding; use JVM",
+                        new UnsupportedOperationException("executor rebinding unsupported")
                       )
                     )
-                    .flatMap(_.execute(call, executor))
+                    .flatMap(_.execute(call))
               }
             }
         )
@@ -335,9 +335,9 @@ object AgentRunner {
     new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
       .executionWithContext(requestProgram(agent.program), agent.context, AgentBudget.default, resolved = true)
 
-  def invocation(agent: ResolvedAgent, manualScalamode: Option[ScalaCodeExecutor] = None): AgentInvocation[Any] =
+  def invocation(agent: ResolvedAgent, scalamodeExecutor: Option[ScalaCodeExecutor] = None): AgentInvocation[Any] =
     new AgentRunner[Any](agent.functions.map(tool => tool.definition.name -> tool).toMap)
-      .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true, manualScalamode)
+      .invocationWithContext(agent.program, agent.context, AgentBudget.default, resolved = true, scalamodeExecutor)
 
   val LogAnnotationKey = "agentRunnerId"
 }

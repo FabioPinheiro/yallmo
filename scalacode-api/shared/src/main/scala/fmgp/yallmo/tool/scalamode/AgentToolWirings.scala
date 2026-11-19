@@ -22,7 +22,7 @@ object AgentToolWirings {
     filesystem match {
       case Some(read)
           if Set(FilesystemToolDefinition.ReadFile, FilesystemToolDefinition.ListFiles).subsetOf(permitted) =>
-        withServiceInternal(FilesystemService.default(read, filesystemWrite), executor, 45.seconds, 64 * 1024, true)(
+        withServiceInternal(FilesystemService.default(read, filesystemWrite), executor)(
           tools
         )
       case _ => withHelloWorld(executor)(tools)
@@ -33,39 +33,28 @@ object AgentToolWirings {
     * service bindings are preserved. Reapplying the wiring is an identity operation.
     */
   def withHelloWorld(executor: ScalaCodeExecutor): ToolWiring =
-    withServiceInternal(HelloWorldService, executor, 45.seconds, 64 * 1024, true)
+    withServiceInternal(HelloWorldService, executor)
 
   /** Rebind only explicitly integrated built-in defaults, retaining guards. Opaque/default-looking custom closures are
-    * not replaceable. Arbitrary service bindings do not opt into the manual pure playground.
+    * not replaceable. Service-bound integrated functions retain their exact binding on executor substitution.
     */
   def withService(
       service: ScalamodeService,
-      executor: ScalaCodeExecutor,
-      timeout: Duration = 45.seconds,
-      maxOutputBytes: Int = 64 * 1024
-  ): ToolWiring = withServiceInternal(service, executor, timeout, maxOutputBytes, false)
+      executor: ScalaCodeExecutor
+  ): ToolWiring = withServiceInternal(service, executor)
 
   private def withServiceInternal(
       service: ScalamodeService,
-      executor: ScalaCodeExecutor,
-      timeout: Duration,
-      maxOutputBytes: Int,
-      purePlayground: Boolean
+      executor: ScalaCodeExecutor
   ): ToolWiring = tools => {
-    val bound = ScalaTool.withServices(service, timeout, maxOutputBytes)
-    val function = new ScalamodeFunction[Any] {
-      val definition = bound.definition
-      def execute(call: ExternalFunctionCall) = bound.execute(call).provideEnvironment(ZEnvironment(executor))
-      override def manualScalamode =
-        if purePlayground then new ScalaTool(timeout, maxOutputBytes).manualScalamode
-        else None
+    val binding = new ScalamodeFunction.DefaultBinding {
+      def bind(settings: ScalamodeFunction.Settings) =
+        ScalamodePlan(settings, Some(service)).function(executor)
     }
     val replacements = tools
       .filter(_.name == ToolKey.Scalamode)
       .flatMap(_.functions)
-      .flatMap(existing =>
-        ScalamodeFunction.from(existing).flatMap(_.bindDefaultScalamode(function)).map(existing -> _)
-      )
+      .flatMap(existing => ScalamodeFunction.from(existing).flatMap(_.bindDefaultScalamode(binding)).map(existing -> _))
       .toMap
     if replacements.isEmpty then ZIO.succeed(tools)
     else
@@ -85,9 +74,7 @@ object AgentToolWirings {
   def withFilesystem(
       executor: ScalaCodeExecutor,
       route: ScalamodePlatform.RpcRoute,
-      endpoint: String,
-      timeout: Duration = 45.seconds,
-      maxOutputBytes: Int = 64 * 1024
+      endpoint: String
   ): ToolWiring = tools => {
     val reads = tools
       .filter(_.name == ToolKey.Filesystem)
@@ -96,7 +83,7 @@ object AgentToolWirings {
         Set(FilesystemToolDefinition.ReadFile, FilesystemToolDefinition.ListFiles).contains(function.definition.name)
       )
     if reads.isEmpty then ZIO.succeed(tools)
-    else withService(readService(reads, route, endpoint), executor, timeout, maxOutputBytes)(tools)
+    else withService(readService(reads, route, endpoint), executor)(tools)
   }
 
   /** Opt into structured FsRead and, only when explicitly supplied, FsWrite-backed services. Both native read/list
@@ -110,9 +97,7 @@ object AgentToolWirings {
       write: Option[FsWrite],
       executor: ScalaCodeExecutor,
       route: ScalamodePlatform.RpcRoute,
-      endpoint: String,
-      timeout: Duration = 45.seconds,
-      maxOutputBytes: Int = 64 * 1024
+      endpoint: String
   ): ToolWiring = tools => {
     val permitted = tools.filter(_.name == ToolKey.Filesystem).flatMap(_.functions.map(_.definition.name)).toSet
     if !Set(FilesystemToolDefinition.ReadFile, FilesystemToolDefinition.ListFiles).subsetOf(permitted) then
@@ -122,7 +107,7 @@ object AgentToolWirings {
         case None        => FilesystemService.read(read, route, endpoint)
         case Some(value) => FilesystemService.readWrite(read, value, route, endpoint)
       }
-      withService(service, executor, timeout, maxOutputBytes)(tools)
+      withService(service, executor)(tools)
     }
   }
 

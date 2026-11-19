@@ -131,7 +131,10 @@ final class ScalamodeModelSuite extends FunSuite {
       """for {
         |  aux = List(1, 2, 3)
         |  ret <- ZIO.succeed(aux.map(_ * 2).sum)
-        |} yield ret""".stripMargin
+        |} yield ret
+        |
+        |// Uncomment to list all entries in the selected agent's filesystem root (requires fs):
+        |// fs.list(".").map(_.mkString("\n"))""".stripMargin
     )
     h.model.run()
     assertEquals(h.requests.size, 1)

@@ -76,8 +76,8 @@ final class YallmoProtocolSuite extends FunSuite {
       Right(ScalamodeCapabilities.Result(false, "not configured"))
     )
     assertEquals(
-      ScalamodeCapabilities.Result(true, "pure-only").toJson,
-      """{"jsNodeAvailable":true,"reason":"pure-only"}"""
+      ScalamodeCapabilities.Result(true, "services preserved").toJson,
+      """{"jsNodeAvailable":true,"reason":"services preserved"}"""
     )
     assert("""{"jsPureAvailable":true,"reason":"legacy"}""".fromJson[ScalamodeCapabilities.Result].isLeft)
   }

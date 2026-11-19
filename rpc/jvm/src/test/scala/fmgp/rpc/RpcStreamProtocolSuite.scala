@@ -42,11 +42,10 @@ class RpcStreamProtocolSuite extends FunSuite {
       .webSocket { channel =>
         channel.receiveAll(event => receive(channel, result, event)).ensuring(channel.shutdown)
       }
-      .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
+      .withConfig(WebSocketConfig.default.forwardCloseFrames(true).subProtocol(Some(RpcHandshake.offer(token))))
     _ <- http
       .uri(URI.create(server.endpoint))
       .addHeader("Origin", "null")
-      .addHeader("Authorization", s"Bearer ${token.exportSecret}")
       .socket(app)
     answer <- result.await
   } yield answer
@@ -54,7 +53,7 @@ class RpcStreamProtocolSuite extends FunSuite {
   test("Byte transport emits bounded binary batches, not JSON or one frame per byte") {
     val bytes = run {
       for {
-        server <- RpcTestServer.start(RpcWebSocket.Limits(maxFrameBytes = 128))
+        server <- RpcTestServer.start(RpcWebSocketClient.Limits(maxFrameBytes = 128))
         result <- raw[Chunk[Byte]](server, new Service) { (channel, result, event) =>
           event match {
             case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
@@ -148,7 +147,7 @@ class RpcStreamProtocolSuite extends FunSuite {
         )
         _ <- unaryStarted.await
         streams <- RpcClientStreams.make(
-          RpcWebSocket.Limits(),
+          RpcWebSocketClient.Limits(),
           nextId.updateAndGet(_ + 1).map(_.toString),
           writes,
           text =>
@@ -305,11 +304,11 @@ class RpcStreamProtocolSuite extends FunSuite {
           }
           .ensuring(channel.shutdown)
       }
-      .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
+      .withConfig(WebSocketConfig.default.forwardCloseFrames(true).subProtocol(Some(RpcHandshake.Protocol)))
     server <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(1.second)).build
     port <- Server.install(Routes(Method.GET / "rpc" -> handler(app.toResponse))).provideEnvironment(server)
-    token <- RpcToken.generate
-    connection <- RpcWebSocket.connect(port, token)
+    token <- RpcTokenSecurity.generate
+    connection <- RpcWebSocketClient.connect(port, token)
     client = rpc.client(connection)
     result <- (if binary then client.readBytes("fake").runDrain else client.entries().runDrain).either
   } yield result

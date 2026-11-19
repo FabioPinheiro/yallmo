@@ -31,7 +31,7 @@ private[application] object ProductionIncrementalRoute {
     providers = Map(provider -> ProviderConfig.OAI("http://unused.invalid/v1"))
   )
 
-  def withServer[A](use: (ServerExecutionService, OrchestratorRpc, ManualJsScalamode) => Task[A]): Task[A] = {
+  def withServer[A](use: (ServerExecutionService, OrchestratorRpc, ScalaJsRuntime) => Task[A]): Task[A] = {
     val finished = new java.util.concurrent.atomic.AtomicLong(0L)
     ZIO
       .scoped {
@@ -45,7 +45,7 @@ private[application] object ProductionIncrementalRoute {
           )
           configPath = root.resolve("config.json")
           _ <- ZIO.attemptBlocking(Files.writeString(configPath, config.toJson, UTF_8))
-          (startup, manual) <- ManualJsScalamode.provisionBundled.timed
+          (startup, manual) <- ScalaJsRuntime.provisionBundled.timed
           _ <- ZIO
             .fail(new IllegalStateException(manual.capabilities.reason))
             .unless(manual.capabilities.jsNodeAvailable)

@@ -63,7 +63,7 @@ class RpcAuthenticationSuite extends FunSuite {
       .mapError(_ => new Exception("HTTP probe failed"))
 
   test("RpcToken parses canonical secrets, exports explicitly and redacts default rendering and parse errors") {
-    val token = run(RpcToken.generate)
+    val token = run(RpcTokenSecurity.generate)
     assertEquals(token.toString, "RpcToken(<redacted>)")
     assertEquals(token.exportSecret.length, 43)
     assert(RpcToken.parse(token.exportSecret).exists(_.exportSecret == token.exportSecret))
@@ -72,7 +72,7 @@ class RpcAuthenticationSuite extends FunSuite {
     invalid.foreach { value =>
       assertEquals(RpcToken.parse(value).left.map(_.getMessage), Left("Unauthorized"))
     }
-    assert(run(RpcToken.generate).exportSecret != token.exportSecret)
+    assert(run(RpcTokenSecurity.generate).exportSecret != token.exportSecret)
   }
 
   test(
@@ -81,9 +81,9 @@ class RpcAuthenticationSuite extends FunSuite {
     val result = run {
       for {
         server <- RpcTestServer.start()
-        unknown <- RpcToken.generate
+        unknown <- RpcTokenSecurity.generate
         missing <- request(server.port, Nil)
-        wrong <- request(server.port, List("Authorization" -> s"Bearer ${unknown.exportSecret}"))
+        wrong <- request(server.port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(unknown)))
         malformed <- request(server.port, List("Authorization" -> "Bearer malformed"))
         wrongScheme <- request(server.port, List("Authorization" -> "Basic malformed"))
         invoked <- Ref.make(0)
@@ -95,7 +95,7 @@ class RpcAuthenticationSuite extends FunSuite {
         })
         token <- server.rpc.register(dispatcher)
         before <- invoked.get
-        connection <- RpcWebSocket.connect(server.endpoint, token)
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
         reply <- calls.client(connection).echo("registered later")
         after <- invoked.get
       } yield (List(missing, wrong, malformed, wrongScheme), before, reply, after)
@@ -113,7 +113,7 @@ class RpcAuthenticationSuite extends FunSuite {
         healthy <- request(port, Nil, upgrade = false, path = "/health")
         denied <- request(port, Nil)
         ticket <- rpc.register(calls.bind(host("custom:")))
-        connection <- RpcWebSocket.connect(port, ticket)
+        connection <- RpcWebSocketClient.connect(port, ticket)
         reply <- calls.client(connection).echo("server")
       } yield (healthy, denied, reply)
     }
@@ -131,10 +131,10 @@ class RpcAuthenticationSuite extends FunSuite {
         portB <- Server.install(b.routes).provideEnvironment(httpB)
         ticketA <- a.register(calls.bind(host("A:")))
         ticketB <- b.register(calls.bind(host("B:")))
-        wrongRoute <- request(portB, List("Authorization" -> s"Bearer ${ticketA.exportSecret}"))
+        wrongRoute <- request(portB, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(ticketA)))
         wrongRevoke <- b.revoke(ticketA)
-        connectionA <- RpcWebSocket.connect(portA, ticketA)
-        connectionB <- RpcWebSocket.connect(portB, ticketB)
+        connectionA <- RpcWebSocketClient.connect(portA, ticketA)
+        connectionB <- RpcWebSocketClient.connect(portB, ticketB)
         replyA <- calls.client(connectionA).echo("own registry")
         replyB <- calls.client(connectionB).echo("own registry")
       } yield (wrongRoute, wrongRevoke, replyA, replyB)
@@ -151,12 +151,12 @@ class RpcAuthenticationSuite extends FunSuite {
         http <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(1.second)).build
         port <- Server.install(rpc.routes ++ health).provideEnvironment(http)
         activeTicket <- rpc.register(calls.bind(host("active:")))
-        connection <- RpcWebSocket.connect(port, activeTicket)
+        connection <- RpcWebSocketClient.connect(port, activeTicket)
         pending <- rpc.register(calls.bind(host("pending:")))
         _ <- routeScope.close(Exit.unit)
         registered <- rpc.register(calls.bind(host("closed:"))).either
         revoked <- rpc.revoke(pending)
-        denied <- request(port, List("Authorization" -> s"Bearer ${pending.exportSecret}"))
+        denied <- request(port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(pending)))
         healthy <- request(port, Nil, upgrade = false, path = "/health")
         reply <- calls.client(connection).echo("still open")
       } yield (error(registered), revoked, denied, healthy, reply)
@@ -169,10 +169,10 @@ class RpcAuthenticationSuite extends FunSuite {
       for {
         server <- RpcTestServer.start()
         token <- server.rpc.register(calls.bind(host("original:")))
-        connection <- RpcWebSocket.connect(server.port, token)
+        connection <- RpcWebSocketClient.connect(server.port, token)
         first <- calls.client(connection).echo("one")
-        replay <- request(server.port, List("Authorization" -> s"Bearer ${token.exportSecret}"))
-        clientReplay <- RpcWebSocket.connect(server.endpoint, token).either
+        replay <- request(server.port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(token)))
+        clientReplay <- RpcWebSocketClient.connect(server.endpoint, token).either
         revoked <- server.rpc.revoke(token)
         second <- calls.client(connection).echo("two")
       } yield (first, replay, error(clientReplay), revoked, second)
@@ -187,8 +187,8 @@ class RpcAuthenticationSuite extends FunSuite {
         server <- RpcTestServer.start()
         token <- server.rpc.register(calls.bind(host("winner:")))
         start <- Promise.make[Nothing, Unit]
-        first <- (start.await *> RpcWebSocket.connect(server.endpoint, token).either).fork
-        second <- (start.await *> RpcWebSocket.connect(server.endpoint, token).either).fork
+        first <- (start.await *> RpcWebSocketClient.connect(server.endpoint, token).either).fork
+        second <- (start.await *> RpcWebSocketClient.connect(server.endpoint, token).either).fork
         _ <- start.succeed(())
         a <- first.join
         b <- second.join
@@ -210,11 +210,11 @@ class RpcAuthenticationSuite extends FunSuite {
         mergedA <- ZIO.fromEither(calls.bind(host("A:")).merge(controls.bind(controlsA)))
         mergedB <- ZIO.fromEither(calls.bind(host("B:")).merge(controls.bind(controlsB)))
         tokenA <- server.rpc.register(mergedA)
-        a <- RpcWebSocket.connect(server.endpoint, tokenA)
+        a <- RpcWebSocketClient.connect(server.endpoint, tokenA)
         tokenB <- server.rpc.register(mergedB)
-        b <- RpcWebSocket.connect(server.endpoint, tokenB)
+        b <- RpcWebSocketClient.connect(server.endpoint, tokenB)
         tokenC <- server.rpc.register(calls.bind(host("C:")))
-        c <- RpcWebSocket.connect(server.endpoint, tokenC)
+        c <- RpcWebSocketClient.connect(server.endpoint, tokenC)
         _ <- controls.client(a).release(2)
         _ <- controls.client(b).release(7)
         answerA <- calls.client(a).echo("ok")
@@ -233,18 +233,39 @@ class RpcAuthenticationSuite extends FunSuite {
       for {
         server <- RpcTestServer.start()
         token <- server.rpc.register(calls.bind(host("ok:")))
-        auth = "Authorization" -> s"Bearer ${token.exportSecret}"
+        auth = "Sec-WebSocket-Protocol" -> RpcHandshake.offer(token)
         ordinary <- request(server.port, List(auth), upgrade = false)
         browser <- request(server.port, List(auth, "Origin" -> "https://untrusted.example"))
         duplicateOrigin <- request(server.port, List(auth, "Origin" -> "null", "Origin" -> "null"))
         duplicateAuth <- request(server.port, List(auth, auth))
-        connection <- RpcWebSocket.connect(server.endpoint, token)
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
         answer <- calls.client(connection).echo("still available")
         absentOriginToken <- server.rpc.register(calls.bind(host("unused")))
-        absentOrigin <- request(server.port, List("Authorization" -> s"Bearer ${absentOriginToken.exportSecret}"))
+        absentOrigin <- request(server.port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(absentOriginToken)))
       } yield (List(ordinary, browser, duplicateOrigin, duplicateAuth), answer, absentOrigin)
     }
     assertEquals(result, (List.fill(4)(401), "ok:still available", 101))
+  }
+
+  test("ambiguous protocol credentials and the removed Authorization path reject before ticket redemption") {
+    val result = run {
+      for {
+        server <- RpcTestServer.start()
+        token <- server.rpc.register(calls.bind(host("safe:")))
+        offer = RpcHandshake.offer(token)
+        invalid = List(
+          List("Sec-WebSocket-Protocol" -> s"$offer, yallmo.rpc.v2"),
+          List("Sec-WebSocket-Protocol" -> s"$offer, yallmo.ticket.${token.exportSecret}"),
+          List("Sec-WebSocket-Protocol" -> s"$offer, unknown"),
+          List("Authorization" -> s"Bearer ${token.exportSecret}"),
+          List("Sec-WebSocket-Protocol" -> offer, "Authorization" -> s"Bearer ${token.exportSecret}")
+        )
+        statuses <- ZIO.foreach(invalid)(headers => request(server.port, headers))
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
+        reply <- calls.client(connection).echo("unburned")
+      } yield (statuses, reply)
+    }
+    assertEquals(result, (List.fill(5)(401), "safe:unburned"))
   }
 
   test("HTTP/1.0 upgrade is rejected without consuming the ticket") {
@@ -254,11 +275,11 @@ class RpcAuthenticationSuite extends FunSuite {
         token <- server.rpc.register(calls.bind(host("ok:")))
         status <- request(
           server.port,
-          List("Authorization" -> s"Bearer ${token.exportSecret}"),
+          List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(token)),
           httpVersion = "HTTP/1.0"
         )
         _ <- ZIO.succeed(assertEquals(status, 401))
-        connection <- RpcWebSocket.connect(server.endpoint, token)
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
         answer <- calls.client(connection).echo("same ticket")
       } yield answer
     }
@@ -322,13 +343,13 @@ class RpcAuthenticationSuite extends FunSuite {
         token <- server.rpc.register(calls.bind(host("revoked")))
         full <- server.rpc.register(calls.bind(host("full"))).either
         revoked <- server.rpc.revoke(token)
-        revokedStatus <- request(server.port, List("Authorization" -> s"Bearer ${token.exportSecret}"))
+        revokedStatus <- request(server.port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(token)))
         expired <- server.rpc.register(calls.bind(host("expired")), ttl = 1.nanosecond)
         afterRegistration <- Clock.nanoTime
         _ <- Clock.nanoTime.repeatUntil(time => time - afterRegistration > 1L).unit
-        expiredStatus <- request(server.port, List("Authorization" -> s"Bearer ${expired.exportSecret}"))
+        expiredStatus <- request(server.port, List("Sec-WebSocket-Protocol" -> RpcHandshake.offer(expired)))
         fresh <- server.rpc.register(calls.bind(host("fresh:")))
-        connection <- RpcWebSocket.connect(server.endpoint, fresh)
+        connection <- RpcWebSocketClient.connect(server.endpoint, fresh)
         answer <- calls.client(connection).echo("ok")
       } yield (error(full), revoked, revokedStatus, expiredStatus, answer)
     }
@@ -353,13 +374,13 @@ class RpcAuthenticationSuite extends FunSuite {
         })).build
         server <- RpcTestServer.start()
         token <- server.rpc.register(calls.bind(host("safe:")))
-        connection <- RpcWebSocket.connect(server.endpoint, token)
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
         _ <- calls.client(connection).echo("payload")
         _ <- connection.close
         logs = messages.toArray.mkString("\n")
       } yield logs.contains("RPC request sent") && logs.contains("payload") &&
         logs.contains("client connected") && !logs.contains(token.exportSecret) &&
-        !logs.contains("Authorization") && !logs.contains("Bearer")
+        !logs.contains("Authorization") && !logs.contains("Bearer") && !logs.contains("yallmo.ticket.")
     }
     assert(safe)
   }

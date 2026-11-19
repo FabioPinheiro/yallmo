@@ -1,6 +1,6 @@
 package fmgp.yallmo.server
 
-import fmgp.yallmo.server.application.ManualJsScalamode
+import fmgp.yallmo.server.application.ScalaJsRuntime
 import java.nio.file.Path
 import munit.FunSuite
 import zio.*
@@ -27,13 +27,13 @@ final class ManualJsOptionsSuite extends FunSuite {
     val result = Unsafe.unsafe { unsafe ?=>
       Runtime.default.unsafe
         .run(
-          ZIO.scoped(ManualJsScalamode.provision(Path.of("/private/missing-artifacts")))
+          ZIO.scoped(ScalaJsRuntime.provision(Path.of("/private/missing-artifacts")))
         )
         .getOrThrowFiberFailure()
     }
     assertEquals(result.executor, None)
     assert(!result.capabilities.jsNodeAvailable)
     assert(!result.capabilities.reason.contains("/private"))
-    assert(!ManualJsScalamode.disabled.capabilities.jsNodeAvailable)
+    assert(!ScalaJsRuntime.disabled.capabilities.jsNodeAvailable)
   }
 }

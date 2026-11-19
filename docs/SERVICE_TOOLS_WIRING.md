@@ -22,13 +22,13 @@ trait ToolDefinition {
 | `ToolDefinition` | Declares a tool's name and the functions it exposes. Contains no execution logic. |
 | `FunctionToolDefinition` | A function's name, description and input schema. The same type is used in declarations, orchestration and native model requests. |
 | `AgentFunction[R]` | Binds one `FunctionToolDefinition` to an `execute` implementation and its required environment. |
-| `ScalamodeFunction[R]` | Scalamode-specific subtype owning explicit default-rebinding and pure-playground opt-in hooks. |
+| `ScalamodeFunction[R]` | Scalamode-specific subtype owning explicit default-binding and executor-rebinding opt-in hooks. |
 | `AgentTool[R]` | Groups bound `AgentFunction[R]` implementations under a `ToolDefinition`. |
 | `ToolWiring` | Alias for one ordinary function: `Seq[AgentTool[Any]] => IO[YallmoError, Seq[AgentTool[Any]]]`. |
 
 `AgentFunction`, `AgentTool` and the top-level `ToolWiring` alias live together in shared `model`, retaining the `fmgp.yallmo.orchestration` package. `Agent.toolWirings(tools: Seq[AgentTool[Any]]): IO[YallmoError, Seq[AgentTool[Any]]]` defaults to `ZIO.succeed(tools)`. Agents compose utility functions explicitly inside this method; there is no wiring wrapper, extra agent hierarchy or local-function marker trait.
 
-`AgentFunction` exposes only `definition` and `execute`. Scalamode integration lives in `fmgp.yallmo.tool.scalamode.ScalamodeFunction` and `ManualScalamode`, also in shared `model`. Environment binding and approval guards preserve that explicit integration; opaque wrappers do not acquire it from a matching name or schema.
+`AgentFunction` exposes only `definition` and `execute`. Scalamode integration lives in `fmgp.yallmo.tool.scalamode.ScalamodeFunction` in shared `model`, with explicit `withExecutor` and default-binding opt-in hooks. Environment binding and approval guards preserve that explicit integration; opaque wrappers do not acquire it from a matching name or schema.
 
 The built-in objects in [the model's tool declarations][declarations] implement `ToolDefinition` and own their function keys and schemas. `FunctionKey` itself contains no built-in catalog or tool back-reference. Membership comes from `ToolDefinition.functions`, never from parsing a name prefix.
 
@@ -182,7 +182,7 @@ and wiring factory belong to **scalacode-api**, retaining `fmgp.yallmo.tool.scal
 capability; external selective callers import `fmgp.yallmo.tool.scalamode.executeWithServices`. Base-only executors
 reject services without pure fallback. The API module depends only on
 model/filesystem/rpc (plus pinned libraries), never core/server. Core alone owns
-[`ScalaCodeExecutorJVM`](../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala):
+[`ScalaCodeExecutors`](../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutors.scala):
 `ApplicationTools.live` installs `.live`, and explicitly configured host/test construction uses `.layer(...)`.
 Process execution/compiler/source/diagnostic helpers stay core-only, outside every child classpath. The child API
 still owns its small compiled runners. API factories/interfaces on the child classpath grant no ambient safe
@@ -224,3 +224,14 @@ for reads and writes. Supplying rooted `FsWrite` intentionally grants mutations 
 trusted wiring owns the derived API, with no separate write allowlist or post-wiring permission filter.
 `withFilesystem` remains an explicit caller-owned-listener exact-delegation choice. Existing resolved
 generations remain cached: restart the application to observe new code/wiring.
+
+## Backend-preserving Scalamode integration
+
+`ScalaTool.withServices` returns an integrated `ScalamodeFunction`, not an opaque closure. Its immutable API-owned
+`ScalamodePlan` captures original timeout, output budget, dependency grants and exact optional service descriptor.
+Default service wiring transforms that plan only for explicitly eligible unbound defaults. Environment and approval
+wrappers forward executor rebinding structurally and rewrap the result, so approval runs once at the same boundary.
+Opaque custom functions, even with the default name/schema, are not substituted. Custom integrated functions must
+explicitly implement `withExecutor`; inspected metadata is never enough to recreate their authority. The operator
+JVM/Scala.js selector invokes this same selected operation with a request-local executor. See the
+[tool guide](tools/TOOL-SCALA-SCRIPT.md) and [parity delivery record](tools/SCALAMODE-BACKEND-PARITY-PLAN.md).

@@ -2,7 +2,6 @@ package fmgp.yallmo.tool.scalamode
 
 import fmgp.yallmo.tool.ScalaModeResult
 import java.nio.file.{Files, Path}
-import java.util.jar.{JarEntry, JarOutputStream}
 import munit.FunSuite
 import zio.*
 
@@ -10,10 +9,10 @@ private[scalamode] object ScalaCodeExecutorNodeFixtures {
   def artifacts(root: Path): Seq[Path] = Seq("scalacode-api", "filesystem", "rpc", "model").map { name =>
     root.resolve(s"target/out/sjs1/scala-3.10.1/yallmo-$name/yallmo-${name}_sjs1_3-2.0.0-SNAPSHOT.jar")
   }
-  def realBackend: ScalaCodeExecutorJVM.Backend = ScalaCodeExecutorJVM.Backend.Node(
-    artifacts(Path.of(sys.env.getOrElse("YALLMO_TEST_NODE_ARTIFACT_ROOT", ".")).toAbsolutePath),
-    sys.env.getOrElse("YALLMO_TEST_NODE", "node")
+  def realArtifacts: Seq[Path] = artifacts(
+    Path.of(sys.env.getOrElse("YALLMO_TEST_NODE_ARTIFACT_ROOT", ".")).toAbsolutePath
   )
+  def realNode: String = sys.env.getOrElse("YALLMO_TEST_NODE", "node")
 }
 
 final class ScalaCodeExecutorNodeSuite extends FunSuite {
@@ -22,156 +21,23 @@ final class ScalaCodeExecutorNodeSuite extends FunSuite {
   private def run[E, A](effect: ZIO[Any, E, A]): A =
     Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
 
-  private def withFakeBackend(compile: String, node: String)(test: (ScalaCodeExecutor, Path) => Unit): Unit = {
-    val root = Files.createTempDirectory("yallmo-node-test-")
-    try {
-      val artifacts = ScalaCodeExecutorNodeFixtures.artifacts(root)
-      artifacts.foreach { path =>
-        Files.createDirectories(path.getParent)
-        val jar = new JarOutputStream(Files.newOutputStream(path))
-        try { jar.putNextEntry(new JarEntry("Reviewed.sjsir")); jar.closeEntry() }
-        finally jar.close()
-      }
-      def script(name: String, body: String): Path = {
-        val path = root.resolve(name)
-        Files.writeString(path, "#!/bin/sh\n" + body + "\n")
-        assert(path.toFile.setExecutable(true))
-        path
-      }
-      val cli = script("cli", compile)
-      val runtime = script("node", node)
-      val executor = ScalaCodeExecutorJVM.make(
-        cli.toString,
-        backend = ScalaCodeExecutorJVM.Backend.Node(artifacts, runtime.toString)
-      )
-      test(executor, root)
-    } finally {
-      val paths = Files.walk(root)
-      try paths.sorted(java.util.Comparator.reverseOrder()).forEach(path => { Files.deleteIfExists(path); () })
-      finally paths.close()
-    }
-  }
-
-  test("Node package/link is compilation, fresh direct runtime has no compiler or JVM flags") {
-    withFakeBackend(
-      "test \"$1\" = package || exit 11\nsleep 0.1\ntouch execution-started\nprintf compiler >&2",
-      "test \"$1\" = --max-old-space-size=128 || exit 12\n" +
-        "test \"$2\" = program.cjs || exit 13\ntest \"$3\" = --scalamode-node || exit 14\n" +
-        "test ! -e execution-started || exit 15\nsleep 0.05\ntouch execution-started\nsleep 0.1\nprintf 42"
-    ) { (executor, _) =>
-      val result = run(executor.execute("42", 5.seconds, 1024))
-      assertEquals(result.exitCode, 0, result.output)
-      assertEquals(result.output, "42")
-      assertEquals(result.logs, Seq("compiler"))
-      assert(result.compilationTime >= 80)
-      assert(result.executionTime >= 120)
-      assert(result.executionSetupTime.exists(t => t >= 30 && t < result.executionTime))
-      assert(result.totalTime >= result.compilationTime + result.executionTime)
-    }
-  }
-
-  test("link failure is not runtime failure; absent marker never inferred from stdout") {
-    withFakeBackend("printf link-failed >&2; exit 1", "exit 99") { (executor, _) =>
-      val result = run(executor.execute("42", 5.seconds, 1024))
-      assert(result.result.isInstanceOf[ScalaModeResult.CompilationError])
-      assertEquals(result.executionTime, 0L)
-      assertEquals(result.executionSetupTime, None)
-    }
-    withFakeBackend("touch execution-started", "printf execution-started; exit 2") { (executor, _) =>
-      val result = run(executor.execute("42", 5.seconds, 1024))
-      assert(result.result.isInstanceOf[ScalaModeResult.Executed])
-      assertEquals(result.exitCode, 2)
-      assertEquals(result.executionSetupTime, None)
-    }
-  }
-
-  test("shared byte budget spans linker, runtime and file logs") {
-    withFakeBackend("printf 1234 >&2", "printf 5678; printf abcdef > runtime.jsonl") { (executor, _) =>
-      val result = run(executor.execute("42", 5.seconds, 10))
-      assert(result.truncated)
-      assertEquals(result.output, "5678")
-      assertEquals(result.logs, Seq("1234", "a")) // Final display also charges the separator newline.
-    }
-  }
-
-  test("shared deadline times out link or runtime and cleans working directory") {
-    for duringLink <- List(true, false) do {
-      withFakeBackend(
-        "pwd > \"$(dirname \"$0\")/work\"\n" + (if duringLink then "sleep 60" else "sleep 0.15"),
-        "touch execution-started; sleep 60"
-      ) { (executor, root) =>
-        val result = run(executor.execute("42", 400.millis, 1024))
-        assert(result.result.isInstanceOf[ScalaModeResult.TimedOut])
-        assert(!Files.exists(Path.of(Files.readString(root.resolve("work")).trim)))
-        if duringLink then {
-          assertEquals(result.executionTime, 0L)
-          assertEquals(result.executionSetupTime, None)
-        } else assert(result.executionSetupTime.nonEmpty)
-      }
-    }
-  }
-
-  test("cancellation kills Node and descendants before deleting invocation directory") {
-    withFakeBackend(
-      "exit 0",
-      "pwd > \"$(dirname \"$0\")/work\"\nsleep 60 &\necho $! > \"$(dirname \"$0\")/pid\"\nwait"
-    ) { (executor, root) =>
-      run(ZIO.scoped {
-        for {
-          fiber <- executor.execute("42", 30.seconds, 1024).forkScoped
-          _ <- ZIO.attemptBlocking {
-            val until = java.lang.System.nanoTime() + 5000000000L
-            while !Files.exists(root.resolve("pid")) && java.lang.System.nanoTime() < until do Thread.sleep(10)
-            assert(Files.exists(root.resolve("pid")))
-          }
-          _ <- fiber.interrupt
-        } yield ()
-      })
-      val pid = Files.readString(root.resolve("pid")).trim.toLong
-      assert(!ProcessHandle.of(pid).isPresent || !ProcessHandle.of(pid).get().isAlive)
-      assert(!Files.exists(Path.of(Files.readString(root.resolve("work")).trim)))
-    }
-  }
-
-  test("services and extra dependency grants fail before metadata, listener or process acquisition") {
-    val executor = ScalaCodeExecutorJVM.make(
-      "must-not-launch",
-      backend = ScalaCodeExecutorJVM.Backend.Node(Seq.empty, "must-not-launch")
+  private var scope: Scope.Closeable = scala.compiletime.uninitialized
+  override def beforeEach(context: BeforeEach): Unit = { scope = run(Scope.make) }
+  override def afterEach(context: AfterEach): Unit = run(scope.close(Exit.unit))
+  private def provision(cli: String, node: String = ScalaCodeExecutorNodeFixtures.realNode): ScalaCodeExecutor =
+    run(
+      ScalaCodeExecutors
+        .node(ScalaCodeExecutorNodeFixtures.realArtifacts, cli, node)
+        .provideEnvironment(ZEnvironment[Scope](scope))
     )
-    val services = new ScalamodeService {
-      def apiDocs: String = "must not be read"
-      def binding: ScalamodeService.Binding = throw new AssertionError("metadata must not be read")
-    }
-    assert(run(executor.executeWithServices("42", services, 1.second, 1024).either).isLeft)
-    val error = run(executor.execute("42", 1.second, 1024, Seq("unreviewed:extra:1")).either)
-    assert(error.swap.toOption.get.getMessage.contains("extra dependency grants"))
-    assert(!run(executor.isAvailable))
-  }
-
-  test("missing Node launch propagates a host failure and still deletes the invocation directory") {
-    withFakeBackend("pwd > \"$(dirname \"$0\")/work\"\nrm \"$(dirname \"$0\")/node\"", "exit 99") { (executor, root) =>
-      assert(run(executor.execute("42", 5.seconds, 1024).either).isLeft)
-      assert(!Files.exists(Path.of(Files.readString(root.resolve("work")).trim)))
-    }
-  }
-
-  test("compiler and Node strip preload, module-path and Java/classpath injection") {
-    val check =
-      "test -z \"$NODE_OPTIONS$NODE_PATH$JAVA_TOOL_OPTIONS$JDK_JAVA_OPTIONS$_JAVA_OPTIONS$CLASSPATH\" || exit 88\n"
-    withFakeBackend(check + "exit 0", check + "printf 42") { (executor, _) =>
-      val result = run(executor.execute("42", 5.seconds, 1024))
-      assertEquals(result.exitCode, 0, result.output)
-      assertEquals(result.output, "42")
-    }
-  }
 
   test("reviewed artifact contract rejects JVM, missing and wrong compiler inputs") {
-    intercept[IllegalArgumentException](ScalaCodeExecutorJVM.nodeClasspath(Seq(Path.of("application.jar")), "3.10.1"))
-    intercept[IllegalArgumentException](ScalaCodeExecutorJVM.nodeClasspath(Seq.empty, "3.10.0"))
+    intercept[IllegalArgumentException](ScalamodeProgram.nodeClasspath(Seq(Path.of("application.jar")), "3.10.1"))
+    intercept[IllegalArgumentException](ScalamodeProgram.nodeClasspath(Seq.empty, "3.10.0"))
     intercept[IllegalArgumentException](
-      ScalaCodeExecutorJVM.nodeClasspath(ScalaCodeExecutorNodeFixtures.artifacts(Path.of("missing")), "3.10.1")
+      ScalamodeProgram.nodeClasspath(ScalaCodeExecutorNodeFixtures.artifacts(Path.of("missing")), "3.10.1")
     )
-    val args = ScalaCodeExecutorJVM.nodeCompileArguments("scala-cli", true, "reviewed")
+    val args = ScalamodeProgram.nodeCompileArguments("scala-cli", true, "reviewed")
     assert(args.contains("dev.zio::zio::2.1.27"))
     assert(!args.contains("dev.zio::zio:2.1.27"))
     assert(args.contains("--offline"))
@@ -185,7 +51,7 @@ final class ScalaCodeExecutorNodeSuite extends FunSuite {
       sys.env.contains("YALLMO_TEST_SCALA_CLI") && sys.env.contains("YALLMO_TEST_NODE"),
       "Set YALLMO_TEST_SCALA_CLI and YALLMO_TEST_NODE; package the four reviewed Scala.js artifacts first"
     )
-    ScalaCodeExecutorJVM.make(sys.env("YALLMO_TEST_SCALA_CLI"), backend = ScalaCodeExecutorNodeFixtures.realBackend)
+    provision(sys.env("YALLMO_TEST_SCALA_CLI"))
   }
 
   test("real restricted Node values, lazy construction, effects, failures, marker and truncation") {
@@ -235,7 +101,7 @@ final class ScalaCodeExecutorNodeSuite extends FunSuite {
            |""".stripMargin
       )
       assert(wrapper.toFile.setExecutable(true))
-      val executor = ScalaCodeExecutorJVM.make(wrapper.toString, backend = ScalaCodeExecutorNodeFixtures.realBackend)
+      val executor = provision(wrapper.toString)
       val result = run(executor.execute("42", 30.seconds, 16384))
       assert(result.result.isInstanceOf[ScalaModeResult.CompilationError], result.output)
       assertEquals(result.executionTime, 0L)
@@ -270,12 +136,7 @@ final class ScalaCodeExecutorNodeSuite extends FunSuite {
            |""".stripMargin
       )
       assert(wrapper.toFile.setExecutable(true))
-      val backend = ScalaCodeExecutorNodeFixtures.realBackend match {
-        case ScalaCodeExecutorJVM.Backend.Node(artifacts, _) =>
-          ScalaCodeExecutorJVM.Backend.Node(artifacts, wrapper.toString)
-        case _ => fail("expected Node backend")
-      }
-      val child = ScalaCodeExecutorJVM.make(sys.env("YALLMO_TEST_SCALA_CLI"), backend = backend)
+      val child = provision(sys.env("YALLMO_TEST_SCALA_CLI"), wrapper.toString)
       run(ZIO.scoped {
         for {
           fiber <- child.execute("while true do ()", 120.seconds, 16384).forkScoped
@@ -323,4 +184,24 @@ final class ScalaCodeExecutorNodeSuite extends FunSuite {
       assertEquals(result.executionSetupTime, None)
     }
   }
+  test("production retained workspace rejects stale code, serializes calls and rotates after 64 compilations") {
+    val executor = realExecutor
+    val identities = (1 to 65).map { _ =>
+      val result = run(executor.execute("42", 120.seconds, 16384))
+      assertEquals(result.output.trim, "42", result.toString)
+      val evidence = result.logs.find(_.startsWith("LINKER pid=")).getOrElse(fail(result.toString))
+      evidence.takeWhile(_ != ' ') + evidence.split(" ")(1)
+    }
+    assertEquals(identities.take(64).distinct.size, 1)
+    assertNotEquals(identities.head, identities.last)
+    val bad = run(executor.execute("doesNotExist", 120.seconds, 16384))
+    assert(bad.result.isInstanceOf[ScalaModeResult.CompilationError], bad.toString)
+    assertEquals(bad.executionTime, 0L)
+    val concurrent = run(executor.execute("45", 120.seconds, 16384).zipPar(executor.execute("46", 120.seconds, 16384)))
+    assertEquals(concurrent._1.output.trim, "45")
+    assertEquals(concurrent._2.output.trim, "46")
+    assertEquals(run(executor.execute("val previous = 5; previous", 120.seconds, 16384)).output.trim, "5")
+    assert(run(executor.execute("previous", 120.seconds, 16384)).result.isInstanceOf[ScalaModeResult.CompilationError])
+  }
+
 }

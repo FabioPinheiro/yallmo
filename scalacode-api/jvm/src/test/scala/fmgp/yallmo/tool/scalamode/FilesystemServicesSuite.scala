@@ -1,6 +1,6 @@
 package fmgp.yallmo.tool.scalamode
 
-import fmgp.rpc.{RpcConnection, RpcWebSocket}
+import fmgp.rpc.{RpcWebSocketClient, RpcConnection, RpcWebSocket}
 import fmgp.yallmo.fs.*
 import java.nio.file.Files
 import munit.FunSuite
@@ -30,7 +30,7 @@ final class FilesystemServicesSuite extends FunSuite {
     port <- Server.install(route.routes).provideEnvironment(server)
     service = make(fs, route, s"ws://127.0.0.1:$port/rpc")
     ticket <- route.registerScoped(service.rpcBinding.get.dispatcher)
-    connection <- RpcWebSocket.connect(port, ticket)
+    connection <- RpcWebSocketClient.connect(port, ticket)
     result <- body(service, connection)
   } yield result))
 

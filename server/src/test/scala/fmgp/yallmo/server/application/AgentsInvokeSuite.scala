@@ -691,7 +691,7 @@ final class AgentsInvokeSuite extends FunSuite {
 
   for serviceBound <- List(false, true) do
     test(
-      s"manual pure preserves selected-agent approval/schema/denial and JVM binding (default services=$serviceBound)"
+      s"backend-selected preserves selected-agent approval/schema/denial and JVM binding (default services=$serviceBound)"
     ) {
       run(ZIO.scoped(for {
         approvals <- Ref.make(0)
@@ -707,7 +707,8 @@ final class AgentsInvokeSuite extends FunSuite {
               code: String,
               service: R,
               timeout: Duration,
-              maxOutputBytes: Int
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
           ) =
             jvmCalls.update(_ + 1).as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed("jvm-services")))
         }
@@ -720,10 +721,14 @@ final class AgentsInvokeSuite extends FunSuite {
               code: String,
               service: R,
               timeout: Duration,
-              maxOutputBytes: Int
-          ) = ZIO.dieMessage("No services in pure mode")
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
+          ) = {
+            assertEquals(service.inspections.map(_.parameter), List("hello"))
+            execute(code, timeout, maxOutputBytes, dependencies)
+          }
         }
-        manual <- ManualJsScalamode.checked(node)
+        manual <- ScalaJsRuntime.checked(node)
         builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
         guarded = FunctionApproval.guard(
           builtin,
@@ -786,7 +791,7 @@ final class AgentsInvokeSuite extends FunSuite {
       }))
     }
 
-  test("custom default-looking closures, opaque wrappers and custom services are never substituted for pure mode") {
+  test("custom default-looking closures and opaque wrappers are never substituted") {
     run(ZIO.scoped(for {
       calls <- Ref.make(0)
       executor = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
@@ -794,7 +799,7 @@ final class AgentsInvokeSuite extends FunSuite {
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           ZIO.dieMessage("No pure execution")
       }
-      manual <- ManualJsScalamode.checked(executor)
+      manual <- ScalaJsRuntime.checked(executor)
       custom = new AgentFunction[Any] {
         val definition = fmgp.yallmo.tool.scalamode.ScalaTool.definition
         def execute(call: ExternalFunctionCall) = calls.update(_ + 1).as(ExternalFunctionResult("custom JVM"))
@@ -805,11 +810,7 @@ final class AgentsInvokeSuite extends FunSuite {
           new AgentFunction[Any] {
             val definition = custom.definition
             def execute(call: ExternalFunctionCall) = custom.execute(call)
-          },
-          AgentFunction.provideEnvironment(
-            fmgp.yallmo.tool.scalamode.ScalaTool.withServices(fmgp.yallmo.tool.scalamode.HelloWorldService),
-            ZEnvironment(executor)
-          )
+          }
         )
       ) { function =>
         for {
@@ -821,7 +822,7 @@ final class AgentsInvokeSuite extends FunSuite {
             scalaExecutor = executor
           )
           result <- pure(fixture, scalaRequest())
-        } yield assert(result.contains("does not support JS / Node playground"))
+        } yield assert(result.contains("does not support executor rebinding"))
       }
       fixture <- make(
         _ => ZIO.dieMessage("No inference"),
@@ -836,13 +837,21 @@ final class AgentsInvokeSuite extends FunSuite {
     }))
   }
 
-  test("manual pure work is request-local, survives disconnect and is finalized by application shutdown") {
+  test("backend-selected work is request-local, survives disconnect and is finalized by application shutdown") {
     run(ZIO.scoped(for {
       started <- Promise.make[Nothing, Unit]
       release <- Promise.make[Nothing, Unit]
       stopped <- Promise.make[Nothing, Unit]
-      node = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor {
+      node = new fmgp.yallmo.tool.scalamode.ScalaCodeExecutor
+        with fmgp.yallmo.tool.scalamode.ScalaCodeExecutorServices {
         def isAvailable = ZIO.succeed(true)
+        def executeWithServices[R <: fmgp.yallmo.tool.scalamode.ScalamodeService](
+            code: String,
+            service: R,
+            timeout: Duration,
+            maxOutputBytes: Int,
+            dependencies: Seq[String]
+        ) = execute(code, timeout, maxOutputBytes, dependencies)
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           (started.succeed(()) *> release.await.as(ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(code))))
             .ensuring(stopped.succeed(()))
@@ -856,11 +865,12 @@ final class AgentsInvokeSuite extends FunSuite {
             code: String,
             service: R,
             timeout: Duration,
-            maxOutputBytes: Int
+            maxOutputBytes: Int,
+            dependencies: Seq[String]
         ) =
           execute(code, timeout, maxOutputBytes, Seq.empty)
       }
-      manual <- ManualJsScalamode.checked(node)
+      manual <- ScalaJsRuntime.checked(node)
       builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
       fixture <- make(
         _ => ZIO.dieMessage("No inference"),
@@ -890,7 +900,7 @@ final class AgentsInvokeSuite extends FunSuite {
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           (entered.succeed(()) *> ZIO.never).ensuring(finalized.succeed(()))
       }
-      blockedManual <- ManualJsScalamode.checked(blocking)
+      blockedManual <- ScalaJsRuntime.checked(blocking)
       blocked <- make(
         _ => ZIO.dieMessage("No inference"),
         configuration = scalaConfiguration(false),
@@ -914,7 +924,7 @@ final class AgentsInvokeSuite extends FunSuite {
         def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
           ZIO.fail(new IllegalStateException("/private/artifacts credentials"))
       }
-      manual <- ManualJsScalamode.checked(node)
+      manual <- ScalaJsRuntime.checked(node)
       builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(node))
       fixture <- make(
         _ => ZIO.dieMessage("No inference"),
@@ -936,9 +946,9 @@ final class AgentsInvokeSuite extends FunSuite {
       "Set YALLMO_TEST_JS_ROOT to reviewed staged artifacts for live integration"
     )
     run(ZIO.scoped(for {
-      manual <- ManualJsScalamode.provision(Path.of(sys.env("YALLMO_TEST_JS_ROOT")))
+      manual <- ScalaJsRuntime.provision(Path.of(sys.env("YALLMO_TEST_JS_ROOT")))
       _ = assert(manual.capabilities.jsNodeAvailable, manual.capabilities.reason)
-      jvm = fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM.make()
+      jvm = fmgp.yallmo.tool.scalamode.ScalaCodeExecutors.make()
       builtin = AgentFunction.provideEnvironment(new fmgp.yallmo.tool.scalamode.ScalaTool(), ZEnvironment(jvm))
       fixture <- make(
         _ => ZIO.dieMessage("No inference"),
@@ -985,9 +995,9 @@ final class AgentsInvokeSuite extends FunSuite {
       root: Option[Path] = None,
       configuration: Config = config,
       tools: Chunk[AgentFunction[Any]] = Chunk.empty,
-      manualJs: ManualJsScalamode = ManualJsScalamode.disabled,
+      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled,
       scalaExecutor: fmgp.yallmo.tool.scalamode.ScalaCodeExecutor =
-        fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM.make(),
+        fmgp.yallmo.tool.scalamode.ScalaCodeExecutors.make(),
       toolDefinitions: Chunk[fmgp.yallmo.tool.ToolDefinition] = ApplicationTools.ToolDefinitions
   ): ZIO[Scope, YallmoError, Fixture] =
     for {

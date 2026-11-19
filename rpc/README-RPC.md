@@ -2,8 +2,9 @@
 
 Independent of `core`, `server`, `model`, and AgentRunner. Scala 3 quotes generate both a
 host dispatcher and a real implementation of the service trait for the client; no JVM
-reflection or dynamic proxy is used. Contracts/codecs/macros are shared JVM/Scala.js;
-only the WebSocket transport is JVM-implemented. **There is no JS WebSocket transport yet.**
+reflection or dynamic proxy is used. Contracts, codecs, macros and client protocol state are shared
+JVM/Scala.js. JVM uses zio-http and Scala.js uses native Node >=22.4 WebSocket; server and ticket
+authority remain JVM-only. Browser execution is unsupported.
 
 ## Two services, one connection
 
@@ -46,7 +47,7 @@ object Demo extends ZIOAppDefault {
       // At any later time, register an immutable service set for exactly one connection.
       dispatcher <- ZIO.fromEither(math.bind(mathHost).merge(greeter.bind(greeterHost)))
       ticket <- rpc.register(dispatcher, ttl = 60.seconds)
-      connection <- RpcWebSocket.connect(port, ticket) // exactly one receiver
+      connection <- RpcWebSocketClient.connect(port, ticket) // exactly one receiver
       mathClient = math.client(connection)
       greeterClient = greeter.client(connection)
       answer <- mathClient.add(20, 22)
@@ -216,7 +217,7 @@ ZIO.scoped {
     http <- Server.defaultWith(_.binding("127.0.0.1", 0)).build
     port <- Server.install(rpc.routes ++ health).provideEnvironment(http)
     ticket <- rpc.register(dispatcher) // May be called any time after route creation.
-    connection <- RpcWebSocket.connect(port, ticket)
+    connection <- RpcWebSocketClient.connect(port, ticket)
     // Create generated clients from connection and perform calls here.
     _ <- connection.close
   } yield ()
@@ -282,38 +283,66 @@ avoids blocking a shared sbt server. Use `bgList` and `bgStop <job-id>` to stop 
   the redeemed socket and finalizing its work on scope exit. TTL still bounds redemption,
   not connected lifetime. Other registrations are unaffected unless they share that scope.
 - `rpc.revoke(ticket): UIO[Boolean]` removes an unclaimed, unexpired ticket only.
-  `RpcWebSocket.connect(endpoint, ticket, limits)` or `connect(port, ticket)` returns a
+  `RpcWebSocketClient.connect(endpoint, ticket, limits)` or `connect(port, ticket)` returns a
   scoped `RpcConnection`. Route-scope exit clears pending tickets; your HTTP-server and
   connection scopes own sockets and their workers. Explicit `connection.close` releases
-  its socket **and owned HTTP-client resources** immediately without closing the caller
+  its socket **and any owned transport resources** immediately without closing the caller
   scope; repeated close is safe.
+
+## Native Scala.js / Node transport
+
+`RpcWebSocketClient` owns one shared correlation/stream/deadline implementation on both platforms.
+`RpcWebSocketClient.Limits` is portable; `RpcWebSocket.route` and registration remain JVM-only.
+The JVM socket uses zio-http; JS uses the native WebSocket API, with no HTTP/npm transport dependency.
+Require **Node >=22.4** and probe the actual executable for native WebSocket/subprotocol/arraybuffer
+support during provisioning, not just `node --version`. Browser execution is not enabled.
+
+Incoming native callbacks use an ordered bridge of at most 32 bounded complete messages, with no
+per-event fibers. Overflow closes the socket and fails pending work. Binary delivery uses
+`binaryType = "arraybuffer"`; IDs remain Scala `Long`, not JavaScript `Number`. Outbound
+`bufferedAmount` plus the next message may not exceed `maxFrameBytes`. Scope exit removes callbacks,
+closes sockets and cancels streams. Unary cancellation only removes the local waiter, not remote work.
+Native WebSocket allocates complete messages before application checks: the shared UTF-8/binary
+byte limits apply before parsing, but cannot reproduce Netty's decoder-level allocation bound or
+fragmentation visibility against a malicious server. Server-side frame limits remain unchanged.
+
+The RPC JS suite launches a scoped JVM test host over private stdio pipes and tests the linked
+Scala.js client over real native Node WebSocket, including typed errors, binary streams, lazy early
+cancellation and replay rejection. A separate raw-native interoperability probe covers IDs above
+JavaScript's exact Number range. This does not claim Scalamode tool/backend parity.
 
 ## Tickets and security semantics
 
 - Tickets contain 256 cryptographically random bits, encoded as canonical unpadded URL-safe
   Base64. `RpcToken` is not a case class; default rendering is redacted.
   `ticket.exportSecret` explicitly exports the bearer and `RpcToken.parse(secret)` imports
-  it for a separate JVM. Neither operation authenticates a person or process: **possession
+  it for a separate JVM or Node client. Neither operation authenticates a person or process: **possession
   of the bearer is the only authority**. Deliver it via a trusted bootstrap channel and
   keep it out of logs, exceptions, shell history, generated code and RPC arguments/results.
-- The client sends `Authorization: Bearer ...` only during the WebSocket handshake, never
-  in RPC payloads or URLs. No query-token or cookie fallback exists; query-bearing endpoint
-  URLs are rejected. The listener stores only SHA-256 ticket digests plus bound dispatchers.
+- Both clients offer exactly `yallmo.rpc.v2, yallmo.ticket.<43-character-ticket>` as WebSocket
+  subprotocols. The server validates one stable protocol and one canonical ticket, redeems it
+  before upgrade, and echoes **only `yallmo.rpc.v2`**, never the credential. Duplicate/unknown
+  offers and any `Authorization` header are rejected. This replaces the former Authorization
+  handshake; external consumers must migrate together. Never log the request protocol header.
+  No query-token or cookie fallback exists; query-bearing endpoint URLs are rejected. The
+  JVM listener stores only SHA-256 ticket digests plus bound dispatchers; secure generation,
+  digesting and ticket authority are not shipped in the JS artifact.
 - Each ticket is atomically removed by one accepted upgrade attempt. Concurrent claims
   have at most one winner. Failed/interrupted handshakes **after redemption consume the
   ticket too**: do not retry/reconnect automatically; request a new ticket through the
   trusted bootstrap channel. Non-upgrade GETs, invalid basic upgrade headers, duplicate
   credentials and rejected Origin headers are checked before redemption and cannot burn it.
 - Missing/malformed/unknown/expired/used/revoked credentials all receive the same empty
-  HTTP401 before upgrade. `RpcError.Code.Unauthorized` represents local parse failures and
-  typed HTTP401 handshake failures where available. **zio-http 3.11.6 discards the response
-  status into an untyped handshake exception, so its JVM client currently reports sanitized
-  `Disconnected` for a denied handshake.** It does not parse exception messages as status.
+  HTTP401 before upgrade. `RpcError.Code.Unauthorized` represents local token parse failures.
+  Both clients deliberately normalize opaque rejected upgrades to `Disconnected` (or `TimedOut`
+  when the handshake deadline expires): native WebSocket does not expose rejection HTTP status.
+  Neither client parses exception messages as status or returns credential-bearing diagnostics.
 - Origins must be absent or exactly one literal `null`; all other or duplicate Origin
   headers are rejected before redemption. The JVM client explicitly sends `Origin: null`
   because Netty otherwise generates a concrete Origin automatically. This is a compatibility
   policy, **not evidence of a JVM or trusted caller** (sandboxed browsers can also have null
-  origins). Browser WebSocket APIs cannot attach this bearer header; there is no JS transport.
+  origins). The native Node client normally omits Origin. Browser execution remains unsupported;
+  this compatibility policy must not be treated as a browser-exclusion or authentication boundary.
 - TTL must be finite, positive and at most `auth.maxTtl` (default 5 minutes; hard maximum
   one day). Pending capacity defaults to 128 tickets (configurable 1..65536). Invalid TTL
   fails with `InvalidArguments`; full capacity with `LimitExceeded`. Expiry uses monotonic

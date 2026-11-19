@@ -37,7 +37,8 @@ final class AgentToolWiringsSuite extends FunSuite {
         code: String,
         service: R,
         timeout: Duration,
-        maxOutputBytes: Int
+        maxOutputBytes: Int,
+        dependencies: Seq[String]
     ) = {
       assertEquals(timeout, 45.seconds)
       assertEquals(maxOutputBytes, 64 * 1024)

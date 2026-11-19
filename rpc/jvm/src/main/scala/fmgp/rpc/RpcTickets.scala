@@ -4,37 +4,18 @@ import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
 import zio.*
 
-/** Single-use bearer connection ticket. Export only over a trusted bootstrap channel. */
-final class RpcToken private (private val secret: String) {
-  def exportSecret: String = secret
-  override def toString: String = "RpcToken(<redacted>)"
-  private[rpc] def digest: String =
-    Base64.getUrlEncoder.withoutPadding.encodeToString(
-      MessageDigest.getInstance("SHA-256").digest(secret.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
-    )
-}
-
-object RpcToken {
-
-  /** Strict canonical 256-bit URL-safe encoding; failures never contain the input. */
-  def parse(secret: String): Either[RpcError, RpcToken] =
-    if secret == null || !secret.matches("[A-Za-z0-9_-]{43}") then Left(RpcError(RpcError.Code.Unauthorized))
-    else
-      try {
-        val bytes = Base64.getUrlDecoder.decode(secret)
-        if bytes.length == 32 && Base64.getUrlEncoder.withoutPadding.encodeToString(bytes) == secret then
-          Right(new RpcToken(secret))
-        else Left(RpcError(RpcError.Code.Unauthorized))
-      } catch { case _: IllegalArgumentException => Left(RpcError(RpcError.Code.Unauthorized)) }
-
-  private[rpc] def generate: IO[RpcError, RpcToken] =
-    ZIO
-      .attempt {
-        val bytes = new Array[Byte](32)
-        new SecureRandom().nextBytes(bytes)
-        new RpcToken(Base64.getUrlEncoder.withoutPadding.encodeToString(bytes))
-      }
-      .mapError(_ => RpcError(RpcError.Code.ServiceFailure))
+private[rpc] object RpcTokenSecurity {
+  def digest(token: RpcToken): String = Base64.getUrlEncoder.withoutPadding.encodeToString(
+    MessageDigest.getInstance("SHA-256").digest(token.exportSecret.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+  )
+  def generate: IO[RpcError, RpcToken] = ZIO
+    .attempt {
+      val bytes = new Array[Byte](32)
+      new SecureRandom().nextBytes(bytes)
+      Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
+    }
+    .mapError(_ => RpcError(RpcError.Code.ServiceFailure))
+    .flatMap(secret => ZIO.fromEither(RpcToken.parse(secret)))
 }
 
 /** Pending tickets only: expiry/revocation never affect established connections. Scoped tickets carry caller authority.
@@ -49,7 +30,7 @@ private[rpc] final class RpcTickets private (
     if ttl <= Duration.Zero || ttl > config.maxTtl then ZIO.fail(RpcError(RpcError.Code.InvalidArguments))
     else
       for {
-        token <- RpcToken.generate
+        token <- RpcTokenSecurity.generate
         time <- now
         result <- state.modify { current =>
           val live = current.tickets.filter { case (_, ticket) => time - ticket.expires < 0 }
@@ -59,7 +40,9 @@ private[rpc] final class RpcTickets private (
           else
             (
               Right(token),
-              current.copy(tickets = live.updated(token.digest, Ticket(dispatcher, time + ttl.toNanos, scope)))
+              current.copy(tickets =
+                live.updated(RpcTokenSecurity.digest(token), Ticket(dispatcher, time + ttl.toNanos, scope))
+              )
             )
         }
         value <- ZIO.fromEither(result)
@@ -70,8 +53,11 @@ private[rpc] final class RpcTickets private (
       time <- now
       result <- state.modify { current =>
         val live = current.tickets.filter { case (_, ticket) => time - ticket.expires < 0 }
-        val ticket = if current.closed then None else live.get(token.digest)
-        (ticket.toRight(RpcError(RpcError.Code.Unauthorized)), current.copy(tickets = live - token.digest))
+        val ticket = if current.closed then None else live.get(RpcTokenSecurity.digest(token))
+        (
+          ticket.toRight(RpcError(RpcError.Code.Unauthorized)),
+          current.copy(tickets = live - RpcTokenSecurity.digest(token))
+        )
       }
       ticket <- ZIO.fromEither(result)
     } yield ticket
@@ -81,7 +67,7 @@ private[rpc] final class RpcTickets private (
       time <- now
       removed <- state.modify { current =>
         val live = current.tickets.filter { case (_, ticket) => time - ticket.expires < 0 }
-        (live.contains(token.digest), current.copy(tickets = live - token.digest))
+        (live.contains(RpcTokenSecurity.digest(token)), current.copy(tickets = live - RpcTokenSecurity.digest(token)))
       }
     } yield removed
 

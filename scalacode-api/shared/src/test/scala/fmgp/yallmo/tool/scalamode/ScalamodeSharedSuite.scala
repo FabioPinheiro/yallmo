@@ -26,7 +26,8 @@ final class ScalamodeSharedSuite extends ZSuite {
           code: String,
           services: R,
           timeout: Duration,
-          maxOutputBytes: Int
+          maxOutputBytes: Int,
+          dependencies: Seq[String]
       ) = ZIO.succeed {
         assertEquals(code, "math.twice(21)")
         assert(services eq service)
@@ -45,6 +46,56 @@ final class ScalamodeSharedSuite extends ZSuite {
         .provideEnvironment(ZEnvironment(executor))
     } yield assertEquals(result.text, "42")
   })
+
+  testZ(
+    "service-bound opt-in and default service wiring preserve original limits, dependency grants and definition on rebinding"
+  )(
+    ZIO.suspendSucceed {
+      val dependencies = Seq("reviewed::helper:1.0")
+      var executions = 0
+      var captured: Option[ScalamodeService] = None
+      val executor: ScalaCodeExecutor = new ScalaCodeExecutor with ScalaCodeExecutorServices {
+        def isAvailable = ZIO.succeed(true)
+        def execute(code: String, timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String]) =
+          ZIO.dieMessage("Service stripping is forbidden")
+        def executeWithServices[R <: ScalamodeService](
+            code: String,
+            services: R,
+            timeout: Duration,
+            maxOutputBytes: Int,
+            grants: Seq[String]
+        ) = ZIO.succeed {
+          assertEquals(timeout, 7.seconds)
+          assertEquals(maxOutputBytes, 1234)
+          assertEquals(grants, dependencies)
+          captured.foreach(previous => assert(previous eq services))
+          captured = Some(services)
+          executions += 1
+          ExternalFunctionResult.ScalaMode(ScalaModeResult.Executed(code))
+        }
+      }
+      val explicit = ScalaTool.withServices(service, 7.seconds, 1234, dependencies)
+      val provided = AgentFunction.provideEnvironment(explicit, ZEnvironment(executor))
+      val original =
+        AgentFunction.provideEnvironment(new ScalaTool(7.seconds, 1234, dependencies), ZEnvironment(executor))
+      val call = ExternalFunctionCall(FunctionKey.scalamode, """{"code":"42"}""")
+      for {
+        a <- provided.execute(call)
+        alternate = ScalamodeFunction.from(provided).get.withExecutor(executor).get
+        b <- alternate.execute(call)
+        _ <- ZIO.succeed { assertEquals(alternate.definition, provided.definition); captured = None }
+        tools <- AgentToolWirings.withDefaults(executor)(Seq(AgentTool(ScalamodeToolDefinition, Chunk(original))))
+        bound = tools.head.functions.head
+        c <- bound.execute(call)
+        rebound = ScalamodeFunction.from(bound).get.withExecutor(executor).get
+        d <- rebound.execute(call)
+      } yield {
+        assertEquals(rebound.definition, bound.definition)
+        assertEquals(List(a.text, b.text, c.text, d.text), List.fill(4)("42"))
+        assertEquals(executions, 4)
+      }
+    }
+  )
 
   test("binding validation rejects source injection on either platform") {
     intercept[IllegalArgumentException](ScalamodeService.Binding("bad;code", Seq("example.Api"), "example.Run.run"))
@@ -80,7 +131,8 @@ final class ScalamodeSharedSuite extends ZSuite {
             code: String,
             services: R,
             timeout: Duration,
-            maxOutputBytes: Int
+            maxOutputBytes: Int,
+            dependencies: Seq[String]
         ) = ZIO.succeed {
           assertEquals(code, "hello.helloWorld")
           assert(services eq HelloWorldService)

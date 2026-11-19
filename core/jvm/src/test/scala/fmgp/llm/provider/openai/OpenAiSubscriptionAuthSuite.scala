@@ -435,7 +435,8 @@ final class OpenAiSubscriptionAuthSuite extends FunSuite {
               code: String,
               service: R,
               timeout: Duration,
-              maxOutputBytes: Int
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
           ) = ZIO.succeed {
             assert(service eq HelloWorldService)
             assertEquals(code, "hello.helloWorld")

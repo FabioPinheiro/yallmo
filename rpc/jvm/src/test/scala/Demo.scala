@@ -74,7 +74,7 @@ object Demo extends ZIOAppDefault {
       http <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(1.second)).build
       port <- Server.install(rpc.routes).provideEnvironment(http)
       token <- rpc.register(Calculator.rpc.bind(CalculatorLive))
-      connection <- RpcWebSocket.connect(port, token)
+      connection <- RpcWebSocketClient.connect(port, token)
       client = Calculator.rpc.client(connection)
       result <- client.add(20, 22)
       _ <- Console.printLine(s"Result1: $result")
@@ -124,7 +124,7 @@ object DemoClient extends ZIOAppDefault {
         .attempt(java.nio.file.Files.readString(java.nio.file.Path.of(path)))
         .mapError(_ => new Exception("Cannot read bootstrap file"))
       token <- ZIO.fromEither(RpcToken.parse(secret))
-      connection <- RpcWebSocket.connect("ws://127.0.0.1:9000/rpc", token)
+      connection <- RpcWebSocketClient.connect("ws://127.0.0.1:9000/rpc", token)
       client = Calculator.rpc.client(connection)
       result <- client.add(20, 22)
       _ <- Console.printLine(s"Result: $result")

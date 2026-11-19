@@ -98,7 +98,8 @@ final class ServerCompositionSuite extends FunSuite {
               code: String,
               service: R,
               timeout: Duration,
-              maxOutputBytes: Int
+              maxOutputBytes: Int,
+              dependencies: Seq[String]
           ) = {
             assert(service eq HelloWorldService)
             assertEquals(code, "hello.helloWorld")
@@ -179,7 +180,8 @@ final class ServerCompositionSuite extends FunSuite {
             code: String,
             service: R,
             timeout: Duration,
-            maxOutputBytes: Int
+            maxOutputBytes: Int,
+            dependencies: Seq[String]
         ) = {
           assertEquals(service.inspections.map(_.parameter), List("fs", "hello"))
           assert(service.rpcBinding.isEmpty)

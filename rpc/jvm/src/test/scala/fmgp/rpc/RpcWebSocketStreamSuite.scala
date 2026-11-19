@@ -15,13 +15,13 @@ class RpcWebSocketStreamSuite extends FunSuite {
   }
   private def connect(
       service: RpcStreamFixtures.Files,
-      limits: RpcWebSocket.Limits = RpcWebSocket.Limits(),
-      clientLimits: RpcWebSocket.Limits = RpcWebSocket.Limits()
+      limits: RpcWebSocketClient.Limits = RpcWebSocketClient.Limits(),
+      clientLimits: RpcWebSocketClient.Limits = RpcWebSocketClient.Limits()
   ) =
     for {
       server <- RpcTestServer.start(limits)
       ticket <- server.rpc.register(rpc.bind(service))
-      connection <- RpcWebSocket.connect(server.endpoint, ticket, clientLimits)
+      connection <- RpcWebSocketClient.connect(server.endpoint, ticket, clientLimits)
     } yield connection
   private def domain[E, A](effect: ZIO[Any, E, A]): Task[A] = effect.mapError(e => new Exception(e.toString))
 
@@ -42,7 +42,7 @@ class RpcWebSocketStreamSuite extends FunSuite {
                 .fromFile(java.nio.file.Path.of(path).toFile, chunkSize = 4096)
                 .mapError(_ => FsError.Missing(path))
           },
-          RpcWebSocket.Limits(maxFrameBytes = 1024)
+          RpcWebSocketClient.Limits(maxFrameBytes = 1024)
         )
         client = rpc.client(connection)
         bytes <- domain(client.readBytes(file.toString).runCollect)
@@ -106,7 +106,7 @@ class RpcWebSocketStreamSuite extends FunSuite {
                 .acquireReleaseWith(started.succeed(()).unit)(_ => released.succeed(()).unit)
                 .flatMap(_ => ZStream.repeatZIO(reads.updateAndGet(_ + 1).map(_.toByte)))
           },
-          RpcWebSocket.Limits(maxStreams = 2)
+          RpcWebSocketClient.Limits(maxStreams = 2)
         )
         client = rpc.client(connection)
         fiber <- domain(
@@ -187,7 +187,7 @@ class RpcWebSocketStreamSuite extends FunSuite {
               if path == "idle" then ZStream(1.toByte, 2.toByte)
               else ZStream.acquireReleaseWith(ZIO.unit)(_ => released.succeed(()).unit).flatMap(_ => ZStream.never)
           },
-          clientLimits = RpcWebSocket.Limits(timeout = 1.second)
+          clientLimits = RpcWebSocketClient.Limits(timeout = 1.second)
         )
         client = rpc.client(connection)
         idle <- domain(client.readBytes("idle").tap(_ => idleReady.succeed(()) *> idleGate.await).runCollect).fork
@@ -214,8 +214,8 @@ class RpcWebSocketStreamSuite extends FunSuite {
             override def readBytes(path: String): ZStream[Any, FsError, Byte] =
               ZStream.fromZIO(started.succeed(()) *> gate.await).drain
           },
-          RpcWebSocket.Limits(maxStreams = 1),
-          RpcWebSocket.Limits(maxStreams = 2)
+          RpcWebSocketClient.Limits(maxStreams = 1),
+          RpcWebSocketClient.Limits(maxStreams = 2)
         )
         client = rpc.client(connection)
         first <- client.readBytes("held").runDrain.fork
@@ -263,7 +263,7 @@ class RpcWebSocketStreamSuite extends FunSuite {
       for {
         server <- RpcTestServer.start()
         token <- server.rpc.register(RpcStreamCodecFixtures.rpc.bind(RpcStreamCodecFixtures.service))
-        connection <- RpcWebSocket.connect(server.endpoint, token)
+        connection <- RpcWebSocketClient.connect(server.endpoint, token)
         client = RpcStreamCodecFixtures.rpc.client(connection)
         nullable <- client.nullable().runDrain.either
         codec <- client.value("throw").runDrain.either
@@ -284,7 +284,7 @@ class RpcWebSocketStreamSuite extends FunSuite {
           new Service {
             override def entries(): ZStream[Any, FsError, Entry] = ZStream(Entry("🙂" * 1000, 1))
           },
-          RpcWebSocket.Limits(maxFrameBytes = 256, maxStreams = 1)
+          RpcWebSocketClient.Limits(maxFrameBytes = 256, maxStreams = 1)
         )
         client = rpc.client(connection)
         result <- client.entries().runDrain.either
@@ -303,8 +303,8 @@ class RpcWebSocketStreamSuite extends FunSuite {
       for {
         connection <- connect(
           new Service,
-          RpcWebSocket.Limits(maxFrameBytes = 256),
-          RpcWebSocket.Limits(maxFrameBytes = 256)
+          RpcWebSocketClient.Limits(maxFrameBytes = 256),
+          RpcWebSocketClient.Limits(maxFrameBytes = 256)
         )
         client = rpc.client(connection)
         large <- client.readBytes("x" * 1024).runDrain.either

@@ -1,6 +1,6 @@
 package fmgp.yallmo.server.application
 
-import fmgp.yallmo.tool.scalamode.ScalaCodeExecutorJVM
+import fmgp.yallmo.tool.scalamode.ScalaCodeExecutors
 import java.io.{ByteArrayInputStream, IOException, InputStream, UncheckedIOException}
 import java.net.URLClassLoader
 import java.nio.file.{Files, Path}
@@ -129,7 +129,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
     run(ZIO.scoped {
       for {
         root <- BundledJsArtifacts.stage()
-        failure <- fmgp.yallmo.tool.scalamode.ScalaCodeExecutorNodeIncremental
+        failure <- fmgp.yallmo.tool.scalamode.ScalaJsCompiler
           .makeWithToolingResources(
             BundledJsArtifacts.artifactNames.map(root.resolve),
             _ => null
@@ -143,9 +143,9 @@ final class BundledJsArtifactsSuite extends FunSuite {
   test("missing Node disables production pure capability without changing JVM availability") {
     assume(sys.env.get("YALLMO_TEST_EXPECT_NO_NODE").contains("1"), "Run with a PATH containing Scala CLI but no Node")
     run(ZIO.scoped(for {
-      manual <- ManualJsScalamode.provisionBundled
+      manual <- ScalaJsRuntime.provisionBundled
       _ <- ZIO.attempt { assert(!manual.capabilities.jsNodeAvailable); assertEquals(manual.executor, None) }
-      jvmAvailable <- ScalaCodeExecutorJVM.make().isAvailable
+      jvmAvailable <- ScalaCodeExecutors.make().isAvailable
       _ <- ZIO.attempt(assert(jvmAvailable))
     } yield ()))
   }
@@ -209,7 +209,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
           for {
             _ <- (Runtime.removeDefaultLoggers >>> Runtime.addLogger(capture)).build
             hostWork <- Ref.make(0)
-            manual <- ManualJsScalamode.provisionBundled(staging)
+            manual <- ScalaJsRuntime.provisionBundled(staging)
             _ <- hostWork.update(_ + 42)
             completed <- hostWork.get
             _ <- ZIO.succeed {
@@ -218,7 +218,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
               assert(!manual.capabilities.jsNodeAvailable)
               assertEquals(
                 manual.capabilities.reason,
-                "JS / Node playground unavailable: check server Node, Scala CLI and reviewed artifacts"
+                "JS / Node backend unavailable: check server Node, Scala CLI and reviewed artifacts"
               )
               assert(Files.exists(failedRoot.get()))
               assertEquals(cleanupCalls.get(), 1)
@@ -250,7 +250,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
                 root => ZIO.succeed(failedRoot.set(root)) *> ZIO.fail(new IOException("cancel cleanup failure"))
             )
             .tap(_ => staged.succeed(())) *> ZIO.never
-          fiber <- ZIO.scoped(ManualJsScalamode.provisionBundled(staging).tap(_ => returnedCapability.set(true))).fork
+          fiber <- ZIO.scoped(ScalaJsRuntime.provisionBundled(staging).tap(_ => returnedCapability.set(true))).fork
           _ <- staged.await
           result <- fiber.interrupt
           returned <- returnedCapability.get
@@ -280,7 +280,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
         val result = run(
           ZIO
             .scoped(
-              ManualJsScalamode.provisionBundled(
+              ScalaJsRuntime.provisionBundled(
                 BundledJsArtifacts.stage(
                   openResource = _ => throw new IOException("staging failed"),
                   removeRoot = root => ZIO.succeed(failedRoot.set(root)) *> cleanup
@@ -333,12 +333,9 @@ final class BundledJsArtifactsSuite extends FunSuite {
     for (cli, node) <- List(("/private/missing-scala-cli", "node"), ("scala-cli", "/private/missing-node")) do {
       val manual = run(ZIO.scoped {
         BundledJsArtifacts.stage().flatMap { root =>
-          ManualJsScalamode.checked(
-            ScalaCodeExecutorJVM.make(
-              executable = cli,
-              backend = ScalaCodeExecutorJVM.Backend.Node(BundledJsArtifacts.artifactNames.map(root.resolve), node)
-            )
-          )
+          ScalaCodeExecutors
+            .node(BundledJsArtifacts.artifactNames.map(root.resolve), cli, node)
+            .flatMap(ScalaJsRuntime.checked)
         }
       })
       assertEquals(manual.executor, None)
@@ -354,7 +351,7 @@ final class BundledJsArtifactsSuite extends FunSuite {
     )
     run(ZIO.scoped {
       for {
-        manual <- ManualJsScalamode.provisionBundled
+        manual <- ScalaJsRuntime.provisionBundled
         _ <- ZIO.succeed(assert(manual.capabilities.jsNodeAvailable, manual.capabilities.reason))
         result <- manual.executor.get.execute("ZIO.succeed(40 + 2)", 90.seconds, 8192, Seq.empty)
         _ <- ZIO.succeed {

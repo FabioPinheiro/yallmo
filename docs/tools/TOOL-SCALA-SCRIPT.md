@@ -2,14 +2,13 @@
 
 The restricted `ScalaTool` (`scalamode`) is registered by `ApplicationTools`. Agent capability allowlists control access to registered tools.
 
-The default/model/service path remains JVM. The operator Scalamode page can explicitly select **JS / Node (`js-node`) with a
-server-scoped incremental linker** (pure-only: no services), provisioned through `ManualJsScalamode.provisionBundled`. It rejects all service
-bindings and extra dependency grants, checks selected-agent permission/approval on every invocation, and starts a
-fresh Node child for every evaluation. See [operator lifecycle and restrictions](SCALAMODE-OPERATOR-PLAYGROUND.md)
-and [actual page-route measurements](SCALAMODE-PRODUCTION-INCREMENTAL.md). This is not an OS sandbox.
-The resource-free `ScalaCodeExecutorJVM.Backend.Node` constructor remains a fresh-build compatibility/control path.
-The [fresh Node PoC](SCALAMODE-NODE-POC.md) and [retained-linker lab](SCALAMODE-NODE-INCREMENTAL.md) are historical
-experiments, not descriptions of the current page backend.
+The default/model path remains JVM. The operator page can select **JS / Node (`js-node`)** through
+`ScalaJsRuntime.provisionBundled`, retaining the selected function's bound services, original configuration and approval.
+`ScalaCodeExecutors.node(reviewedArtifacts)` provisions the single retained Scala.js compiler/linker engine;
+every evaluation launches a fresh Node child. There is no alternate fresh-build production Node route or JVM fallback.
+Node 22.4+ with native WebSocket and the pinned offline compiler/dependencies must be provisioned on the server.
+Pure values and environment-free effects work on both backends, as do explicitly bound services. This is not an OS sandbox.
+See the [backend parity delivery record](SCALAMODE-BACKEND-PARITY-PLAN.md) for validation and remaining acceptance work.
 
 Module ownership (the package remains `fmgp.yallmo.tool.scalamode`):
 
@@ -19,11 +18,11 @@ Module ownership (the package remains `fmgp.yallmo.tool.scalamode`):
   [ScalaCodeExecutorServices capability/extension](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorServices.scala),
   [ScalamodeService](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodeService.scala) and
   [AgentToolWirings](../../scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/AgentToolWirings.scala).
-- Core host only: [ScalaCodeExecutorJVM](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala)
+- Core host only: [ScalaCodeExecutors](../../core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutors.scala)
   owns Scala CLI/process execution, generated source, classpaths and diagnostics. `LocalProcess` and `CommandOutput` also stay in core. None is on the child classpath; the small compiled child runners remain in API.
 
-`ApplicationTools.live` supplies `ScalaCodeExecutorJVM.live`; custom trusted configuration uses
-`ScalaCodeExecutorJVM.layer(executable, scalaVersion = ScalaCodeExecutor.ScalaVersion, offline = true)`.
+`ApplicationTools.live` supplies `ScalaCodeExecutors.live`; custom trusted configuration uses
+`ScalaCodeExecutors.layer(executable, scalaVersion = ScalaCodeExecutor.ScalaVersion, offline = true)`.
 Consumers/custom test doubles still require or implement `ScalaCodeExecutor`, not a new service type.
 The API depends on model/filesystem/rpc, never core/server. Its shared JSON argument parsing uses the same pinned upickle
 as core. Scala.js can use the shared contracts and service/wiring factories; host execution remains core JVM-only.
@@ -31,11 +30,19 @@ Relocation changes module ownership and the host factory name, not packages, cal
 Service-overriding custom executors must add `with ScalaCodeExecutorServices`; selective external callers import
 `fmgp.yallmo.tool.scalamode.executeWithServices`. Base-only executors continue to reject services explicitly.
 
+Host **source/API migration**: use `ScalaCodeExecutors` instead of the removed JVM-named factory, and
+`ScalamodeFunction.withExecutor` instead of the removed manual/pure-operation hooks. `Binding.artifacts` becomes
+`Binding.products: ScalamodeService.Products`; service-aware executor implementations now receive dependency grants
+as the fifth `executeWithServices` parameter. `AgentToolWirings.withFilesystem` takes only executor/route/endpoint;
+limits come from the original selected tool instead of wiring defaults. Recompile host integrations. The public
+`scalamode` name, code-only schema and `jvm`/`js-node` wire identifiers are unchanged.
+
+
 The operator-only selector uses `scalamodeExecution: "js-node"` (enum `JsNode`), with capability field
 `jsNodeAvailable`. Rebuild/deploy browser and server together: the old `js-pure` value, `js`, `js-browser` and
 explicit null are rejected; no browser backend is implemented. Omitted selectors retain byte-compatible JVM defaults.
-The JS / Node route remains pure-only (no selected-agent services), never falls back to JVM, and still enforces
-selected-agent permissions, approval, output limits and lifecycle cleanup. This selector is not a tool input field.
+The JS / Node route preserves selected-agent services, rooted permissions, approval, original timeout/output limits
+and lifecycle cleanup. This selector is not a tool input field.
 
 The `scalamode` agent tool accepts only a `code` string. Unknown fields, including the retired `mode` field
 (with either former value), are rejected; there is no compatibility branch:
@@ -52,10 +59,10 @@ The trusted `FunctionCallOutput` is a flat object discriminated only by `name`:
 
 `ScalaModeOutput.name` is fixed to `scalamode`; `output` is computed from `result`, never duplicated in stored JSON.
 Host-measured timings use a monotonic clock and are integer **milliseconds**:
-- `compilationTime`: the explicit `scala-cli compile` phase on JVM, including CLI startup and dependency resolution. The opt-in Node backend uses a separate `package --js` phase, charging compilation **and linking** here.
+- `compilationTime`: the explicit `scala-cli compile` phase on JVM, including CLI startup and dependency resolution. The Node backend compiles Scala.js IR and uses a retained fast linker, charging compilation **and linking** here.
 - `executionTime`: the `scala-cli run` phase on JVM, including CLI/JVM startup and any run-stage compilation; on Node, the direct fresh Node child's launch/bootstrap/evaluation/cleanup. Includes runtime-log collection, not just snippet evaluation. Zero when compilation/linking fails or times out.
 - `executionSetupTime`: optional launch-to-evaluation time, included within `executionTime`. The trusted runtime creates an empty marker immediately before evaluating plain code or constructing/running its returned effect, after RPC connection when applicable. The host polls every 5 ms using its own monotonic clock, so the measurement includes observation/scheduling delay. It is absent if evaluation is not observed (including startup failure/timeout, older outputs and custom runners without instrumentation); marker-write failure never changes the program outcome.
-- `totalTime`: the complete executor invocation, including validation, source setup, both phases, diagnostics and temporary-directory cleanup (excluding RPC registration/transport).
+- `totalTime`: the complete executor invocation, including validation, source setup, both phases, diagnostics, temporary-directory cleanup, service registration/transport and Node queue wait.
 Failures and timeouts retain elapsed phase timings. Missing timing fields decode as zero for older saved outputs;
 custom executors and host failures without measurements also default to zero.
 `CompilationError(diagnostics)` contains formatted retained diagnostics when the explicit `scala-cli compile` stage
@@ -91,7 +98,7 @@ code. No bundled compiler or staging task is required.
 
 ### Compiled runtime API
 
-Every invocation uses the compiled `scalacode-api` JVM module, automatically imported into the snippet:
+Every invocation uses the matching compiled `scalacode-api` JVM or Scala.js module, automatically imported into the snippet:
 
 ```scala
 tool.api // prints "Yes Tool API is available" through the trusted API
@@ -100,7 +107,7 @@ tool.api // prints "Yes Tool API is available" through the trusted API
 
 The result is `42\n`; `logs` contains `Yes Tool API is available`.
 
-The model sees only the public contract in the tool description: the fixed API availability message and restricted effect constructors. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/shared/src/main/scala/fmgp/yallmo/scalacode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
+The model sees only the public contract in the tool description: the fixed API availability message and restricted effect constructors. It does not receive the implementation source. The implementation is normal compiled code in `scalacode-api/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaToolApi.scala`. The executor locates the API module's classes directory or JAR and supplies it through Scala CLI's `--classpath`, without exposing the application's full dependency classpath. Generated snippets use `import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}` and `import tool.*`, so both `api` and `tool.api` work. No API source resource is loaded or copied.
 
 The greeting helper, narrow `ScalaToolApi.ZIO` facade, and immutable `FilesystemModes` accessors use `@caps.assumeSafe` to cross the compiler's trust boundary. These methods are marked `@experimental`; the API object remains a stable classpath-location anchor. Submitted code still cannot use annotations, print directly, or access ambient JVM authority. Adding privileged helpers expands the trusted API and requires review; this prototype is not a general tool bridge.
 
@@ -126,7 +133,7 @@ The default executor executes a returned `ZIO[Any, E, A]` and returns its succes
 ### Runtime logging
 
 The generated applications use [ZIOAppDefault](https://zio.dev/reference/core/zioapp/). Their trusted bootstrap is
-`Runtime.removeDefaultLoggers >>> ... Runtime.addLogger(...)`, owned by `ScalaToolRuntime` in the JVM API module.
+`Runtime.removeDefaultLoggers >>> ... Runtime.addLogger(...)`, owned by the platform-specific `ScalaToolRuntime` in the API module. JVM and explicitly opted-in Node runners share the log record encoding.
 INFO-and-above records are written to the invocation-local `runtime.jsonl` file with timestamp, level, fiber,
 message, optional cause and annotations. JSON encoding escapes quotes, newlines and other control characters.
 ZIOApp handles effect execution, failure reporting, resource finalization and the process exit code.
@@ -145,11 +152,11 @@ stderr; there is no `System.setOut` mutation.
 ```scala
 new ScalaTool() // ZIO by default
 new ScalaTool(dependencies = ScalaTool.DefaultDependencies :+ "dev.zio::zio-streams:2.1.27")
-new ScalaTool(dependencies = Seq.empty) // Only the mandatory ZIO/ZIO JSON runner dependencies
+new ScalaTool(dependencies = Seq.empty) // Only the mandatory ZIO/ZIO JSON/ZIO Streams runner dependencies
 ```
 
-A supplied sequence replaces the defaults. The trusted runner always adds `dev.zio::zio:2.1.27` and
-`dev.zio::zio-json:1.1.1`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
+A supplied sequence replaces the defaults. The trusted runner always adds `dev.zio::zio:2.1.27`,
+`dev.zio::zio-json:1.1.1` and `dev.zio::zio-streams:2.1.27`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
 
 ### Pinned Scala release / offline use
 
@@ -213,7 +220,7 @@ host descriptor type; neither the executor nor `ScalaTool` derives an RPC contra
 Custom executors retain their unsupported-service default. Ordinary `execute` remains a value/environment-free
 effect path. ChatGPTAgent resolution installs the rooted filesystem service when both native filesystem functions
 are permitted, retaining hello alongside fs. No listener starts at construction/selection. The application's shared
-`ScalaCodeExecutorJVM.live` / `.layer(...)` lazily starts one loopback listener on the first local-service execution
+`ScalaCodeExecutors.live` / `.layer(...)` lazily starts one loopback listener on the first local-service execution
 and closes it at layer shutdown. Concurrent and sequential executions reuse it, with independently scoped dispatchers,
 single-use tickets and connections; one execution's cleanup does not close the listener or other executions.
 Keep the layer scope alive while using its executor. The resource-free `.make(...)` compatibility constructor retains
@@ -277,7 +284,10 @@ object ArithmeticService extends ScalamodeService {
     parameter = "math",
     apiTypes = Seq("example.Arithmetic.type"),
     runner = "example.ArithmeticRuntime.run",
-    artifacts = Seq(ArithmeticRuntime.getClass)
+    products = ScalamodeService.Products(
+      jvm = Seq(ArithmeticRuntime.getClass),
+      scalaJs = Some(Seq("/reviewed/arithmetic_sjs1_3.jar"))
+    )
   )
 }
 val arithmeticTool = ScalaTool.withServices(ArithmeticService)
@@ -293,13 +303,13 @@ validation precedes registration and launch. Credentials travel only over child 
 deadline. The invocation scope owns `registerScoped` cleanup on success, failure, timeout and cancellation, including
 authenticated host work. Ticket TTL equals the process deadline and must fit the route's configured maximum.
 No reconnect, retry or raw `FsRead` export is implied. The proxy exposes neither connection nor bearer. Executable custom pure
-and non-filesystem greeting RPC fixtures live in scalacode-api's test artifact
-[`CompiledServices.scala`](../../scalacode-api/jvm/src/test/scala/fmgp/yallmo/scalacode/fixture/CompiledServices.scala),
+and non-filesystem greeting RPC fixtures live in the unpublished, test-only crossProject
+[`CompiledServices.scala`](../../scalamode-test-fixtures/src/main/scala/fmgp/yallmo/scalacode/fixture/CompiledServices.scala),
 selected by descriptor subtypes in `ScalamodeServiceSuite`; they do not inject implementations as source strings.
 
 Pure and service classpaths explicitly contain **scalacode-api + model + filesystem + rpc** to resolve the shared
 runtime signatures; service bindings additionally include their reviewed artifact anchors. No full application classpath, core or server artifact is added. The API CrossProject depends on
-those reviewed modules on JVM/JS; runtime/transport helpers remain JVM-only. Abstract capability views reuse existing
+those reviewed modules on JVM/JS; runtime helpers have JVM and Node implementations; the listener/registry remain JVM-only. Abstract capability views reuse existing
 types where appropriate, but adding filesystem/model classes does **not** export `FileSystem.open` or other ambient
 authority: compiler-negative tests check those restrictions. The expanded API artifact also contains the host-facing
 executor interface, ScalaTool and wiring/service factories, but no assumeSafe authority grant was added. Real compiler
@@ -307,8 +317,11 @@ probes reject executor service acquisition, broader tool/RPC construction, priva
 lookup. Artifact/classpath tests separately prove the engine and general host execution helpers are absent. This is not an OS sandbox or a capability grant inferred
 from classpath presence. Host authors must not add broader artifacts or hide extra authority in compiled helpers.
 
-`dependencies` are pinned host-supplied Scala CLI coordinates, defaulting to the reviewed ZIO/streams/JSON/HTTP set
-and BouncyCastle 1.86 pins. Mandatory ZIO/ZIO JSON/ZIO Streams are still added; provision every selected/transitive artifact in the
+`dependencies` are pinned host-supplied Scala CLI coordinates. Mandatory ZIO/ZIO JSON/ZIO Streams are added by both
+runners. JVM HTTP transport/BouncyCastle pins belong to the JVM runner, not portable service metadata. Scala.js
+translates only built-in reviewed cross-platform coordinates or explicit `Products.scalaJsDependencies` mappings;
+JVM-only/unsupported grants fail before execution. Custom bindings need reviewed `Products.scalaJs` IR products;
+JVM class anchors alone cannot locate them. Always provision every selected/transitive artifact in the
 service user's cache. No uncached compiler fallback or silent network download is used.
 All phases retain the existing deadline, byte budget, process-tree cleanup and monotonic timings. Submitted code
 retains its 65,536-character bound. Diagnostics use the fixed generated preamble length; trusted setup failures and
@@ -347,9 +360,9 @@ Invalid explicit roots fail at first selection rather than falling back. The com
 direct invocation and session execution share it. Coach/Folder restrictions remain unchanged; Bash/Git stay
 workspace-bound. The filesystem module and its read/write/patch permissions remain independent of Scalamode.
 
-`AgentToolWirings.withFilesystem(executor, route, endpoint, timeout, maxOutputBytes): ToolWiring` returns one ordinary
+`AgentToolWirings.withFilesystem(executor, route, endpoint): ToolWiring` returns one ordinary
 function. Add it explicitly to an agent's `toolWirings`; no agent receives it by default. It replaces an existing,
-permitted **default** `scalamode` binding only (selected definition equality, not implementation class), without new model-visible names or a global registry lookup. The caller owns the listener and its lifetime; server startup never substitutes an unfiltered `FsRead` binding.
+permitted **default** `scalamode` binding only (explicit `ScalamodeFunction.bindDefaultScalamode` opt-in, never definition equality alone), without new model-visible names or a global registry lookup. The caller owns the listener and its lifetime; server startup never substitutes an unfiltered `FsRead` binding.
 
 The stage receives the resolver's **already-filtered** `AgentTool[Any]` generation. It captures the exact native
 `filesystem/readFile` and `filesystem/listFiles` implementations and their bound definitions, not `FsRead`. Every

@@ -21,27 +21,14 @@ final class ScalaTool(
 
   override val definition: FunctionToolDefinition = ScalaTool.definition
 
-  override def bindDefaultScalamode(replacement: ScalamodeFunction[Any]) = {
-    val pure = Option.when(replacement.manualScalamode.nonEmpty)(manualScalamode).flatten
-    Some(new ScalamodeFunction[Any] {
-      val definition = replacement.definition
-      def execute(call: ExternalFunctionCall) = replacement.execute(call)
-      override def manualScalamode = pure
-    })
-  }
+  private val plan = ScalamodePlan(ScalamodeFunction.Settings(timeout, maxOutputBytes, dependencies))
 
-  override def manualScalamode: Option[ManualScalamode[Any]] = Some(new ManualScalamode[Any] {
-    def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor) =
-      ScalaTool.executeWith(call, definition.name)(code =>
-        executor.execute(code, timeout, maxOutputBytes, dependencies)
-      )
-  })
+  override def bindDefaultScalamode(binding: ScalamodeFunction.DefaultBinding) = Some(binding.bind(plan.settings))
+
+  override def withExecutor(executor: ScalaCodeExecutor) = Some(plan.function(executor))
 
   override def execute(call: ExternalFunctionCall): ZIO[ScalaCodeExecutor, YallmoError, ExternalFunctionResult] =
-    ScalaTool
-      .executeWith(call, definition.name) { code =>
-        ZIO.serviceWithZIO[ScalaCodeExecutor](_.execute(code, timeout, maxOutputBytes, dependencies))
-      }
+    ZIO.serviceWithZIO[ScalaCodeExecutor](plan.function(_).execute(call))
 }
 
 object ScalaTool {
@@ -52,15 +39,17 @@ object ScalaTool {
   def withServices(
       service: ScalamodeService,
       timeout: Duration = 45.seconds,
-      maxOutputBytes: Int = 64 * 1024
-  ): AgentFunction[ScalaCodeExecutor] = {
+      maxOutputBytes: Int = 64 * 1024,
+      dependencies: Seq[String] = DefaultDependencies
+  ): ScalamodeFunction[ScalaCodeExecutor] = {
     require(timeout > Duration.Zero, "timeout must be positive")
     require(maxOutputBytes > 0, "maxOutputBytes must be positive")
-    new AgentFunction[ScalaCodeExecutor] {
-      override val definition = ScalamodeToolDefinition.withServices(service.inspections)
-      override def execute(call: ExternalFunctionCall) = executeWith(call, definition.name) { code =>
-        ZIO.serviceWithZIO[ScalaCodeExecutor](_.executeWithServices(code, service, timeout, maxOutputBytes))
-      }
+    val plan = ScalamodePlan(ScalamodeFunction.Settings(timeout, maxOutputBytes, dependencies), Some(service))
+    new ScalamodeFunction[ScalaCodeExecutor] {
+      override val definition = plan.definition
+      override def withExecutor(executor: ScalaCodeExecutor) = Some(plan.function(executor))
+      override def execute(call: ExternalFunctionCall) =
+        ZIO.serviceWithZIO[ScalaCodeExecutor](plan.function(_).execute(call))
     }
   }
 

@@ -9,7 +9,8 @@ trait ScalaCodeExecutorServices { self: ScalaCodeExecutor =>
       code: String,
       services: R,
       timeout: Duration,
-      maxOutputBytes: Int
+      maxOutputBytes: Int,
+      dependencies: Seq[String] = ScalaCodeExecutor.DefaultDependencies
   ): Task[ExternalFunctionResult.ScalaMode]
 }
 
@@ -19,11 +20,12 @@ extension (executor: ScalaCodeExecutor)
       code: String,
       services: R,
       timeout: Duration,
-      maxOutputBytes: Int
+      maxOutputBytes: Int,
+      dependencies: Seq[String] = ScalaCodeExecutor.DefaultDependencies
   ): Task[ExternalFunctionResult.ScalaMode] =
     executor match {
       case capable: ScalaCodeExecutorServices =>
-        capable.executeWithServices(code, services, timeout, maxOutputBytes)
+        capable.executeWithServices(code, services, timeout, maxOutputBytes, dependencies)
       case _ =>
         ZIO.fail(new UnsupportedOperationException("Service Scala execution is not enabled"))
     }

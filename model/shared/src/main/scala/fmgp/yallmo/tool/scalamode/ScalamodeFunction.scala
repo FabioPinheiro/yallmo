@@ -1,48 +1,37 @@
 package fmgp.yallmo.tool.scalamode
 
-import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall, ExternalFunctionResult}
+import fmgp.yallmo.orchestration.{AgentFunction, ExternalFunctionCall}
 import zio.*
 
-/** Explicit integration hooks for Scalamode implementations. Ordinary agent functions remain opaque to wiring and
-  * alternate playground execution, even when they advertise the same name or schema.
-  */
+/** Explicit integration, never inferred from a tool's name or schema. Opaque custom functions remain opaque. */
 trait ScalamodeFunction[-R] extends AgentFunction[R] {
 
-  /** Trusted opt-in to pure playground execution with a request-local executor. */
-  def manualScalamode: Option[ManualScalamode[R]] = None
+  /** Replace only the execution engine, retaining this operation's definition, capabilities and guards. */
+  def withExecutor(executor: ScalaCodeExecutor): Option[ScalamodeFunction[R]] = None
 
-  /** Rebind an integrated default while retaining its execution boundary. Already-bound functions return None. */
-  def bindDefaultScalamode(replacement: ScalamodeFunction[Any]): Option[ScalamodeFunction[R]] = None
-}
-
-/** Pure playground execution; the supplied executor must not receive the selected agent's services. */
-trait ManualScalamode[-R] {
-  def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor): ZIO[R, YallmoError, ExternalFunctionResult]
+  /** Opt-in for unbound defaults. The transformation receives the original trusted configuration. */
+  def bindDefaultScalamode(binding: ScalamodeFunction.DefaultBinding): Option[ScalamodeFunction[R]] = None
 }
 
 object ScalamodeFunction {
-
-  /** Bind both execution paths without losing explicit integration through the environment wrapper. */
-  def provideEnvironment[R](
-      tool: ScalamodeFunction[R],
-      environment: ZEnvironment[R]
-  ): ScalamodeFunction[Any] = new ScalamodeFunction[Any] {
-    val definition = tool.definition
-    def execute(call: ExternalFunctionCall) = tool.execute(call).provideEnvironment(environment)
-    override def manualScalamode = tool.manualScalamode.map(operation =>
-      new ManualScalamode[Any] {
-        def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor) =
-          operation.execute(call, executor).provideEnvironment(environment)
-      }
-    )
-    override def bindDefaultScalamode(replacement: ScalamodeFunction[Any]) =
-      tool.bindDefaultScalamode(replacement).map(provideEnvironment(_, environment))
+  final case class Settings(timeout: Duration, maxOutputBytes: Int, dependencies: Seq[String])
+  trait DefaultBinding {
+    def bind(settings: Settings): ScalamodeFunction[Any]
   }
 
-  /** Discover explicit integration, never infer it from tool metadata. */
+  /** Forward integration structurally; never reconstruct a function from its inspection metadata. */
+  def provideEnvironment[R](tool: ScalamodeFunction[R], environment: ZEnvironment[R]): ScalamodeFunction[Any] =
+    new ScalamodeFunction[Any] {
+      val definition = tool.definition
+      def execute(call: ExternalFunctionCall) = tool.execute(call).provideEnvironment(environment)
+      override def withExecutor(executor: ScalaCodeExecutor) =
+        tool.withExecutor(executor).map(provideEnvironment(_, environment))
+      override def bindDefaultScalamode(binding: DefaultBinding) =
+        tool.bindDefaultScalamode(binding).map(provideEnvironment(_, environment))
+    }
+
   def from[R](function: AgentFunction[R]): Option[ScalamodeFunction[R]] = function match {
-    // R is erased, but ScalamodeFunction inherits AgentFunction with the same environment requirement.
+    // R is erased, but both interfaces have the same environment requirement.
     case integrated: ScalamodeFunction[R] @unchecked => Some(integrated)
     case _                                           => None
   }

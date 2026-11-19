@@ -7,7 +7,7 @@ import zio.stream.*
 /** One worker per admitted stream; the receiver never waits on producer pulls or interruption finalizers. */
 private[rpc] final class RpcServerStreams private (
     dispatcher: RpcDispatcher,
-    limits: RpcWebSocket.Limits,
+    limits: RpcWebSocketClient.Limits,
     scope: Scope,
     entries: Ref[Map[String, RpcServerStreams.Entry]],
     highest: Ref[Long],
@@ -152,7 +152,7 @@ private[rpc] object RpcServerStreams {
   )
   def make(
       dispatcher: RpcDispatcher,
-      limits: RpcWebSocket.Limits,
+      limits: RpcWebSocketClient.Limits,
       scope: Scope,
       unary: Ref[Set[String]],
       send: String => Task[Unit],

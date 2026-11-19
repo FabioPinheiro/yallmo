@@ -17,9 +17,9 @@
 - Canonical pure `ScalaCodeExecutor`, defaults and compiler pin belong to shared model. Shared
   `ScalamodeToolDefinition`, `ScalaTool`, `ScalamodeService`, `ScalaCodeExecutorServices` capability/extension and
   `AgentToolWirings` belong to scalacode-api. The package remains `fmgp.yallmo.tool.scalamode`.
-  API depends on model/filesystem/rpc, never core/server (including tests). Core alone owns `ScalaCodeExecutorJVM`,
+  API depends on model/filesystem/rpc, never core/server (including tests). Core alone owns `ScalaCodeExecutors`,
   process/source/classpath/diagnostic machinery and general host execution helpers.
-- Services select compiled `Binding(parameter, apiTypes, runner, artifacts, errorType, dependencies)` metadata,
+- Services select compiled `Binding(parameter, apiTypes, runner, products, errorType, dependencies)` metadata,
   not implementation source. Fixed safe glue preserves inferred value/effect types and calls compiled runners.
   Service classpaths include reviewed API/model/filesystem/rpc anchors and explicit narrow artifacts, never the
   application classpath. The compiler/dependencies stay pinned and offline; HTTP services retain host security pins.
@@ -241,17 +241,28 @@ The standalone native hello tool is removed. `HelloWorldService` selects the com
 `HelloWorldRuntime`, advertising `hello.helloWorld: String` through the same structured service metadata used by the
 model and inspector. Snippets may return the value directly or as `ZIO.succeed(hello.helloWorld)`.
 
-`ChatGPTAgent.toolWirings` runs explicit custom composition and then `AgentToolWirings.withHelloWorld(executor)`.
+`ChatGPTAgent.toolWirings` runs explicit custom composition and then `AgentToolWirings.withDefaults(executor, filesystem, filesystemWrite)`.
 Only an existing default Scalamode function is replaced; missing Scalamode, tool order, unrelated functions and custom
 service bindings are preserved. There is no separate hello tool/function key and no implicit service-descriptor merge.
 `withService(service, executor)` centralizes exact schema/implementation replacement and executor capture.
 
 AgentCatalog passes its executor to configured ChatGPT adapters (including Coach delegates). ServerApplication.workspace
 passes the original configured executor through to the catalog, rather than silently replacing injected executors.
-Standalone construction uses `ScalaCodeExecutorJVM.make()`, a resource-free description with no eager compilation.
+Standalone construction uses `ScalaCodeExecutors.make()`, a resource-free description with no eager compilation.
 Resolution filtering remains only before wiring. Existing resolved generations require an application restart to
-pick up changed code. Filesystem services still require explicit composition and a caller-owned existing listener.
+pick up changed code. Default filesystem services use executor-owned local RPC when the complete native read/list grant is present; exact native delegation remains an explicit caller-owned-listener choice.
 
 Validation includes portable wiring/executor tests, ChatGPT default/custom composition tests, a configured `sol`
 server integration test verifying inspection and direct invocation, and a real pinned/offline Scala compiler test
 executing both greeting forms. JVM/server compilation and shared Scala.js test compilation are checked separately.
+
+## Backend parity follow-up
+
+The current integration uses explicit `ScalamodeFunction.withExecutor`, an immutable API `ScalamodePlan` and
+plan-preserving default binding. JVM and Scala.js / Node execute the same selected operation with original limits,
+services, rooted grants and approval. `ScalaTool.withServices` explicitly opts in; opaque default-looking closures
+remain unsupported for backend substitution. Custom helper products are platform-reviewed, and the unpublished
+`scalamodeTestFixtures` crossProject keeps compiler fixtures outside API suites/frameworks and production bundles.
+See [the parity delivery record](tools/SCALAMODE-BACKEND-PARITY-PLAN.md) for fresh nonzero suite counts, the recovered
+Scala.js test artifact hang, broad-core SDLC failures and pending independent/manual acceptance. Older checkpoints
+above describe their original delivery, not current backend restrictions or a new green full-suite claim.

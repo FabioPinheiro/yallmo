@@ -61,6 +61,7 @@ use the selected agent read root when configured, otherwise workspace, independe
 - [Client controls — quick reference](docs/CLIENT_CONTROLS.md) — keyboard/mode tables for the website and REPL, dictation and ClientHarness.
 - [Browser audio setup, privacy and manual checks](browser-STT-TTS/README.md) — plain loopback page, no frontend installation.
 - [Capabilities architecture](docs/Capabilities_Architecture.md) — configuration inheritance, restrictions, enforcement flow, and REPL voice policy.
+- [Typed RPC](rpc/README-RPC.md) — standalone service contracts, JVM/Node WebSocket clients, typed errors, streaming and scoped connection authority.
 - [ChatGPT subscription profiles](docs/HOW_TO_RUN.md#chatgpt-subscription-profiles)
 - [Attachments and blob storage](lixo/completed/orchestration/ATTACHMENTS_AND_BLOB_STORAGE_PLAN.md) — retained recordings, reference-only messages, ingestion APIs, and storage limits.
 - [Orchestrator website and API](server/README.md) — Scala.js/Laminar SPA, Vite development and JVM asset packaging.
@@ -75,10 +76,21 @@ only `{"code":"1 + 1"}`; backend selection is not a tool argument. Model-driven 
 keep their existing selected-agent bindings, permissions and approval rules.
 
 The operator **Scalamode** webpage has an execution dropdown: **JVM (`jvm`)** is the default; **JS / Node (`js-node`)**
-is an explicit, server-side pure playground. It supports plain values and environment-free ZIO effects only—no
-filesystem, hello, custom services, RPC, streaming or extra dependency grants. Selected-agent permissions and approval
-still apply on every Run, with no fallback to JVM. A future `js-browser` backend is **not implemented**. Compiler
-restrictions and reviewed APIs are defense in depth, **not an OS sandbox**.
+selects a server-side Scala.js compiler and fresh Node runtime for the **same selected-agent function**. Bound hello,
+rooted filesystem and custom services, original limits/dependency grants, argument validation and approval remain intact.
+Custom functions must explicitly support executor rebinding; opaque functions are not replaced by name/schema matching.
+Missing reviewed Scala.js products or unsupported dependency grants fail explicitly, with no JVM fallback.
+Node **22.4+** with native WebSocket is required and probed at startup. A future `js-browser` backend is **not implemented**.
+Compiler restrictions and reviewed APIs are defense in depth, **not an OS sandbox**.
+
+When the selected agent exposes the `fs` read capability, list all direct entries in its filesystem root with:
+
+```scala
+fs.list(".").map(_.mkString("\n"))
+```
+
+Here `"."` is the agent's configured filesystem root, not the host machine's root directory. The webpage's default
+example includes this expression commented out, so it still runs for agents without filesystem access.
 
 The JS / Node page backend retains a server-scoped incremental fast linker for repeated runs and source edits,
 but launches a **fresh Node process for every evaluation**; definitions are not available to subsequent submissions,
@@ -96,14 +108,32 @@ Use the normal server startup described in [Setup and running](docs/HOW_TO_RUN.m
 See the [Scalamode tool contract](docs/tools/TOOL-SCALA-SCRIPT.md) and
 [reviewed API and host boundaries](scalacode-api/README-SCALACODE.md) for details.
 
+## Typed RPC
+
+The [`rpc/` module](rpc/README-RPC.md) (`fmgp.rpc`, artifact `yallmo-rpc`) is independent of Yallmo's model,
+core, server and agent orchestration. It turns Scala service traits into typed remote clients and host dispatchers:
+
+- `Rpc.derived[Service](serviceId, version)` generates a contract at compile time, without runtime reflection or dynamic proxies.
+- `contract.bind(implementation)` exposes the host implementation; `contract.client(connection)` provides the same Scala interface remotely.
+- Unary ZIO methods and server-to-client `ZStream` methods share one connection. Explicit codecs and error mappers preserve typed domain errors; byte streams use binary batches with pull-based back-pressure.
+- Client protocol state is shared across JVM and Scala.js. JVM uses zio-http; Scala.js uses native **Node 22.4+ WebSocket**. The server and single-use ticket registry remain JVM-only; browser clients are not supported.
+- The host owns the HTTP listener, service selection and authorization. Scoped tickets tie access and remote work to the invocation's lifetime; the transport does not grant filesystem access or automatically retry calls.
+
+Scalamode uses this module to let both JVM and Node snippets call the **same host-side capabilities**, including
+rooted filesystem services. This typed capability transport is separate from the application JSON-RPC API in
+`protocol/`, which connects the website and REPL to the orchestrator.
+
+See the [RPC guide](rpc/README-RPC.md) for runnable examples, authentication, resource ownership, limits and supported method signatures.
+
 ## Project layout
 
 - `model/` — JVM/JS provider-neutral models and orchestration state; owns the canonical [ScalaCodeExecutor](model/shared/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutor.scala) contract and defaults.
 - `filesystem/` — shared rooted filesystem capabilities and JSONL helpers; JVM-only NIO implementation.
 - `scalacode-api/` — reviewed JVM/JS snippet API and optional `ScalaCodeExecutorServices` capability; depends on model/filesystem/rpc, never core/server.
-- `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG. `core/jvm` owns [ScalaCodeExecutorJVM](core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutorJVM.scala) and `ScalaCodeExecutorNodeIncremental`.
+- `scalamode-test-fixtures/` — unpublished, test-only `CrossType.Pure` project; JVM and Scala.js compile the same [`src/main/scala` fixtures](scalamode-test-fixtures/src/main/scala/fmgp/yallmo/scalacode/fixture/CompiledServices.scala). Supplies narrow custom-service artifacts for core integration tests, never production runtime dependencies.
+- `core/` — shared agent execution/configuration and in-memory storage; JVM-only providers, disk storage, process tools and RAG. `core/jvm` owns [ScalaCodeExecutors](core/jvm/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaCodeExecutors.scala) and the internal `ScalaJsCompiler`, with shared invocation/program/process helpers.
 - [linker-worker/](linker-worker/) — isolated JVM compiler/linker tooling; never evaluates submitted snippets.
-- `rpc/` — standalone JVM/JS typed contracts, codecs and derivation for unary/streaming RPC; WebSocket transport is JVM-only, with no JS transport implemented.
+- [`rpc/`](rpc/README-RPC.md) — standalone JVM/JS typed contracts, codecs and derivation for unary/streaming RPC; shared client state with JVM zio-http and native Node WebSocket adapters; ticket registry and server stay JVM-only.
 - `protocol/` — JVM/JS JSON-RPC envelopes and application wire types; depends only on `model`.
 - `client-harness/` — **ClientHarness**, JVM/JS command catalog, input-mode policy and dictation key lifecycle shared by the clients.
 - `repl/` — the JVM interactive terminal client and lazy scoped browser audio bridge.
@@ -113,9 +143,9 @@ See the [Scalamode tool contract](docs/tools/TOOL-SCALA-SCRIPT.md) and
 
 ### Module dependencies
 
-Solid arrows point from a module to its direct code dependencies; the dashed arrow denotes build-time resource
-packaging, not a code dependency. JVM/JS labels select the matching cross-project variant; the root project only
-aggregates these modules.
+Solid arrows point from a module to its direct code dependencies. Dashed arrows show explicitly labeled test-only
+dependencies or build-time resource packaging, not production code dependencies. JVM/JS labels select the matching
+cross-project variant; the root project aggregates the main application modules.
 
 ```mermaid
 flowchart BT
@@ -126,7 +156,9 @@ flowchart BT
     web -->|JS| protocol["protocol · JVM / JS"]
     server -->|JVM| core
     server -->|JVM| protocol
-    server -.->|bundled tooling| linker["linker-worker · JVM"]
+    core -.->|JVM bundled tooling| linker["linker-worker · JVM"]
+    core -.->|test → compile only| fixtures["scalamode-test-fixtures · JVM / JS<br/>CrossType.Pure"]
+    fixtures --> scalaApi
     core --> model["model · JVM / JS"]
     core --> filesystem["filesystem · JVM / JS"]
     core --> scalaApi["scalacode-api · JVM / JS"]
@@ -140,6 +172,8 @@ flowchart BT
 This is a build graph, not a deployment diagram: the connected REPL and website communicate with a separately running
 server over JSON-RPC/WebSocket. ClientHarness is independent of the server, protocol, core and model modules.
 `scalacode-api` depends on model/filesystem/rpc, not core/server. Restricted snippets use reviewed API artifacts and
-pinned dependencies, never the whole application classpath. The server bundles the four JS API products and isolated
-linker tooling as resources; bundling tooling does not make it a snippet compile/link dependency.
+pinned dependencies, never the whole application classpath. JVM core packages isolated linker tooling as resources;
+the server adds the four reviewed JS API products. Bundling tooling does not make it a snippet compile/link dependency.
+The fixture project depends on `scalacode-api` and is used by core through `test->compile` only; its artifacts contain
+reviewed helpers rather than test suites or test-framework dependencies and are not bundled into the application.
 `browser-STT-TTS/` and the shared browser-audio JavaScript are assets, not sbt modules; they are packaged by the clients/server.

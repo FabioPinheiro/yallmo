@@ -1,22 +1,19 @@
 package fmgp.rpc
 
-import munit.FunSuite
+import munit.ZSuite
 import zio.*
 
-class RpcClientStreamsSuite extends FunSuite {
-  private def run[A](effect: ZIO[Scope, RpcError, A]): A = Unsafe.unsafe { _ ?=>
-    Runtime.default.unsafe
-      .run(ZIO.scoped(effect).timeoutFail(RpcError(RpcError.Code.TimedOut))(10.seconds))
-      .getOrThrowFiberFailure()
-  }
-  test("client stream slots, cancellation acknowledgement and late batches cannot resurrect or cross IDs") {
-    val result = run {
+class RpcClientStreamsSuite extends ZSuite {
+  private def run[A](effect: ZIO[Scope, RpcError, A]): IO[RpcError, A] =
+    ZIO.scoped(effect).timeoutFail(RpcError(RpcError.Code.TimedOut))(10.seconds)
+  testZ("client stream slots, cancellation acknowledgement and late batches cannot resurrect or cross IDs") {
+    run {
       for {
         next <- Ref.make(0L)
         sent <- Queue.bounded[RpcWire.Control](8)
         writes <- Semaphore.make(1)
         streams <- RpcClientStreams.make(
-          RpcWebSocket.Limits(maxStreams = 1),
+          RpcWebSocketClient.Limits(maxStreams = 1),
           next.updateAndGet(_ + 1).map(_.toString),
           writes,
           text => ZIO.fromEither(RpcWire.control(text)).flatMap(sent.offer).unit,
@@ -45,23 +42,24 @@ class RpcClientStreamsSuite extends FunSuite {
         _ <- streams.receive(cancel2.id, RpcWire.StreamReply.Cancelled)
         invalid <- streams.receiveBytes(cancel1.id, Chunk[Byte](77)).either
       } yield (initial, firstResult, limited, open1.id, open2.id, secondResult, invalid)
+    }.map { result =>
+      assertEquals(result._1, 0)
+      assertEquals(result._2, Right(Chunk(RpcStreamChunk.Bytes(Chunk[Byte](10)))))
+      assertEquals(result._3, Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.LimitExceeded))))
+      assertEquals(result._4, "1")
+      assertEquals(result._5, "2")
+      assertEquals(result._6, Right(Chunk(RpcStreamChunk.Bytes(Chunk[Byte](20)))))
+      assertEquals(result._7, Left(RpcError(RpcError.Code.ProtocolError)))
     }
-    assertEquals(result._1, 0)
-    assertEquals(result._2, Right(Chunk(RpcStreamChunk.Bytes(Chunk[Byte](10)))))
-    assertEquals(result._3, Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.LimitExceeded))))
-    assertEquals(result._4, "1")
-    assertEquals(result._5, "2")
-    assertEquals(result._6, Right(Chunk(RpcStreamChunk.Bytes(Chunk[Byte](20)))))
-    assertEquals(result._7, Left(RpcError(RpcError.Code.ProtocolError)))
   }
-  test("open deadline interrupts a stalled send and still sends cancellation") {
-    val result = run {
+  testZ("open deadline interrupts a stalled send and still sends cancellation") {
+    run {
       for {
         next <- Ref.make(0L)
         sent <- Queue.bounded[RpcWire.Control](4)
         writes <- Semaphore.make(1)
         streams <- RpcClientStreams.make(
-          RpcWebSocket.Limits(timeout = 100.millis),
+          RpcWebSocketClient.Limits(timeout = 100.millis),
           next.updateAndGet(_ + 1).map(_.toString),
           writes,
           text =>
@@ -79,22 +77,23 @@ class RpcClientStreamsSuite extends FunSuite {
         result <- consumer.join
         _ <- streams.receive(cancelled.id, RpcWire.StreamReply.Cancelled)
       } yield (opened.id, cancelled, result)
+    }.map { result =>
+      assertEquals(
+        result,
+        ("1", RpcWire.Control.Cancel("1"), Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.TimedOut))))
+      )
     }
-    assertEquals(
-      result,
-      ("1", RpcWire.Control.Cancel("1"), Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.TimedOut))))
-    )
   }
 
-  test("stream admission rejects excess materializations before waiting for a stalled write") {
-    val result = run {
+  testZ("stream admission rejects excess materializations before waiting for a stalled write") {
+    run {
       for {
         next <- Ref.make(0L)
         started <- Promise.make[Nothing, Unit]
         sent <- Queue.bounded[RpcWire.Control](4)
         writes <- Semaphore.make(1)
         streams <- RpcClientStreams.make(
-          RpcWebSocket.Limits(maxStreams = 1, timeout = 5.seconds),
+          RpcWebSocketClient.Limits(maxStreams = 1, timeout = 5.seconds),
           next.updateAndGet(_ + 1).map(_.toString),
           writes,
           text =>
@@ -117,24 +116,25 @@ class RpcClientStreamsSuite extends FunSuite {
         cancelled <- sent.take
         _ <- streams.receive(cancelled.id, RpcWire.StreamReply.Cancelled)
       } yield (excess, allocated, opened.id, cancelled)
+    }.map { result =>
+      assertEquals(
+        result._1.toList,
+        List.fill(32)(Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.LimitExceeded))))
+      )
+      assertEquals(result._2, 1L)
+      assertEquals(result._3, "1")
+      assertEquals(result._4, RpcWire.Control.Cancel("1"))
     }
-    assertEquals(
-      result._1.toList,
-      List.fill(32)(Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.LimitExceeded))))
-    )
-    assertEquals(result._2, 1L)
-    assertEquals(result._3, "1")
-    assertEquals(result._4, RpcWire.Control.Cancel("1"))
   }
-  test("disconnect during allocation cannot resurrect an entry or send any control") {
-    val result = run {
+  testZ("disconnect during allocation cannot resurrect an entry or send any control") {
+    run {
       for {
         allocating <- Promise.make[Nothing, Unit]
         resume <- Promise.make[Nothing, Unit]
         sent <- Queue.bounded[RpcWire.Control](4)
         writes <- Semaphore.make(1)
         streams <- RpcClientStreams.make(
-          RpcWebSocket.Limits(),
+          RpcWebSocketClient.Limits(),
           allocating.succeed(()) *> resume.await.as("1"),
           writes,
           text => ZIO.fromEither(RpcWire.control(text)).flatMap(sent.offer).unit,
@@ -149,9 +149,10 @@ class RpcClientStreamsSuite extends FunSuite {
         controls <- sent.size
         after <- streams.stream("test", 1, "bytes", Chunk.empty, true).runDrain.either
       } yield (outcome, present, controls, after)
+    }.map { result =>
+      val disconnected = Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.Disconnected)))
+      assertEquals(result, (disconnected, false, 0, disconnected))
     }
-    val disconnected = Left(RpcStreamError.Infrastructure(RpcError(RpcError.Code.Disconnected)))
-    assertEquals(result, (disconnected, false, 0, disconnected))
   }
 
 }

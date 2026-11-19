@@ -1,6 +1,6 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.scalamode.{ManualScalamode, ScalaCodeExecutor, ScalamodeFunction}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeFunction}
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.FunctionToolDefinition
 
@@ -36,15 +36,11 @@ object FunctionApproval {
   ): ScalamodeFunction[R] = new ScalamodeFunction[R] {
     override val definition: FunctionToolDefinition = tool.definition
 
-    override def bindDefaultScalamode(replacement: ScalamodeFunction[Any]): Option[ScalamodeFunction[R]] =
-      tool.bindDefaultScalamode(replacement).map(guardScalamode(_, approval))
+    override def bindDefaultScalamode(binding: ScalamodeFunction.DefaultBinding): Option[ScalamodeFunction[R]] =
+      tool.bindDefaultScalamode(binding).map(guardScalamode(_, approval))
 
-    override def manualScalamode = tool.manualScalamode.map(operation =>
-      new ManualScalamode[R] {
-        def execute(call: ExternalFunctionCall, executor: ScalaCodeExecutor) =
-          approval.approve(definition, call) *> operation.execute(call, executor)
-      }
-    )
+    override def withExecutor(executor: ScalaCodeExecutor) =
+      tool.withExecutor(executor).map(guardScalamode(_, approval))
 
     override def execute(call: ExternalFunctionCall): ZIO[R, YallmoError, ExternalFunctionResult] =
       approval.approve(definition, call) *> tool.execute(call)

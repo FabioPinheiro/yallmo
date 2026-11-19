@@ -3,7 +3,7 @@ package fmgp.yallmo.tool.scalamode
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 import java.time.Instant
-import fmgp.rpc.{Rpc, RpcToken, RpcWebSocket}
+import fmgp.rpc.{Rpc, RpcToken, RpcWebSocketClient}
 import zio.*
 import zio.json.*
 
@@ -28,7 +28,7 @@ private[scalamode] trait ScalaToolRuntimePlatform {
         endpoint <- Console.readLine
         secret <- Console.readLine
         token <- ZIO.fromEither(RpcToken.parse(secret))
-        connection <- RpcWebSocket.connect(endpoint, token)
+        connection <- RpcWebSocketClient.connect(endpoint, token)
         value <- ZIO.suspendSucceed(evaluate(contract.client(connection)))
         _ <- Console.printLine(value)
       } yield ()
@@ -45,18 +45,6 @@ private[scalamode] trait ScalaToolRuntimePlatform {
         _ <- fileLogger(Path.of(ScalaToolRuntime.LogFile), limit).build
       } yield ()
     }
-
-  private final case class LogRecord(
-      timestamp: String,
-      level: String,
-      fiber: String,
-      message: String,
-      cause: Option[String],
-      annotations: Map[String, String]
-  )
-  private object LogRecord {
-    given JsonEncoder[LogRecord] = DeriveJsonEncoder.gen[LogRecord]
-  }
 
   /** Keeps a byte prefix plus one overflow byte so the host can detect truncation without another marker file. A
     * truncated final JSON record may be partial. Writes are synchronous, serialized, and bounded even if a snippet logs
@@ -76,7 +64,7 @@ private[scalamode] trait ScalaToolRuntimePlatform {
             lock.synchronized {
               if remaining > 0 then {
                 val text = message()
-                val record = LogRecord(
+                val record = ScalamodeLogRecord(
                   Instant.now().toString,
                   level.label,
                   fiber.threadName,

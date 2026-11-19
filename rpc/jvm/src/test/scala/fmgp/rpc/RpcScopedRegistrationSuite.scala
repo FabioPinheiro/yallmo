@@ -31,9 +31,9 @@ class RpcScopedRegistrationSuite extends FunSuite {
         token <- server.rpc.registerScoped(calls.bind(host)).provideEnvironment(ZEnvironment(authority))
         _ <- authority.close(Exit.unit)
         revoked <- server.rpc.revoke(token)
-        denied <- RpcWebSocket.connect(server.port, token).either
+        denied <- RpcWebSocketClient.connect(server.port, token).either
         fresh <- server.rpc.register(calls.bind(host))
-        connection <- RpcWebSocket.connect(server.port, fresh)
+        connection <- RpcWebSocketClient.connect(server.port, fresh)
         reply <- calls.client(connection).echo("route remains open")
       } yield (revoked, code(denied), reply)
     }
@@ -62,9 +62,9 @@ class RpcScopedRegistrationSuite extends FunSuite {
         token <- server.rpc.registerScoped(calls.bind(service)).provideEnvironment(ZEnvironment(authority))
         other <- server.rpc.registerScoped(calls.bind(host)).provideEnvironment(ZEnvironment(otherAuthority))
         legacy <- server.rpc.register(calls.bind(host))
-        connection <- RpcWebSocket.connect(server.port, token)
-        otherConnection <- RpcWebSocket.connect(server.port, other)
-        legacyConnection <- RpcWebSocket.connect(server.port, legacy)
+        connection <- RpcWebSocketClient.connect(server.port, token)
+        otherConnection <- RpcWebSocketClient.connect(server.port, other)
+        legacyConnection <- RpcWebSocketClient.connect(server.port, legacy)
         pending <- calls.client(connection).waitFor(1).either.fork
         _ <- started.await
         closing <- authority.close(Exit.unit).fork
@@ -110,7 +110,7 @@ class RpcScopedRegistrationSuite extends FunSuite {
               ZStream.fromZIO(started.succeed(()) *> ZIO.never).ensuring(finalized.succeed(()).unit)
           }))
           .provideEnvironment(ZEnvironment(authority))
-        connection <- RpcWebSocket.connect(server.port, token)
+        connection <- RpcWebSocketClient.connect(server.port, token)
         pending <- rpc.client(connection).readBytes("file").runDrain.either.fork
         _ <- started.await
         _ <- authority.close(Exit.unit)
@@ -130,7 +130,7 @@ class RpcScopedRegistrationSuite extends FunSuite {
             authority <- scope
             token <- server.rpc.registerScoped(calls.bind(host)).provideEnvironment(ZEnvironment(authority))
             start <- Promise.make[Nothing, Unit]
-            connecting <- (start.await *> RpcWebSocket.connect(server.port, token).either).fork
+            connecting <- (start.await *> RpcWebSocketClient.connect(server.port, token).either).fork
             closing <- (start.await *> authority.close(Exit.unit)).fork
             _ <- start.succeed(())
             _ <- closing.join
@@ -170,12 +170,12 @@ class RpcScopedRegistrationSuite extends FunSuite {
             ticket <- tickets.redeem(token)
             _ <- redeemed.succeed(())
             _ <- release.await
-            response <- RpcWebSocket.socket(ticket.dispatcher, RpcWebSocket.Limits(), ticket.scope).toResponse
+            response <- RpcWebSocket.socket(ticket.dispatcher, RpcWebSocketClient.Limits(), ticket.scope).toResponse
           } yield response).orDie
         })
         http <- Server.defaultWith(_.binding("127.0.0.1", 0).gracefulShutdownTimeout(1.second)).build
         port <- Server.install(routes).provideEnvironment(http)
-        attempt <- RpcWebSocket.connect(port, token).either.fork
+        attempt <- RpcWebSocketClient.connect(port, token).either.fork
         _ <- redeemed.await
         _ <- authority.close(Exit.unit)
         _ <- release.succeed(())

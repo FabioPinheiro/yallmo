@@ -1,13 +1,13 @@
 package fmgp.yallmo.tool.scalamode
 
-import fmgp.rpc.Rpc
+import fmgp.rpc.{Rpc, RpcToken, RpcWebSocketClient}
 import zio.*
 import zio.json.*
 import scala.scalajs.js
 import scala.scalajs.js.annotation.JSGlobal
 
 /** Node-only, explicitly enabled trusted runner infrastructure. None of these hooks are safe snippet capabilities.
-  * Browser bootstrap and RPC remain unsupported. Node itself is not an OS sandbox.
+  * Browser execution remains unsupported. Node itself is not an OS sandbox.
   */
 private[scalamode] trait ScalaToolRuntimePlatform {
   private var nodeEnabled = false
@@ -18,9 +18,31 @@ private[scalamode] trait ScalaToolRuntimePlatform {
     ()
   }.ignore
 
-  @scala.annotation.nowarn("msg=unused explicit parameter")
   def runRpc[API, E, A](contract: Rpc[API])(evaluate: API => ZIO[Any, E, A]): ZIO[Any, E | Throwable, Unit] =
-    ZIO.fail(new UnsupportedOperationException("Scalamode RPC runner is not implemented on Scala.js"))
+    ZIO.scoped {
+      for {
+        _ <- ZIO
+          .fail(new UnsupportedOperationException("Scalamode RPC requires explicit Node opt-in"))
+          .unless(nodeEnabled)
+        input <- readRpcBootstrap
+        token <- ZIO.fromEither(RpcToken.parse(input._2))
+        connection <- RpcWebSocketClient.connect(input._1, token)
+        value <- ZIO.suspendSucceed(evaluate(contract.client(connection)))
+        _ <- Console.printLine(value)
+      } yield ()
+    }
+
+  /** stdin is the trusted host pipe, not ZIO Console on JS. Read no more than two bounded ASCII lines; no credential
+    * enters argv, a workspace or an exception. The parent process deadline also covers a stalled bootstrap pipe.
+    */
+  private def readRpcBootstrap: Task[(String, String)] = ZIO.attempt {
+    val fs = NodeRequire("node:fs")
+    val buffer = NodeRequire("node:buffer").Buffer.alloc(1)
+    NodeRpcBootstrap.read(() => {
+      val count = fs.readSync(0, buffer, 0, 1, null).asInstanceOf[Int]
+      if count == 1 then buffer.readUInt8(0).asInstanceOf[Int] else -1
+    })
+  }
 
   /** Only the host's fresh CommonJS child receives the opt-in flag, followed by its positive log budget. */
   val bootstrap: ZLayer[ZIOAppArgs, Throwable, Unit] =
@@ -49,18 +71,6 @@ private[scalamode] trait ScalaToolRuntimePlatform {
       } yield ()
     }
 
-  private final case class LogRecord(
-      timestamp: String,
-      level: String,
-      fiber: String,
-      message: String,
-      cause: Option[String],
-      annotations: Map[String, String]
-  )
-  private object LogRecord {
-    given JsonEncoder[LogRecord] = DeriveJsonEncoder.gen[LogRecord]
-  }
-
   /** Synchronous Node writes keep at most the budget plus one overflow byte, just like the JVM logger. All handles are
     * scoped; log records never share stdout or the marker channel.
     */
@@ -76,7 +86,7 @@ private[scalamode] trait ScalaToolRuntimePlatform {
         val logger: ZLogger[String, Unit] = (_, fiber, level, message, cause, _, _, annotations) => {
           if remaining > 0 then {
             val text = message()
-            val record = LogRecord(
+            val record = ScalamodeLogRecord(
               new js.Date().toISOString(),
               level.label,
               fiber.threadName,
@@ -102,4 +112,24 @@ private[scalamode] trait ScalaToolRuntimePlatform {
 @JSGlobal("require")
 private object NodeRequire extends js.Object {
   def apply(module: String): js.Dynamic = js.native
+}
+
+/** Byte-at-a-time parsing bounds stdin consumption even when the peer never sends a newline. */
+private[scalamode] object NodeRpcBootstrap {
+  def read(readByte: () => Int): (String, String) = {
+    def line(maxBytes: Int): String = {
+      val output = new StringBuilder
+      var complete = false
+      while !complete do {
+        val byte = readByte()
+        if byte < 0 then throw new IllegalArgumentException("Incomplete RPC bootstrap")
+        if byte == 10 then complete = true
+        else if byte < 32 || byte > 126 || output.length >= maxBytes then
+          throw new IllegalArgumentException("Invalid or oversized RPC bootstrap")
+        else output.append(byte.toChar)
+      }
+      output.toString
+    }
+    (line(4096), line(43))
+  }
 }

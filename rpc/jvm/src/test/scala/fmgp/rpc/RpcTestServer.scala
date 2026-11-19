@@ -10,7 +10,7 @@ private[rpc] final case class RpcTestServer(port: Int, rpc: RpcWebSocket.RpcRout
 
 private[rpc] object RpcTestServer {
   def start(
-      limits: RpcWebSocket.Limits = RpcWebSocket.Limits(),
+      limits: RpcWebSocketClient.Limits = RpcWebSocketClient.Limits(),
       auth: RpcWebSocket.AuthConfig = RpcWebSocket.AuthConfig()
   ): ZIO[Scope, Throwable, RpcTestServer] =
     for {

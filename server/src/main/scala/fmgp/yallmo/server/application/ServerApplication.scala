@@ -15,7 +15,7 @@ import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
 import scala.collection.immutable.VectorMap
 import zio.json.ast.Json
 import java.util.concurrent.ConcurrentHashMap
-import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutorJVM}
+import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutors}
 import zio.*
 import zio.http.Client
 
@@ -32,7 +32,7 @@ final class ServerApplication private (
     config: Config,
     availableContext: StaticContext[Any],
     val availability: ToolAvailability,
-    val manualJs: ManualJsScalamode
+    val manualJs: ScalaJsRuntime
 ) {
   import ServerApplication.*
 
@@ -100,7 +100,7 @@ final class ServerApplication private (
       manual: Option[ScalaCodeExecutor] = None
   ): IO[YallmoError, Message] =
     (ZIO
-      .fail(YallmoError.InvalidMessage("Manual pure execution requires an explicit Scalamode ToolCall"))
+      .fail(YallmoError.InvalidMessage("Backend-selected execution requires an explicit Scalamode ToolCall"))
       .when(manual.nonEmpty && !(input.payload match {
         case fmgp.yallmo.model.MessagePayload.ToolCall(call) => call.name == fmgp.yallmo.tool.FunctionKey.scalamode
         case _                                               => false
@@ -150,9 +150,9 @@ object ServerApplication {
       workspaceFilesystem: Option[FsRead] = None,
       selectedFunctions: Option[FsRead] => Chunk[AgentFunction[Any]] = _ => Chunk.empty,
       toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions,
-      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutorJVM.make(),
+      scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutors.make(),
       workspaceFilesystemWrite: Option[FsWrite] = None,
-      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
+      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled
   ): ZIO[Client, YallmoError, ServerApplication] =
     for {
       context = StaticContext[Any](
@@ -219,7 +219,7 @@ object ServerApplication {
       workspace: Path,
       services: ULayer[ApplicationTools.Environment] = ApplicationTools.live,
       sharedSdlc: Option[SdlcService] = None,
-      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
+      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled
   ): ZIO[Scope & Client, YallmoError, ServerApplication] =
     for {
       environment <- services.build
@@ -265,7 +265,7 @@ object ServerApplication {
       configPath: Path,
       workspace: Option[Path] = None,
       sharedSdlc: Option[SdlcService] = None,
-      manualJs: ManualJsScalamode = ManualJsScalamode.disabled
+      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     openConfigured(storage, configPath, workspace, sharedSdlc, manualJs)
 
@@ -274,7 +274,7 @@ object ServerApplication {
       configPath: Path,
       workspace: Option[Path],
       sharedSdlc: Option[SdlcService],
-      manualJs: ManualJsScalamode
+      manualJs: ScalaJsRuntime
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     ZIO.uninterruptibleMask { restore =>
       for {
@@ -295,7 +295,7 @@ object ServerApplication {
       configPath: Path,
       workspace: Option[Path],
       sharedSdlc: Option[SdlcService],
-      manualJs: ManualJsScalamode
+      manualJs: ScalaJsRuntime
   ): ZIO[Scope & Environment, Throwable, ServerExecutionService] =
     for {
       root <- existingDirectory(storage, "Storage directory must already exist and be accessible")

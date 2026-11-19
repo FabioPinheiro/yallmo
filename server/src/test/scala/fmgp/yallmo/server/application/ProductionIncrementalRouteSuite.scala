@@ -91,9 +91,15 @@ final class ProductionIncrementalRouteSuite extends FunSuite {
           val ir = "snippetIr=([a-f0-9]+)".r
           assertEquals(ir.findFirstIn(evidence(first)), ir.findFirstIn(evidence(same)))
           assertNotEquals(ir.findFirstIn(evidence(first)), ir.findFirstIn(evidence(changed)))
-          List(missing, noHello, noFs, noHost).foreach(output =>
+          List(first, same, changed, recovered).foreach { output =>
+            assertEquals(output.exitCode, 0)
+            assert(output.executionSetupTime.nonEmpty)
+          }
+          List(missing, noHello, noFs, noHost).foreach { output =>
             assert(output.result.isInstanceOf[ScalaModeResult.CompilationError])
-          )
+            assertEquals(output.executionTime, 0L)
+            assertEquals(output.executionSetupTime, None)
+          }
           assert(runtimeError.result.isInstanceOf[ScalaModeResult.Executed] && runtimeError.exitCode != 0)
           assert(!recovered.output.contains("privatePrior") && !recovered.logs.mkString.contains("privatePrior"))
         }
@@ -179,6 +185,63 @@ final class ProductionIncrementalRouteSuite extends FunSuite {
     })
   }
 
+  test("stalled production linker deadline and cancellation kill the worker and remove its workspace") {
+    live()
+    run(withServer { (_, rpc, manual) =>
+      for {
+        conn <- connection(rpc)
+        _ <- ZIO.foreachDiscard(List(false, true)) { cancel =>
+          for {
+            initial <- invoke(rpc, conn, "81")
+            process = worker(initial)
+            workspace = directory(process)
+            _ <- ZIO
+              .scoped {
+                for {
+                  _ <- ZIO.attemptBlocking {
+                    Files.delete(workspace.resolve("classpath"))
+                    Files.delete(workspace.resolve("response"))
+                    val stop = new ProcessBuilder("kill", "-STOP", process.pid().toString).start()
+                    assertEquals(stop.waitFor(), 0)
+                  }
+                  pending <- manual.executor.get
+                    .execute("82", if cancel then 30.seconds else 8.seconds, 65536, Seq.empty)
+                    .forkScoped
+                  _ <- waitFor(
+                    Files.exists(workspace.resolve("classpath")) && !Files.exists(workspace.resolve("response"))
+                  )
+                  _ <-
+                    if cancel then pending.interrupt.unit
+                    else
+                      pending.join.flatMap(output =>
+                        ZIO.attempt {
+                          assert(output.result.isInstanceOf[ScalaModeResult.TimedOut], output.toString)
+                          assertEquals(output.executionTime, 0L)
+                          assertEquals(output.executionSetupTime, None)
+                        }
+                      )
+                  _ <- ZIO.attempt {
+                    assert(!process.isAlive)
+                    assert(!Files.exists(workspace))
+                  }
+                } yield ()
+              }
+              .ensuring(ZIO.attemptBlocking {
+                if process.isAlive then { process.destroyForcibly(); () }
+              }.orDie)
+            recovered <- invoke(rpc, conn, "83")
+            _ <- ZIO.attempt {
+              assertEquals(recovered.output.trim, "83")
+              assertNotEquals(worker(recovered).pid(), process.pid())
+              assert(evidence(recovered).contains("links=1 "))
+            }
+          } yield ()
+        }
+        _ <- rpc.disconnect(conn)
+      } yield ()
+    })
+  }
+
   test("link failure cannot run the prior JS; changed-source recovery and small shared output budget") {
     live()
     run(withServer { (_, rpc, manual) =>
@@ -196,6 +259,7 @@ final class ProductionIncrementalRouteSuite extends FunSuite {
         _ <- ZIO.attempt {
           assert(broken.result.isInstanceOf[ScalaModeResult.CompilationError], broken.toString)
           assertEquals(broken.executionTime, 0L)
+          assertEquals(broken.executionSetupTime, None)
           assert(!Files.exists(workspace.resolve("program.cjs")))
         }
         _ <- ZIO.attempt {

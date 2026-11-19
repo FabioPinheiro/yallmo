@@ -39,7 +39,7 @@ private[webharness] object ScalamodeView {
           option(
             value := "js-node",
             disabled <-- state.map(s => !s.jsNodeAvailable),
-            "JS / Node — pure playground (retained linker)"
+            "Scala.js / Node (retained linker)"
           )
         )
       ),
@@ -47,7 +47,7 @@ private[webharness] object ScalamodeView {
       p(
         cls := "muted",
         hidden <-- state.map(_.execution != ScalamodeExecution.JsNode),
-        "Pure playground: selected agent permissions/approval still apply; its hello/filesystem APIs and other services are NOT available. Custom bindings are unsupported. Server-scoped incremental linker; cold first link, fresh Node process on every Run. No runtime state is retained."
+        "Selected-agent services, rooted permissions, original limits and approval are preserved. Custom functions must opt in to executor rebinding and provide reviewed Scala.js products. Server-scoped incremental linker; cold first link, fresh Node process on every Run. No runtime state is retained."
       ),
       div(
         cls := "composer-actions",
@@ -71,7 +71,7 @@ private[webharness] object ScalamodeView {
               cls := "muted",
               result.execution match {
                 case ScalamodeExecution.JVM    => "JVM — selected agent binding"
-                case ScalamodeExecution.JsNode => "JS / Node — pure playground (retained linker); no agent services"
+                case ScalamodeExecution.JsNode => "Scala.js / Node — selected-agent services (retained linker)"
               }
             ),
             result.fields match {

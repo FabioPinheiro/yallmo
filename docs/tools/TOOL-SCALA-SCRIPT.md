@@ -156,7 +156,7 @@ new ScalaTool(dependencies = Seq.empty) // Only the mandatory ZIO/ZIO JSON/ZIO S
 ```
 
 A supplied sequence replaces the defaults. The trusted runner always adds `dev.zio::zio:2.1.27`,
-`dev.zio::zio-json:1.1.1` and `dev.zio::zio-streams:2.1.27`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
+`dev.zio::zio-json:1.1.3` and `dev.zio::zio-streams:2.1.27`; duplicates are removed. Each coordinate is passed as a separate `--dependency` argument. Offline mode requires all selected artifacts and their transitive dependencies to be cached. Dependencies are not accepted in the model's JSON arguments or code directives. Only configure trusted libraries: adding dependencies expands the code available to snippets; compiler safety restrictions still apply.
 
 ### Pinned Scala release / offline use
 
@@ -173,7 +173,7 @@ scala-cli compile "$warmup" \
   --scala 3.10.1 \
   --jvm system \
   --dependency dev.zio::zio:2.1.27 \
-  --dependency dev.zio::zio-json:1.1.1
+  --dependency dev.zio::zio-json:1.1.3
 rm -rf "$warmup"
 ```
 

@@ -222,7 +222,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
   }
 
   test("custom dependencies retain the mandatory ZIOApp runtime dependencies without duplicates") {
-    val dependencies = Seq("dev.zio::zio-streams:2.1.27", "dev.zio::zio-json:1.1.1")
+    val dependencies = Seq("dev.zio::zio-streams:2.1.27", "dev.zio::zio-json:1.1.3")
     val arguments = ScalamodeProgram.arguments(dependencies = dependencies)
     val actual = arguments.sliding(2).collect { case Seq("--dependency", dependency) => dependency }.toList
     assertEquals(actual, (dependencies ++ ScalamodeProgram.RuntimeDependencies).distinct.toList)
@@ -241,7 +241,7 @@ final class ScalaCodeExecutorSuite extends FunSuite {
 
   test("ScalaTool forwards additional dependencies and always includes the trusted runtime libraries") {
     withFakeCli("printf '%s\\n' \"$@\"\n") { executable =>
-      for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.1"), Seq.empty) do {
+      for dependencies <- List(ScalaTool.DefaultDependencies, Seq("dev.zio::zio-json:1.1.3"), Seq.empty) do {
         val result = run(
           new ScalaTool(dependencies = dependencies)
             .execute(
@@ -274,6 +274,43 @@ final class ScalaCodeExecutorSuite extends FunSuite {
         assert(!Files.exists(Path.of(result.output.trim.linesIterator.toList.last)))
       }
       assertNotEquals(first.output.trim, second.output.trim)
+    }
+  }
+
+  test("generated wrappers keep submitted code unchanged at column zero, including service constants") {
+    val code = "val text = \"\"\"first\nsecond\"\"\"\nfor {\n  n <- ZIO.succeed(42)\n} yield n"
+    val binding =
+      HelloWorldService.binding.copy(constants = Seq(HelloWorldService.inspection.copy(parameter = "greeting")))
+    for service <- List(None, Some(binding)) do {
+      val program = ScalamodeProgram(code, service)
+      assert(program.snippetSource.contains("\ndef result("), program.snippetSource)
+      assert(program.snippetSource.endsWith("\n" + code + "\n  }\n}\n"), program.snippetSource)
+      if service.nonEmpty then assert(program.snippetSource.contains("\nval greeting:"), program.snippetSource)
+    }
+  }
+
+  test("Scala CLI ANSI styles are removed before diagnostic mapping, without modifying returned values") {
+    for service <- List(None, Some(HelloWorldService.binding)) do {
+      val program = ScalamodeProgram("missing", service)
+      val line = program.snippetSource.linesIterator.toList.indexOf("missing") + 1
+      val raw = CommandOutput(
+        1,
+        false,
+        "\u001b[33mCompiler error\u001b[0m",
+        false,
+        Seq(s"\u001b[33mSnippet.scala:$line:1\u001b[0m", s"\u001b[33m$line |missing\u001b[0m", "  |^^^^^^^")
+      )
+      val plain = program.compilationDiagnostics(raw, compiled = false)
+      val result = program.finish(plain, compiled = false, 1024, None)
+      assertEquals(result.output, "Compiler error\nSnippet.scala:1:1\n1 |missing\n  |^^^^^^^")
+    }
+    withFakeCli(
+      "printf '\\033[32m42\\033[0m'; printf '\\033[33mruntime warning\\033[0m\\n' >&2",
+      compileBody = "printf '\\033[90mCompiled project\\033[0m\\n' >&2"
+    ) { executable =>
+      val result = execute(executable)
+      assertEquals(result.output, "\u001b[32m42\u001b[0m")
+      assertEquals(result.logs, Seq("Compiled project", "runtime warning"))
     }
   }
 
@@ -644,6 +681,29 @@ final class ScalaCodeExecutorSuite extends FunSuite {
           Seq("Yes Tool API is available", "Yes Tool API is available")
         )
       }
+    }
+  }
+
+  test("pinned compiler runs multiline for expressions without wrapper indentation warnings") {
+    assume(realCli.nonEmpty, "Set YALLMO_TEST_SCALA_CLI to run the wrapper diagnostics integration test")
+    val code = "for {\n  a <- ZIO.succeed(1)\n  b <- ZIO.succeed(2)\n} yield a + b"
+    val executor = ScalaCodeExecutors.make(realCli.get, realVersion, realOffline)
+    val constantService = new ScalamodeService {
+      val apiDocs = HelloWorldService.apiDocs
+      val binding =
+        HelloWorldService.binding.copy(constants = Seq(HelloWorldService.inspection.copy(parameter = "greeting")))
+    }
+    for result <- List(
+        run(executor.execute(code, 120.seconds, 16 * 1024)),
+        run(executor.executeWithServices(code, constantService, 120.seconds, 16 * 1024))
+      )
+    do {
+      assertEquals(result.exitCode, 0, result.toString)
+      assertEquals(result.output.trim, "3")
+      val logs = result.logs.mkString("\n")
+      assert(!logs.contains("indented too far"), logs)
+      assert(!logs.contains("zio-json is outdated"), logs)
+      assert(!logs.contains("\u001b["), logs)
     }
   }
 

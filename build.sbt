@@ -116,7 +116,7 @@ lazy val model = crossProject(JSPlatform, JVMPlatform)
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % "2.1.27",
       "dev.zio" %% "zio-streams" % "2.1.27",
-      "dev.zio" %% "zio-json" % "1.1.1",
+      "dev.zio" %% "zio-json" % "1.1.3",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
@@ -176,7 +176,7 @@ lazy val filesystem = crossProject(JSPlatform, JVMPlatform)
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % "2.1.27",
       "dev.zio" %% "zio-streams" % "2.1.27",
-      "dev.zio" %% "zio-json" % "1.1.1",
+      "dev.zio" %% "zio-json" % "1.1.3",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
@@ -245,7 +245,7 @@ lazy val protocol = crossProject(JSPlatform, JVMPlatform)
   .settings(
     name := "yallmo-protocol",
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-json" % "1.1.1",
+      "dev.zio" %% "zio-json" % "1.1.3",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
   )
@@ -263,7 +263,7 @@ lazy val rpc = crossProject(JSPlatform, JVMPlatform)
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % "2.1.27",
       "dev.zio" %% "zio-streams" % "2.1.27",
-      "dev.zio" %% "zio-json" % "1.1.1",
+      "dev.zio" %% "zio-json" % "1.1.3",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
       "com.github.poslegm" %% "munit-zio" % "0.4.1" % Test,
     ),
@@ -360,7 +360,7 @@ lazy val webHarness = project
       "com.raquo" %% "laminar" % "17.2.1",
       "dev.zio" %% "zio" % "2.1.27",
       "dev.zio" %% "zio-streams" % "2.1.27",
-      "dev.zio" %% "zio-json" % "1.1.1",
+      "dev.zio" %% "zio-json" % "1.1.3",
       "org.scalameta" %% "munit" % "1.2.4" % Test,
     ),
     bundleFrontend := Def.uncached {

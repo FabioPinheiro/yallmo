@@ -14,8 +14,14 @@ private[scalamode] final case class ScalamodeProgram(code: String, binding: Opti
   val preambleLines = binding.map(config => servicePreamble(config).count(_ == '\n'))
   def snippetSource: String = binding.fold(snippet(code))(config => servicePreamble(config) + code + "\n  }\n}\n")
   def mainSource: String = binding.fold(main)(serviceMain)
-  def compilationDiagnostics(command: CommandOutput, compiled: Boolean): CommandOutput =
-    preambleLines.fold(command)(lines => hideSetupDiagnostics(command, code, lines, compiled))
+  def compilationDiagnostics(command: CommandOutput, compiled: Boolean): CommandOutput = {
+    // Scala CLI colours its own messages even with scalac's -color:never. Diagnostics are displayed as plain text.
+    val plain = command.copy(
+      output = stripAnsiStyle(command.output),
+      logs = command.logs.map(stripAnsiStyle)
+    )
+    preambleLines.fold(plain)(lines => hideSetupDiagnostics(plain, code, lines, compiled))
+  }
   def runtimeResult(
       compilation: CommandOutput,
       runtime: CommandOutput,
@@ -93,7 +99,7 @@ private[scalamode] object ScalamodeProgram {
   )
 
   private[tool] val RuntimeDependencies =
-    Seq("dev.zio::zio:2.1.27", "dev.zio::zio-json:1.1.1", "dev.zio::zio-streams:2.1.27")
+    Seq("dev.zio::zio:2.1.27", "dev.zio::zio-json:1.1.3", "dev.zio::zio-streams:2.1.27")
 
   private[tool] def arguments(
       executable: String = "scala-cli",
@@ -155,7 +161,7 @@ private[scalamode] object ScalamodeProgram {
         offline,
         dependencies,
         classpath,
-        Seq("dev.zio::zio::2.1.27", "dev.zio::zio-json::1.1.1", "dev.zio::zio-streams::2.1.27")
+        Seq("dev.zio::zio::2.1.27", "dev.zio::zio-json::1.1.3", "dev.zio::zio-streams::2.1.27")
       ) ++ Seq(
         "--js",
         "--js-version",
@@ -228,10 +234,15 @@ private[scalamode] object ScalamodeProgram {
     (base +: extra).mkString(java.io.File.pathSeparator)
   }
 
+  // Keep trusted declarations at column zero: submitted code starts there too. Indenting the submitted code would
+  // change multiline string values and require column/caret remapping; an indented wrapper causes spurious warnings.
   private val purePreamble =
     "import scala.language.experimental.safe\n" +
       "import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}\n" +
-      "object ScalaToolSnippet {\n  import tool.*\n  def result(using zio.Trace) = {\n"
+      "object ScalaToolSnippet {\nimport tool.*\ndef result(using zio.Trace) = {\n"
+
+  private val ansiStyle = "\u001b\\[[0-9;]*m".r
+  private def stripAnsiStyle(value: String): String = ansiStyle.replaceAllIn(value, "")
 
   private[tool] def snippet(code: String): String = purePreamble + code + "\n  }\n}\n"
 
@@ -340,9 +351,9 @@ private[scalamode] object ScalamodeProgram {
       "import fmgp.yallmo.tool.scalamode.{ScalaToolApi as tool}\nimport tool.*\n" +
       s"import ${config.errorType}\n" +
       "object ScalaToolSnippet {\n" +
-      s"  def result(${config.parameter}: ${config.apiTypes.mkString(" & ")})(using zio.Trace, zio.CanFail[${config.errorType}]) = {\n" +
+      s"def result(${config.parameter}: ${config.apiTypes.mkString(" & ")})(using zio.Trace, zio.CanFail[${config.errorType}]) = {\n" +
       config.constants.map { constant =>
-        s"    val ${constant.parameter}: ${constant.apiTypes.head} = ${constant.apiTypes.head.stripSuffix(".type")}\n"
+        s"val ${constant.parameter}: ${constant.apiTypes.head} = ${constant.apiTypes.head.stripSuffix(".type")}\n"
       }.mkString
 
   private[scalamode] def serviceMain(config: ScalamodeService.Binding): String =

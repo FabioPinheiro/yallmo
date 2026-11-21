@@ -427,7 +427,6 @@ final class OrchestratorRebaseSuite extends FunSuite {
     def listSessions = delegate.listSessions
     def createSession(id: SessionId, agents: Chunk[AgentId]) = delegate.createSession(id, agents)
     def loadSession(id: SessionId) = delegate.loadSession(id)
-    def loadSessionParcial(id: SessionId) = delegate.loadSessionParcial(id)
     def addSessionAgent(id: SessionId, agentId: AgentId) = delegate.addSessionAgent(id, agentId)
     def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Chunk[Message]) =
       delegate.putMessagesAndUpdateSession(id, head, messages)

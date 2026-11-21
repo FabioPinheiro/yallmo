@@ -52,7 +52,6 @@ private[orchestration] final class StorageEvents(base: Storage, updates: Orchest
   override def listBlobIds = base.listBlobIds
   override def listSessions = base.listSessions
   override def loadSession(id: SessionId) = base.loadSession(id)
-  override def loadSessionParcial(id: SessionId) = base.loadSessionParcial(id)
 
   override def putMessage(message: Message): IO[YallmoError, Message] =
     for {

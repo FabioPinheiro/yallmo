@@ -489,9 +489,6 @@ final class OrchestratorLive[-R] private[orchestration] (
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     storage.loadSession(id).mapError(YallmoError.StorageFailed.apply)
 
-  override def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial] =
-    storage.loadSessionParcial(id).mapError(YallmoError.StorageFailed.apply)
-
   override def addSessionAgent(id: SessionId, agentId: AgentId): IO[YallmoError, Session] =
     catalog.validateAuthor(agentId) *> storage.addSessionAgent(id, agentId).mapError(YallmoError.StorageFailed.apply)
 

@@ -646,7 +646,6 @@ final class OrchestrationEventsSuite extends FunSuite {
     def listSessions = base.listSessions
     def createSession(id: SessionId, authors: Chunk[AgentId]) = base.createSession(id, authors)
     def loadSession(id: SessionId) = base.loadSession(id)
-    def loadSessionParcial(id: SessionId) = base.loadSessionParcial(id)
     def addSessionAgent(id: SessionId, author: AgentId) = base.addSessionAgent(id, author)
     def putMessagesAndUpdateSession(id: SessionId, expected: Option[MessageId], messages: Chunk[Message]) =
       base.putMessagesAndUpdateSession(id, expected, messages)

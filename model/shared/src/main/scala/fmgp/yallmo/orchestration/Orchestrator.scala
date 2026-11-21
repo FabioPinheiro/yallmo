@@ -110,11 +110,6 @@ trait Orchestrator[-R] extends BlobOps {
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
-  /** Loads read-only history with explicit missing-message markers. Does not repair storage or make incomplete history
-    * executable; submit, append and other mutations continue to require strict [[loadSession]].
-    */
-  def loadSessionParcial(id: SessionId): IO[YallmoError, SessionParcial]
-
   /** Adds a registered message author without changing the session ID or transcript. Idempotent. Fixed-membership
     * implementations retain their previous behavior unless they override this operation.
     */

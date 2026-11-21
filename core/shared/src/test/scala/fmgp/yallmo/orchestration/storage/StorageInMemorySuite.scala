@@ -1,7 +1,7 @@
 package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.orchestration.{SessionId, SessionParcial}
+import fmgp.yallmo.orchestration.{Session, SessionId}
 import munit.ZSuite
 import zio.*
 
@@ -30,23 +30,21 @@ final class StorageInMemorySuite extends ZSuite {
     }
   })
 
-  testZ("partial session reads preserve complete histories, metadata and missing-session errors")(ZIO.suspendSucceed {
+  testZ("session reads preserve complete histories, metadata and missing-session errors")(ZIO.suspendSucceed {
     val author = AgentId("author")
-    val id = SessionId.unsafe("partial")
+    val id = SessionId.unsafe("history")
     val absentId = SessionId.unsafe("absent")
     for {
       storage <- StorageInMemory.make
       _ <- storage.createSession(id, Chunk(author))
-      empty <- storage.loadSessionParcial(id)
-      strict <- StorageTestMessages.persistTurn(storage, id, author, Chunk(MessagePayload.User("hello")))
-      partial <- storage.loadSessionParcial(id)
-      absent <- storage.loadSessionParcial(absentId).either
-      unchanged <- storage.loadSession(id)
+      empty <- storage.loadSession(id)
+      saved <- StorageTestMessages.persistTurn(storage, id, author, Chunk(MessagePayload.User("hello")))
+      loaded <- storage.loadSession(id)
+      absent <- storage.loadSession(absentId).either
     } yield {
-      assertEquals(empty, SessionParcial(id, Chunk(author), Chunk.empty))
-      assertEquals(partial, SessionParcial(id, strict.agentIds, strict.messages))
+      assertEquals(empty, Session(id, Chunk(author), Chunk.empty))
+      assertEquals(loaded, saved)
       assertEquals(absent, Left(YallmoError.SessionNotFound(absentId)))
-      assertEquals(unchanged, strict)
     }
   })
 

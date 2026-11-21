@@ -37,26 +37,26 @@ final class OrchestratorLiveSuite extends FunSuite {
     assertEquals(session.messages.map(_.payload), Chunk(Message.User("hello")))
   }
 
-  test("public partial session reads delegate to memory storage and preserve error mapping") {
+  test("public session reads delegate to memory storage and preserve error mapping") {
     runZIO {
       for {
         instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
-        id = SessionId.unsafe("partial")
+        id = SessionId.unsafe("history")
         _ <- orchestrator.createSession(id, Chunk(agentId))
-        strict <- orchestrator.append(id, agentId, Chunk(Message.User("hello")))
-        partial <- orchestrator.loadSessionParcial(id)
+        saved <- orchestrator.append(id, agentId, Chunk(Message.User("hello")))
+        loaded <- orchestrator.loadSession(id)
         absentId = SessionId.unsafe("absent")
-        absent <- orchestrator.loadSessionParcial(absentId).either
+        absent <- orchestrator.loadSession(absentId).either
       } yield {
-        assertEquals(partial, SessionParcial(id, strict.agentIds, strict.messages))
+        assertEquals(loaded, saved)
         assertEquals(absent, Left(YallmoError.StorageFailed(YallmoError.SessionNotFound(absentId))))
       }
     }
   }
 
-  test("public partial filesystem reads preserve missing heads while strict reads and appends still fail") {
-    val root = Files.createTempDirectory("yallmo-partial-session-")
+  test("filesystem reads and appends reject missing heads without changing storage") {
+    val root = Files.createTempDirectory("yallmo-missing-head-")
     try {
       runZIO {
         for {
@@ -72,12 +72,10 @@ final class OrchestratorLiveSuite extends FunSuite {
             )
           )
           before <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
-          partial <- orchestrator.loadSessionParcial(id)
           strict <- orchestrator.loadSession(id).either
           appended <- orchestrator.append(id, agentId, Chunk(Message.User("must not write"))).either
           after <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
         } yield {
-          assertEquals(partial, SessionParcial(id, Chunk(agentId), Chunk(MessageMissing(missing))))
           assert(strict.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))
           assert(appended.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))
           assertEquals(after, before)

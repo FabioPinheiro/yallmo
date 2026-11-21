@@ -1,7 +1,7 @@
 package fmgp.yallmo.orchestration
 
 import zio.Chunk
-import fmgp.yallmo.model.{AgentId, Message, MessageId, MessageMaybe}
+import fmgp.yallmo.model.{AgentId, Message, MessageId}
 
 /** Stable identifier for one ordered message thread. */
 opaque type SessionId = String
@@ -27,15 +27,6 @@ final case class Session(
     id: SessionId,
     agentIds: Chunk[AgentId],
     messages: Chunk[Message]
-)
-
-/** Read-only session history that may begin with a missing-object marker followed by the readable newer tail. It is
-  * deliberately separate from [[Session]], which requires complete messages for execution and writes.
-  */
-final case class SessionParcial(
-    id: SessionId,
-    agentIds: Chunk[AgentId],
-    messages: Chunk[MessageMaybe]
 )
 
 type SessionRef = (SessionId, MessageId)

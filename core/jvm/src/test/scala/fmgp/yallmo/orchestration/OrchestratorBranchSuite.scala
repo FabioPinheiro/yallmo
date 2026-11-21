@@ -241,7 +241,6 @@ final class OrchestratorBranchSuite extends FunSuite {
     def listSessions = forbidden
     def createSession(id: SessionId, agents: Chunk[AgentId]) = { val _ = (id, agents); forbidden }
     def loadSession(id: SessionId) = { val _ = id; forbidden }
-    def loadSessionParcial(id: SessionId) = { val _ = id; forbidden }
     def addSessionAgent(id: SessionId, agent: AgentId) = { val _ = (id, agent); forbidden }
     def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Chunk[Message]) = {
       val _ = (id, head, messages); forbidden

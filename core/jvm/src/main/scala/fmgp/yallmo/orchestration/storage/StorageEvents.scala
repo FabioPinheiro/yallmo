@@ -7,7 +7,7 @@ import zio.*
 /** All orchestration mutation paths share this decoration, including CAS and acknowledgement recovery. */
 private[orchestration] final class StorageEvents(base: Storage, updates: OrchestrationEvents) extends Storage {
   private val RecoveryTimeout = 2.seconds
-  private def dispatch[A](messages: Chunk[Message], sessionId: Option[SessionId], successSessions: A => Chunk[Session])(
+  private def dispatch[A](messages: Seq[Message], sessionId: Option[SessionId], successSessions: A => Chunk[Session])(
       storage: IO[YallmoError, A]
   ): IO[YallmoError, A] =
     ZIO.uninterruptibleMask { restore =>
@@ -65,7 +65,13 @@ private[orchestration] final class StorageEvents(base: Storage, updates: Orchest
       saved <- dispatch[Message](Chunk(message), None, _ => Chunk.empty)(base.putMessage(message))
     } yield saved
 
-  override def createSession(id: SessionId, agentIds: Chunk[AgentId]) = session(id)(base.createSession(id, agentIds))
+  override def createSession(id: SessionId, agentIds: Seq[AgentId]) = session(id)(base.createSession(id, agentIds))
+  override def createSession(id: SessionId, agentIds: Seq[AgentId], info: Option[SessionInfo]) =
+    session(id)(base.createSession(id, agentIds, info))
+  override def updateSessionInfo(id: SessionId, expectedRevision: Long, info: Option[SessionInfo]) =
+    session(id)(base.updateSessionInfo(id, expectedRevision, info))
+  override def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean) =
+    session(id)(base.setSessionArchived(id, expectedRevision, archived))
   override def addSessionAgent(id: SessionId, agentId: AgentId) = session(id)(base.addSessionAgent(id, agentId))
   override def compareAndSetSessionHead(id: SessionId, expectedHead: Option[MessageId], newHead: Option[MessageId]) =
     session(id)(base.compareAndSetSessionHead(id, expectedHead, newHead))
@@ -74,7 +80,7 @@ private[orchestration] final class StorageEvents(base: Storage, updates: Orchest
   override def putMessagesAndUpdateSession(
       id: SessionId,
       expectedHead: Option[MessageId],
-      messages: Chunk[Message]
+      messages: Seq[Message]
   ): IO[YallmoError, Session] = updates.mutationGate.withPermit {
     for {
       previous <- base.loadSession(id)

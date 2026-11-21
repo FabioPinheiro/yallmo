@@ -95,7 +95,7 @@ existing trusted-host read authorization, not a new security/ownership boundary.
 `scope` echoes the accepted selection:
 
 - `messages`: canonical public `MessageSnapshot` inventory, without opaque provider continuations.
-- `sessions`: `EventSession = {id, agentIds, messageCount, head?, revision, error?}`. After a successful inventory
+- `sessions`: `EventSession = {id, agentIds, messageCount, head?, revision, error?, meta?, info?}`. After a successful inventory
   listing, an individual subsequent history-read failure retains summary fields and a sanitized `error`; its absent
   head is **unknown**, not a confirmed empty pointer. Inventory-listing failures still fail bootstrap: filesystem
   listing itself traverses histories, so a missing referenced message can prevent that initial listing.
@@ -215,7 +215,12 @@ Collections encode as arrays. Protocol-local codecs do not alter storage formats
 - `AgentTask = {prompt: String}`; `AgentResult = {agentId: AgentId, text: String}`.
 - `Message = {id: MessageId, data: {agentId: AgentId, parentId?: MessageId, timestamp: String, payload: MessagePayload}}`.
   The shared codec verifies `id` against the canonical encoded `data`; payload variants retain their existing tagged JSON.
-- `SessionSnapshot = {id: SessionId, agentIds: [AgentId], messages: [MessageSnapshot]}`.
+- `SessionSnapshot = {id: SessionId, agentIds: [AgentId], messages: [MessageSnapshot], meta?: SessionMetadata, info?: SessionInfo}`.
+- `SessionMetadata = {createdAt?: Instant, updatedAt?: Instant, archivedAt?: Instant, revision: Long}`.
+  Storage assigns these values. The durable revision and update time track info/archive changes only, independently
+  of message-head changes and the process-local `EventSession.revision`. Legacy records may have no metadata or unknown dates.
+- `SessionInfo = {title?: String, parentSessionId?: SessionId, goals?: String, status?: String}`.
+  Status is descriptive text, not an execution state or archive flag; parent lineage is fixed at creation.
 - `MessageSnapshot = {id: MessageId, agentId: AgentId, parentId?: MessageId, timestamp: String, role: String,
   content: String, blobIds: [BlobId], toolName?: String}`.
 - `ApplicationError = {code: String, message: String}` with safe display text, never provider errors, credentials,
@@ -223,7 +228,11 @@ Collections encode as arrays. Protocol-local codecs do not alter storage formats
 
 Snapshots expose public text/attachment references, not opaque `ProviderContinuation`. They never fabricate stored
 messages or change persisted history. Listing order remains sessions/agents/blobs by ID, all messages by timestamp
-then ID; session messages are in transcript order.
+then ID; session messages are in transcript order. Canonical events carry the same optional metadata/info as snapshots,
+including updates with no newly appended messages. Info/archive mutation is currently an in-process Orchestrator API,
+not an additional JSON-RPC operation. Missing update info preserves the existing object; supplied info replaces it in
+full. Changes require the expected durable metadata revision. Archive/unarchive is explicit and does not block execution.
+Forks get fresh unarchived metadata and source parent lineage, without copying the source's description/status.
 
 `blobs.read`: offset must be nonnegative and no greater than size; maxBytes is 1..65536 decoded bytes. At EOF, data
 is empty and eof true. Decode each base64 chunk independently and advance by decoded bytes. Binary frames remain unsupported.

@@ -217,9 +217,9 @@ final class ManagedHistorySubmitSuite extends FunSuite {
                     (reached.succeed(()) *> release.await).when(change.startsWith("at-apply")) *>
                       history.rebase(base, head, onto)
                   private[orchestration] def snapshot = history.snapshot
-                  private[orchestration] def append(payloads: Chunk[MessagePayload]) = history.append(payloads)
+                  private[orchestration] def append(payloads: Seq[MessagePayload]) = history.append(payloads)
                   private[orchestration] def appendAt(
-                      payloads: Chunk[MessagePayload],
+                      payloads: Seq[MessagePayload],
                       expectedParent: Option[MessageId]
                   ) = history.appendAt(payloads, expectedParent)
 
@@ -2134,7 +2134,7 @@ final class ManagedHistorySubmitSuite extends FunSuite {
   private def outputPayload(id: String, text: String = "result"): MessagePayload =
     MessagePayload.ToolOutput(FunctionGenericOutput(FunctionCallId.unsafe(id), functionKey, text))
 
-  private def persistChain(storage: Storage, payloads: Chunk[MessagePayload]): IO[YallmoError, Chunk[Message]] =
+  private def persistChain(storage: Storage, payloads: Seq[MessagePayload]): IO[YallmoError, Chunk[Message]] =
     ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (chain, payload) =>
       Clock.instant
         .flatMap(time => storage.putMessage(Message(MessageData(userId, chain.lastOption.map(_.id), time, payload))))
@@ -2239,10 +2239,16 @@ final class ManagedHistorySubmitSuite extends FunSuite {
     def putMessage(message: Message) = delegate.putMessage(message)
     def listBlobIds = delegate.listBlobIds
     def listSessions = delegate.listSessions
-    def createSession(id: SessionId, agents: Chunk[AgentId]) = delegate.createSession(id, agents)
+    def createSession(id: SessionId, agents: Seq[AgentId]) = delegate.createSession(id, agents)
+    def createSession(id: SessionId, agents: Seq[AgentId], info: Option[SessionInfo]) =
+      delegate.createSession(id, agents, info)
+    def updateSessionInfo(id: SessionId, revision: Long, info: Option[SessionInfo]) =
+      delegate.updateSessionInfo(id, revision, info)
+    def setSessionArchived(id: SessionId, revision: Long, archived: Boolean) =
+      delegate.setSessionArchived(id, revision, archived)
     def loadSession(id: SessionId) = delegate.loadSession(id)
     def addSessionAgent(id: SessionId, agentId: AgentId) = delegate.addSessionAgent(id, agentId)
-    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Chunk[Message]) =
+    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Seq[Message]) =
       delegate.putMessagesAndUpdateSession(id, head, messages)
     def putBlob(blob: Blob) = delegate.putBlob(blob)
     def getBlob(id: BlobId) = delegate.getBlob(id)

@@ -18,6 +18,8 @@ import fmgp.yallmo.orchestration.{
   EventSession,
   Session,
   SessionId,
+  SessionInfo,
+  SessionMetadata,
   SessionSummary
 }
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -434,6 +436,35 @@ final class YallmoProtocolSuite extends FunSuite {
     )
     val session = Session(sessionId, Chunk(AgentId("human")), Chunk.empty)
     assertWire(SessionSnapshot.from(session), """{"id":"s1","agentIds":["human"],"messages":[]}""")
+  }
+
+  test("public session snapshots and canonical events preserve optional metadata and info") {
+    val now = Instant.parse("2026-01-02T03:04:05Z")
+    val session = Session(
+      sessionId,
+      Seq(agentId),
+      Seq.empty,
+      Some(SessionMetadata(createdAt = Some(now), updatedAt = Some(now), revision = 3L)),
+      Some(
+        SessionInfo(
+          title = Some("Title"),
+          parentSessionId = Some(SessionId.unsafe("parent")),
+          goals = Some("Goals"),
+          status = Some("Ready")
+        )
+      )
+    )
+    val snapshot = SessionSnapshot.from(session)
+    assertEquals(snapshot.meta, session.meta)
+    assertEquals(snapshot.info, session.info)
+    assertEquals(snapshot.toJson.fromJson[SessionSnapshot], Right(snapshot))
+    val event = EventSession.from(session, 42L)
+    assertEquals(event.meta, session.meta)
+    assertEquals(event.info, session.info)
+    assertEquals(event.revision, 42L)
+    assertEquals(event.meta.map(_.revision), Some(3L))
+    assertEquals(event.toJson.fromJson[EventSession], Right(event))
+    assertEquals("""{"id":"s1","agentIds":[],"messages":[]}""".fromJson[SessionSnapshot].map(_.meta), Right(None))
   }
 
   test("diagnostics.request accepts a session ID and returns an optional document, never a file path") {

@@ -3,14 +3,13 @@ package fmgp.yallmo.repl.debug
 import fmgp.yallmo.model.MessagePayload
 import fmgp.yallmo.model.llm.value
 import upickle.default.*
-import zio.*
 
 /** Debug information retained by the REPL without initiating a model request. */
-final case class ReplDebugSnapshot(messages: Chunk[MessagePayload])
+final case class ReplDebugSnapshot(messages: Seq[MessagePayload])
 
 /** Renders JSONL transcript diagnostics. Persisting or displaying that data is a client responsibility. */
 object ReplDebug {
-  def renderJsonLines(messages: Chunk[MessagePayload], timestamp: Long = java.lang.System.currentTimeMillis()): String =
+  def renderJsonLines(messages: Seq[MessagePayload], timestamp: Long = java.lang.System.currentTimeMillis()): String =
     if messages.isEmpty then ""
     else messages.map(message => upickle.default.write(toJson(message, timestamp))).mkString("", "\n", "\n")
 

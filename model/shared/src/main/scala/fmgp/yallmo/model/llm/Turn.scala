@@ -24,7 +24,7 @@ enum LlmStopReason {
   */
 final case class AgentTurnRequest(
     model: String,
-    input: Chunk[MessagePayload],
+    input: Seq[MessagePayload],
     tools: Chunk[FunctionToolDefinition] = Chunk.empty,
     parallelToolCalls: Boolean = false,
     options: ProviderGenerateOptions = ProviderGenerateOptions(),

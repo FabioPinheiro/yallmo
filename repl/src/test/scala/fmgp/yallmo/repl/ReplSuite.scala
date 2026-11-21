@@ -165,7 +165,10 @@ final class ReplSuite extends FunSuite {
     val before = created.copy(logLevel = LogLevel.Debug)
     val history = runZIO(application.submit(before, "/history"))
     assertEquals(history.state, before)
-    assertEquals(history.events, Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value))))
+    assertEquals(
+      history.events,
+      Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value)))
+    )
     assertEquals(stored.messages.map(_.agentId), Chunk(AgentId("TestAgentId"), AgentId("bob")))
 
     val resumed = runZIO(application.submit(before, "/session resume history"))
@@ -330,7 +333,7 @@ final class ReplSuite extends FunSuite {
       ProviderContinuation(ProviderId.unsafe("openai-codex-responses"), Some("current"), "current-encrypted-state")
     )
     val history = Chunk(Message.User("earlier"), oldReasoning, Message.Assistant("earlier answer"))
-    val requests = scala.collection.mutable.ListBuffer.empty[Chunk[MessagePayload]]
+    val requests = scala.collection.mutable.ListBuffer.empty[Seq[MessagePayload]]
     val agent = new AgentInstance[Any] {
       override val id = AgentId("new-agent")
       override def next(task: AgentTask, context: StaticContext[Any], current: RunContext): IO[YallmoError, AgentTurn] =

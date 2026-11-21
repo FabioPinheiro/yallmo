@@ -239,10 +239,19 @@ final class OrchestratorBranchSuite extends FunSuite {
     def beginBlobUpload(id: BlobId, size: Long) = base.beginBlobUpload(id, size)
     private def forbidden = ZIO.dieMessage("Session operation forbidden in branch execution")
     def listSessions = forbidden
-    def createSession(id: SessionId, agents: Chunk[AgentId]) = { val _ = (id, agents); forbidden }
+    def createSession(id: SessionId, agents: Seq[AgentId]) = { val _ = (id, agents); forbidden }
+    def createSession(id: SessionId, agents: Seq[AgentId], info: Option[SessionInfo]) = {
+      val _ = (id, agents, info); forbidden
+    }
+    def updateSessionInfo(id: SessionId, revision: Long, info: Option[SessionInfo]) = {
+      val _ = (id, revision, info); forbidden
+    }
+    def setSessionArchived(id: SessionId, revision: Long, archived: Boolean) = {
+      val _ = (id, revision, archived); forbidden
+    }
     def loadSession(id: SessionId) = { val _ = id; forbidden }
     def addSessionAgent(id: SessionId, agent: AgentId) = { val _ = (id, agent); forbidden }
-    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Chunk[Message]) = {
+    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Seq[Message]) = {
       val _ = (id, head, messages); forbidden
     }
     def compareAndSetSessionHead(id: SessionId, expected: Option[MessageId], head: Option[MessageId]) = {

@@ -425,10 +425,16 @@ final class OrchestratorRebaseSuite extends FunSuite {
     def putMessage(message: Message) = delegate.putMessage(message)
     def listBlobIds = delegate.listBlobIds
     def listSessions = delegate.listSessions
-    def createSession(id: SessionId, agents: Chunk[AgentId]) = delegate.createSession(id, agents)
+    def createSession(id: SessionId, agents: Seq[AgentId]) = delegate.createSession(id, agents)
+    def createSession(id: SessionId, agents: Seq[AgentId], info: Option[SessionInfo]) =
+      delegate.createSession(id, agents, info)
+    def updateSessionInfo(id: SessionId, revision: Long, info: Option[SessionInfo]) =
+      delegate.updateSessionInfo(id, revision, info)
+    def setSessionArchived(id: SessionId, revision: Long, archived: Boolean) =
+      delegate.setSessionArchived(id, revision, archived)
     def loadSession(id: SessionId) = delegate.loadSession(id)
     def addSessionAgent(id: SessionId, agentId: AgentId) = delegate.addSessionAgent(id, agentId)
-    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Chunk[Message]) =
+    def putMessagesAndUpdateSession(id: SessionId, head: Option[MessageId], messages: Seq[Message]) =
       delegate.putMessagesAndUpdateSession(id, head, messages)
     def putBlob(blob: Blob) = delegate.putBlob(blob)
     def getBlob(id: BlobId) = delegate.getBlob(id)

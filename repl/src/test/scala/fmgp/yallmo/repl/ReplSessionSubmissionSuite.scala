@@ -158,7 +158,7 @@ final class ReplSessionSubmissionSuite extends ZSuite {
       histories <- canonical.get
       configurations <- configured.get
     } yield {
-      def reasoning(messages: Chunk[MessagePayload]) = messages.collect {
+      def reasoning(messages: Seq[MessagePayload]) = messages.collect {
         case MessagePayload.Reasoning(_, continuation) => continuation.encryptedContent
       }
       assertEquals(reasoning(requests(1).messages), Chunk.empty)

@@ -4,7 +4,7 @@ import fmgp.yallmo.model.{AgentId, Blob, BlobId, Message, MessageId, YallmoError
 import zio.{Chunk, IO}
 
 /** Lightweight information suitable for a session picker. */
-final case class SessionSummary(id: SessionId, messageCount: Long, agentIds: Chunk[AgentId])
+final case class SessionSummary(id: SessionId, messageCount: Long, agentIds: Seq[AgentId])
 
 /** Storage for immutable messages, conversation sessions and binary blobs.
   *
@@ -23,7 +23,21 @@ private[orchestration] trait Storage extends BlobOps {
 
   def listSessions: IO[YallmoError, Chunk[SessionSummary]]
 
-  def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session]
+  def createSession(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Session]
+
+  /** Creates a session with optional descriptive info. Storage assigns metadata and validates any parent exists. */
+  def createSession(id: SessionId, agentIds: Seq[AgentId], info: Option[SessionInfo]): IO[YallmoError, Session]
+
+  /** Revision-checked whole-info replacement. None preserves existing info; Some replaces all fields. Parent lineage
+    * cannot change. Legacy records start at revision 0; no-op updates do not advance it. Storage owns all timestamps.
+    */
+  def updateSessionInfo(id: SessionId, expectedRevision: Long, info: Option[SessionInfo]): IO[YallmoError, Session]
+
+  /** Revision-checked organizational archive flag, independent of execution and the message head. Repeated archive
+    * retains its original timestamp; unarchive clears it. Stale revisions fail even when the requested change is a
+    * no-op.
+    */
+  def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean): IO[YallmoError, Session]
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
@@ -38,7 +52,7 @@ private[orchestration] trait Storage extends BlobOps {
   def putMessagesAndUpdateSession(
       id: SessionId,
       expectedHead: Option[MessageId],
-      messages: Chunk[Message]
+      messages: Seq[Message]
   ): IO[YallmoError, Session]
 
   /** Replaces only an existing session pointer with validated, already stored ancestry. Atomic with session mutations;

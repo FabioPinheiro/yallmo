@@ -100,6 +100,17 @@ object YallmoError {
       extends RuntimeException(s"Session '${id.value}' head changed from $expectedHead to $actualHead")
       with YallmoError
 
+  /** A stale info/archive revision; the session was not modified. Independent of message-head conflicts. */
+  final case class SessionMetadataConflict(id: SessionId, expectedRevision: Long, actualRevision: Long)
+      extends RuntimeException(
+        s"Session '${id.value}' metadata revision changed from $expectedRevision to $actualRevision"
+      )
+      with YallmoError
+
+  final case class InvalidSessionInfo(id: SessionId, reason: String)
+      extends RuntimeException(s"Invalid info for session '${id.value}': $reason")
+      with YallmoError
+
   final case class StorageFailure(message: String, cause: Throwable)
       extends RuntimeException(message, cause)
       with YallmoError

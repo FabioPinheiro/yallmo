@@ -38,7 +38,7 @@ final case class AgentResult(
 final case class AgentTurn(
     assistant: Option[MessagePayload.Assistant],
     decision: AgentDecision,
-    additionalMessages: Chunk[MessagePayload] = Chunk.empty
+    additionalMessages: Seq[MessagePayload] = Seq.empty
 )
 
 /** Compatibility output containing the terminal answer and a payload snapshot. Never reapplied to managed history. */

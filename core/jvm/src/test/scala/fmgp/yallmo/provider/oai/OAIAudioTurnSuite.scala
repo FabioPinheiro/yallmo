@@ -21,7 +21,7 @@ final class OAIAudioTurnSuite extends FunSuite {
   private val encoded = Base64.getEncoder.encodeToString(bytes.toArray)
   private val request = AgentTurnRequest(
     "explicit-audio-model",
-    Chunk(MessagePayload.User("Describe the sound"), audio, MessagePayload.Instructions("Be helpful")),
+    Vector(MessagePayload.User("Describe the sound"), audio, MessagePayload.Instructions("Be helpful")),
     tools = Chunk(
       FunctionToolDefinition(
         FunctionKey.unsafe("inspect"),

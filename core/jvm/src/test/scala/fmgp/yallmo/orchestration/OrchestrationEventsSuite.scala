@@ -628,6 +628,60 @@ final class OrchestrationEventsSuite extends FunSuite {
     })
   }
 
+  test("info and archive changes publish canonical metadata without inventing message appends") {
+    run(for {
+      base <- StorageInMemory.make
+      _ <- base.createSession(id, Chunk(author))
+      _ <- base.putMessagesAndUpdateSession(id, None, Chunk(root))
+      updates <- OrchestrationEvents.make
+      subscriber <- updates.subscribe
+      storage = new StorageEvents(base, updates)
+      updated <- storage.updateSessionInfo(id, 0L, Some(SessionInfo(title = Some("New title"))))
+      pending <- subscriber.take
+      terminal <- subscriber.take
+      archived <- storage.setSessionArchived(id, 1L, true)
+      archivePending <- subscriber.take
+      archiveTerminal <- subscriber.take
+      _ <- subscriber.close
+    } yield {
+      assertEquals(pending.change, EventUpdate.Pending(operationId(pending), Chunk.empty))
+      assertEquals(
+        terminal.change,
+        EventUpdate.Confirmed(operationId(pending), Chunk.empty, Chunk(EventSession.from(updated, terminal.sequence)))
+      )
+      assertEquals(
+        archiveTerminal.change,
+        EventUpdate.Confirmed(
+          operationId(archivePending),
+          Chunk.empty,
+          Chunk(EventSession.from(archived, archiveTerminal.sequence))
+        )
+      )
+      assertEquals(updated.messages, archived.messages)
+      assertEquals(archived.meta.map(_.revision), Some(2L))
+    })
+  }
+
+  test("descriptive session info participates in subscriber byte accounting") {
+    run(for {
+      base <- StorageInMemory.make
+      _ <- base.createSession(id, Chunk(author))
+      updates <- OrchestrationEvents.make
+      subscriber <- updates.subscribe
+      storage = new StorageEvents(base, updates)
+      saved <- storage.updateSessionInfo(
+        id,
+        0L,
+        Some(SessionInfo(goals = Some("x" * (OrchestrationEvents.MaxQueuedBytes.toInt + 1))))
+      )
+      overflow <- subscriber.check.either
+      _ <- subscriber.close
+    } yield {
+      assertEquals(saved.meta.map(_.revision), Some(1L))
+      assert(overflow.isLeft)
+    })
+  }
+
   private def operationId(event: SequencedEventUpdate): String = event.change match {
     case EventUpdate.Pending(id, _) => id
     case _                          => fail("Expected pending event")
@@ -644,10 +698,16 @@ final class OrchestrationEventsSuite extends FunSuite {
     def putMessage(message: Message) = base.putMessage(message)
     def listBlobIds = base.listBlobIds
     def listSessions = base.listSessions
-    def createSession(id: SessionId, authors: Chunk[AgentId]) = base.createSession(id, authors)
+    def createSession(id: SessionId, authors: Seq[AgentId]) = base.createSession(id, authors)
+    def createSession(id: SessionId, agents: Seq[AgentId], info: Option[SessionInfo]) =
+      base.createSession(id, agents, info)
+    def updateSessionInfo(id: SessionId, revision: Long, info: Option[SessionInfo]) =
+      base.updateSessionInfo(id, revision, info)
+    def setSessionArchived(id: SessionId, revision: Long, archived: Boolean) =
+      base.setSessionArchived(id, revision, archived)
     def loadSession(id: SessionId) = base.loadSession(id)
     def addSessionAgent(id: SessionId, author: AgentId) = base.addSessionAgent(id, author)
-    def putMessagesAndUpdateSession(id: SessionId, expected: Option[MessageId], messages: Chunk[Message]) =
+    def putMessagesAndUpdateSession(id: SessionId, expected: Option[MessageId], messages: Seq[Message]) =
       base.putMessagesAndUpdateSession(id, expected, messages)
     def compareAndSetSessionHead(id: SessionId, expected: Option[MessageId], head: Option[MessageId]) =
       base.compareAndSetSessionHead(id, expected, head)

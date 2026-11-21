@@ -266,7 +266,7 @@ final class ServerSubmissionSuite extends FunSuite {
         session <- seed(backend, human, Some(SessionId.unsafe("broken")))
         _ <- ZIO.attemptBlocking(
           Files.writeString(
-            backend.workspace.resolve("refs/sessions/broken"),
+            backend.workspace.resolve("refs/sessions/broken.json"),
             s"""{"agentIds":["${AgentId.value(human)}"],"head":"${MessageId.value(missing)}"}"""
           )
         )

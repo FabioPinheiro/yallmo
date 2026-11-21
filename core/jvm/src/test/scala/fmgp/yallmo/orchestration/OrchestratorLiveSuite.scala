@@ -23,13 +23,46 @@ final class OrchestratorLiveSuite extends FunSuite {
     assertEquals(result, Left(YallmoError.UnknownAgent(unknown)))
   }
 
+  test("session management delegates ownership, lineage and revision checks to storage") {
+    runZIO {
+      for {
+        instances <- AgentCatalog.fromAgents(Chunk(agent))
+        orchestrator <- OrchestratorLive.inMemory(instances)
+        parent = SessionId.unsafe("parent")
+        id = SessionId.unsafe("child")
+        _ <- orchestrator.createSession(parent, Chunk(agentId))
+        info = SessionInfo(title = Some("Child"), parentSessionId = Some(parent))
+        created <- orchestrator.createSession(id, Chunk(agentId), Some(info))
+        updated <- orchestrator.updateSessionInfo(id, 0L, Some(info.copy(goals = Some("Learn"))))
+        stale <- orchestrator.setSessionArchived(id, 0L, true).either
+        archived <- orchestrator.setSessionArchived(id, 1L, true)
+        preserved <- orchestrator.updateSessionInfo(id, 2L, None)
+        absent = SessionId.unsafe("missing")
+        missing <- orchestrator
+          .createSession(SessionId.unsafe("bad"), Chunk(agentId), Some(SessionInfo(parentSessionId = Some(absent))))
+          .either
+        unknown <- orchestrator
+          .createSession(SessionId.unsafe("unknown-agent"), Chunk(AgentId("unknown")), Some(info))
+          .either
+      } yield {
+        assert(created.meta.nonEmpty)
+        assertEquals(updated.info.flatMap(_.goals), Some("Learn"))
+        assertEquals(stale, Left(YallmoError.StorageFailed(YallmoError.SessionMetadataConflict(id, 0L, 1L))))
+        assert(archived.meta.flatMap(_.archivedAt).nonEmpty)
+        assertEquals(preserved, archived)
+        assertEquals(missing, Left(YallmoError.StorageFailed(YallmoError.SessionNotFound(absent))))
+        assertEquals(unknown, Left(YallmoError.UnknownAgent(AgentId("unknown"))))
+      }
+    }
+  }
+
   test("persists messages through the application-facing orchestrator API") {
     val session = runZIO {
       for {
         instances <- AgentCatalog.fromAgents(Chunk(agent))
         orchestrator <- OrchestratorLive.inMemory(instances)
-        _ <- orchestrator.createSession(SessionId.unsafe("main"), Chunk(agentId))
-        appended <- orchestrator.append(SessionId.unsafe("main"), agentId, Chunk(Message.User("hello")))
+        _ <- orchestrator.createSession(SessionId.unsafe("main"), List(agentId))
+        appended <- orchestrator.append(SessionId.unsafe("main"), agentId, Vector(Message.User("hello")))
       } yield appended
     }
 
@@ -67,14 +100,14 @@ final class OrchestratorLiveSuite extends FunSuite {
           missing = MessageId.sha256("unavailable-head")
           _ <- ZIO.attempt(
             Files.writeString(
-              root.resolve("refs/sessions/broken"),
+              root.resolve("refs/sessions/broken.json"),
               s"""{"agentIds":["${AgentId.value(agentId)}"],"head":"${MessageId.value(missing)}"}"""
             )
           )
-          before <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
+          before <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken.json")))
           strict <- orchestrator.loadSession(id).either
           appended <- orchestrator.append(id, agentId, Chunk(Message.User("must not write"))).either
-          after <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken")))
+          after <- ZIO.attempt(Files.readString(root.resolve("refs/sessions/broken.json")))
         } yield {
           assert(strict.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))
           assert(appended.swap.toOption.exists(_.isInstanceOf[YallmoError.StorageFailed]))

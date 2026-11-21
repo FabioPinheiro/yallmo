@@ -2,7 +2,6 @@ package fmgp.yallmo.repl.terminal
 
 import fmgp.yallmo.model.{AgentId, Message, MessagePayload}
 import org.jline.utils.AttributedString
-import zio.*
 
 private[terminal] object TerminalMessageRenderer {
 
@@ -28,7 +27,7 @@ private[terminal] object TerminalMessageRenderer {
   }
 
   /** Renders stored history using each message's original author. */
-  def render(messages: Chunk[Message]): Chunk[String] =
+  def render(messages: Seq[Message]): Seq[String] =
     messages.map(message => render(message.payload, Some(message.agentId)))
 
   /** Shared formatting for history and live output; unknown authors retain generic role labels. */

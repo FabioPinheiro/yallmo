@@ -1,7 +1,7 @@
 package fmgp.yallmo.webharness
 
 import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.{EventOrigin, EventSession, SessionId}
+import fmgp.yallmo.orchestration.{EventOrigin, EventSession, SessionId, SessionInfo, SessionMetadata}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import java.time.Instant
 import munit.FunSuite
@@ -62,6 +62,21 @@ final class ChatSessionFeedSuite extends FunSuite {
     def flush(): Unit = while callbacks.nonEmpty do callbacks.dequeue().run()
     def start(): Feed = { model.start(); feeds.last }
     def ids: List[MessageId] = state.snapshot.toList.flatMap(_.messages.map(_.id))
+  }
+
+  test("canonical info-only events refresh metadata while preserving the transcript") {
+    val h = new Harness
+    val f = h.start()
+    f.baseline()
+    h.flush()
+    val meta = Some(SessionMetadata(updatedAt = Some(first.timestamp), revision = 1L))
+    val info = Some(SessionInfo(title = Some("Updated"), goals = Some("Learn")))
+    val updated = session(first, 2L).copy(meta = meta, info = info)
+    f.event(11, EventChange.Confirmed("info", Chunk.empty, Chunk(updated)))
+    assertEquals(h.ids, List(first.id))
+    assertEquals(h.state.snapshot.flatMap(_.meta), meta)
+    assertEquals(h.state.snapshot.flatMap(_.info), info)
+    assertEquals(h.state.pending, Nil)
   }
 
   test("early pending replay and canonical confirmation dedupe by real ID, duplicate sequence ignored") {

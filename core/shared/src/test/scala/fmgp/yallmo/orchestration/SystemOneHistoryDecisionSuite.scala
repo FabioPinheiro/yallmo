@@ -21,8 +21,8 @@ final class SystemOneHistoryDecisionSuite extends FunSuite {
     def initialMessages = ZIO.succeed(original)
     private[orchestration] def snapshot = ZIO.succeed(original)
     def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]) = calls.update(_ + 1).as(original)
-    private[orchestration] def append(payloads: Chunk[MessagePayload]) = ZIO.unit
-    private[orchestration] def appendAt(payloads: Chunk[MessagePayload], expectedParent: Option[MessageId]) =
+    private[orchestration] def append(payloads: Seq[MessagePayload]) = ZIO.unit
+    private[orchestration] def appendAt(payloads: Seq[MessagePayload], expectedParent: Option[MessageId]) =
       ZIO.succeed(expectedParent)
   }
 

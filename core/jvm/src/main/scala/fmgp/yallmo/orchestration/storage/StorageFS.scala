@@ -71,14 +71,55 @@ private[orchestration] final class StorageFS(
         }
       }
 
-  override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
+  override def createSession(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Session] =
+    createSession(id, agentIds, None)
+
+  override def createSession(
+      id: SessionId,
+      agentIds: Seq[AgentId],
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
     lock.withPermit {
-      validateAgentIds(id, agentIds) *>
-        StorageFiles.exists(root, id).flatMap {
-          case true  => ZIO.fail(YallmoError.SessionAlreadyExists(id))
-          case false => StorageFiles.write(root, id, agentIds, None).as(Session(id, agentIds, Chunk.empty))
+      for {
+        _ <- validateAgentIds(id, agentIds)
+        exists <- StorageFiles.exists(root, id)
+        _ <- ZIO.fail(YallmoError.SessionAlreadyExists(id)).when(exists)
+        _ <- ZIO.foreachDiscard(info.flatMap(_.parentSessionId)) { parent =>
+          if parent == id then ZIO.fail(YallmoError.InvalidSessionInfo(id, "a session cannot be its own parent"))
+          else StorageFiles.read(root, parent).unit
         }
+        now <- Clock.instant
+        state = SessionRecords.created(agentIds, info, now)
+        _ <- StorageFiles.write(root, id, state).uninterruptible
+      } yield Session(id, state.agentIds, Seq.empty, state.meta, state.info)
     }
+
+  override def updateSessionInfo(
+      id: SessionId,
+      expectedRevision: Long,
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
+    updateRecord(id)(state =>
+      Clock.instant.flatMap(now => ZIO.fromEither(SessionRecords.updateInfo(id, state, expectedRevision, info, now)))
+    )
+
+  override def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean): IO[YallmoError, Session] =
+    updateRecord(id)(state =>
+      Clock.instant.flatMap(now =>
+        ZIO.fromEither(SessionRecords.setArchived(id, state, expectedRevision, archived, now))
+      )
+    )
+
+  private def updateRecord(id: SessionId)(change: SessionRef => IO[YallmoError, SessionRef]): IO[YallmoError, Session] =
+    lock
+      .withPermit {
+        for {
+          previous <- readState(id)
+          updated <- change(previous)
+          _ <- StorageFiles.write(root, id, updated).unless(updated == previous).uninterruptible
+        } yield updated
+      }
+      .flatMap(sessionFrom(id, _))
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     lock.withPermit(readState(id)).flatMap(sessionFrom(id, _))
@@ -89,7 +130,7 @@ private[orchestration] final class StorageFS(
         for {
           state <- readState(id)
           updated = if state.agentIds.contains(agentId) then state else state.copy(agentIds = state.agentIds :+ agentId)
-          _ <- StorageFiles.write(root, id, updated.agentIds, updated.head).unless(updated == state)
+          _ <- StorageFiles.write(root, id, updated).unless(updated == state).uninterruptible
         } yield updated
       }
       .flatMap(sessionFrom(id, _))
@@ -97,7 +138,7 @@ private[orchestration] final class StorageFS(
   override def putMessagesAndUpdateSession(
       id: SessionId,
       expectedHead: Option[MessageId],
-      messages: Chunk[Message]
+      messages: Seq[Message]
   ): IO[YallmoError, Session] =
     lock
       .withPermit {
@@ -110,7 +151,7 @@ private[orchestration] final class StorageFS(
           updated <- (for {
             _ <- ZIO.foreachDiscard(messages)(message => store.put(message.data))
             head = messages.lastOption.map(_.id)
-            _ <- StorageFiles.write(root, id, state.agentIds, head)
+            _ <- StorageFiles.write(root, id, state.copy(head = head))
           } yield state.copy(head = head)).uninterruptible
         } yield updated
       }
@@ -130,7 +171,7 @@ private[orchestration] final class StorageFS(
             .unless(state.head == expectedHead)
           inventory <- store.listMessages.map(_.map(m => m.id -> m).toMap)
           _ <- StoreageUtils.ancestry(inventory, newHead)
-          _ <- StorageFiles.write(root, id, state.agentIds, newHead).uninterruptible
+          _ <- StorageFiles.write(root, id, state.copy(head = newHead)).uninterruptible
         } yield state.copy(head = newHead)
       }
       .flatMap(sessionFrom(id, _))
@@ -189,20 +230,20 @@ private[orchestration] final class StorageFS(
         StorageFiles.exists(root, target).flatMap {
           case true  => ZIO.fail(YallmoError.SessionAlreadyExists(target))
           case false =>
-            readState(source).flatMap { state =>
-              StorageFiles.write(root, target, state.agentIds, state.head).as(state)
-            }
+            for {
+              state <- readState(source)
+              now <- Clock.instant
+              forked = SessionRecords.forked(source, state, now)
+              _ <- StorageFiles.write(root, target, forked).uninterruptible
+            } yield forked
         }
       }
       .flatMap(sessionFrom(target, _))
 
-  private final case class SessionState(agentIds: Chunk[AgentId], head: Option[MessageId])
+  private def sessionFrom(id: SessionId, state: SessionRef): IO[YallmoError, Session] =
+    messagesFrom(state.head).map(messages => Session(id, state.agentIds, messages, state.meta, state.info))
 
-  private def sessionFrom(id: SessionId, state: SessionState): IO[YallmoError, Session] =
-    messagesFrom(state.head).map(Session(id, state.agentIds, _))
-
-  private def readState(id: SessionId): IO[YallmoError, SessionState] =
-    StorageFiles.read(root, id).map(ref => SessionState(ref.agentIds, ref.head))
+  private def readState(id: SessionId): IO[YallmoError, SessionRef] = StorageFiles.read(root, id)
 
   private def messagesFrom(head: Option[MessageId]): IO[YallmoError, Chunk[Message]] =
     head.fold[IO[YallmoError, Chunk[Message]]](ZIO.succeed(Chunk.empty)) { messageId =>
@@ -222,7 +263,7 @@ private[orchestration] final class StorageFS(
   private def messageCount(head: Option[MessageId]): IO[YallmoError, Long] =
     messagesFrom(head).map(_.size.toLong)
 
-  private def validateAgentIds(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Unit] =
+  private def validateAgentIds(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Unit] =
     agentIds.headOption match
       case None    => ZIO.fail(YallmoError.EmptyAgentIds(id))
       case Some(_) =>

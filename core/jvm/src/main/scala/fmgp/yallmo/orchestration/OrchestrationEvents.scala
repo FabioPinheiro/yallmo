@@ -4,6 +4,7 @@ import fmgp.yallmo.model.{Message, YallmoError}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
 import zio.*
+import zio.json.*
 
 /** One storage owner's ephemeral fan-out. No history, authoring replay, or cross-process filesystem watch. */
 final class OrchestrationEvents private (
@@ -42,7 +43,7 @@ final class OrchestrationEvents private (
     state.update(current => current.copy(subscribers = current.subscribers - id))
 
   private[orchestration] def begin(
-      messages: Chunk[Message],
+      messages: Seq[Message],
       origin: Option[EventOrigin] = None
   ): UIO[EventUpdate.Pending] =
     state.modify { current =>
@@ -164,12 +165,13 @@ object OrchestrationEvents {
       publicBytes(messages) + sessions.foldLeft(0L)((n, s) =>
         n + 256L + s.id.value.getBytes(UTF_8).length.toLong * 6L + s.agentIds
           .map(_.toString.getBytes(UTF_8).length.toLong * 6L)
-          .sum
+          .sum + s.meta.fold(0L)(_.toJson.getBytes(UTF_8).length.toLong) +
+          s.info.fold(0L)(_.toJson.getBytes(UTF_8).length.toLong)
       )
     case _: EventUpdate.Uncertain => 256L
   })
 
-  private def publicBytes(messages: Chunk[EventMessage]): Long =
+  private def publicBytes(messages: Seq[EventMessage]): Long =
     messages.foldLeft(256L) { (size, message) =>
       // Conservative JSON escaping allowance; private provider continuation payloads are never counted or encoded.
       size + 512L + message.content.getBytes(UTF_8).length.toLong * 6L +

@@ -42,8 +42,8 @@ final class OpenAiCodexSuite extends FunSuite:
     val audio = AudioAttachment(fmgp.yallmo.model.BlobId.fresh(), AudioFormat.Wav, Some("private description"))
     Seq(audio, audio.copy(blobId = fmgp.yallmo.model.BlobId.fresh())).foreach { input =>
       Seq(
-        Chunk[MessagePayload](input),
-        Chunk(MessagePayload.User("before"), input, MessagePayload.Assistant("after"))
+        List[MessagePayload](input),
+        Vector(MessagePayload.User("before"), input, MessagePayload.Assistant("after"))
       ).foreach { items =>
         assertEquals(OpenAiCodexTurnMapper.input(items), Left("OpenAI Codex does not support audio input"))
       }

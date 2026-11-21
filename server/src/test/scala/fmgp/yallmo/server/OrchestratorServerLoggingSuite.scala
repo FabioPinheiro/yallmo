@@ -175,7 +175,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
         _ <- master.append(session, author, Chunk(MessagePayload.User("PRIVATE_TRANSCRIPT")))
         _ <- ZIO.attemptBlocking(
           Files.writeString(
-            root.resolve("refs/sessions/broken"),
+            root.resolve("refs/sessions/broken.json"),
             s"""{"agentIds":["author"],"head":"${MessageId.value(missing)}"}"""
           )
         )
@@ -226,7 +226,7 @@ final class OrchestratorServerLoggingSuite extends FunSuite {
         // Failed bootstrap replaced and closed the waiting feed; no slot is leaked by either generation.
         capacity <- ZIO.collectAll(List.fill(128)(master.events.subscribe))
         _ <- ZIO.foreachDiscard(capacity)(_.close)
-        noCreation <- ZIO.attemptBlocking(!Files.exists(root.resolve("refs/sessions/not-created")))
+        noCreation <- ZIO.attemptBlocking(!Files.exists(root.resolve("refs/sessions/not-created.json")))
         notFound <- rpc.handle(
           JsonRpc
             .Request(

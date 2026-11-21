@@ -108,6 +108,6 @@ private[terminal] object TerminalEventRenderer {
         )
     }
 
-  private def printLines(lines: Chunk[String]): UIO[Unit] =
+  private def printLines(lines: Seq[String]): UIO[Unit] =
     ZIO.foreachDiscard(lines)(line => Console.printLine(line).orDie)
 }

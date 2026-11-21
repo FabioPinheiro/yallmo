@@ -47,7 +47,7 @@ private[openai] object OpenAiCodexTurnMapper {
     }
 
   /** Unsupported modalities are mapping errors, not thrown exceptions or omitted input. */
-  def input(items: Chunk[MessagePayload]): Either[String, ujson.Arr] =
+  def input(items: Seq[MessagePayload]): Either[String, ujson.Arr] =
     items
       .foldLeft[Either[String, Chunk[ujson.Value]]](Right(Chunk.empty)) { (result, item) =>
         for {

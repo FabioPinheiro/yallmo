@@ -751,7 +751,10 @@ final class ReplStartupSuite extends FunSuite {
       assertEquals(restored.state.runContext.messages, newTurn.state.runContext.messages)
       val history = submit(returned, restored.state, "/history")
       assertEquals(history.state, restored.state)
-      assertEquals(history.events, Chunk(ReplEvent.Transcript(after.messages, Some(after.id.value))))
+      assertEquals(
+        history.events,
+        Chunk(ReplEvent.Transcript(after.messages, Some(after.id.value)))
+      )
     } finally {
       val paths = Files.walk(root)
       try paths.sorted(Comparator.reverseOrder()).forEach(path => Files.deleteIfExists(path))

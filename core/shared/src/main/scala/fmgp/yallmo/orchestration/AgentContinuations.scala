@@ -49,7 +49,7 @@ object AgentContinuations {
         }
       }
 
-  def continuations(messages: Chunk[MessagePayload]): Set[ProviderContinuation] =
+  def continuations(messages: Seq[MessagePayload]): Set[ProviderContinuation] =
     messages.collect { case MessagePayload.Reasoning(_, continuation) => continuation }.toSet
 
   private def withoutContinuations(current: RunContext, excluded: Set[ProviderContinuation]): RunContext =

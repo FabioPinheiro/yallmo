@@ -26,7 +26,7 @@ private[orchestration] object StoreageUtils {
       id: SessionId,
       expectedHead: Option[MessageId],
       actualHead: Option[MessageId],
-      messages: Chunk[Message]
+      messages: Seq[Message]
   ): Either[YallmoError, Unit] =
     if actualHead != expectedHead then Left(YallmoError.SessionHeadConflict(id, expectedHead, actualHead))
     else if messages.isEmpty then Left(YallmoError.EmptyAppend(id))

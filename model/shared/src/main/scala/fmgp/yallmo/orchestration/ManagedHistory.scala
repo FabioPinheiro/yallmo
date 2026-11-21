@@ -39,12 +39,12 @@ trait ManagedHistory {
   // Atomically compare the captured parent and return this append's resulting head, never a later unlocked read.
   // On mismatch, retain produced payloads under that original parent in journal/audit and fail continuation.
   private[orchestration] def appendAt(
-      payloads: Chunk[MessagePayload],
+      payloads: Seq[MessagePayload],
       expectedParent: Option[MessageId]
   ): IO[YallmoError, Option[MessageId]]
 
   /** Appends only new payloads, allocating stable identities and scheduling ordered persistence without waiting for
     * disk. This is not a durability barrier.
     */
-  private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit]
+  private[orchestration] def append(payloads: Seq[MessagePayload]): IO[YallmoError, Unit]
 }

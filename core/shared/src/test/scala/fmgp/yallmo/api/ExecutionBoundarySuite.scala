@@ -75,10 +75,10 @@ final class ExecutionBoundarySuite extends FunSuite {
       new ManagedHistory {
         def rebase(base: fmgp.yallmo.model.MessageId, head: fmgp.yallmo.model.MessageId, onto: Option[fmgp.yallmo.model.MessageId]) = ZIO.succeed(Chunk.empty)
         def snapshot = ZIO.succeed(Chunk.empty)
-        def appendAt(payloads: Chunk[fmgp.yallmo.model.MessagePayload], expectedParent: Option[fmgp.yallmo.model.MessageId]) = ZIO.succeed(expectedParent)
+        def appendAt(payloads: Seq[fmgp.yallmo.model.MessagePayload], expectedParent: Option[fmgp.yallmo.model.MessageId]) = ZIO.succeed(expectedParent)
         def messages = ZIO.succeed(Chunk.empty)
         def initialMessages = ZIO.succeed(Chunk.empty)
-        def append(payloads: Chunk[fmgp.yallmo.model.MessagePayload]) = ZIO.unit
+        def append(payloads: Seq[fmgp.yallmo.model.MessagePayload]) = ZIO.unit
       }
     """)
     assertEquals(read, Nil)

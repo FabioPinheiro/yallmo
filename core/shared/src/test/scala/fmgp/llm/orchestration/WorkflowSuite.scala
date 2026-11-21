@@ -252,7 +252,7 @@ final class AgentRunnerSuite extends FunSuite:
       assertEquals(outputs(3).output, "12:00")
       assertEquals(
         executed.map(_.callId),
-        requests.filter(_.name == FunctionKey.unsafe("clock")).map(call => Some(call.id))
+        requests.filter(_.name == FunctionKey.unsafe("clock")).map(call => Option(call.id))
       )
       requests.zip(outputs).foreach { case (call, output) =>
         assert(transcript.indexOf(Message.ToolCall(call)) < transcript.indexOf(Message.ToolOutput(output)))

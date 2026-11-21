@@ -56,14 +56,55 @@ private[orchestration] final class StorageInMemory private (
       )
     }
 
-  override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
-    ZIO.fromEither(validateAgentIds(id, agentIds)) *> sessions
+  override def createSession(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Session] =
+    createSession(id, agentIds, None)
+
+  override def createSession(
+      id: SessionId,
+      agentIds: Seq[AgentId],
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
+    for {
+      _ <- ZIO.fromEither(validateAgentIds(id, agentIds))
+      now <- Clock.instant
+      saved <- sessions
+        .modify { current =>
+          val result = for {
+            _ <- Either.cond(!current.contains(id), (), YallmoError.SessionAlreadyExists(id))
+            _ <- info.flatMap(_.parentSessionId) match {
+              case Some(parent) if parent == id =>
+                Left(YallmoError.InvalidSessionInfo(id, "a session cannot be its own parent"))
+              case Some(parent) if !current.contains(parent) => Left(YallmoError.SessionNotFound(parent))
+              case _                                         => Right(())
+            }
+          } yield {
+            val ref = SessionRecords.created(agentIds, info, now)
+            Session(id, ref.agentIds, Seq.empty, ref.meta, ref.info)
+          }
+          (result, result.fold(_ => current, session => current.updated(id, session)))
+        }
+        .flatMap(ZIO.fromEither)
+    } yield saved
+
+  override def updateSessionInfo(
+      id: SessionId,
+      expectedRevision: Long,
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
+    Clock.instant.flatMap(now => updateRecord(id)(SessionRecords.updateInfo(id, _, expectedRevision, info, now)))
+
+  override def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean): IO[YallmoError, Session] =
+    Clock.instant.flatMap(now => updateRecord(id)(SessionRecords.setArchived(id, _, expectedRevision, archived, now)))
+
+  private def updateRecord(
+      id: SessionId
+  )(change: SessionRef => Either[YallmoError, SessionRef]): IO[YallmoError, Session] =
+    sessions
       .modify { current =>
-        current.get(id) match
-          case Some(_) => (Left(YallmoError.SessionAlreadyExists(id)), current)
-          case None    =>
-            val session = Session(id, agentIds, Chunk.empty)
-            (Right(session), current.updated(id, session))
+        val result = current.get(id).toRight(YallmoError.SessionNotFound(id)).flatMap { session =>
+          change(session.ref).map(ref => session.copy(meta = ref.meta, info = ref.info))
+        }
+        (result, result.fold(_ => current, session => current.updated(id, session)))
       }
       .flatMap(ZIO.fromEither)
 
@@ -86,7 +127,7 @@ private[orchestration] final class StorageInMemory private (
   override def putMessagesAndUpdateSession(
       id: SessionId,
       expectedHead: Option[MessageId],
-      messages: Chunk[Message]
+      messages: Seq[Message]
   ): IO[YallmoError, Session] =
     sessions
       .modify { current =>
@@ -138,19 +179,22 @@ private[orchestration] final class StorageInMemory private (
     blobs.get.flatMap(current => ZIO.fromOption(current.get(blobId)).orElseFail(YallmoError.BlobMissing(blobId)))
 
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
-    sessions
-      .modify { current =>
-        if current.contains(target) then (Left(YallmoError.SessionAlreadyExists(target)), current)
-        else
-          current.get(source).toRight(YallmoError.SessionNotFound(source)) match
-            case Left(error)    => (Left(error), current)
-            case Right(session) =>
-              val forked = session.copy(id = target)
-              (Right(forked), current.updated(target, forked))
-      }
-      .flatMap(ZIO.fromEither)
+    Clock.instant.flatMap { now =>
+      sessions
+        .modify { current =>
+          if current.contains(target) then (Left(YallmoError.SessionAlreadyExists(target)), current)
+          else
+            current.get(source).toRight(YallmoError.SessionNotFound(source)) match
+              case Left(error)    => (Left(error), current)
+              case Right(session) =>
+                val ref = SessionRecords.forked(source, session.ref, now)
+                val forked = session.copy(id = target, meta = ref.meta, info = ref.info)
+                (Right(forked), current.updated(target, forked))
+        }
+        .flatMap(ZIO.fromEither)
+    }
 
-  private def validateAgentIds(id: SessionId, agentIds: Chunk[AgentId]): Either[YallmoError, Unit] =
+  private def validateAgentIds(id: SessionId, agentIds: Seq[AgentId]): Either[YallmoError, Unit] =
     agentIds.headOption match
       case None    => Left(YallmoError.EmptyAgentIds(id))
       case Some(_) =>

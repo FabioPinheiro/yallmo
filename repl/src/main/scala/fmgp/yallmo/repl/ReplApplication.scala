@@ -100,7 +100,11 @@ final class ReplApplication[R](
               .flatMap(replOrchestrator.loadSession)
               .fold(
                 error => ReplTransition(state, Chunk(ReplEvent.SessionFailed(error.toString))),
-                stored => ReplTransition(state, Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value))))
+                stored =>
+                  ReplTransition(
+                    state,
+                    Chunk(ReplEvent.Transcript(stored.messages, Some(stored.id.value)))
+                  )
               )
         }
       case ReplCommand.Tools => ZIO.succeed(ReplTransition(state, Chunk(ReplEvent.ToolAvailability(toolAvailability))))

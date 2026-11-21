@@ -51,7 +51,7 @@ private[webharness] final class ChatSessionFeed(
     }
     val complete = next.isEmpty && canonical.forall(s => s.error.isEmpty && s.messageCount == chain.size.toLong)
     if complete then {
-      val snapshot = canonical.map(s => SessionSnapshot(id, s.agentIds, Chunk.fromIterable(chain)))
+      val snapshot = canonical.map(s => SessionSnapshot(id, s.agentIds, chain, s.meta, s.info))
       // Stored objects off the canonical chain are not transcript messages, even if this turn produced them.
       val pending = observations.valuesIterator.flatten.toList
         .distinctBy(_.id)

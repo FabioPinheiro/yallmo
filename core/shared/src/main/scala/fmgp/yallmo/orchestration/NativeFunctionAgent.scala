@@ -131,7 +131,7 @@ object NativeFunctionAgent {
       .filter(_.nonEmpty)
       .mkString("\n\n")
 
-  private def input(runContext: RunContext, staticContext: StaticContext[?]): Chunk[MessagePayload] =
+  private def input(runContext: RunContext, staticContext: StaticContext[?]): Seq[MessagePayload] =
     runContext.messages.flatMap {
       case payload: MessagePayload.AudioAttachment           => Chunk(payload)
       case payload: MessagePayload.User                      => Chunk(payload)

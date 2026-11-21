@@ -13,6 +13,8 @@ import fmgp.yallmo.orchestration.{
   EventSession,
   Session,
   SessionId,
+  SessionInfo,
+  SessionMetadata,
   SessionSummary
 }
 import java.time.Instant
@@ -30,7 +32,6 @@ object YallmoProtocol {
   val MaxBlobChunkBytes: Int = BlobUploadLimits.MaxChunkBytes
 
   // Missing domain codecs are derived here, without changing persistence formats or core/model ownership.
-  given JsonCodec[SessionId] = JsonCodec.string.transformOrFail(SessionId.from, _.value)
   given JsonCodec[SessionSummary] = DeriveJsonCodec.gen[SessionSummary]
   given JsonCodec[AgentTask] = DeriveJsonCodec.gen[AgentTask]
   given JsonCodec[AgentResult] = DeriveJsonCodec.gen[AgentResult]
@@ -65,12 +66,23 @@ object YallmoProtocol {
   }
 
   /** Session metadata is reused, but messages are public snapshots rather than raw persisted provider payloads. */
-  final case class SessionSnapshot(id: SessionId, agentIds: Chunk[AgentId], messages: Chunk[MessageSnapshot])
-      derives JsonCodec
+  final case class SessionSnapshot(
+      id: SessionId,
+      agentIds: Seq[AgentId],
+      messages: Seq[MessageSnapshot],
+      meta: Option[SessionMetadata] = None,
+      info: Option[SessionInfo] = None
+  ) derives JsonCodec
 
   object SessionSnapshot {
     def from(session: Session): SessionSnapshot =
-      SessionSnapshot(session.id, session.agentIds, session.messages.map(MessageSnapshot.from))
+      SessionSnapshot(
+        session.id,
+        session.agentIds,
+        session.messages.map(MessageSnapshot.from),
+        session.meta,
+        session.info
+      )
   }
 
   given JsonCodec[EventSession] = DeriveJsonCodec.gen[EventSession]
@@ -105,7 +117,7 @@ object YallmoProtocol {
 
   final case class EventPending(
       operationId: String,
-      messages: Chunk[MessageSnapshot],
+      messages: Seq[MessageSnapshot],
       origin: Option[EventOrigin] = None
   ) derives JsonCodec
 
@@ -114,9 +126,9 @@ object YallmoProtocol {
   sealed trait EventChange derives JsonCodec
   object EventChange {
     @jsonHint("pending")
-    final case class Pending(operationId: String, messages: Chunk[MessageSnapshot]) extends EventChange
+    final case class Pending(operationId: String, messages: Seq[MessageSnapshot]) extends EventChange
     @jsonHint("confirmed")
-    final case class Confirmed(operationId: String, messages: Chunk[MessageSnapshot], sessions: Chunk[EventSession])
+    final case class Confirmed(operationId: String, messages: Seq[MessageSnapshot], sessions: Seq[EventSession])
         extends EventChange
     @jsonHint("uncertain")
     final case class Uncertain(operationId: String) extends EventChange
@@ -131,8 +143,8 @@ object YallmoProtocol {
         streamId: String,
         nonce: String,
         startSequence: Long,
-        messages: Chunk[MessageSnapshot],
-        sessions: Chunk[EventSession],
+        messages: Seq[MessageSnapshot],
+        sessions: Seq[EventSession],
         pending: Chunk[EventPending],
         scope: SubscriptionScope = SubscriptionScope.All()
     ) derives JsonCodec
@@ -490,7 +502,7 @@ object YallmoProtocol {
     final case class Succeeded(
         session: SessionSnapshot,
         result: AgentResult,
-        newMessages: Chunk[MessageSnapshot]
+        newMessages: Seq[MessageSnapshot]
     ) extends TurnOutcome
 
     @jsonHint("failed")

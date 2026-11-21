@@ -42,7 +42,7 @@ final class StorageInMemorySuite extends ZSuite {
       loaded <- storage.loadSession(id)
       absent <- storage.loadSession(absentId).either
     } yield {
-      assertEquals(empty, Session(id, Chunk(author), Chunk.empty))
+      assertEquals(empty, Session(id, Chunk(author), Chunk.empty, empty.meta))
       assertEquals(loaded, saved)
       assertEquals(absent, Left(YallmoError.SessionNotFound(absentId)))
     }

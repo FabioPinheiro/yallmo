@@ -1,8 +1,7 @@
 package fmgp.yallmo.orchestration.storage
 
 import fmgp.yallmo.model.YallmoError
-import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.{SessionId}
+import fmgp.yallmo.orchestration.{SessionId, SessionRef}
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
@@ -13,10 +12,8 @@ import scala.jdk.CollectionConverters.*
 import zio.*
 import zio.json.*
 
-/** Filesystem representation of mutable session heads and agent membership. */
+/** Mutable session heads and agent membership, stored as pretty-printed `refs/sessions/<id>.json` files. */
 private[storage] object StorageFiles {
-  private[storage] final case class SessionRef(agentIds: Chunk[AgentId], head: Option[MessageId]) derives JsonCodec
-
   def ensureDirectories(root: Path): IO[YallmoError, Unit] =
     ZIO
       .attemptBlocking {
@@ -48,7 +45,8 @@ private[storage] object StorageFiles {
           stream.iterator.asScala.toList
             .filter(Files.isRegularFile(_))
             .map(_.getFileName.toString)
-            .filterNot(name => name.startsWith(".") && name.endsWith(".tmp")) // see writeAtomically
+            .filter(_.endsWith(".json"))
+            .map(_.stripSuffix(".json"))
             .sorted
         finally stream.close()
       }
@@ -57,8 +55,8 @@ private[storage] object StorageFiles {
         ZIO.foreach(names)(name => ZIO.fromEither(SessionId.from(name).left.map(invalid))).map(Chunk.fromIterable)
       )
 
-  def write(root: Path, id: SessionId, agentIds: Chunk[AgentId], head: Option[MessageId]): IO[YallmoError, Unit] =
-    writeAtomically(sessionPath(root, id), SessionRef(agentIds, head).toJson)
+  def write(root: Path, id: SessionId, ref: SessionRef): IO[YallmoError, Unit] =
+    writeAtomically(sessionPath(root, id), ref.toJsonPretty + "\n")
 
   private def writeAtomically(path: Path, contents: String): IO[YallmoError, Unit] =
     val temporary = path.resolveSibling(s".${path.getFileName}.${UUID.randomUUID()}.tmp")
@@ -81,7 +79,7 @@ private[storage] object StorageFiles {
 
   private def sessionsDirectory(root: Path): Path = root.resolve("refs/sessions")
 
-  private def sessionPath(root: Path, id: SessionId): Path = sessionsDirectory(root).resolve(id.value)
+  private def sessionPath(root: Path, id: SessionId): Path = sessionsDirectory(root).resolve(s"${id.value}.json")
 
   private def invalid(message: String): YallmoError =
     YallmoError.StorageFailure(message, IllegalArgumentException(message))

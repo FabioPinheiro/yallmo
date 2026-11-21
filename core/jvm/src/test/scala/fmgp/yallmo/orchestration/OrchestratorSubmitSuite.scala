@@ -426,7 +426,7 @@ final class OrchestratorSubmitSuite extends FunSuite {
     }
 
   private def awaitStored(orchestrator: Orchestrator[Any])(
-      ready: Chunk[MessagePayload] => Boolean
+      ready: Seq[MessagePayload] => Boolean
   ): IO[YallmoError, Session] =
     (ZIO.yieldNow *> orchestrator.loadSession(sessionId))
       .repeatUntil(session => ready(session.messages.map(_.payload)))

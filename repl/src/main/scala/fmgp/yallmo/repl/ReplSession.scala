@@ -38,7 +38,10 @@ final case class ReplState(
 
   /** Refreshes durable conversation state without changing client preferences or provider continuation boundaries. */
   def withSession(session: Session): ReplState =
-    copy(sessionId = Some(session.id.value), runContext = RunContext(session.messages.map(_.payload)))
+    copy(
+      sessionId = Some(session.id.value),
+      runContext = RunContext(session.messages.map(_.payload))
+    )
 }
 
 /** The result of accepting one user prompt in a REPL session. */

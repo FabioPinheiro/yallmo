@@ -351,7 +351,12 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                   .map { session =>
                     (
                       session.messages,
-                      Chunk((SessionSummary(id, session.messages.size, session.agentIds), Right(session)))
+                      Chunk(
+                        (
+                          SessionSummary(id, session.messages.size, session.agentIds),
+                          Right(session)
+                        )
+                      )
                     )
                   }
                   .catchSome { case YallmoError.StorageFailed(_: YallmoError.SessionNotFound) =>

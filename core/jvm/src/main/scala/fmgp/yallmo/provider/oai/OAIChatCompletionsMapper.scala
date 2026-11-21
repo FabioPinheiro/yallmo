@@ -10,7 +10,7 @@ import zio.Chunk
 
 /** Encodes and decodes the OpenAI-compatible Chat Completions wire dialect. */
 private[oai] object OAIChatCompletionsMapper {
-  def messages(items: Chunk[MessagePayload], audioData: Map[BlobId, String] = Map.empty): ujson.Arr =
+  def messages(items: Seq[MessagePayload], audioData: Map[BlobId, String] = Map.empty): ujson.Arr =
     ujson.Arr.from(items.foldLeft(Vector.empty[ujson.Value])((history, item) => append(history, item, audioData)))
 
   def agentTurnResponse(response: OAIResponse): Either[String, AgentTurnResponse] =

@@ -14,14 +14,18 @@ enum EventScope {
 /** Observation provenance only. A persisted object is not necessarily on this session's canonical head. */
 final case class EventOrigin(sessionId: SessionId, turnId: Option[String] = None)
 
-/** Process-local canonical pointer version, not a persistence format or durable replay cursor. */
+/** Process-local canonical session snapshot. `revision` orders live outcomes; it is distinct from the durable
+  * info/archive revision in `meta` and is not a durable replay cursor.
+  */
 final case class EventSession(
     id: SessionId,
-    agentIds: Chunk[AgentId],
+    agentIds: Seq[AgentId],
     messageCount: Long,
     head: Option[MessageId],
     revision: Long,
-    error: Option[String] = None
+    error: Option[String] = None,
+    meta: Option[SessionMetadata] = None,
+    info: Option[SessionInfo] = None
 )
 
 object EventSession {
@@ -31,7 +35,9 @@ object EventSession {
       session.agentIds,
       session.messages.size.toLong,
       session.messages.lastOption.map(_.id),
-      revision
+      revision,
+      meta = session.meta,
+      info = session.info
     )
 }
 
@@ -66,8 +72,8 @@ object EventMessage {
 
 /** Only public message observations enter live fan-out. */
 enum EventUpdate {
-  case Pending(operationId: String, messages: Chunk[EventMessage])
-  case Confirmed(operationId: String, messages: Chunk[EventMessage], sessions: Chunk[EventSession])
+  case Pending(operationId: String, messages: Seq[EventMessage])
+  case Confirmed(operationId: String, messages: Seq[EventMessage], sessions: Seq[EventSession])
   case Uncertain(operationId: String)
 }
 

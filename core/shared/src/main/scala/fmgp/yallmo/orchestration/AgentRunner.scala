@@ -179,10 +179,10 @@ final class AgentRunner[R](
         def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]): IO[YallmoError, Chunk[Message]] =
           history.rebase(base, head, onto)
         private[orchestration] def snapshot: UIO[Chunk[Message]] = history.snapshot
-        private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit] =
+        private[orchestration] def append(payloads: Seq[MessagePayload]): IO[YallmoError, Unit] =
           history.append(payloads)
         private[orchestration] def appendAt(
-            payloads: Chunk[MessagePayload],
+            payloads: Seq[MessagePayload],
             expectedParent: Option[MessageId]
         ): IO[YallmoError, Option[MessageId]] =
           history.appendAt(payloads, expectedParent)

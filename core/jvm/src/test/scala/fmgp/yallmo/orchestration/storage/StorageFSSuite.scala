@@ -7,8 +7,100 @@ import java.nio.file.{Files, Path}
 import java.util.Comparator
 import munit.FunSuite
 import zio.*
+import zio.json.*
 
 final class StorageFSSuite extends FunSuite:
+  test("session references use a JSON extension and pretty-printed JSON") {
+    val root = Files.createTempDirectory("yallmo-storage-json-")
+    val id = SessionId.unsafe("research.v1.json")
+    try
+      val created = runZIO {
+        for {
+          storage <- StorageFS.open(root)
+          created <- storage.createSession(id, agents)
+          reopened <- StorageFS.open(root)
+          loaded <- reopened.loadSession(id)
+          listed <- reopened.listSessions
+        } yield {
+          assertEquals(loaded, created)
+          assertEquals(listed.map(_.id), Chunk(id))
+          created
+        }
+      }
+      val path = root.resolve("refs/sessions/research.v1.json.json")
+      val contents = Files.readString(path)
+      val reference = SessionRef(Seq(replAgent, AgentId("reviewer")), None, created.meta)
+      assertEquals(contents, reference.toJsonPretty + "\n")
+      assert(contents.contains("\n  \"agentIds\""))
+      assertEquals(contents.fromJson[SessionRef], Right(reference))
+      assert(!Files.exists(root.resolve("refs/sessions/research.v1.json")))
+      assertEquals(created, Session(id, Seq(replAgent, AgentId("reviewer")), Seq.empty, created.meta))
+    finally deleteRecursively(root)
+  }
+
+  test("legacy JSON references retain unknown dates and preserve optional info during normal mutations") {
+    val root = Files.createTempDirectory("yallmo-storage-legacy-info-")
+    val id = SessionId.unsafe("legacy")
+    val info = SessionInfo(title = Some("Legacy title"), goals = Some("Preserve me"))
+    try
+      runZIO {
+        for {
+          storage <- StorageFS.open(root)
+          _ <- ZIO.attempt(
+            Files.writeString(
+              root.resolve("refs/sessions/legacy.json"),
+              s"""{"agentIds":["repl"],"info":${info.toJson}}"""
+            )
+          )
+          legacy <- storage.loadSession(id)
+          appended <- StorageTestMessages.persistTurn(storage, id, replAgent, Chunk(Message.User("hello")))
+          joined <- storage.addSessionAgent(id, AgentId("joined"))
+          changed <- storage.updateSessionInfo(id, 0L, Some(info.copy(status = Some("Updated"))))
+          reopened <- StorageFS.open(root)
+          loaded <- reopened.loadSession(id)
+          reference <- StorageFiles.read(root, id)
+        } yield {
+          assertEquals(legacy.meta, None)
+          assertEquals(appended.meta, None)
+          assertEquals(joined.meta, None)
+          assertEquals(joined.info, Some(info))
+          assertEquals(changed.meta.flatMap(_.createdAt), None)
+          assert(changed.meta.flatMap(_.updatedAt).nonEmpty)
+          assertEquals(changed.meta.map(_.revision), Some(1L))
+          assertEquals(changed.agentIds, joined.agentIds)
+          assertEquals(changed.messages, joined.messages)
+          assertEquals(loaded, changed)
+          assertEquals(reference, changed.ref)
+        }
+      }
+    finally deleteRecursively(root)
+  }
+
+  test("metadata, archive and descriptive info survive filesystem reopening") {
+    val root = Files.createTempDirectory("yallmo-storage-info-reopen-")
+    val id = SessionId.unsafe("info")
+    try
+      runZIO {
+        for {
+          storage <- StorageFS.open(root)
+          created <- storage.createSession(id, agents, Some(SessionInfo(title = Some("Initial"))))
+          _ <- storage.updateSessionInfo(id, 0L, Some(SessionInfo(title = Some("Updated"), status = Some("Ready"))))
+          archived <- storage.setSessionArchived(id, 1L, true)
+          appended <- StorageTestMessages.persistTurn(storage, id, replAgent, Chunk(Message.User("hello")))
+          reopened <- StorageFS.open(root)
+          loaded <- reopened.loadSession(id)
+          reference <- StorageFiles.read(root, id)
+        } yield {
+          assertEquals(loaded, appended)
+          assertEquals(reference, loaded.ref)
+          assertEquals(loaded.meta, archived.meta)
+          assertEquals(loaded.meta.map(_.revision), Some(2L))
+          assertEquals(loaded.meta.flatMap(_.createdAt), created.meta.flatMap(_.createdAt))
+        }
+      }
+    finally deleteRecursively(root)
+  }
+
   test("an empty named session persists its agent IDs across reopening") {
     val root = Files.createTempDirectory("yallmo-storage-")
     try
@@ -21,7 +113,7 @@ final class StorageFSSuite extends FunSuite:
         } yield (created, loaded)
       }
 
-      assertEquals(sessions._1, Session(SessionId.unsafe("research"), agents, Chunk.empty))
+      assertEquals(sessions._1, Session(SessionId.unsafe("research"), agents, Chunk.empty, sessions._1.meta))
       assertEquals(sessions._2, sessions._1)
     finally deleteRecursively(root)
   }
@@ -346,14 +438,19 @@ final class StorageFSSuite extends FunSuite:
     } finally deleteRecursively(root)
   }
 
-  test("session listing ignores abandoned atomic-publication temporary files") {
+  test("session listing includes only JSON files, ignoring temporary files and directories") {
     val root = Files.createTempDirectory("yallmo-storage-temporary-")
     try {
       runZIO {
         for {
           storage <- StorageFS.open(root)
           _ <- storage.createSession(SessionId.unsafe("main"), agents)
-          _ <- ZIO.attempt(Files.writeString(root.resolve("refs/sessions/.main.abandoned.tmp"), "partial"))
+          _ <- ZIO.attempt {
+            Files.writeString(root.resolve("refs/sessions/.main.json.abandoned.tmp"), "partial")
+            Files.writeString(root.resolve("refs/sessions/README.txt"), "not a session")
+            Files.writeString(root.resolve("refs/sessions/extensionless"), "not a JSON session file")
+            Files.createDirectory(root.resolve("refs/sessions/directory.json"))
+          }
           listed <- storage.listSessions
         } yield assertEquals(listed.map(_.id.value), Chunk("main"))
       }

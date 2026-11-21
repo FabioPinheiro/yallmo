@@ -10,7 +10,7 @@ private[orchestration] object StorageTestMessages {
       storage: Storage,
       id: SessionId,
       author: AgentId,
-      payloads: Chunk[MessagePayload]
+      payloads: Seq[MessagePayload]
   ): IO[YallmoError, Session] =
     (for {
       session <- storage.loadSession(id)

@@ -137,23 +137,25 @@ final class OrchestratorLive[-R] private[orchestration] (
   )
 
   private def managedSubmit[R1](
-      initial: Chunk[Message],
+      initial: Seq[Message],
       publication: Option[Session],
       task: AgentTask,
       execution: AgentExecution[R1]
   ): ZIO[R1, ManagedFailure, ManagedTurn] = {
+    // Keep indexed Chunk snapshots inside the private journal; callers only need an immutable Seq.
+    val initialSnapshot = Chunk.fromIterable(initial)
     val label = publication.fold("Unnamed branch")(session => s"Session ${session.id.value}")
     ZIO.scoped {
       for {
-        active <- Ref.make(initial)
+        active <- Ref.make(initialSnapshot)
         closed <- Ref.make(false)
         gate <- Semaphore.make(1)
         // This journal NEVER changes prefixes, even when active context is replaced.
-        journal <- Ref.make(initial)
+        journal <- Ref.make(initialSnapshot)
         audit <- Ref.make(Chunk.empty[Message])
         storedCount <- Ref.make(initial.size)
         published <- Ref.make(publication)
-        attemptedPublication <- Ref.make(initial)
+        attemptedPublication <- Ref.make(initialSnapshot)
         queue <- Queue.unbounded[Option[UIO[Unit]]]
         persistObjects =
           for {
@@ -206,12 +208,12 @@ final class OrchestratorLive[-R] private[orchestration] (
           .forkScoped
         history = new ManagedHistory {
           override def messages: UIO[Chunk[Message]] = active.get
-          override def initialMessages: UIO[Chunk[Message]] = ZIO.succeed(initial)
+          override def initialMessages: UIO[Chunk[Message]] = ZIO.succeed(initialSnapshot)
           override private[orchestration] def snapshot: UIO[Chunk[Message]] = active.get
           private def ensureOpen: IO[YallmoError, Unit] = closed.get.flatMap(value =>
             ZIO.fail(YallmoError.InvalidAgentDecision("Managed history submission is closed")).when(value).unit
           )
-          private def allocate(payloads: Chunk[MessagePayload], parent: Option[MessageId]): UIO[Chunk[Message]] =
+          private def allocate(payloads: Seq[MessagePayload], parent: Option[MessageId]): UIO[Chunk[Message]] =
             ZIO.foldLeft(payloads)(Chunk.empty[Message]) { (batch, payload) =>
               Clock.instant.map(timestamp =>
                 batch :+ Message(
@@ -219,7 +221,7 @@ final class OrchestratorLive[-R] private[orchestration] (
                 )
               )
             }
-          private def appendLocked(payloads: Chunk[MessagePayload]): IO[YallmoError, Option[MessageId]] = for {
+          private def appendLocked(payloads: Seq[MessagePayload]): IO[YallmoError, Option[MessageId]] = for {
             _ <- ensureOpen
             current <- active.get
             batch <- allocate(payloads, current.lastOption.map(_.id))
@@ -229,10 +231,10 @@ final class OrchestratorLive[-R] private[orchestration] (
             _ <- active.set(next)
             _ <- queue.offer(Some(checkpoint(next)))
           } yield next.lastOption.map(_.id)
-          override private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit] =
+          override private[orchestration] def append(payloads: Seq[MessagePayload]): IO[YallmoError, Unit] =
             gate.withPermit(appendLocked(payloads).unit.uninterruptible)
           override private[orchestration] def appendAt(
-              payloads: Chunk[MessagePayload],
+              payloads: Seq[MessagePayload],
               expectedParent: Option[MessageId]
           ): IO[YallmoError, Option[MessageId]] = gate.withPermit {
             (for {
@@ -483,8 +485,25 @@ final class OrchestratorLive[-R] private[orchestration] (
       )
     } yield response)
 
-  override def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session] =
+  override def createSession(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Session] =
     validateAuthors(agentIds) *> storage.createSession(id, agentIds).mapError(YallmoError.StorageFailed.apply)
+
+  override def createSession(
+      id: SessionId,
+      agentIds: Seq[AgentId],
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
+    validateAuthors(agentIds) *> storage.createSession(id, agentIds, info).mapError(YallmoError.StorageFailed.apply)
+
+  override def updateSessionInfo(
+      id: SessionId,
+      expectedRevision: Long,
+      info: Option[SessionInfo]
+  ): IO[YallmoError, Session] =
+    storage.updateSessionInfo(id, expectedRevision, info).mapError(YallmoError.StorageFailed.apply)
+
+  override def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean): IO[YallmoError, Session] =
+    storage.setSessionArchived(id, expectedRevision, archived).mapError(YallmoError.StorageFailed.apply)
 
   override def loadSession(id: SessionId): IO[YallmoError, Session] =
     storage.loadSession(id).mapError(YallmoError.StorageFailed.apply)
@@ -495,7 +514,7 @@ final class OrchestratorLive[-R] private[orchestration] (
   override def append(
       id: SessionId,
       agentId: AgentId,
-      messages: Chunk[MessagePayload]
+      messages: Seq[MessagePayload]
   ): IO[YallmoError, Session] =
     catalog.validateAuthor(agentId) *>
       (if messages.isEmpty then ZIO.fail(YallmoError.EmptyAppend(id))
@@ -504,7 +523,7 @@ final class OrchestratorLive[-R] private[orchestration] (
   private def appendToLatestSession(
       id: SessionId,
       agentId: AgentId,
-      payloads: Chunk[MessagePayload]
+      payloads: Seq[MessagePayload]
   ): IO[YallmoError, Session] =
     (for {
       session <- storage.loadSession(id)
@@ -564,7 +583,7 @@ final class OrchestratorLive[-R] private[orchestration] (
   override def fork(source: SessionId, target: SessionId): IO[YallmoError, Session] =
     storage.fork(source, target).mapError(YallmoError.StorageFailed.apply)
 
-  private def validateAuthors(agentIds: Chunk[AgentId]): IO[YallmoError, Unit] =
+  private def validateAuthors(agentIds: Seq[AgentId]): IO[YallmoError, Unit] =
     ZIO.foreachDiscard(agentIds)(catalog.validateAuthor)
 }
 

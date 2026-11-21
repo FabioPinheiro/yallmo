@@ -106,7 +106,21 @@ trait Orchestrator[-R] extends BlobOps {
 
   def listSessions: IO[YallmoError, Chunk[SessionSummary]]
 
-  def createSession(id: SessionId, agentIds: Chunk[AgentId]): IO[YallmoError, Session]
+  def createSession(id: SessionId, agentIds: Seq[AgentId]): IO[YallmoError, Session]
+
+  /** Creates a session with optional descriptive info. Storage assigns metadata and validates any parent exists. */
+  def createSession(id: SessionId, agentIds: Seq[AgentId], info: Option[SessionInfo]): IO[YallmoError, Session]
+
+  /** Revision-checked whole-info replacement. None preserves existing info; Some replaces all fields. Parent lineage
+    * cannot change. Legacy records start at revision 0; no-op updates do not advance it. Storage owns all timestamps.
+    */
+  def updateSessionInfo(id: SessionId, expectedRevision: Long, info: Option[SessionInfo]): IO[YallmoError, Session]
+
+  /** Revision-checked organizational archive flag, independent of execution and the message head. Repeated archive
+    * retains its original timestamp; unarchive clears it. Stale revisions fail even when the requested change is a
+    * no-op.
+    */
+  def setSessionArchived(id: SessionId, expectedRevision: Long, archived: Boolean): IO[YallmoError, Session]
 
   def loadSession(id: SessionId): IO[YallmoError, Session]
 
@@ -119,7 +133,7 @@ trait Orchestrator[-R] extends BlobOps {
       else ZIO.fail(YallmoError.AgentNotInSession(id, agentId))
     }
 
-  def append(id: SessionId, agentId: AgentId, messages: Chunk[MessagePayload]): IO[YallmoError, Session]
+  def append(id: SessionId, agentId: AgentId, messages: Seq[MessagePayload]): IO[YallmoError, Session]
 
   def appendWithBlobBytes(
       id: SessionId,

@@ -18,14 +18,14 @@ enum ReplEvent {
   case ProviderRequestDocument(capture: Option[zio.json.ast.Json.Obj])
 
   /** Stored conversation messages, including their original authors and optional session name. */
-  case Transcript(messages: Chunk[Message], sessionId: Option[String])
+  case Transcript(messages: Seq[Message], sessionId: Option[String])
   case SnapshotTranscript(
-      messages: Chunk[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot],
+      messages: Seq[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot],
       sessionId: Option[String]
   )
 
   /** Actual durable suffix from remote execution, not a reconstructed local transcript. */
-  case SnapshotDelta(messages: Chunk[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot])
+  case SnapshotDelta(messages: Seq[fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot])
   case Unavailable(message: String)
   case ToolAvailability(value: ApplicationToolAvailability)
   case LogLevelChanged(level: LogLevel)
@@ -33,7 +33,7 @@ enum ReplEvent {
   case SessionList(ids: Chunk[String], activeId: Option[String])
   case SessionResumed(id: String)
   case SessionFailed(message: String)
-  case AgentTurn(result: AgentResult, newMessages: Chunk[MessagePayload])
+  case AgentTurn(result: AgentResult, newMessages: Seq[MessagePayload])
   case InputRejected(error: ReplSyntaxError)
   case AgentFailed(message: String)
   case ExitRequested

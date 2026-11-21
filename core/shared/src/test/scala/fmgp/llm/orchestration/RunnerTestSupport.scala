@@ -33,21 +33,21 @@ private[orchestration] object RunnerTestSupport {
           def rebase(base: MessageId, head: MessageId, onto: Option[MessageId]): IO[YallmoError, Chunk[Message]] =
             ZIO.fail(YallmoError.InvalidMessage("Runner-only harness has no object store"))
           private[orchestration] def snapshot: UIO[Chunk[Message]] = active.get
-          private def appendLocked(current: Chunk[Message], payloads: Chunk[MessagePayload]): UIO[Chunk[Message]] =
+          private def appendLocked(current: Chunk[Message], payloads: Seq[MessagePayload]): UIO[Chunk[Message]] =
             ZIO.foldLeft(payloads)(current) { (chain, payload) =>
               Clock.instant.map(time =>
                 chain :+ Message(MessageData(agent.id, chain.lastOption.map(_.id), time, payload))
               )
             }
           private[orchestration] def appendAt(
-              payloads: Chunk[MessagePayload],
+              payloads: Seq[MessagePayload],
               expectedParent: Option[MessageId]
           ): IO[YallmoError, Option[MessageId]] = active.modifyZIO { current =>
             if current.lastOption.map(_.id) != expectedParent then
               ZIO.fail(YallmoError.InvalidAgentDecision("History changed during work"))
             else appendLocked(current, payloads).map(next => (next.lastOption.map(_.id), next))
           }
-          private[orchestration] def append(payloads: Chunk[MessagePayload]): IO[YallmoError, Unit] =
+          private[orchestration] def append(payloads: Seq[MessagePayload]): IO[YallmoError, Unit] =
             active.updateZIO(current => appendLocked(current, payloads))
 
         }

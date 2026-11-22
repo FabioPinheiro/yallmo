@@ -89,6 +89,7 @@ final class OrchestratorRpcSuite extends ZSuite {
             "initialize",
             "sessions.list",
             "sessions.get",
+            "sessions.rename",
             "messages.list",
             "agents.list",
             "tools.list",
@@ -108,7 +109,7 @@ final class OrchestratorRpcSuite extends ZSuite {
             "providers.login.cancel"
           )
         )
-        assertEquals(result.methods.size, 20)
+        assertEquals(result.methods.size, 21)
         assertEquals(result.notifications, List(EventsUpdate.method))
         assertEquals(error(changed).code, ErrorCode.Conflict)
         assertEquals(error(removed).code, ErrorCode.Conflict)

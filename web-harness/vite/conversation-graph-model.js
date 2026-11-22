@@ -1,6 +1,7 @@
 // Pure, ID-keyed state. Message artifacts accumulate; session pointers are replaceable snapshots.
 export const messageKey = id => `message:${id}`;
 export const sessionKey = id => `session:${id}`;
+export const sessionDisplayName = session => session.title?.trim() || session.rawId || session.id;
 const spacing = 110;
 const laneWidth = 210;
 const turnClearance = 55;
@@ -78,7 +79,7 @@ export class ConversationGraphModel {
     }
     for (const session of this.sessions.values()) {
       const id = sessionKey(session.id);
-      nodes.set(id, { ...session, id, rawId: session.id, kind: "session", label: session.id + (session.error ? " (unreadable)" : "") });
+      nodes.set(id, { ...session, id, rawId: session.id, kind: "session", label: sessionDisplayName(session) + (session.error ? " (unreadable)" : "") });
       if (session.head) {
         if (!this.messages.has(session.head)) missing(session.head);
         const edgeId = `head:${session.id}`;

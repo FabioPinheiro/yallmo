@@ -556,6 +556,21 @@ final class YallmoProtocolSuite extends FunSuite {
     assertWire(List(first, second), s"[${first.toJson},${second.toJson}]")
   }
 
+  test("session summaries round-trip metadata and info while accepting legacy inventory") {
+    val summary = SessionSummary(
+      sessionId,
+      2L,
+      List(agentId),
+      Some(SessionMetadata(createdAt = Some(Instant.EPOCH), updatedAt = Some(Instant.EPOCH.plusSeconds(1)))),
+      Some(SessionInfo(title = Some("Research")))
+    )
+    assertEquals(summary.toJson.fromJson[SessionSummary], Right(summary))
+    assertEquals(
+      """{"id":"s1","messageCount":2,"agentIds":["agent1"]}""".fromJson[SessionSummary],
+      Right(SessionSummary(sessionId, 2L, List(agentId)))
+    )
+  }
+
   test("session summaries, agent IDs, blob IDs, tasks and results reuse domain types and codecs") {
     val sessions: SessionsList.Result = Chunk(SessionSummary(sessionId, 2, Chunk(agentId)))
     val agents: AgentsList.Result = Chunk(agentId)

@@ -3,7 +3,7 @@ package fmgp.yallmo.webharness
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.ControlAction
 import fmgp.yallmo.model.{AgentId, BlobId, UserId}
-import fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot
+import fmgp.yallmo.server.protocol.YallmoProtocol.{MessageSnapshot, SessionSnapshot}
 import org.scalajs.dom
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -42,6 +42,15 @@ object App {
       client.cancelProviderLogin
     )
     val chat = new ChatModel(client, notifications.publish)
+    val titleUpdates = new EventBus[SessionSnapshot]
+    val titles = new ConversationTitleModel(
+      client,
+      snapshot => {
+        chat.acceptTitleInfo(snapshot)
+        titleUpdates.emit(snapshot)
+      },
+      notifications.publish
+    )
     val selectedAgent = chat.state.signal.map(_.current.agent).distinct
     val scalamode =
       new ScalamodeModel(client.invokeAgent, () => chat.state.now().current.agent, () => client.scalamodeCapabilities())
@@ -70,6 +79,7 @@ object App {
     var mounted = false
     def close(): Unit = {
       connected.set(false)
+      titles.disable()
       voice.disable()
       providers.disable()
       scalamode.disable()
@@ -93,6 +103,7 @@ object App {
             connecting.set(false)
             val graphOwnsInventory = route.now() == ViewRoute.Graph
             chat.configure(info, refreshSessions = !graphOwnsInventory)
+            titles.configure(info)
             scalamode.configure(info)
             branch.configure(info)
             voice.configure(info)
@@ -106,6 +117,7 @@ object App {
             connecting.set(false)
             voice.disable()
             chat.disable()
+            titles.disable()
             providers.disable()
             scalamode.disable()
             branch.disable()
@@ -122,6 +134,7 @@ object App {
     }
     val graphSession = Var(Option.empty[String])
     val graphNavigation = new EventBus[String]
+    val graphTitleEditing = new EventBus[Unit]
     val sessionNavigation = new SidebarSessionNavigation(
       () => route.now(),
       chat.resume,
@@ -187,6 +200,23 @@ object App {
             if route.now() == ViewRoute.Chat then activate("#reload-history") else refresh.emit(())
           }
         ),
+        WebCommand(
+          ControlAction.RenameConversation,
+          () => {
+            if route.now() == ViewRoute.Graph then {
+              if graphSession.now().nonEmpty && titles.enabled.now() then graphTitleEditing.emit(())
+              else unavailable()
+            } else {
+              openChat()
+              val _ = dom.window.requestAnimationFrame { _ =>
+                if mounted && ViewRoute.parse(dom.window.location.hash) == ViewRoute.Chat then
+                  if chat.state.now().current.snapshot.exists(s => titles.drafts.now().contains(s.id)) then
+                    focus("#conversation-title-input")
+                  else activate("#rename-conversation")
+              }
+            }
+          }
+        ),
         WebCommand(ControlAction.ReloadConversations, () => chat.refresh()),
         WebCommand(ControlAction.Username, () => focus("#username")),
         WebCommand(ControlAction.Reconnect, () => activate("#reconnect")),
@@ -208,6 +238,7 @@ object App {
           connected.set(false)
           voice.disable()
           chat.disable()
+          titles.disable()
           providers.disable()
           scalamode.disable()
           branch.disable()
@@ -290,7 +321,7 @@ object App {
             idAttr := "content",
             tabIndex := -1,
             child <-- route.signal.distinct.map {
-              case ViewRoute.Chat      => ChatView(chat, client, speech, voice)
+              case ViewRoute.Chat      => ChatView(chat, client, speech, voice, titles)
               case ViewRoute.Scalamode => ScalamodeView(scalamode, selectedAgent)
               case ViewRoute.Providers => ProvidersView(providers, refreshes)
               case ViewRoute.Sdlc      => SdlcView(refreshes)
@@ -312,7 +343,10 @@ object App {
                   chat.state.signal
                     .map(s => s.pending.nonEmpty || s.voiceBusy)
                     .combineWith(scalamode.state.signal.map(_.pending))
-                    .map(_ || _)
+                    .map(_ || _),
+                  titles,
+                  titleUpdates.events,
+                  graphTitleEditing.events
                 )
               case ViewRoute.Agents =>
                 listPage(

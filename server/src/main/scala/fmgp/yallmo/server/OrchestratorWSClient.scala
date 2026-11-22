@@ -59,6 +59,9 @@ final class OrchestratorWSClient private (
       TurnSubmit.Params(target, agentId, task, actingAgentId, expectedHead, resetContinuation)
     )
 
+  override def renameSession(params: SessionsRename.Params): IO[Error, SessionSnapshot] =
+    request(SessionsRename.method, params)
+
   override def submitBranch(params: BranchesSubmit.Params): IO[Error, BranchOutcome] =
     request(BranchesSubmit.method, params)
 

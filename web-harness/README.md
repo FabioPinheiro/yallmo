@@ -34,7 +34,23 @@ Static assets and SDLC inspection use HTTP; other application requests and attac
 bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat,
 all messages, an interactive timestamp-based conversation DAG,
 registry agents with on-demand tool inspection, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
-from the conversation sidebar; empty, unknown and former Sessions hashes open Chat. Reconnect refreshes the active view; requests from an unmounted tab cannot update
+from the conversation sidebar, sorted by `meta.updatedAt` (falling back to `meta.createdAt`), newest first.
+Unknown dates come last; equal dates use session ID order. These audit dates track metadata changes, not message activity.
+Nonblank session titles appear in the sidebar, Chat heading, graph session markers, graph search results and session inspectors.
+Session IDs remain the fallback and are also shown in graph inspector details and titled search results for disambiguation.
+Sorting and titles update on inventory reloads and live session updates without changing selection or drafts.
+For a saved conversation, use the pencil beside the Chat title or the title in a graph session inspector.
+**Rename conversation** in the command menu edits the selected graph session without leaving Graph, or the current Chat session otherwise.
+The inline editor is prefilled; Enter/Save commits, Esc/Cancel discards edits, and **Reset title** explicitly restores
+session-ID presentation. Clicking elsewhere does not save. The pencil and editor buttons have at least 44px touch targets;
+there is no double-click/double-tap gesture or hover-only control. Saving does not alter the message draft or run an agent.
+The editor appears only when the server advertises Operator `sessions.rename`. It captures the metadata revision when
+opened; conflict/uncertain replies retain the draft and require **Reload latest title** before another explicit save.
+The refresh preserves the draft rather than silently overwriting either the user's input or the newer server title.
+Chat and Graph share an application-owned, session-keyed editor model. Graph edits never select or load a Chat conversation.
+Live head/metadata updates do not remount an open editor or replace its draft. Acknowledged edits update graph labels and
+sidebar summaries even with Live paused, without restarting subscriptions, moving messages, fitting the viewport or changing branch drafts.
+Empty, unknown and former Sessions hashes open Chat. Reconnect refreshes the active view; requests from an unmounted tab cannot update
 the current view. Function-call JSON is pretty-printed. Tool-result objects show compact inline scalar fields
 (e.g. exitCode, timedOut, truncated) and labeled output with decoded line breaks; unknown fields are retained and
 invalid JSON falls back to literal text. Tool calls/results and long messages start collapsed to their header line;

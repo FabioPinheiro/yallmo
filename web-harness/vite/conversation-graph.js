@@ -90,7 +90,7 @@ function graphStyle(window, host) {
   ];
 }
 
-export function createConversationGraph(host, inspect, selected = () => {}, liveChanged = () => {}, messageSelected = () => {}) {
+export function createConversationGraph(host, inspect, selected = () => {}, liveChanged = () => {}, messageSelected = () => {}, inspectSession = null) {
   const document = host.ownerDocument, window = document.defaultView;
   const model = new ConversationGraphModel();
   const root = element(document, "div", "conversation-graph");
@@ -131,7 +131,7 @@ export function createConversationGraph(host, inspect, selected = () => {}, live
   const inspector = new GraphInspector(layer, id => {
     const node = cy.getElementById(id);
     return node.empty() ? { x: 16, y: 16 } : node.renderedPosition();
-  }, inspect, id => { sessionNavigation.request(id); }, () => search.input.focus());
+  }, inspect, id => { sessionNavigation.request(id); }, () => search.input.focus(), inspectSession);
   const open = id => {
     const node = model.nodes.get(id);
     if (!node) return;

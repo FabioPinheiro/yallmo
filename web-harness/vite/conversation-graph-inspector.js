@@ -1,3 +1,5 @@
+import { sessionDisplayName } from "./conversation-graph-model.js";
+
 export function element(document, tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -7,10 +9,11 @@ export function element(document, tag, className, text) {
 
 // One node-following inspector. Its body is mounted/unmounted by the safe Laminar callback.
 export class GraphInspector {
-  constructor(layer, position, inspect, focus, returnFocus) {
+  constructor(layer, position, inspect, focus, returnFocus, inspectSession = null) {
     this.layer = layer;
     this.position = position;
     this.inspect = inspect;
+    this.inspectSession = inspectSession;
     this.focus = focus;
     this.returnFocus = returnFocus;
     this.document = layer.ownerDocument;
@@ -90,7 +93,13 @@ export class GraphInspector {
       this.card = { id: node.id, shell, body, dx: 24, dy: 24, dispose: () => {}, persistent: !passive, hovered: false };
       shell.addEventListener("pointerenter", () => { this.hoveredNode = null; this.card.hovered = true; this.cancelHoverClose(); });
       shell.addEventListener("pointerleave", () => { this.card.hovered = false; this.scheduleHoverClose(); });
-      shell.addEventListener("focusin", () => this.cancelHoverClose());
+      shell.addEventListener("focusin", event => {
+        if (event.target.closest?.(".conversation-title")) this.card.persistent = true;
+        this.cancelHoverClose();
+      });
+      shell.addEventListener("pointerdown", event => {
+        if (event.target.closest?.(".conversation-title")) this.card.persistent = true;
+      });
       shell.addEventListener("focusout", () => this.scheduleHoverClose());
       drag.addEventListener("pointerdown", event => {
         if (event.button !== 0) return;
@@ -98,6 +107,10 @@ export class GraphInspector {
         this.drag = { x: event.clientX, y: event.clientY };
       });
       this.layer.append(shell);
+      if (typeof this.window.ResizeObserver === "function") {
+        this.card.resize = new this.window.ResizeObserver(() => this.recover());
+        this.card.resize.observe(body);
+      }
     }
     this.cancelHoverClose();
     this.card.persistent ||= !passive;
@@ -128,6 +141,10 @@ export class GraphInspector {
     const signature = JSON.stringify(node);
     if (signature === card.signature) return;
     card.signature = signature;
+    card.shell.setAttribute("aria-label", `Inspector ${node.kind === "session" ? sessionDisplayName(node) : node.rawId}`);
+    card.shell.title = node.rawId;
+    // Session details are reactive Laminar content. Keep the mounted editor and its focus across live title/head updates.
+    if (node.kind === "session" && this.inspectSession && card.sessionMounted) return;
     card.dispose();
     card.dispose = () => {};
     card.body.replaceChildren();
@@ -136,9 +153,15 @@ export class GraphInspector {
       card.body.append(element(this.document, "h3", "", "Missing referenced message"), element(this.document, "code", "", node.rawId),
         element(this.document, "p", "", "Referenced artifact is unavailable; its position is reserved."));
     } else {
-      card.body.append(element(this.document, "h3", "", `Session: ${node.rawId}`),
-        element(this.document, "p", "", `Current published head: ${node.head ?? (node.error ? "unknown" : "(empty)")}`));
-      if (node.error) card.body.append(element(this.document, "p", "error", `Snapshot unavailable; last known pointer shown if available. ${node.error}`));
+      if (this.inspectSession) {
+        card.dispose = this.inspectSession(node.rawId, card.body);
+        card.sessionMounted = true;
+      } else {
+        card.body.append(element(this.document, "h3", "", `Session: ${sessionDisplayName(node)}`));
+        if (sessionDisplayName(node) !== node.rawId) card.body.append(element(this.document, "code", "", node.rawId));
+        card.body.append(element(this.document, "p", "", `Current published head: ${node.head ?? (node.error ? "unknown" : "(empty)")}`));
+        if (node.error) card.body.append(element(this.document, "p", "error", `Snapshot unavailable; last known pointer shown if available. ${node.error}`));
+      }
       const focus = element(this.document, "button", "", "Highlight history / focus");
       focus.type = "button";
       focus.addEventListener("click", () => this.focus(node.rawId));
@@ -160,6 +183,7 @@ export class GraphInspector {
     this.hoveredNode = null;
     this.drag = null;
     if (!this.card) return;
+    this.card.resize?.disconnect();
     this.card.dispose();
     this.card.shell.remove();
     this.card = null;

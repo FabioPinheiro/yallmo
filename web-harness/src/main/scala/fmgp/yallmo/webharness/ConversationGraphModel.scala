@@ -2,7 +2,7 @@ package fmgp.yallmo.webharness
 
 import com.raquo.laminar.api.L.Var
 import fmgp.yallmo.model.MessageId
-import fmgp.yallmo.orchestration.{EventSession as PublishedSession, SessionSummary}
+import fmgp.yallmo.orchestration.{EventSession as PublishedSession, SessionInfo, SessionMetadata, SessionSummary}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import java.nio.charset.StandardCharsets.UTF_8
 import scala.concurrent.ExecutionContext
@@ -10,7 +10,13 @@ import scala.util.{Failure, Success}
 import zio.Chunk
 import zio.json.*
 
-private[webharness] final case class GraphSessionNode(id: String, head: Option[String], error: Option[String] = None)
+private[webharness] final case class GraphSessionNode(
+    id: String,
+    head: Option[String],
+    error: Option[String] = None,
+    info: Option[SessionInfo] = None,
+    meta: Option[SessionMetadata] = None
+)
 private[webharness] final case class GraphSnapshot(messages: List[MessageSnapshot], sessions: List[GraphSessionNode])
 private[webharness] final case class GraphLoadState(
     snapshot: Option[GraphSnapshot] = None,
@@ -35,6 +41,21 @@ private[webharness] final class ConversationGraphModel(
   private var confirmed = Map.empty[MessageId, MessageSnapshot]
   private var pending = Map.empty[String, List[MessageSnapshot]]
   private var sessions = Map.empty[String, PublishedSession]
+  // Own acknowledged metadata can merge while Live is paused, without changing event revisions or session heads.
+  private var titleOverrides = Map.empty[String, SessionSummary]
+
+  def acceptTitleInfo(snapshot: SessionSnapshot): Unit = if enabled then {
+    val id = snapshot.id.value
+    if titleOverrides.get(id).forall(_.meta.fold(0L)(_.revision) <= snapshot.meta.fold(0L)(_.revision)) then
+      titleOverrides += id -> SessionSummary(
+        snapshot.id,
+        snapshot.messages.size.toLong,
+        snapshot.agentIds,
+        snapshot.meta,
+        snapshot.info
+      )
+    if state.now().snapshot.nonEmpty then publish()
+  }
   private def eligible: Boolean = enabled && live && connected() && visible()
 
   def isConfirmed(id: MessageId): Boolean = confirmed.contains(id)
@@ -56,7 +77,16 @@ private[webharness] final class ConversationGraphModel(
   def refresh(): Unit = if eligible then start(recoveries = 1)
 
   private def publish(): Unit = {
-    val values = sessions.values.toList.sortBy(_.id.value)
+    val values = sessions.values.toList.sortBy(_.id.value).map { session =>
+      titleOverrides.get(session.id.value) match {
+        case Some(own) if own.meta.fold(0L)(_.revision) > session.meta.fold(0L)(_.revision) =>
+          session.copy(meta = own.meta, info = own.info)
+        case Some(_) =>
+          titleOverrides -= session.id.value
+          session
+        case None => session
+      }
+    }
     state.set(
       GraphLoadState(
         Some(
@@ -64,12 +94,12 @@ private[webharness] final class ConversationGraphModel(
             (confirmed.values.toList ++ pending.valuesIterator.flatten)
               .distinctBy(_.id)
               .sortBy(m => (m.timestamp.toString, MessageId.value(m.id))),
-            values.map(s => GraphSessionNode(s.id.value, s.head.map(MessageId.value), s.error))
+            values.map(s => GraphSessionNode(s.id.value, s.head.map(MessageId.value), s.error, s.info, s.meta))
           )
         )
       )
     )
-    updateSummaries(values.map(s => SessionSummary(s.id, s.messageCount, s.agentIds)))
+    updateSummaries(values.map(s => SessionSummary(s.id, s.messageCount, s.agentIds, s.meta, s.info)))
   }
 
   private def start(recoveries: Int): Unit = {

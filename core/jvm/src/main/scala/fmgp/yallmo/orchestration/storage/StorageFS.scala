@@ -67,7 +67,7 @@ private[orchestration] final class StorageFS(
       }
       .flatMap { states =>
         ZIO.foreach(states) { case (id, state) =>
-          messageCount(state.head).map(SessionSummary(id, _, state.agentIds))
+          messageCount(state.head).map(SessionSummary(id, _, state.agentIds, state.meta, state.info))
         }
       }
 

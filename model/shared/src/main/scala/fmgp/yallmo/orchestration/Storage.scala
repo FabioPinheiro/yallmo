@@ -3,8 +3,14 @@ package fmgp.yallmo.orchestration
 import fmgp.yallmo.model.{AgentId, Blob, BlobId, Message, MessageId, YallmoError}
 import zio.{Chunk, IO}
 
-/** Lightweight information suitable for a session picker. */
-final case class SessionSummary(id: SessionId, messageCount: Long, agentIds: Seq[AgentId])
+/** Lightweight session inventory, including optional descriptions and audit dates without loading history. */
+final case class SessionSummary(
+    id: SessionId,
+    messageCount: Long,
+    agentIds: Seq[AgentId],
+    meta: Option[SessionMetadata] = None,
+    info: Option[SessionInfo] = None
+)
 
 /** Storage for immutable messages, conversation sessions and binary blobs.
   *

@@ -213,6 +213,21 @@ object YallmoProtocol {
     type Result = SessionSnapshot
   }
 
+  /** Display-title mutation only; session identity, lineage and other info fields are preserved. */
+  object SessionsRename {
+    val method: String = "sessions.rename"
+    val MaxTitleLength: Int = 256
+
+    /** title must be present: a nonblank single line sets it, explicit null resets the display-name fallback. */
+    @jsonNoExtraFields
+    final case class Params(
+        sessionId: SessionId,
+        expectedRevision: Long,
+        @jsonExplicitNull title: Option[String]
+    ) derives JsonCodec
+    type Result = SessionSnapshot
+  }
+
   object SessionsFork {
     val method: String = "sessions.fork"
 

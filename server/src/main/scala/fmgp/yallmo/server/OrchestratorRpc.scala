@@ -1,7 +1,15 @@
 package fmgp.yallmo.server
 
 import fmgp.yallmo.model.{AgentId, BlobId, BlobUploadFailure, BlobUploadLimits, UserId, YallmoError}
-import fmgp.yallmo.orchestration.{BlobUploader, EventSession, EventUpdate, OrchestrationEvents, Session, SessionSummary}
+import fmgp.yallmo.orchestration.{
+  BlobUploader,
+  EventSession,
+  EventUpdate,
+  OrchestrationEvents,
+  Session,
+  SessionInfo,
+  SessionSummary
+}
 import fmgp.yallmo.server.application.ServerExecutionService
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
@@ -159,6 +167,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                 if userId.nonEmpty then
                   methods ++ List(
                     TurnSubmit.method,
+                    SessionsRename.method,
                     BranchesSubmit.method,
                     DiagnosticsRequest.method,
                     BlobsUpload.method,
@@ -209,6 +218,25 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                 domain(master.loadSession(request.sessionId))
               )
               result <- encode(SessionSnapshot.from(session))
+            } yield result
+          case SessionsRename.method =>
+            for {
+              _ <- operator(state)
+              _ <- ZIO.fail(JsonRpc.Error.InvalidParams).unless(params.fields.exists(_._1 == "title"))
+              request <- decode[SessionsRename.Params](params)
+              title = request.title.map(_.trim)
+              _ <- ZIO
+                .fail(JsonRpc.Error.InvalidParams)
+                .when(
+                  request.expectedRevision < 0 || title.exists(value =>
+                    value.isEmpty || value.length > SessionsRename.MaxTitleLength ||
+                      value.exists(char => Character.isISOControl(char) || char == '\u2028' || char == '\u2029')
+                  )
+                )
+              session <- domain(master.loadSession(request.sessionId))
+              info = session.info.getOrElse(SessionInfo()).copy(title = title)
+              updated <- domain(master.updateSessionInfo(request.sessionId, request.expectedRevision, Some(info)))
+              result <- encode(SessionSnapshot.from(updated))
             } yield result
           case MessagesList.method =>
             decode[Empty](params) *> domain(master.listMessages).flatMap(values =>
@@ -353,7 +381,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
                       session.messages,
                       Chunk(
                         (
-                          SessionSummary(id, session.messages.size, session.agentIds),
+                          SessionSummary(id, session.messages.size, session.agentIds, session.meta, session.info),
                           Right(session)
                         )
                       )
@@ -550,6 +578,9 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
     case YallmoError.StorageFailed(error)                            => storageError(error)
     case _: YallmoError.SessionNotFound | _: YallmoError.BlobMissing =>
       JsonRpc.Error(ErrorCode.NotFound, "Not found")
+    case _: YallmoError.SessionMetadataConflict =>
+      JsonRpc.Error(ErrorCode.Conflict, "Conversation details changed. Reload the latest title before saving again.")
+    case _: YallmoError.InvalidSessionInfo    => JsonRpc.Error(ErrorCode.Rejected, "Invalid conversation details")
     case _: YallmoError.BlobAlreadyExists     => JsonRpc.Error(ErrorCode.Conflict, "Blob already exists")
     case YallmoError.BlobUploadFailed(reason) =>
       reason match {

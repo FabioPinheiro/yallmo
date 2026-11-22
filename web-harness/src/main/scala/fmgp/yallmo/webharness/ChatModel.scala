@@ -153,10 +153,11 @@ private[webharness] final class ChatModel(client: OrchestratorWSClient, notify: 
           )
         }
         value.snapshot.foreach { snapshot =>
-          val summary = SessionSummary(snapshot.id, snapshot.messages.size.toLong, snapshot.agentIds)
+          val summary =
+            SessionSummary(snapshot.id, snapshot.messages.size.toLong, snapshot.agentIds, snapshot.meta, snapshot.info)
           liveSummaries += snapshot.id -> summary
           state.update(s =>
-            s.copy(sessions = (s.sessions.filterNot(_.id == snapshot.id) :+ summary).sortBy(_.id.value))
+            s.copy(sessions = SessionPresentation.sorted(s.sessions.filterNot(_.id == snapshot.id) :+ summary))
           )
         }
       }
@@ -203,7 +204,7 @@ private[webharness] final class ChatModel(client: OrchestratorWSClient, notify: 
   def updateSummaries(summaries: List[SessionSummary]): Unit = {
     listVersion += 1
     liveSummaries = Map.empty
-    state.update(_.copy(sessions = summaries, listError = ""))
+    state.update(_.copy(sessions = SessionPresentation.sorted(summaries), listError = ""))
   }
 
   private def refreshList(): Unit = if inventoryEnabled && mounted && visible && connected then {
@@ -212,10 +213,37 @@ private[webharness] final class ChatModel(client: OrchestratorWSClient, notify: 
     liveSummaries = Map.empty
     client.sessions().onComplete {
       case Success(sessions) if version == listVersion =>
-        val inventory = (sessions.map(s => s.id -> s).toMap ++ liveSummaries).values.toList.sortBy(_.id.value)
+        val inventory = SessionPresentation.sorted((sessions.map(s => s.id -> s).toMap ++ liveSummaries).values.toList)
         state.update(_.copy(sessions = inventory, listError = ""))
       case Failure(error) if version == listVersion => state.update(_.copy(listError = error.getMessage))
       case _                                        => ()
+    }
+  }
+
+  /** Merge metadata only: a rename response must not replace newer transcript, pending-work or composer state. */
+  def acceptTitleInfo(snapshot: SessionSnapshot): Unit = {
+    val id = snapshot.id.value
+    def newer(meta: Option[fmgp.yallmo.orchestration.SessionMetadata]): Boolean =
+      snapshot.meta.fold(0L)(_.revision) >= meta.fold(0L)(_.revision)
+    state.update { s =>
+      val conversations = s.conversations.get(id).fold(s.conversations) { c =>
+        val updated = c.snapshot.map(current =>
+          if newer(current.meta) then current.copy(meta = snapshot.meta, info = snapshot.info) else current
+        )
+        s.conversations.updated(id, c.copy(snapshot = updated))
+      }
+      val existing = liveSummaries.get(snapshot.id).orElse(s.sessions.find(_.id == snapshot.id))
+      val summary = existing match {
+        case Some(value) if newer(value.meta) => value.copy(meta = snapshot.meta, info = snapshot.info)
+        case Some(value)                      => value
+        case None                             =>
+          SessionSummary(snapshot.id, snapshot.messages.size.toLong, snapshot.agentIds, snapshot.meta, snapshot.info)
+      }
+      liveSummaries += snapshot.id -> summary
+      s.copy(
+        conversations = conversations,
+        sessions = SessionPresentation.sorted(s.sessions.filterNot(_.id == snapshot.id) :+ summary)
+      )
     }
   }
 

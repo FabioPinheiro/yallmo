@@ -27,6 +27,8 @@ enum ControlAction(val id: String, val webLabel: String, val terminalLabel: Stri
   case Sdlc extends ControlAction("sdlc", "Go to SDLC", "sdlc", Some("8"))
   case Conversations extends ControlAction("conversations", "Choose conversation", "conversations", Some("s"))
   case NewConversation extends ControlAction("new-conversation", "New conversation", "new conversation", Some("n"))
+  case RenameConversation
+      extends ControlAction("rename-conversation", "Rename conversation", "rename conversation", None)
   case Reload extends ControlAction("reload", "Reload current view / history", "reload", Some("r"))
   case ReloadConversations
       extends ControlAction("reload-conversations", "Reload conversations", "reload conversations", None)

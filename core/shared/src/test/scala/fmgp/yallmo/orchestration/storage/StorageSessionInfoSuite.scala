@@ -36,6 +36,22 @@ abstract class StorageSessionInfoSuite extends FunSuite {
     }
   }
 
+  test("session inventory includes current metadata and info without loading history") {
+    withStorage { storage =>
+      for {
+        created <- storage.createSession(id, agents, Some(SessionInfo(title = Some("Research"))))
+        initial <- storage.listSessions
+        updated <- storage.updateSessionInfo(id, 0L, Some(SessionInfo(title = Some("Results"))))
+        archived <- storage.setSessionArchived(id, 1L, true)
+        current <- storage.listSessions
+      } yield {
+        assertEquals(initial.toList, List(SessionSummary(id, 0L, agents, created.meta, created.info)))
+        assertEquals(updated.info.flatMap(_.title), Some("Results"))
+        assertEquals(current.toList, List(SessionSummary(id, 0L, agents, archived.meta, archived.info)))
+      }
+    }
+  }
+
   test("None preserves info; Some replaces the complete object and can clear descriptive fields") {
     withStorage { storage =>
       for {

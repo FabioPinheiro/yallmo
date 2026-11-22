@@ -1,4 +1,5 @@
 import { element } from "./conversation-graph-inspector.js";
+import { sessionDisplayName } from "./conversation-graph-model.js";
 
 // Query-only results: no permanent node inventory or pagination UI.
 export class GraphSearch {
@@ -9,7 +10,7 @@ export class GraphSearch {
     const field = element(document, "div", "graph-search");
     this.input = element(document, "input");
     this.input.type = "search";
-    this.input.placeholder = "ID, text or session";
+    this.input.placeholder = "ID, text or conversation title";
     this.input.setAttribute("aria-label", "Search graph");
     this.results = element(document, "ul", "graph-search-results");
     this.results.setAttribute("aria-label", "Graph search results");
@@ -29,7 +30,11 @@ export class GraphSearch {
     const query = this.input.value.trim();
     const matches = query ? this.find(query) : [];
     const shown = matches.slice(0, 30);
-    const labels = shown.map(node => `${node.kind === "message" ? node.role : node.kind}: ${node.rawId}`);
+    const labels = shown.map(node => {
+      if (node.kind !== "session") return `${node.kind === "message" ? node.role : node.kind}: ${node.rawId}`;
+      const title = sessionDisplayName(node);
+      return `session: ${title}${title === node.rawId ? "" : ` (${node.rawId})`}`;
+    });
     const signature = JSON.stringify([query, matches.length, shown.map(node => node.id), labels]);
     if (signature === this.signature) return;
     this.signature = signature;
@@ -40,6 +45,7 @@ export class GraphSearch {
       const row = element(this.input.ownerDocument, "li");
       const action = element(this.input.ownerDocument, "button", "", labels[index]);
       action.type = "button";
+      action.title = node.rawId;
       action.addEventListener("click", () => {
         this.input.value = "";
         this.update();

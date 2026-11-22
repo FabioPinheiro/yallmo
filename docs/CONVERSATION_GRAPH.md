@@ -4,7 +4,8 @@
 
 1. `ConversationGraphModel.scala` subscribes to `events.update` over the existing initialized `/rpc` WebSocket.
    `events.subscribe` supplies public messages, canonical session metadata/heads/revisions and in-flight observations.
-   Session names are stable `SessionId` strings. Empty histories remain visible; failed session reads are explicitly
+   Session identities are stable `SessionId` strings; marker labels use nonblank titles when available, falling back to IDs.
+   Empty histories remain visible; failed session reads are explicitly
    unknown/stale, never interpreted as empty histories. No recurring message/session inventory reads or timer remain.
 2. `conversation-graph-model.js` reconciles immutable artifacts by message ID and mutable pointers by session ID.
    All inventory branches are retained, including originals, disconnected roots and messages outside any session.
@@ -38,10 +39,16 @@
    buttons/links inside does not dismiss it. View-only Branches/Live controls retain it unless its target is hidden.
    Each replaced/dismissed message root is explicitly unmounted. Message bodies reuse safe Laminar `App.messageCard`, including identity,
    author/role/time, tool output, public reasoning text/summaries, attachments and speech controls. Opaque provider
-   continuation data is not part of `MessageSnapshot`. Session inspectors show name and current/last-known head.
+   continuation data is not part of `MessageSnapshot`. Session inspectors show the title, stable ID and current/last-known head.
+   On an editable session, the pencil opens the same inline title editor as Chat. Editing promotes a passive preview to a
+   persistent inspector; live head/title updates preserve its mounted input and draft. Enter/Save commits, Esc/Cancel
+   discards the draft, and Reset title restores ID presentation. The shared Rename conversation command targets the selected
+   graph session without navigating to Chat. Mutation requires the advertised Operator sessions.rename capability and a
+   readable target; it never edits a message, moves a pointer or executes an agent.
    The toolbar contains search, a labelled **Branches** select and a **Live** checkbox. A nonempty query searches
-   global full text, IDs, roles, authors and session names, including hidden branches; up to 30 keyboard-selectable
-   result buttons appear in a dropdown. Selecting a result updates focus, reveals/opens it and clears the query.
+   global full text, IDs, roles, authors and session titles, including hidden branches; up to 30 keyboard-selectable
+   result buttons appear in a dropdown. Named session results include both title and ID; IDs remain searchable after renaming.
+   Selecting a result updates focus, reveals/opens it and clears the query.
    There is no permanent node list/disclosure or Refresh button.
 
    Branch modes are **All**, **Current**, and **Current + siblings** (default). Before any explicit selection, all
@@ -65,7 +72,7 @@
 Pan/zoom use the canvas gestures; initial load fits automatically. Search and sidebar session navigation are explicit
 navigation actions; Branches and Live are local view controls. Explicit search centering/session fitting recovers the
 inspector inside the viewport after navigation; ordinary pan/live updates keep following the node without clamping.
-No title or fit/zoom/highlight-reset/close-all toolbar buttons are shown.
+No extra graph-title or fit/zoom/highlight-reset/close-all toolbar buttons are shown; session-title editing lives in the inspector.
 While this route is active, sidebar session clicks stay on Graph, focus/highlight published ancestry and open/reuse
 the session inspector; they do not resume Chat or change its drafts, continuation or pending turn. Canvas/search session
 selection updates the same sidebar selection. Graph starts unselected on each mount. Before its
@@ -74,7 +81,10 @@ and unreadable sessions remain navigable as session nodes. New conversation and 
 Chat; existing-session clicks on other routes still resume Chat. Mobile graph selection closes the sidebar.
 The empty state includes empty session nodes; a truly empty store displays “No stored messages or sessions.”
 Request failures and unreadable session snapshots are visible without deleting previously inspected messages.
-Reading/navigating the DAG does not change history. The composer uses the additive sessionless operation below;
+Reading/navigating the DAG does not change history. An acknowledged title edit merges metadata only, including while Live
+is paused, without resubscribing, moving graph nodes, resetting the viewport or disturbing Chat/branch drafts. Conflicts
+and uncertain saves retain the title draft and require explicit refresh before another save. Unrelated background changes
+remain frozen while Live is off. The composer uses the additive sessionless operation below;
 existing session submission semantics are unchanged.
 
 ## Unnamed branch composer

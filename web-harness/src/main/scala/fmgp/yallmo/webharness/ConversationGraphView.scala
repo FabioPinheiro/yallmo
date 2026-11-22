@@ -2,9 +2,9 @@ package fmgp.yallmo.webharness
 
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.SessionSummary
+import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
 import fmgp.yallmo.server.protocol.YallmoProtocol.MessageSnapshot
-import fmgp.yallmo.server.protocol.YallmoProtocol.SubscriptionScope
+import fmgp.yallmo.server.protocol.YallmoProtocol.{SessionSnapshot, SubscriptionScope}
 import org.scalajs.dom
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.scalajs.js
@@ -28,6 +28,7 @@ private[webharness] object ConversationGraphView {
     val id: String = js.native
     val head: String | Null = js.native
     val error: String | Null = js.native
+    val title: String | Null = js.native
   }
 
   @js.native
@@ -46,7 +47,8 @@ private[webharness] object ConversationGraphView {
         inspect: js.Function2[String, dom.Element, js.Function0[Unit]],
         selected: js.Function1[js.UndefOr[String], Unit],
         liveChanged: js.Function1[Boolean, Unit],
-        messageSelected: js.Function1[js.UndefOr[String], Unit]
+        messageSelected: js.Function1[js.UndefOr[String], Unit],
+        inspectSession: js.Function2[String, dom.Element, js.Function0[Unit]]
     ): GraphHandle = js.native
   }
 
@@ -66,7 +68,10 @@ private[webharness] object ConversationGraphView {
       agent: Signal[Option[AgentId]],
       connected: Signal[Boolean],
       updateSummaries: List[SessionSummary] => Unit,
-      busy: Signal[Boolean]
+      busy: Signal[Boolean],
+      titles: ConversationTitleModel,
+      titleUpdates: EventStream[SessionSnapshot],
+      editTitle: EventStream[Unit]
   ): HtmlElement = {
     var ready = false
     var visible = !dom.document.hidden
@@ -82,6 +87,43 @@ private[webharness] object ConversationGraphView {
       model.eligibilityChanged()
     }
     var graph = Option.empty[GraphHandle]
+    val selectedSession = Var(Option.empty[String])
+    def sessionTarget(session: GraphSessionNode): ConversationTitleTarget =
+      ConversationTitleTarget(
+        SessionId.unsafe(session.id),
+        session.info.flatMap(_.title),
+        session.meta.fold(0L)(_.revision)
+      )
+    def inspectSession(id: String, body: dom.Element): js.Function0[Unit] = {
+      val session = model.state.signal.map(_.snapshot.flatMap(_.sessions.find(_.id == id)))
+      val root = render(
+        body,
+        div(
+          cls := "graph-session-details",
+          ConversationTitleEditor(
+            titles,
+            session.map(_.map(sessionTarget)),
+            session.map(_.forall(_.error.nonEmpty)),
+            headingPrefix = "Session: ",
+            emptyTitle = s"Session: $id"
+          ),
+          p(cls := "muted", "Session ID: ", code(id)),
+          p(
+            child.text <-- session.map(
+              _.fold("Session unavailable")(s =>
+                s"Current published head: ${s.head.getOrElse(if s.error.nonEmpty then "unknown" else "(empty)")}"
+              )
+            )
+          ),
+          p(
+            cls := "error",
+            hidden <-- session.map(_.flatMap(_.error).isEmpty),
+            child.text <-- session.map(_.flatMap(_.error).getOrElse(""))
+          )
+        )
+      )
+      () => root.unmount()
+    }
     var artifacts = Map.empty[String, MessageSnapshot]
     val bridgeError = Var(Option.empty[String])
     def inspect(id: String, host: dom.Element): js.Function0[Unit] = artifacts.get(id) match {
@@ -112,12 +154,13 @@ private[webharness] object ConversationGraphView {
             Browser.create(
               context.thisNode.ref,
               (id, body) => inspect(id, body),
-              id => selected(id.toOption),
+              id => { selectedSession.set(id.toOption); selected(id.toOption) },
               live => model.setLive(live),
               id =>
                 branch.select(id.toOption.flatMap(value => MessageId.from(value).toOption).filter { messageId =>
                   model.isConfirmed(messageId) || branch.state.now().messages.exists(_.id == messageId)
-                })
+                }),
+              (id, body) => inspectSession(id, body)
             )
           )
           bridgeError.set(None)
@@ -141,6 +184,18 @@ private[webharness] object ConversationGraphView {
       connected.distinct --> { value => ready = value; model.eligibilityChanged() },
       branch.state.signal.map(_.messages).distinct --> (_ => mergeBranches()),
       branch.state.signal.map(_.reviewRequired).distinct.changes.filter(identity) --> (_ => model.refresh()),
+      titleUpdates --> model.acceptTitleInfo,
+      editTitle --> { _ =>
+        selectedSession.now().foreach { id =>
+          graph.foreach(_.navigateSession(id))
+          model.state
+            .now()
+            .snapshot
+            .flatMap(_.sessions.find(_.id == id))
+            .filter(_.error.isEmpty)
+            .foreach(session => titles.begin(sessionTarget(session)))
+        }
+      },
       navigation --> (id => navigateSession(branch, id, session => graph.foreach(_.navigateSession(session)))),
       refreshes.changes --> (_ => model.refresh()),
       model.state.signal.map(_.snapshot).distinct --> { snapshot =>
@@ -183,7 +238,8 @@ private[webharness] object ConversationGraphView {
       .literal(
         id = session.id,
         head = session.head.orNull,
-        error = session.error.orNull
+        error = session.error.orNull,
+        title = session.info.flatMap(_.title).orNull
       )
       .asInstanceOf[SessionNode]
 }

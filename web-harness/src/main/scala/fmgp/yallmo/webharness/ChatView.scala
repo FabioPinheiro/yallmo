@@ -3,6 +3,7 @@ package fmgp.yallmo.webharness
 import com.raquo.laminar.api.L.*
 import fmgp.yallmo.clientharness.{KeyInput, KeyboardControls}
 import fmgp.yallmo.model.AgentId
+import fmgp.yallmo.orchestration.SessionId
 import org.scalajs.dom
 import scala.scalajs.js
 
@@ -93,7 +94,11 @@ private[webharness] object ChatView {
               cls <-- selectedSession.map(selected => if selected.contains(id) then "session selected" else "session"),
 
               aria.current <-- selectedSession.map(selected => if selected.contains(id) then "true" else "false"),
-              span(cls := "session-name", id),
+              title := id,
+              span(
+                cls := "session-name",
+                child.text <-- summary.map(s => SessionPresentation.displayName(id, s.info))
+              ),
               span(cls := "muted", child.text <-- summary.map(s => s"${s.messageCount} messages")),
               onClick --> (_ => selectSession(id))
             )
@@ -195,7 +200,13 @@ private[webharness] object ChatView {
   }
 
   /** Routed transcript and composer; `client` is reused by persisted-message attachment download controls. */
-  def apply(model: ChatModel, client: OrchestratorWSClient, speech: MessageSpeech, voice: VoiceModel): HtmlElement = {
+  def apply(
+      model: ChatModel,
+      client: OrchestratorWSClient,
+      speech: MessageSpeech,
+      voice: VoiceModel,
+      titles: ConversationTitleModel
+  ): HtmlElement = {
     val state = model.state.signal
     val current = state.map(_.current)
     val follow = Var(true)
@@ -241,8 +252,17 @@ private[webharness] object ChatView {
       },
       div(
         cls := "conversation-header chat-heading",
-        h2(
-          child.text <-- state.map(s => if s.active.isEmpty then "New conversation" else s"Conversation: ${s.active}")
+        ConversationTitleEditor(
+          titles,
+          state.map(s =>
+            Option.when(s.active.nonEmpty && !s.current.creating) {
+              val summary = s.sessions.find(_.id.value == s.active)
+              val info = s.current.snapshot.flatMap(_.info).orElse(summary.flatMap(_.info))
+              val meta = s.current.snapshot.flatMap(_.meta).orElse(summary.flatMap(_.meta))
+              ConversationTitleTarget(SessionId.unsafe(s.active), info.flatMap(_.title), meta.fold(0L)(_.revision))
+            }
+          ),
+          state.map(s => s.current.loading || s.voiceBusy || s.current.snapshot.isEmpty)
         ),
         button(
           typ := "button",

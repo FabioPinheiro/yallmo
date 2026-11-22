@@ -93,6 +93,7 @@ final class OrchestratorWSClient private[webharness] (
     Future
       .fromTry(Try(SessionId.from(id).fold(reason => throw new IllegalArgumentException(reason), identity)))
       .flatMap(id => request(SessionsGet.method, SessionsGet.Params(id)))
+  def renameSession(params: SessionsRename.Params): Future[SessionSnapshot] = request(SessionsRename.method, params)
   def submitTurn(params: TurnSubmit.Params): Future[TurnOutcome] = request(TurnSubmit.method, params)
   def submitBranch(params: BranchesSubmit.Params): Future[BranchOutcome] = request(BranchesSubmit.method, params)
   def scalamodeCapabilities(): Future[ScalamodeCapabilities.Result] =

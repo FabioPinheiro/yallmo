@@ -1,7 +1,13 @@
 package fmgp.yallmo.webharness
 
 import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.{EventSession as PublishedSession, SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.{
+  EventSession as PublishedSession,
+  SessionId,
+  SessionInfo,
+  SessionMetadata,
+  SessionSummary
+}
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import java.time.Instant
 import munit.FunSuite
@@ -72,6 +78,58 @@ final class ConversationGraphModelSuite extends FunSuite {
     def flush(): Unit = while callbacks.nonEmpty do callbacks.dequeue().run()
     def start(): Feed = { model.refresh(); feeds.last }
     def ids: Set[MessageId] = model.state.now().snapshot.get.messages.map(_.id).toSet
+  }
+
+  test("graph inventory preserves session metadata and titles in baselines and info-only updates") {
+    val h = new Harness
+    val feed = h.start()
+    val initial = session("main", first, 1).copy(
+      meta = Some(SessionMetadata(createdAt = Some(first.timestamp))),
+      info = Some(SessionInfo(title = Some("Initial")))
+    )
+    feed.baseline(sessions = List(initial))
+    h.flush()
+    assertEquals(h.summaries.head.meta, initial.meta)
+    assertEquals(h.summaries.head.info, initial.info)
+    val updated = initial.copy(
+      revision = 2L,
+      meta = Some(SessionMetadata(updatedAt = Some(first.timestamp.plusSeconds(1)), revision = 1L)),
+      info = Some(SessionInfo(title = Some("Updated")))
+    )
+    feed.event(11, EventChange.Confirmed("info", Chunk.empty, Chunk(updated)))
+    assertEquals(h.summaries.head.meta, updated.meta)
+    assertEquals(h.summaries.head.info, updated.info)
+    assertEquals(h.model.state.now().snapshot.get.sessions.head.info, updated.info)
+    val before = h.model.state.now().snapshot.get
+    h.model.setLive(false)
+    val ownMeta = Some(SessionMetadata(revision = 2L))
+    val ownInfo = Some(SessionInfo(title = Some("Edited while paused")))
+    h.model.acceptTitleInfo(SessionSnapshot(initial.id, initial.agentIds, Nil, ownMeta, ownInfo))
+    val after = h.model.state.now().snapshot.get
+    assertEquals(after.messages, before.messages)
+    assertEquals(after.sessions.head.head, before.sessions.head.head)
+    assertEquals(after.sessions.head.info, ownInfo)
+    assertEquals(h.summaries.head.info, ownInfo)
+    assertEquals(h.feeds.size, 1)
+    h.model.setLive(true)
+    h.feeds.last.baseline(sessions = List(updated))
+    h.flush()
+    assertEquals(h.model.state.now().snapshot.get.sessions.head.info, ownInfo)
+    h.feeds.last.event(
+      11,
+      EventChange.Confirmed(
+        "newer-info",
+        Nil,
+        List(
+          updated.copy(
+            revision = 3L,
+            meta = Some(SessionMetadata(revision = 3L)),
+            info = Some(SessionInfo(title = Some("Newer external title")))
+          )
+        )
+      )
+    )
+    assertEquals(h.model.state.now().snapshot.get.sessions.head.info.flatMap(_.title), Some("Newer external title"))
   }
 
   test("notification before baseline and pre-registration pending reconcile through one subscription") {

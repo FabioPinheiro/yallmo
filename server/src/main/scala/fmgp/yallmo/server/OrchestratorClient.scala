@@ -23,6 +23,12 @@ trait OrchestratorClient {
   ): IO[OrchestratorClient.Error, TurnOutcome] =
     ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
 
+  /** Optional title-only mutation; None resets the title without changing the session ID. */
+  def renameSession(params: SessionsRename.Params): IO[OrchestratorClient.Error, SessionSnapshot] = {
+    val _ = params
+    ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))
+  }
+
   def submitBranch(params: BranchesSubmit.Params): IO[OrchestratorClient.Error, BranchOutcome] = {
     val _ = params
     ZIO.fail(OrchestratorClient.Error.Remote(JsonRpc.Error.MethodNotFound))

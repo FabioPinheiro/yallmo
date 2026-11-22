@@ -21,7 +21,7 @@ backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
 Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `tools.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
-Operator additionally advertises `turn.submit`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
+Operator additionally advertises `turn.submit`, `sessions.rename`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
 The server requires a configured backend; standalone startup requires `--config`. There is no viewer-only server mode.
 
@@ -50,6 +50,25 @@ actors can reconnect. There is no implicit-author fallback.
 Presence is connection-owned and cleaned on disconnect; duplicate same-name viewers retain presence while connected.
 A human registered on submit/invoke remains in the runtime registry for the process lifetime, independently of active
 viewers. Neither retention nor a stable label is authentication or durable identity.
+
+## Conversation titles
+
+`sessions.rename` is an Operator-only, title-only mutation. It never changes the session ID, executes an agent,
+appends a message, or resets provider continuation. It preserves goals, descriptive status, parent lineage and archive state.
+
+```json
+{"jsonrpc":"2.0","id":"rename-1","method":"sessions.rename","params":{"sessionId":"conversation-1","expectedRevision":0,"title":"Investigate authentication"}}
+```
+
+- `expectedRevision` is the nonnegative durable `SessionMetadata.revision` (0 for absent legacy metadata), not an event revision.
+- `title` must be present. A string is trimmed and must contain 1–256 UTF-16 code units on one line, without control characters or Unicode line/paragraph separators.
+- Explicit `"title": null` resets the title; presentation then falls back to the session ID. Omission/blank strings are InvalidParams, not implicit resets.
+- Result is the authoritative `SessionSnapshot`; updates are also visible through the existing session event feed.
+- Stale metadata revision returns Conflict. The server does not retry/reapply the edit against a new revision.
+- All Operators use the existing trusted-host session policy; this adds no per-session ownership/ACL claim.
+- A lost reply is uncertain. Refresh the session before an explicit retry; clients never automatically replay the rename.
+
+General whole-info replacement and archive controls remain in-process Orchestrator APIs, not additional RPC methods.
 
 ## Framing and bounds
 
@@ -210,7 +229,7 @@ Existing domain types/codecs are reused. IDs encode as strings: safe path-segmen
 Collections encode as arrays. Protocol-local codecs do not alter storage formats.
 
 - `Identity = {id: UserId, role: "viewer" | "operator", agentIds: [AgentId]}`; owned acting agents are separate from configured recipients.
-- `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId]}`.
+- `SessionSummary = {id: SessionId, messageCount: Long, agentIds: [AgentId], meta?: SessionMetadata, info?: SessionInfo}`. Inventory includes the same optional metadata and description as session snapshots; legacy records may omit them.
 - `SubmitTarget = {kind: "new", name?: SessionId} | {kind: "existing", sessionId: SessionId}`. The target is mandatory; legacy top-level `sessionId` is rejected. `expectedHead` is valid only for existing targets.
 - `AgentTask = {prompt: String}`; `AgentResult = {agentId: AgentId, text: String}`.
 - `Message = {id: MessageId, data: {agentId: AgentId, parentId?: MessageId, timestamp: String, payload: MessagePayload}}`.
@@ -229,8 +248,8 @@ Collections encode as arrays. Protocol-local codecs do not alter storage formats
 Snapshots expose public text/attachment references, not opaque `ProviderContinuation`. They never fabricate stored
 messages or change persisted history. Listing order remains sessions/agents/blobs by ID, all messages by timestamp
 then ID; session messages are in transcript order. Canonical events carry the same optional metadata/info as snapshots,
-including updates with no newly appended messages. Info/archive mutation is currently an in-process Orchestrator API,
-not an additional JSON-RPC operation. Missing update info preserves the existing object; supplied info replaces it in
+including updates with no newly appended messages. General info/archive mutation remains an in-process Orchestrator API;
+only the title-specific `sessions.rename` mutation is exposed remotely. Missing update info preserves the existing object; supplied info replaces it in
 full. Changes require the expected durable metadata revision. Archive/unarchive is explicit and does not block execution.
 Forks get fresh unarchived metadata and source parent lineage, without copying the source's description/status.
 

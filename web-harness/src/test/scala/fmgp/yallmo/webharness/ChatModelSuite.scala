@@ -1,7 +1,15 @@
 package fmgp.yallmo.webharness
 
 import fmgp.yallmo.model.{AgentId, MessageId}
-import fmgp.yallmo.orchestration.{AgentResult, EventOrigin, EventSession, SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.{
+  AgentResult,
+  EventOrigin,
+  EventSession,
+  SessionId,
+  SessionInfo,
+  SessionMetadata,
+  SessionSummary
+}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.{*, given}
 import java.time.Instant
@@ -438,6 +446,43 @@ final class ChatModelSuite extends FunSuite {
     h.flush()
     assertEquals(h.model.state.now(), before)
     assertEquals(h.params[EventsUnsubscribe.Params](h.request(EventsUnsubscribe.method)).subscriptionId, "old")
+    h.close()
+  }
+
+  test("inventory reads, graph inventories and live info-only updates share date ordering and retain titles") {
+    val h = new Harness
+    val old = SessionSummary(
+      h.target,
+      1L,
+      List(assistant),
+      Some(SessionMetadata(updatedAt = Some(first.timestamp))),
+      Some(SessionInfo(title = Some("Old")))
+    )
+    val recent = old.copy(
+      id = SessionId.unsafe("z-recent"),
+      meta = Some(SessionMetadata(createdAt = Some(first.timestamp.plusSeconds(1)))),
+      info = Some(SessionInfo(title = Some("Recent")))
+    )
+    h.socket.reply(h.request(SessionsList.method), Chunk(old, recent))
+    h.flush()
+    assertEquals(h.model.state.now().sessions, List(recent, old))
+    h.model.updateSummaries(List(old, recent))
+    assertEquals(h.model.state.now().sessions, List(recent, old))
+    h.baseline(List(first))
+    val updated = EventSession(
+      h.target,
+      List(assistant),
+      1L,
+      Some(first.id),
+      2L,
+      meta = Some(SessionMetadata(updatedAt = Some(first.timestamp.plusSeconds(2)), revision = 1L)),
+      info = Some(SessionInfo(title = Some("Updated")))
+    )
+    h.event(EventChange.Confirmed("info", Chunk.empty, Chunk(updated)))
+    val summaries = h.model.state.now().sessions
+    assertEquals(summaries.map(_.id), List(h.target, recent.id))
+    assertEquals(summaries.head.meta, updated.meta)
+    assertEquals(summaries.head.info, updated.info)
     h.close()
   }
 

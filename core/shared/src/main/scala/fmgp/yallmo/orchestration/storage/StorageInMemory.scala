@@ -52,7 +52,9 @@ private[orchestration] final class StorageInMemory private (
       Chunk.fromIterable(
         values.values.toList
           .sortBy(_.id.value)
-          .map(session => SessionSummary(session.id, session.messages.size, session.agentIds))
+          .map(session =>
+            SessionSummary(session.id, session.messages.size, session.agentIds, session.meta, session.info)
+          )
       )
     }
 

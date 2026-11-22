@@ -63,8 +63,11 @@ The global command shortcut and native navigation/activation controls also work 
 **While composing a message:** plain `Enter` sends, `Shift+Enter` inserts a newline. IME composition and
 Ctrl/Cmd/Alt-modified Enter do not send. Capability, selected-agent, history and pending-work checks still apply.
 
-The command menu also offers **Reload conversations**, **Reconnect**, **Stop reading aloud** and **Focus page
-content**, without dedicated shortcuts. Its buttons remain mouse-accessible, including the toolbar's mode/commands
+The command menu also offers **Rename conversation**, **Reload conversations**, **Reconnect**, **Stop reading aloud** and **Focus page
+content**, without dedicated shortcuts. Rename opens the same inline title editor as the pencil beside a saved Chat title
+or in a graph session inspector. On Graph it targets the selected session and stays on Graph; other routes use the active
+Chat session. Enter/Save commits, Esc/Cancel discards edits, and Reset title restores the session ID. Clicking elsewhere does not save;
+no double-click or mobile double-tap is required. Rename requires the server's advertised Operator capability. Its buttons remain mouse-accessible, including the toolbar's mode/commands
 button. `Up`/`Down` moves between menu controls; typing `j`/`k` in its search field searches instead of navigating.
 
 Normal shortcuts do not consume text, IME composition or other Ctrl/Cmd/Alt combinations. Held keys do not retrigger

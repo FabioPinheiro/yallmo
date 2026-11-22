@@ -98,6 +98,14 @@ test("search matches IDs, content, roles, authors and session names; empty state
   for (const query of ["ABC", "needle", "human", "USER"]) assert.equal(model.search(query)[0].rawId, "abc");
   assert.equal(model.search("research")[0].kind, "session");
   assert.equal(model.search("absent").length, 0);
+  const position = { ...model.positions.get(s("research")) };
+  model.reconcile([], [{ id: "research", head: "abc", title: "Authentication review" }]);
+  assert.equal(model.nodes.get(s("research")).label, "Authentication review");
+  assert.equal(model.search("authentication")[0].rawId, "research");
+  assert.equal(model.search("research")[0].kind, "session", "IDs remain searchable after renaming");
+  assert.deepEqual(model.positions.get(s("research")), position, "title changes do not move the session marker");
+  model.reconcile([], [{ id: "research", head: "abc", title: "  " }]);
+  assert.equal(model.nodes.get(s("research")).label, "research", "blank titles fall back to IDs");
 });
 
 test("cycles remain visible without recursion or infinite history walks", () => {

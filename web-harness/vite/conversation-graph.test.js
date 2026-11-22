@@ -217,7 +217,30 @@ test("placeholder/session updates reuse the single shell and maintain safe conte
   assert.equal(disposed, 1);
   inspector.update({ id: "session:main", rawId: "main", kind: "session", head: "new-head" });
   assert(inspector.card.body.textContent.includes("new-head"));
+  inspector.update({ id: "session:main", rawId: "main", kind: "session", head: "new-head", title: "<img src=x> Review" });
+  assert(inspector.card.body.textContent.includes("<img src=x> Review"));
+  assert.equal(inspector.card.body.querySelector("img"), null, "session titles are plain text");
+  assert.equal(inspector.card.body.querySelector("code").textContent, "main");
   inspector.destroy();
+  let mounts = 0, unmounts = 0;
+  const editor = new GraphInspector(dom.window.document.getElementById("layer"), () => ({ x: 0, y: 0 }),
+    () => () => {}, () => {}, () => {}, (_id, body) => {
+      mounts++;
+      const input = dom.window.document.createElement("input");
+      input.value = "Retained title draft";
+      body.append(input);
+      return () => { unmounts++; };
+    });
+  editor.open({ id: "session:main", rawId: "main", kind: "session", head: null });
+  const input = editor.card.body.querySelector("input");
+  input.focus();
+  editor.update({ id: "session:main", rawId: "main", kind: "session", head: "new-head", title: "Updated title" });
+  assert.equal(mounts, 1, "live metadata does not remount a session editor");
+  assert.equal(unmounts, 0);
+  assert.equal(dom.window.document.activeElement, input);
+  assert.equal(input.value, "Retained title draft");
+  editor.destroy();
+  assert.equal(unmounts, 1);
   dom.window.close();
 });
 
@@ -250,6 +273,11 @@ test("search toolbar retains accessible Live toggle and only exposes keyboard re
   search.update();
   search.results.querySelector("button").click();
   assert.deepEqual(opened, ["session:research", m("message-id")]);
+  model.reconcile([], [{ id: "research", head: null, title: "Research title" }]);
+  search.input.value = "Research title";
+  search.update();
+  assert.equal(search.results.querySelector("button").textContent, "session: Research title (research)");
+  assert.equal(search.results.querySelector("button").title, "research");
   search.input.value = "no-such-text";
   search.update();
   assert(search.results.textContent.includes("No matches"));

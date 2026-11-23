@@ -1,5 +1,6 @@
 package fmgp.yallmo.server.application
 
+import fmgp.yallmo.skill.Skill
 import fmgp.yallmo.tool.scalamode.{
   HelloWorldService,
   FilesystemRuntime,
@@ -957,7 +958,7 @@ final class ServerCompositionSuite extends FunSuite {
         "chat",
         functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
       )
-      val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
+      val skill = StaticContext[Any]("chat", skills = Chunk(Skill("brief", "brief", "be brief")))
       def check(policy: AgentCapabilities, context: StaticContext[Any]) =
         ServerApplication
           .make(config.copy(agents = Map(voiceId -> voiceDefinition.copy(capabilities = policy))), Chunk.empty)

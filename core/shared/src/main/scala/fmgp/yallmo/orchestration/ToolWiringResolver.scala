@@ -1,8 +1,9 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.skill.ReadSkillTool
 import fmgp.yallmo.model.{AgentId, YallmoError}
 import fmgp.yallmo.orchestration.config.AgentCapabilities
-import fmgp.yallmo.tool.{FunctionToolDefinition, ToolDefinition}
+import fmgp.yallmo.tool.{FunctionToolDefinition, SkillsToolDefinition, ToolDefinition}
 import zio.*
 
 /** The resolution boundary, shared by the catalog and focused offline composition tests. */
@@ -17,6 +18,16 @@ private[orchestration] object ToolWiringResolver {
       policy: AgentCapabilities,
       declaredPolicies: Chunk[AgentCapabilities]
   ): IO[YallmoError, Result] = {
+    val readerPolicy = declaredPolicies.foldLeft(policy)((effective, declared) => effective.intersect(declared))
+
+    // Trusted wiring additions remain unrestricted except for the skill reader's explicit authorization contract.
+    def restrictReader(current: StaticContext[Any]): StaticContext[Any] = {
+      val permitted = current.functions.filter(function =>
+        function.name != SkillsToolDefinition.ReadSkill || readerPolicy.allowsFunction(function.name, current.tools)
+      )
+      current.copy(functions = permitted, tools = ToolDefinition.available(current.tools, permitted))
+    }
+
     def asContext(tools: Seq[AgentTool[Any]]): StaticContext[Any] =
       context.copy(
         tools = Chunk.fromIterable(tools.map(_.definition)),
@@ -27,10 +38,13 @@ private[orchestration] object ToolWiringResolver {
       _ <- ZIO.fromEither(validateCatalog(context.tools, functions.map(_.definition)))
       base = AgentTool.group(context.tools, functions)
       _ <- ZIO.fromEither(validateTools(base))
-      filtered = policy.restrict(asContext(base))
+      filtered = restrictReader(policy.restrict(asContext(base)))
       input = AgentTool.group(
         filtered.tools,
-        base.flatMap(_.functions).filter(f => filtered.functions.contains(f.definition))
+        base.flatMap(_.functions).filter(f => filtered.functions.contains(f.definition)).map {
+          case reader: ReadSkillTool => reader.narrow(readerPolicy.restrict(filtered).skills)
+          case function              => function
+        }
       )
       output <- wiring(input)
       _ <- ZIO.fromEither(validateTools(output))
@@ -42,7 +56,16 @@ private[orchestration] object ToolWiringResolver {
         functions = (known.functions ++ available.functions).distinctBy(_.name)
       )
       _ <- ZIO.foreachDiscard(declaredPolicies :+ policy)(p => ZIO.fromEither(p.validateIds(id, accumulated)))
-    } yield Result(available, Chunk.fromIterable(output.flatMap(_.functions)))
+      permitted = restrictReader(available)
+      bound = Chunk
+        .fromIterable(output.flatMap(_.functions))
+        .filter(f => permitted.functions.contains(f.definition))
+        .map {
+          case reader: ReadSkillTool => reader.narrow(readerPolicy.restrict(permitted).skills)
+          case function              => function
+        }
+      executable = ReadSkillTool.executableContext(permitted, bound)
+    } yield Result(executable, bound.filter(f => executable.functions.contains(f.definition)))
   }
 
   private def unique[A](kind: String, keys: Iterable[A]): Either[YallmoError, Unit] = {

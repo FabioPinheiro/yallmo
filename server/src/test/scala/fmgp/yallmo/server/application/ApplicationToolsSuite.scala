@@ -365,7 +365,9 @@ final class ApplicationToolsSuite extends FunSuite {
           }
           assertEquals(
             tools.functions.map(_.definition.name),
-            allKeys.filterNot(key => fmgp.yallmo.tool.sdlc.SdlcTools.Definitions.exists(_.name == key))
+            allKeys.filterNot(key =>
+              fmgp.yallmo.tool.sdlc.SdlcTools.Definitions.exists(_.name == key) || key == SkillsToolDefinition.ReadSkill
+            )
           )
           assertEquals(
             tools.availability.unavailableFunctions.map(_._1),

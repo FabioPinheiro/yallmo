@@ -37,6 +37,22 @@ object YallmoError {
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' is not allowed to call tool '$functionKey'")
       with YallmoError
 
+  final case class UnknownSkill(name: String)
+      extends RuntimeException(s"No skill is registered with name '$name'")
+      with YallmoError
+
+  final case class UnknownSkillSection(name: String, section: String)
+      extends RuntimeException(s"Skill '$name' has no section '$section'")
+      with YallmoError
+
+  final case class SkillReadFailed(path: String, message: String, cause: Throwable)
+      extends RuntimeException(s"Skill file '$path' could not be read: $message", cause)
+      with YallmoError
+
+  final case class SkillTooLarge(maxBytes: Int)
+      extends RuntimeException(s"Skill file exceeds its $maxBytes byte size limit")
+      with YallmoError
+
   final case class EmptyActionBatch(agentId: AgentId)
       extends RuntimeException(s"Agent '${AgentId.value(agentId)}' returned an empty action batch")
       with YallmoError

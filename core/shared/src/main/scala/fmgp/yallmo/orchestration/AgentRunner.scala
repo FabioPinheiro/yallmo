@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.skill.ReadSkillTool
 import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeFunction}
 import fmgp.yallmo.tool.{
   FunctionCall,
@@ -93,7 +94,8 @@ final class AgentRunner[R](
               for {
                 _ <- ZIO.fromEither(call.validate.left.map(YallmoError.InvalidMessage.apply))
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                result <- executeAction(agent, call, context, scalamodeExecutor)
+                executable = ReadSkillTool.executableContext(context, functions.values)
+                result <- executeAction(agent, call, executable, scalamodeExecutor)
               } yield result
             case _: MessagePayload.Reasoning =>
               ZIO.fail(
@@ -102,7 +104,8 @@ final class AgentRunner[R](
             case _ =>
               for {
                 context <- if resolved then ZIO.succeed(staticContext) else agent.configuredContext(staticContext)
-                turn <- agent.next(AgentTask(input.contentStr), context, RunContext(Chunk(input)))
+                executable = ReadSkillTool.executableContext(context, functions.values)
+                turn <- agent.next(AgentTask(input.contentStr), executable, RunContext(Chunk(input)))
                 result <- turn.decision match {
                   case AgentDecision.FinalAnswer(text) if text.trim.nonEmpty =>
                     ZIO.succeed(MessagePayload.Assistant(text))
@@ -137,7 +140,7 @@ final class AgentRunner[R](
               agentRun <- runLoop(
                 agent,
                 task,
-                effectiveContext,
+                ReadSkillTool.executableContext(effectiveContext, functions.values),
                 budget,
                 turnCount,
                 actionCount,
@@ -270,7 +273,11 @@ final class AgentRunner[R](
             .orElseFail(YallmoError.UnknownTool(call.functionKey))
             .flatMap { function =>
               scalamodeExecutor match {
-                case None           => function.execute(call)
+                case None =>
+                  function match {
+                    case reader: ReadSkillTool => reader.narrow(staticContext.skills).execute(call)
+                    case other                 => other.execute(call)
+                  }
                 case Some(executor) =>
                   ZIO
                     .fromOption(ScalamodeFunction.from(function).flatMap(_.withExecutor(executor)))

@@ -54,7 +54,7 @@ final case class AgentCapabilities(
       )
       _ <- check("tools", tools, available.tools.map(_.name).toSet)
       _ <- check("functions", functions, available.functions.map(_.name).toSet)
-      _ <- check("skills", skills, available.skills.map(_.key).toSet)
+      _ <- check("skills", skills, available.skills.map(_.name).toSet)
     } yield ()
   }
 
@@ -66,16 +66,17 @@ final case class AgentCapabilities(
     available.copy(
       functions = permitted,
       tools = ToolDefinition.available(available.tools.filter(tool => allowsTool(tool.name)), permitted),
-      skills = available.skills.filter(t => skills.forall(_.contains(t.key)))
+      skills = available.skills.filter(t => skills.forall(_.contains(t.name)))
     )
   }
 
   /** Request-level filtering also covers callers that bypass native program/context assembly. */
   def filterRequest(request: AgentTurnRequest): AgentTurnRequest =
-    if tools.isEmpty && functions.isEmpty then request
+    if tools.isEmpty && functions.isEmpty && skills.isEmpty then request
     else {
       val permitted = request.tools.filter(f => allowsFunction(f.name, request.toolGroups))
       request.copy(
+        skills = request.skills.filter(skill => skills.forall(_.contains(skill.name))),
         tools = permitted,
         toolGroups = ToolDefinition
           .available(request.toolGroups.filter(tool => allowsTool(tool.name)), permitted),

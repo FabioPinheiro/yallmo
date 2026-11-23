@@ -1,6 +1,8 @@
 package fmgp.yallmo.orchestration
 
-import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.skill.Skill
+import fmgp.yallmo.orchestration.config.AgentCapabilities
+import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, SkillsToolDefinition}
 
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.*
@@ -42,28 +44,69 @@ final class LlmDecisionAgentSuite extends FunSuite {
     assert(!prompt.contains("DCI4Tg=="))
   }
 
-  test("effectful prompt rendering preserves text, capabilities, and system instructions") {
-    val codec = new AgentDecisionCodec {
-      val instructions = "Decide"
-      def decode(response: String, staticContext: StaticContext[?]): UIO[AgentDecision] =
-        ZIO.succeed(AgentDecision.FinalAnswer(response))
-    }
+  private val codec = new AgentDecisionCodec {
+    val instructions = "Decide"
+    def decode(response: String, staticContext: StaticContext[?]): UIO[AgentDecision] =
+      ZIO.succeed(AgentDecision.FinalAnswer(response))
+  }
+
+  test("prompt rendering advertises escaped metadata only once between system and codec instructions") {
+    val visible = Skill(
+      "guide&<>\"'",
+      "Guidance & <care> \"please\" 'now'",
+      "PRIVATE BODY",
+      sections = Map("private/path.md" -> "PRIVATE SECTION")
+    )
+    val hidden = Skill("hidden", "PRIVATE HIDDEN", "PRIVATE BODY", disableModelInvocation = true)
+    val denied = Skill("denied", "PRIVATE DENIED", "PRIVATE BODY")
+    val available = StaticContext[Any](
+      "System",
+      functions =
+        Chunk(FunctionToolDefinition(FunctionKey.unsafe("clock"), "Time"), SkillsToolDefinition.ReadSkillDefinition),
+      skills = Chunk(visible, hidden, denied)
+    )
+    val context = AgentCapabilities(skills = Some(Set(visible.name, hidden.name)))
+      .resolve(AgentId("decision"), available)
+      .toOption
+      .get
     val prompt = run {
       LlmDecisionAgent.renderPrompt(
         AgentTask("Continue"),
-        StaticContext[Any](
-          "System",
-          functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("clock"), "Time")),
-          skills = Chunk(AgentSkill("guide", "Guidance", "Follow guide"))
-        ),
+        context,
         RunContext(Chunk(MessagePayload.User("Hello"), MessagePayload.Assistant("Hi"))),
         codec
       )
     }
-    assertEquals(prompt.systemInstruction, "System\n\nFollow guide\n\nDecide")
+    assertEquals(
+      prompt.systemInstruction,
+      s"System\n\n${Skill.renderCatalog(Seq(visible))}\n\n${SkillsToolDefinition.ActivationGuidance}\n\nDecide"
+    )
+    assert(prompt.systemInstruction.contains("<name>guide&amp;&lt;&gt;&quot;&apos;</name>"))
+    assert(
+      prompt.systemInstruction.contains(
+        "<description>Guidance &amp; &lt;care&gt; &quot;please&quot; &apos;now&apos;</description>"
+      )
+    )
+    assert(!s"${prompt.systemInstruction}\n${prompt.prompt}".contains("PRIVATE"))
+    assert(!s"${prompt.systemInstruction}\n${prompt.prompt}".contains("private/path.md"))
+    assertEquals(prompt.systemInstruction.sliding("<skill>".length).count(_ == "<skill>"), 1)
     assertEquals(
       prompt.prompt,
-      "Function: clock — Time\n\nSkill: guide — Guidance\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
+      s"Function: clock — Time\nFunction: readSkill — ${SkillsToolDefinition.ReadSkillDefinition.description}\n\nUser: Hello\n\nAssistant: Hi\n\nTask: Continue"
     )
   }
+
+  for (label, skills, policy) <- List(
+      ("empty", Chunk.empty[Skill], AgentCapabilities()),
+      ("disabled", Chunk(Skill("hidden", "PRIVATE", "PRIVATE", disableModelInvocation = true)), AgentCapabilities()),
+      ("denied", Chunk(Skill("denied", "PRIVATE", "PRIVATE")), AgentCapabilities(skills = Some(Set.empty)))
+    )
+  do
+    test(s"$label decision catalog adds neither wrapper nor duplicate task advertisement") {
+      val available = StaticContext[Any]("System", skills = skills)
+      val context = policy.resolve(AgentId("decision"), available).toOption.get
+      val prompt = run(LlmDecisionAgent.renderPrompt(AgentTask("Continue"), context, RunContext(), codec))
+      assertEquals(prompt.systemInstruction, "System\n\nDecide")
+      assertEquals(prompt.prompt, "Task: Continue")
+    }
 }

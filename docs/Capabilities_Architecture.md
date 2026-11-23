@@ -138,7 +138,26 @@ Separately, `AgentCatalog.resolve` validates selected-agent policies against the
 
 `validateIds` rejects unknown IDs with `InvalidConfig`, naming the agent, capability field and unknown IDs, without filtering or constructing a restricted context. `resolve` reuses that validation before restricting contexts for its other callers. The input catalog is filtered before wiring; its output is structurally validated without further filtering. A separate available-ID catalog remembers base and final output IDs, avoiding confusion between denied and nonexistent capabilities. Internal intermediate outputs are not observed. An implementation unavailable in both the base and final output cannot be enabled by naming it in an allowlist.
 
-The server supplies available tools; its base skill catalog is empty. Applications may supply their own skills. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
+The server supplies available tools and discovers skills under `<storage>/skills` at startup. One application-owned `SkillService` snapshots complete skills (instructions and supporting Markdown sections) in memory until restart. The available `StaticContext.skills` retains the complete catalog for allowlist ID validation, including skills with `disableModelInvocation = true`; existing per-agent allowlists narrow that catalog. Native and decision-agent prompts advertise only XML-escaped names and descriptions in `<available_skills>`, omitting disabled-for-model entries and empty catalogs. Advertisement and activation guidance require the effective `readSkill` definition **and** an executable reader. Denying the `skills` tool group or `readSkill` function, or removing the reader through selected tool wiring, hides the catalog rather than widening policy. Available skill IDs remain independent for configuration validation and the transcription effective-empty guard. Instructions, sections and filesystem paths are not eagerly injected. Progressive disclosure concerns LLM context, not lazy filesystem reads.
+
+### Skill activation: `skills` / `readSkill`
+
+The provider-neutral function has this exact input schema (descriptions omitted):
+
+```json
+{"type":"object","properties":{"name":{"type":"string"},"section":{"type":"string"}},"required":["name"],"additionalProperties":false}
+```
+
+`name` is required and nonblank. `section`, when supplied, must be a nonblank exact skill-relative key; nulls, invalid types and unknown arguments fail at both the runner/schema and direct implementation boundaries. There is no normalization, alias, filesystem fallback or general file read. The immutable reader is bound to the final selected agent's authorized skills after policy intersection and tool wiring. Each runner call narrows the bound reader again to the effective context, including direct invocation and section reads. Guessing a globally known but denied name produces the same `UnknownSkill` error as an unknown name; missing sections fail explicitly with `UnknownSkillSection`. `disableModelInvocation` hides automatic advertisements, not permission to read an otherwise authorized skill; explicit activation commands remain deferred.
+
+Results are JSON text encoded with zio-json:
+
+- Main: `{"name":"example","content":"MAIN instructions","availableSections":["references/a.md","references/z.md"]}`. Section keys are sorted; section contents are absent.
+- Section: `{"name":"example","section":"references/a.md","content":"selected section"}`. No main instructions, sibling content or sibling section names.
+
+Both use the ordinary runner action budget, timeout and matching trusted tool call/result history; there is no loaded-skills registry or additional `RunContext` field.
+
+`AgentTurnRequest.skills` is a default-empty **host-only** catalog, never serialized as Skill objects. Canonical `input` stays catalog-free. Native programs attach the effective catalog separately; `AgentCapabilities.filterRequest` applies skill restrictions even for skills-only policies. The pure `modelInput` projection appends catalog and brief activation guidance to final Instructions only if the permitted reader definition remains. Repeated filtering/validation/projection does not mutate canonical input or duplicate blocks, and opaque continuations remain untouched. OAI Chat Completions and OpenAI Codex mappers consume `modelInput` after request filtering. Custom provider adapters must use this same final projection rather than serializing the host-only catalog. `/tools` reports application-level availability, not necessarily a selected agent's effective permissions.
 
 ### Native read roots and default Scalamode services
 
@@ -181,7 +200,7 @@ Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, available
        -> agent.next(task, effectiveContext, runContext)
        -> native program assembles request
             filtered tools become function definitions
-            filtered skills contribute instructions
+            visible filtered skills contribute the names/descriptions catalog; disabled entries are omitted
        -> configured adapter filters direct tool definitions/choice
        -> concrete Agent.turn performs one provider request
        -> configured adapter checks returned tool calls
@@ -196,7 +215,7 @@ Orchestrator.submit(sessionId, authorId, task, runner.execution(agent, available
 ### Before inference
 
 - Denied tools are removed from the context advertised to the program.
-- Denied skills do not contribute their instructions during prompt assembly.
+- Denied and disabled-for-model skills are omitted from the metadata catalog; skill instructions and sections are never eagerly injected.
 - `NativeFunctionAgent` filters the assembled tool request using its combined policy as well as constructing it from the filtered context.
 
 ### At execution
@@ -221,7 +240,7 @@ The exposed function list is the request-level control: an empty list requests t
 
 For an explicit tools or functions policy, the adapter also rejects a returned function call if it was not advertised in the filtered request. This is a typed `InvalidConfig` failure before any execution.
 
-If both allowlists are omitted, request filtering and this extra response guard preserve existing behavior. The runner's effective-context checks still authorize execution on the runner path. An adapter turn itself does not execute tools or enter an orchestration loop.
+If both tool/function allowlists are omitted, the extra response guard preserves existing behavior; skill allowlists still narrow the host-only request skill catalog. The runner's effective-context checks still authorize execution on the runner path. An adapter turn itself does not execute tools or enter an orchestration loop.
 
 ## 8. REPL transcription is application policy
 

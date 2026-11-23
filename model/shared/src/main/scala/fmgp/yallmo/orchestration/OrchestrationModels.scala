@@ -3,6 +3,7 @@ package fmgp.yallmo.orchestration
 import fmgp.yallmo.tool.{FunctionCallId, FunctionKey, FunctionToolDefinition, ScalaModeResult, ToolDefinition}
 
 import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.skill.Skill
 import zio.*
 import fmgp.yallmo.model.{MessagePayload}
 import fmgp.yallmo.model.*
@@ -84,22 +85,17 @@ object ExternalFunctionResult {
   def apply(text: String): ExternalFunctionResult = Generic(text)
 }
 
-/** Model guidance made available to an agent for this run. */
-final case class AgentSkill(
-    key: String,
-    description: String,
-    instructions: String
-)
-
 /** Static configuration explicitly available to one agent for an entire run.
   *
   * The runner never replaces this value after a run starts. Tools must be advertised here before the runner can resolve
   * a model-requested capability.
+  *
+  * TODO FIXME use Seq Instead of Chunk
   */
 final case class StaticContext[+R](
     systemPrompt: String,
     functions: Chunk[FunctionToolDefinition] = Chunk.empty,
-    skills: Chunk[AgentSkill] = Chunk.empty,
+    skills: Chunk[Skill] = Chunk.empty,
     tools: Chunk[ToolDefinition] = Chunk.empty
 )
 

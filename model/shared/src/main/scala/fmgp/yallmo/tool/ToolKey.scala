@@ -16,6 +16,7 @@ object ToolKey {
   val Scalamode: ToolKey = "scalamode"
   val Sdlc: ToolKey = "sdlc"
   val Coach: ToolKey = "coach"
+  val Skills: ToolKey = "skills"
 
   def from(value: String): Either[String, ToolKey] =
     Either.cond(value.trim.nonEmpty, value, "tool key must not be blank")

@@ -8,6 +8,7 @@ import fmgp.yallmo.tool.sdlc.SdlcService
 import fmgp.yallmo.orchestration.*
 import fmgp.yallmo.orchestration.config.{Config, ConfiguredAgentSettings, ProviderId}
 import fmgp.yallmo.fs.{FsRead, FsWrite}
+import fmgp.yallmo.skill.{FileSkillService, SkillService, ReadSkillTool}
 import fmgp.yallmo.model.llm.ProviderContinuation
 import fmgp.yallmo.orchestration.config.ConfigFile
 import java.nio.channels.{FileChannel, OverlappingFileLockException}
@@ -32,7 +33,8 @@ final class ServerApplication private (
     config: Config,
     availableContext: StaticContext[Any],
     val availability: ToolAvailability,
-    val manualJs: ScalaJsRuntime
+    val manualJs: ScalaJsRuntime,
+    val skillService: SkillService
 ) {
   import ServerApplication.*
 
@@ -152,14 +154,27 @@ object ServerApplication {
       toolDefinitions: Chunk[ToolDefinition] = ApplicationTools.ToolDefinitions,
       scalaCodeExecutor: ScalaCodeExecutor = ScalaCodeExecutors.make(),
       workspaceFilesystemWrite: Option[FsWrite] = None,
-      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled
+      manualJs: ScalaJsRuntime = ScalaJsRuntime.disabled,
+      skillService: Option[SkillService] = None
   ): ZIO[Client, YallmoError, ServerApplication] =
     for {
+      skills <- skillService.fold(FileSkillService.make(storageRoot))(ZIO.succeed(_))
+      skillFunctions =
+        if skills.catalog.exists(!_.disableModelInvocation) && toolDefinitions.exists(
+            _.functions.contains(fmgp.yallmo.tool.SkillsToolDefinition.ReadSkillDefinition)
+          )
+        then Chunk(ReadSkillTool(skills.catalog))
+        else Chunk.empty
+      functions =
+        if availableFunctions.exists(_.definition.name == fmgp.yallmo.tool.SkillsToolDefinition.ReadSkill) then
+          availableFunctions
+        else availableFunctions ++ skillFunctions
       context = StaticContext[Any](
         DefaultSystemPrompt,
-        functions = availableFunctions.map(_.definition),
+        skills = Chunk.fromIterable(skills.catalog),
+        functions = functions.map(_.definition),
         tools = ToolDefinition
-          .available(toolDefinitions, availableFunctions.map(_.definition))
+          .available(toolDefinitions, functions.map(_.definition))
       )
       _ <- ZIO.foreachDiscard(config.agents.toList) { case (id, definition) =>
         val available = if definition.agentType == "CoachAgent" then
@@ -177,7 +192,7 @@ object ServerApplication {
         context,
         fs => {
           val rebound = selectedFunctions(fs.orElse(workspaceFilesystem))
-          if rebound.isEmpty then ApplicationTools.selected(availableFunctions, fs.orElse(workspaceFilesystem))
+          if rebound.isEmpty then ApplicationTools.selected(functions, fs.orElse(workspaceFilesystem))
           else rebound
         },
         id => reader.await.flatMap(_.readBlob(id)),
@@ -195,8 +210,9 @@ object ServerApplication {
       catalog,
       config,
       context,
-      ToolAvailability.from(availableFunctions.map(_.definition), Chunk.empty, toolDefinitions),
-      manualJs
+      ToolAvailability.from(functions.map(_.definition), Chunk.empty, toolDefinitions),
+      manualJs,
+      skills
     )
 
   /** Configuration file boundary for retained embedded callers; the captured client must outlive the application. */
@@ -223,9 +239,13 @@ object ServerApplication {
   ): ZIO[Scope & Client, YallmoError, ServerApplication] =
     for {
       environment <- services.build
-      startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc).provideEnvironment(environment)
+      skills <- FileSkillService.make(storageRoot)
+      startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc, skills).provideEnvironment(environment)
       tools = startup.functions.map { tool =>
-        AgentFunction.provideEnvironment(tool, environment)
+        tool match {
+          case reader: ReadSkillTool => reader
+          case other                 => AgentFunction.provideEnvironment(other, environment)
+        }
       }
       application <- make(
         config,
@@ -236,7 +256,8 @@ object ServerApplication {
         fs => ApplicationTools.selected(tools, fs),
         scalaCodeExecutor = environment.get[ScalaCodeExecutor],
         workspaceFilesystemWrite = startup.filesystemWrite,
-        manualJs = manualJs
+        manualJs = manualJs,
+        skillService = Some(skills)
       )
     } yield new ServerApplication(
       application.master,
@@ -244,7 +265,8 @@ object ServerApplication {
       config,
       application.context(None),
       startup.availability,
-      manualJs
+      manualJs,
+      application.skillService
     )
 
   type ToolEnvironment = ApplicationTools.Environment

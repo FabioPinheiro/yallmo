@@ -2,6 +2,7 @@ package fmgp.yallmo.server.application
 
 import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutors, ScalaTool, ScalamodeToolDefinition}
 
+import fmgp.yallmo.skill.{ReadSkillTool, SkillService}
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
 
@@ -62,14 +63,15 @@ object ApplicationTools {
       BashTool.definition,
       RepositoryChangesTool.definition,
       ScalaTool.definition
-    ) ++ SdlcTools.Definitions
+    ) ++ SdlcTools.Definitions :+ SkillsToolDefinition.ReadSkillDefinition
 
   val ToolDefinitions: Chunk[ToolDefinition] = Chunk(
     FilesystemToolDefinition,
     BashToolDefinition,
     RepositoryChangesToolDefinition,
     ScalamodeToolDefinition,
-    SdlcToolDefinition
+    SdlcToolDefinition,
+    SkillsToolDefinition
   )
 
   val live: ULayer[Environment] =
@@ -79,7 +81,8 @@ object ApplicationTools {
   def evaluate(
       workspace: Path,
       storageRoot: Option[Path],
-      sharedSdlc: Option[SdlcService] = None
+      sharedSdlc: Option[SdlcService] = None,
+      skills: SkillService = SkillService.empty
   ): URIO[Environment, StartupTools] =
     for {
       filesystem <- FileSystem.open(workspace.toString).option
@@ -127,7 +130,9 @@ object ApplicationTools {
           Option.when(hasScala)(new ScalaTool()),
         ).flatten
       )
-      allAvailable = available ++ sdlc.fold(Chunk.empty[AgentFunction[Any]])(_.functions)
+      reader =
+        if skills.catalog.exists(!_.disableModelInvocation) then Chunk(ReadSkillTool(skills.catalog)) else Chunk.empty
+      allAvailable = available ++ sdlc.fold(Chunk.empty[AgentFunction[Any]])(_.functions) ++ reader
       startupTools = StartupTools(
         allAvailable,
         ToolAvailability.from(allAvailable.map(_.definition), unavailable, ToolDefinitions),

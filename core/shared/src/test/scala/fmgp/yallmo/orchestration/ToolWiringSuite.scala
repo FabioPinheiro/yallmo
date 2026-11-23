@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.skill.Skill
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.AgentCapabilities
@@ -177,7 +178,7 @@ final class ToolWiringSuite extends FunSuite {
 
   test("skill restrictions are retained without filtering wired tools again") {
     run {
-      val skill = AgentSkill("brief", "be brief", "instructions")
+      val skill = Skill("brief", "be brief", "instructions")
       val added = tool("local", function("local_operation"))
       ToolWiringResolver
         .resolve(
@@ -186,7 +187,7 @@ final class ToolWiringSuite extends FunSuite {
           Chunk.empty,
           _ => ZIO.succeed(Seq(added)),
           AgentCapabilities(tools = Some(Set.empty), skills = Some(Set.empty)),
-          Chunk(AgentCapabilities(skills = Some(Set(skill.key))))
+          Chunk(AgentCapabilities(skills = Some(Set(skill.name))))
         )
         .map { result =>
           assertEquals(result.context.skills, Chunk.empty)

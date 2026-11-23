@@ -5,7 +5,7 @@ import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeToolDefinition}
 import fmgp.yallmo.tool.*
 
 import fmgp.yallmo.model.*
-import fmgp.yallmo.orchestration.{SessionId, ExternalFunctionResult}
+import fmgp.yallmo.orchestration.{SessionId, ExternalFunctionCall, ExternalFunctionResult}
 import fmgp.yallmo.orchestration.config.{
   AgentCapabilities,
   AgentConfig,
@@ -18,6 +18,7 @@ import fmgp.yallmo.server.TestWebSession
 import fmgp.yallmo.server.{OrchestratorRpc, MainServer}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
+import fmgp.yallmo.skill.Skill
 import java.nio.channels.FileChannel
 import java.nio.file.{Files, Path, StandardOpenOption}
 import java.nio.file.attribute.PosixFilePermissions
@@ -66,16 +67,53 @@ final class ServerApplicationSuite extends FunSuite {
     }
   }
 
+  test("embedded in-memory startup owns an empty skill service without advertising skills") {
+    run(ZIO.scoped {
+      for {
+        application <- ServerApplication.make(config, Chunk.empty).provideLayer(Client.default)
+      } yield {
+        assertEquals(application.skillService.catalog, Vector.empty)
+        assert(application.context(None).skills.isEmpty)
+      }
+    })
+  }
+
   test(
-    "configured startup retains the same application master without a startup human or running anything"
+    "configured startup snapshots the complete skill catalog before validation and retains the same master"
   ) {
     run(ZIO.scoped {
       for {
         root <- temporaryRoot
+        skillFile <- ZIO.attemptBlocking {
+          val directory = Files.createDirectories(root.resolve("skills/grilling"))
+          Files.writeString(directory.resolve("safety.md"), "PRIVATE SECTION\n")
+          val hidden = Files.createDirectories(root.resolve("skills/hidden"))
+          Files.writeString(
+            hidden.resolve("SKILL.md"),
+            "---\nname: hidden\ndescription: PRIVATE HIDDEN\ndisable-model-invocation: true\n---\nPRIVATE HIDDEN BODY\n"
+          )
+          val denied = Files.createDirectories(root.resolve("skills/denied"))
+          Files.writeString(
+            denied.resolve("SKILL.md"),
+            "---\nname: denied\ndescription: PRIVATE DENIED\n---\nPRIVATE DENIED BODY\n"
+          )
+          Files.writeString(
+            directory.resolve("SKILL.md"),
+            "---\nname: grilling\ndescription: Grill safely & carefully\n---\nPRIVATE SKILL BODY\n"
+          )
+        }
         path <- writeConfig(
           root,
           config.copy(
-            agents = config.agents.updated(first, AgentConfig("OAIAgent", Seq(provider))),
+            agents = config.agents.updated(
+              first,
+              AgentConfig(
+                "OAIAgent",
+                Seq(provider),
+                config = Json.Obj("model" -> Json.Str("local-model")),
+                capabilities = AgentCapabilities(skills = Some(Set("grilling", "hidden")))
+              )
+            ),
             providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
           )
         )
@@ -87,7 +125,79 @@ final class ServerApplicationSuite extends FunSuite {
         loaded <- configured.application.master.loadSession(session.id)
         _ <- application.application.master.append(session.id, first, Chunk(MessagePayload.User("local author")))
         calls <- services.calls.get
+        _ <- ZIO.attemptBlocking(
+          Files.writeString(skillFile, "---\nname: grilling\ndescription: Changed\n---\nFRESH BODY\n")
+        )
+        loadedSkill <- configured.application.skillService.readSkill("grilling").either
+        selection <- configured.application.resolve(first)
+        boundReader = selection.functions.find(_.definition.name == SkillsToolDefinition.ReadSkill).get
+        mainRead <- boundReader.execute(ExternalFunctionCall(SkillsToolDefinition.ReadSkill, """{"name":"grilling"}"""))
+        sectionRead <- configured.application.invoke(
+          Message(
+            MessageData(
+              first,
+              None,
+              java.time.Instant.EPOCH,
+              MessagePayload.ToolCall(
+                FunctionCall(
+                  FunctionCallId.unsafe("skill-section"),
+                  SkillsToolDefinition.ReadSkill,
+                  """{"name":"grilling","section":"safety.md"}"""
+                )
+              )
+            )
+          ),
+          selection
+        )
+        deniedRead <- boundReader
+          .execute(ExternalFunctionCall(SkillsToolDefinition.ReadSkill, """{"name":"denied","section":"safety.md"}"""))
+          .either
+        unknown <- ServerApplication
+          .make(
+            config.copy(agents =
+              Map(second -> AgentConfig("Unsupported", capabilities = AgentCapabilities(skills = Some(Set("typo")))))
+            ),
+            Chunk.empty,
+            Some(root)
+          )
+          .provideLayer(Client.default)
+          .either
       } yield {
+        assertEquals(configured.application.skillService.catalog.map(_.name), Vector("denied", "grilling", "hidden"))
+        assertEquals(
+          loadedSkill,
+          Right(
+            Skill(
+              "grilling",
+              "Grill safely & carefully",
+              "PRIVATE SKILL BODY\n",
+              sections = Map("safety.md" -> "PRIVATE SECTION\n")
+            )
+          )
+        )
+        assertEquals(loadedSkill.toOption.get.name, "grilling")
+        assertEquals(
+          configured.application.context(None).skills,
+          Chunk.fromIterable(configured.application.skillService.catalog)
+        )
+        assertEquals(selection.context.skills.map(_.name), Chunk("grilling", "hidden"))
+        assert(selection.context.functions.contains(SkillsToolDefinition.ReadSkillDefinition))
+        assert(selection.tools.exists(_.name == ToolKey.Skills))
+        assert(configured.application.availability.availableFunctions.contains(SkillsToolDefinition.ReadSkill))
+        assert(mainRead.text.contains("PRIVATE SKILL BODY") && !mainRead.text.contains("PRIVATE SECTION"))
+        assert(
+          sectionRead.payload.contentStr.contains("PRIVATE SECTION") && !sectionRead.payload.contentStr.contains(
+            "PRIVATE SKILL BODY"
+          )
+        )
+        assertEquals(deniedRead, Left(YallmoError.UnknownSkill("denied")))
+        assert(selection.context.skills.head eq loadedSkill.toOption.get)
+        val advertisement = Skill.renderCatalog(selection.context.skills)
+        assert(advertisement.contains("<name>grilling</name>"))
+        assert(advertisement.contains("<description>Grill safely &amp; carefully</description>"))
+        assert(!advertisement.contains("PRIVATE"))
+        assert(!advertisement.contains("safety.md"))
+        assert(unknown.swap.toOption.get.getMessage.contains("capabilities.skills contains unknown IDs: typo"))
         assert(application.application.master eq configured.application.master)
         assertEquals(ids.toSet, Set(first, second))
         assertEquals(configured.workspace, Path.of("").toRealPath())
@@ -105,7 +215,8 @@ final class ServerApplicationSuite extends FunSuite {
             SdlcToolDefinition.ReadTask,
             SdlcToolDefinition.SetIntents,
             SdlcToolDefinition.ReadIntent,
-            SdlcToolDefinition.List
+            SdlcToolDefinition.List,
+            SkillsToolDefinition.ReadSkill
           )
         )
         assertEquals(
@@ -117,6 +228,53 @@ final class ServerApplicationSuite extends FunSuite {
             "scala.available"
           )
         )
+      }
+    })
+  }
+
+  test("discovered disabled skills remain subject to the transcription empty-skills guard") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        _ <- ZIO.attemptBlocking {
+          val directory = Files.createDirectories(root.resolve("skills/hidden"))
+          Files.writeString(
+            directory.resolve("SKILL.md"),
+            "---\nname: hidden\ndescription: Hidden\ndisable-model-invocation: true\n---\nPRIVATE BODY\n"
+          )
+        }
+        voice = AgentConfig(
+          "OAIAgent",
+          Seq(provider),
+          config = Json.Obj("model" -> Json.Str("audio-model"), "systemPrompt" -> Json.Str("Transcribe exactly")),
+          capabilities = AgentCapabilities(tools = Some(Set.empty))
+        )
+        inherited <- ServerApplication
+          .make(
+            Config(
+              agents = Map(first -> voice),
+              providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
+            ),
+            Chunk.empty,
+            Some(root)
+          )
+          .provideLayer(Client.default)
+        rejected <- inherited.resolveTranscriber(first, inherited.context(None)).either
+        explicit <- ServerApplication
+          .make(
+            Config(
+              agents = Map(first -> voice.copy(capabilities = voice.capabilities.copy(skills = Some(Set.empty)))),
+              providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
+            ),
+            Chunk.empty,
+            Some(root)
+          )
+          .provideLayer(Client.default)
+        accepted <- explicit.resolveTranscriber(first, explicit.context(None))
+      } yield {
+        assertEquals(Skill.renderCatalog(inherited.context(None).skills), "")
+        assert(rejected.swap.toOption.get.getMessage.contains("effectively empty capabilities.tools/skills"))
+        assertEquals(accepted._1.id, first)
       }
     })
   }

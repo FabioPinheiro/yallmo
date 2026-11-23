@@ -124,7 +124,7 @@ private[oai] object OAIChatCompletionsMapper {
   ): ujson.Obj = {
     val body = ujson.Obj(
       "model" -> model,
-      "messages" -> messages(request.input, audioData),
+      "messages" -> messages(request.modelInput, audioData),
       "stream" -> false
     )
     request.options.temperature.foreach(value => body("temperature") = value)

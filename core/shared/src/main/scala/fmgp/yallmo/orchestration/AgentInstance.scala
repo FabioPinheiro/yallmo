@@ -2,6 +2,7 @@ package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.model.MessagePayload.AudioAttachment
 import fmgp.yallmo.model.YallmoError
+import fmgp.yallmo.tool.SkillsToolDefinition
 import fmgp.yallmo.orchestration.config.AgentCapabilities
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{LlmProvider, ProviderGenerateOptions}
@@ -107,7 +108,7 @@ object LlmDecisionAgent {
   ): String =
     Chunk(
       staticContext.systemPrompt,
-      staticContext.skills.map(_.instructions).mkString("\n\n"),
+      SkillsToolDefinition.renderCatalog(staticContext.skills, staticContext.functions),
       decisionCodec.instructions
     ).filter(_.nonEmpty).mkString("\n\n")
 
@@ -145,8 +146,7 @@ object LlmDecisionAgent {
       capabilities = Chunk(
         staticContext.functions
           .map(function => s"Function: ${function.name} — ${function.description}")
-          .mkString("\n"),
-        staticContext.skills.map(skill => s"Skill: ${skill.key} — ${skill.description}").mkString("\n")
+          .mkString("\n")
       ).filter(_.nonEmpty)
     } yield (capabilities ++ history :+ s"Task: ${task.prompt}").mkString("\n\n")
 }

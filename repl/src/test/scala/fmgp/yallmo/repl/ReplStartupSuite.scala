@@ -1,5 +1,6 @@
 package fmgp.yallmo.repl
 
+import fmgp.yallmo.skill.Skill
 import fmgp.yallmo.model.{AgentId, AudioFormat, MessageId, MessagePayload, YallmoError}
 import fmgp.yallmo.tool.{FunctionToolDefinition, FunctionKey}
 
@@ -496,7 +497,7 @@ final class ReplStartupSuite extends FunSuite {
       "chat",
       functions = Chunk(FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands"))
     )
-    val skill = StaticContext[Any]("chat", skills = Chunk(AgentSkill("brief", "brief", "be brief")))
+    val skill = StaticContext[Any]("chat", skills = Chunk(Skill("brief", "brief", "be brief")))
     def check(policy: AgentCapabilities, context: StaticContext[Any]) = {
       val c = voiceConfig.copy(
         agents = voiceConfig.agents.updated(voiceId, voiceDefinition.copy(capabilities = policy))

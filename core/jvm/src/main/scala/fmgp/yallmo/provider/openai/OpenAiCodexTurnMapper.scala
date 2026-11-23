@@ -23,10 +23,10 @@ private[openai] object OpenAiCodexTurnMapper {
 
   private[openai] def requestBody(turnRequest: AgentTurnRequest): Either[String, ujson.Obj] =
     validateRequest(turnRequest).flatMap { validated =>
-      validated.input.lastOption match {
+      validated.modelInput.lastOption match {
         // AgentTurnRequest requires the current instructions last, not at the start of history.
         case Some(MessagePayload.Instructions(instructions)) =>
-          OpenAiCodexTurnMapper.input(validated.input.dropRight(1)).map { input =>
+          OpenAiCodexTurnMapper.input(validated.modelInput.dropRight(1)).map { input =>
             val body = ujson.Obj(
               "model" -> validated.model,
               "store" -> false,

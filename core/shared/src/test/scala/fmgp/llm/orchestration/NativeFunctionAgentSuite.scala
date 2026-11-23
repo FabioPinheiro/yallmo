@@ -1,6 +1,9 @@
 package fmgp.yallmo.orchestration
 
 import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition}
+import fmgp.yallmo.skill.{Skill, ReadSkillTool}
+import fmgp.yallmo.tool.SkillsToolDefinition
+import fmgp.yallmo.orchestration.config.AgentCapabilities
 
 import RunnerTestSupport.*
 
@@ -12,6 +15,72 @@ import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 final class NativeFunctionAgentSuite extends FunSuite:
   private val NativeId = AgentId("native")
+
+  private val visible = Skill(
+    "grill&<>\"'",
+    "Use <heat> & \"care\"; it's safe",
+    "PRIVATE BODY",
+    sections = Map("private/path.md" -> "PRIVATE SECTION")
+  )
+  private val hidden = Skill("hidden", "PRIVATE HIDDEN", "PRIVATE BODY", disableModelInvocation = true)
+  private val denied = Skill("denied", "PRIVATE DENIED", "PRIVATE BODY")
+
+  for (label, skills, policy, expected) <- List(
+      (
+        "visible",
+        Chunk(visible, hidden, denied),
+        AgentCapabilities(skills = Some(Set(visible.name, hidden.name))),
+        s"System\n\n${Skill.renderCatalog(Seq(visible))}\n\n${SkillsToolDefinition.ActivationGuidance}"
+      ),
+      ("empty", Chunk.empty[Skill], AgentCapabilities(), "System"),
+      ("disabled", Chunk(hidden), AgentCapabilities(), "System"),
+      ("denied", Chunk(denied), AgentCapabilities(skills = Some(Set.empty)), "System")
+    )
+  do
+    test(s"$label native catalog sends only permitted metadata in the provider request") {
+      runZIO {
+        for {
+          requests <- Ref.make(Chunk.empty[AgentTurnRequest])
+          client = new Agent[Any] {
+            val id: AgentId = NativeId
+            def turn(request: AgentTurnRequest): IO[YallmoError, AgentTurnResponse] =
+              requests
+                .update(_ :+ request)
+                .as(AgentTurnResponse(Chunk(MessagePayload.Assistant("done")), LlmStopReason.Stop))
+          }
+          program = NativeFunctionAgent[Agent[Any]](NativeId, "test-model", capabilities = policy).bind[Any](client)
+          reader = ReadSkillTool(skills)
+          _ <- new AgentRunner[Any](Map(reader.definition.name -> reader))
+            .run(
+              program,
+              AgentTask("Hello"),
+              StaticContext[Any](
+                "System",
+                functions = Chunk(reader.definition),
+                skills = skills,
+                tools = Chunk(SkillsToolDefinition)
+              )
+            )
+          seen <- requests.get
+        } yield seen
+      } { requests =>
+        assertEquals(requests.size, 1)
+        assertEquals(
+          requests.head.modelInput,
+          Chunk(MessagePayload.User("Hello"), MessagePayload.Instructions(expected))
+        )
+        assert(!requests.head.modelInput.toString.contains("PRIVATE"))
+        assert(!requests.head.modelInput.toString.contains("private/path.md"))
+        assertEquals(requests.head.tools, Chunk(SkillsToolDefinition.ReadSkillDefinition))
+        if label == "visible" then {
+          assert(expected.contains("<name>grill&amp;&lt;&gt;&quot;&apos;</name>"))
+          assert(
+            expected.contains("<description>Use &lt;heat&gt; &amp; &quot;care&quot;; it&apos;s safe</description>")
+          )
+          assertEquals(expected.sliding("<skill>".length).count(_ == "<skill>"), 1)
+        }
+      }
+    }
 
   test("runner records provider calls and links the trusted output before the next native turn") {
     runZIO {

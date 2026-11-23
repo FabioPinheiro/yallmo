@@ -1,5 +1,6 @@
 package fmgp.yallmo.orchestration
 
+import fmgp.yallmo.skill.Skill
 import fmgp.yallmo.tool.{FunctionCall, FunctionCallId, FunctionKey, FunctionToolDefinition, ToolKey}
 
 import RunnerTestSupport.*
@@ -22,7 +23,7 @@ final class AgentCapabilitiesSuite extends FunSuite {
       FunctionToolDefinition(FunctionKey.unsafe("clock"), "time"),
       FunctionToolDefinition(FunctionKey.unsafe("shell"), "commands")
     ),
-    skills = Chunk(AgentSkill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS"))
+    skills = Chunk(Skill("brief", "be brief", "SECRET_SKILL_INSTRUCTIONS"))
   )
   private val request = AgentTurnRequest(
     "model",

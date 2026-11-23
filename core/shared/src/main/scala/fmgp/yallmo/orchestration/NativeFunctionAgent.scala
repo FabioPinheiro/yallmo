@@ -86,6 +86,7 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
         model = model,
         input = NativeFunctionAgent.input(runContext, context),
         tools = context.functions,
+        skills = context.skills,
         toolGroups = context.tools,
         parallelToolCalls = parallelToolCalls,
         options = options
@@ -127,9 +128,7 @@ final case class NativeFunctionAgent[R <: Agent[Any]](
 
 object NativeFunctionAgent {
   private def instructions(staticContext: StaticContext[?]): String =
-    Chunk(staticContext.systemPrompt, staticContext.skills.map(_.instructions).mkString("\n\n"))
-      .filter(_.nonEmpty)
-      .mkString("\n\n")
+    staticContext.systemPrompt
 
   private def input(runContext: RunContext, staticContext: StaticContext[?]): Seq[MessagePayload] =
     runContext.messages.flatMap {

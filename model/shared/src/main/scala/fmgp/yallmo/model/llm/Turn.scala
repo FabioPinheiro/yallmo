@@ -1,7 +1,8 @@
 package fmgp.yallmo.model.llm
 
 import fmgp.yallmo.model.{Blob, BlobId, MessagePayload, YallmoError}
-import fmgp.yallmo.tool.FunctionToolDefinition
+import fmgp.yallmo.tool.{FunctionToolDefinition, SkillsToolDefinition}
+import fmgp.yallmo.skill.Skill
 import zio.*
 import fmgp.yallmo.tool.ToolDefinition
 
@@ -30,8 +31,21 @@ final case class AgentTurnRequest(
     options: ProviderGenerateOptions = ProviderGenerateOptions(),
     readBlob: BlobId => IO[YallmoError, Blob] = Blob.unavailable,
     // Host-only membership catalog, never projected into provider JSON.
-    toolGroups: Chunk[ToolDefinition] = Chunk.empty
+    toolGroups: Chunk[ToolDefinition] = Chunk.empty,
+    // Host-only catalog; never serialize Skill objects. Only metadata is projected after all policy filtering.
+    skills: Seq[Skill] = Seq.empty
 ) {
+
+  /** Pure final-input projection. Raw input stays catalog-free, so filtering/validation never duplicates guidance. */
+  def modelInput: Seq[MessagePayload] = {
+    val catalog = SkillsToolDefinition.renderCatalog(skills, tools)
+    input.lastOption match {
+      case Some(MessagePayload.Instructions(text)) if catalog.nonEmpty =>
+        input.dropRight(1) :+ MessagePayload.Instructions(s"$text\n\n$catalog")
+      case _ => input
+    }
+  }
+
   def validate: Either[String, AgentTurnRequest] =
     val duplicateToolNames =
       tools.map(_.name).groupBy(identity).collect { case (name, names) if names.size > 1 => name }

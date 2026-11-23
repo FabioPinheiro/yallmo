@@ -158,6 +158,37 @@ class ZshKitTests(unittest.TestCase):
             self.assertTrue(list((Path(temporary) / ".zsh-data").glob("zcompdump-*")))
 
 
+class ShellClipboardTests(unittest.TestCase):
+    def check_clipboard_environment(self, shell):
+        for inherited, expected in ((None, "1"), ("", "1"), ("0", "0"), ("1", "1")):
+            with self.subTest(shell=shell, inherited=inherited), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary)
+                # Start through the rc file, without the Pi launcher. A child must
+                # inherit the value, including an explicit opt-out.
+                env = {"HOME": temporary, "PATH": os.environ["PATH"], "TERM": "dumb"}
+                if inherited is not None:
+                    env["PI_CLIPBOARD_OSC52"] = inherited
+                if shell == "bash":
+                    rc = home / ".bashrc"
+                    rc.write_text("source " + shlex.quote(str(ZSH / "bash-history.bash")) + "\n")
+                    args = ["bash", "--noprofile", "--rcfile", str(rc), "-i"]
+                else:
+                    shutil.copyfile(ZSH / "zshrc", home / ".zshrc")
+                    args = ["zsh", "-i"]
+                result = subprocess.run(
+                    args + ["-c", "sh -c 'printf \"%s\" \"$PI_CLIPBOARD_OSC52\"'"],
+                    env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+
+    def test_bash_exports_clipboard_default_and_preserves_overrides(self):
+        self.check_clipboard_environment("bash")
+
+    @unittest.skipUnless(shutil.which("zsh"), "Zsh runtime checked during the kit image build")
+    def test_zsh_exports_clipboard_default_and_preserves_overrides(self):
+        self.check_clipboard_environment("zsh")
+
+
 class BashHistoryTests(unittest.TestCase):
     def run_bash(self, home, script, setup="", interactive=True):
         rc = home / ".bashrc"

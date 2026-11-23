@@ -74,7 +74,10 @@ The `pi/`, `workspace/` and `yallmo-workspace/` directories remain user-managed
 state beside the kits. No existing profile contents are rewritten by this split.
 
 The Pi launcher defaults to `PI_CLIPBOARD_OSC52=1` so Pi's `/copy` and Ctrl+X send
-text to the host terminal clipboard. This requires an OSC 52-capable terminal (such as Ghostty) with
+text to the host terminal clipboard. The optional shell kit also exports this default
+from its Bash (`.bashrc`) and Zsh (`.zshrc`) startup configs, so clipboard forwarding
+survives a Pi update replacing the launcher. Explicit values such as
+`PI_CLIPBOARD_OSC52=0` are preserved. This requires an OSC 52-capable terminal (such as Ghostty) with
 clipboard writes allowed; no `wl-clipboard` installation is needed. In an existing
 sandbox, run `export PI_CLIPBOARD_OSC52=1` before launching Pi to apply the workaround
 without recreating the sandbox.

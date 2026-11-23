@@ -44,6 +44,8 @@ path+=("$HOME/.local/share/coursier/bin" "$HOME/.cargo/bin")
 export PATH
 export DO_NOT_TRACK=1
 export DOCKER_ENV=true
+# Keep host clipboard forwarding enabled even if a Pi update replaces its launcher.
+export PI_CLIPBOARD_OSC52="${PI_CLIPBOARD_OSC52:-1}"
 
 # Share and append history across sessions. SHARE_HISTORY already imports/appends;
 # don't combine it with INC_APPEND_HISTORY. No old host history is imported.

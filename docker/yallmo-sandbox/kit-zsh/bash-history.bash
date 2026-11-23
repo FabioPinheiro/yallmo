@@ -1,6 +1,9 @@
 # Sourced at the end of the agent's .bashrc; never enable history for scripts.
 [[ $- == *i* ]] || return 0
 
+# Keep host clipboard forwarding enabled even if a Pi update replaces its launcher.
+export PI_CLIPBOARD_OSC52="${PI_CLIPBOARD_OSC52:-1}"
+
 # Share Zsh's private volume, not its history file. Never import old host history.
 mkdir -p -- "$HOME/.zsh-data"
 HISTFILE="$HOME/.zsh-data/bash_history"

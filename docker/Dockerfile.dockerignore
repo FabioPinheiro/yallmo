@@ -24,6 +24,7 @@
 !rpc/js/src/main/**
 !client-harness/shared/src/main/**
 !repl/src/main/**
+!linker-worker/src/main/**
 !server/src/main/**
 !web-harness/src/main/**
 

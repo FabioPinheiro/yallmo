@@ -46,6 +46,32 @@ Coursier, Scala CLI and its `scala` alias (default to Scala **3.10.1**). Metals,
 no SSH server is installed. The full Scala distribution/offline Maven repository is not bundled.
 Keep `docker/Dockerfile.dockerignore`: it excludes private runtime data from builds.
 
+## Image scan
+
+```bash
+# Build
+docker buildx build --pull --no-cache --load --provenance=false -f docker/Dockerfile --target runtime -t yallmo:local .
+
+# Scan exactly as CI does
+mkdir -p /tmp/yallmo-scan
+docker save --output /tmp/yallmo-scan/image.tar yallmo:local
+docker run --rm \
+  --mount type=bind,src=/tmp/yallmo-scan,dst=/scan,readonly \
+  aquasec/trivy:latest image \
+  --input /scan/image.tar \
+  --exit-code 1 \
+  --severity HIGH,CRITICAL
+rm /tmp/yallmo-scan/image.tar; rmdir /tmp/yallmo-scan
+
+# Optional: run Trivy on macOS
+trivy image --exit-code 1 --severity HIGH,CRITICAL yallmo:local
+
+trivy image \
+  --severity HIGH,CRITICAL \
+  --format json --output /tmp/yallmo-trivy.json \
+  yallmo:local
+```
+
 ## Development sandbox (experimental)
 
 The sandbox adds Bash, Metals, Bloop, Pi, `pi-subagents`, `pi-ssh-remote`, Playwright/MCP,

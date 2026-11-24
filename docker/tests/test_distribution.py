@@ -1,4 +1,5 @@
 """Smoke the actual staged JVM classpath without Docker: build with sbt 'dockerStage' first."""
+from io import BytesIO
 from pathlib import Path
 import shutil
 import socket
@@ -8,8 +9,33 @@ import time
 import unittest
 from urllib.error import URLError
 from urllib.request import urlopen
+from zipfile import ZipFile
 
 LIB = Path(__file__).resolve().parents[2] / "target/docker/lib"
+
+
+@unittest.skipUnless(LIB.is_dir(), "run sbt dockerStage first")
+class LinkerDependencyTests(unittest.TestCase):
+    def test_packaged_worker_does_not_bundle_unused_closure_or_its_shaded_dependencies(self):
+        core_jars = list(LIB.glob("*-yallmo-core_*.jar"))
+        self.assertEqual(len(core_jars), 1, "Expected exactly one packaged core JAR")
+        with ZipFile(core_jars[0]) as core:
+            manifest = core.read("scalamode-linker/classpath.txt").decode().splitlines()
+            self.assertTrue(manifest, "The runtime linker worker must remain bundled")
+            self.assertTrue(any("yallmo-linker-worker" in name for name in manifest))
+            for name in manifest:
+                with self.subTest(jar=name):
+                    self.assertNotIn("closure-compiler", name)
+                    with ZipFile(BytesIO(core.read("scalamode-linker/" + name))) as dependency:
+                        entries = dependency.namelist()
+                        if "yallmo-linker-worker" in name:
+                            self.assertIn("fmgp/yallmo/linker/IncrementalLinkerWorker.class", entries,
+                                          "The packaged worker must not be an empty JAR")
+                        self.assertFalse(any("jscomp/jarjar/" in entry for entry in entries),
+                                         "Unused shaded Closure dependencies must not ship")
+                        for library in ("com.google.code.gson/gson", "com.google.guava/guava"):
+                            self.assertNotIn("META-INF/maven/" + library + "/pom.properties", entries,
+                                             "The worker does not require Gson or Guava")
 
 
 @unittest.skipUnless(LIB.is_dir() and shutil.which("java"), "run sbt dockerStage first; Java required")

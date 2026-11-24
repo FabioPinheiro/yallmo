@@ -378,7 +378,10 @@ lazy val linkerWorker = project
   .settings(
     name := "yallmo-linker-worker",
     publish / skip := true,
-    libraryDependencies += "org.scala-js" %% "scalajs-linker" % "1.22.0",
+    // The worker uses Scala.js's optimizer with Closure disabled. Closure v20220202 bundles shaded
+    // Gson 2.7 (CVE-2022-25647) and Guava 31.0.1-jre (CVE-2026-102554); overrides cannot patch them.
+    libraryDependencies += ("org.scala-js" %% "scalajs-linker" % "1.22.0")
+      .exclude("com.google.javascript", "closure-compiler"),
   )
 
 lazy val server = project

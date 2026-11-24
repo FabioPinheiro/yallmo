@@ -26,6 +26,7 @@ class ContextTests(unittest.TestCase):
             "docker/image/install-sbt.py", "docker/image/install-coursier.py", "docker/image/entrypoint.sh",
             "docker/image/coursier-env.sh", "docker/image/coursier-tool.sh",
             "repl/src/main/scala/fmgp/yallmo/repl/debug/Example.scala",
+            "linker-worker/src/main/scala/fmgp/yallmo/linker/IncrementalLinkerWorker.scala",
             "rpc/js/src/main/scala/fmgp/rpc/RpcWebSocketClientPlatform.scala",
             "scalacode-api/js/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaToolRuntimePlatform.scala",
             "scalacode-api/js/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodePlatform.scala",
@@ -35,7 +36,7 @@ class ContextTests(unittest.TestCase):
             "model/shared", "model/jvm", "model/js", "filesystem/shared", "filesystem/jvm",
             "scalacode-api/shared", "scalacode-api/jvm", "scalacode-api/js",
             "core/shared", "core/jvm", "protocol/shared",
-            "rpc/shared", "rpc/jvm", "rpc/js", "client-harness/shared", "repl", "server", "web-harness",
+            "rpc/shared", "rpc/jvm", "rpc/js", "client-harness/shared", "repl", "linker-worker", "server", "web-harness",
         ]
         allowed += [tree + "/src/main/scala/Required.scala" for tree in source_trees]
         denied = [

@@ -276,10 +276,15 @@ class SandboxServiceTests(unittest.TestCase):
                          "run sbt dockerStage first; Java required")
     def test_actual_staged_jvm_starts_and_stops_under_the_service_manager(self):
         (self.workspace / "storage").mkdir()
+        config = self.workspace / "yallmo.yaml"
+        example = (Path(__file__).parent / "fixtures/server-config.yaml").read_text()
+        config.write_text(example.replace("root: /workspace", "root: " + str(self.workspace)))
+        config.chmod(0o600)
         (self.workspace / "server.sh").write_text(
             '#!/bin/sh\nexec "$TEST_JAVA" --enable-native-access=ALL-UNNAMED '
             '--sun-misc-unsafe-memory-access=allow -cp "$TEST_CLASSPATH" '
-            'fmgp.yallmo.server.MainServer --storage ./storage --port "$FAKE_PORT"\n')
+            'fmgp.yallmo.server.MainServer --storage ./storage --config ./yallmo.yaml '
+            '--workspace . --port "$FAKE_PORT"\n')
         self.env.update(TEST_JAVA=shutil.which("java"),
                         TEST_CLASSPATH=str(ROOT.parents[1] / "target/docker/lib/*"))
         result = self.boot(autostart=True)

@@ -12,6 +12,51 @@ SCRIPT = Path(__file__).resolve().parent / "smoke.sh"
 
 @unittest.skipUnless(shutil.which("bash"), "Bash required")
 class SmokeTests(unittest.TestCase):
+    def test_every_server_start_mounts_and_passes_the_required_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binaries = root / "bin"
+            binaries.mkdir()
+            calls = root / "calls.jsonl"
+            docker = binaries / "docker"
+            docker.write_text(
+                '#!/usr/bin/env python3\n'
+                'import json, os, sys\n'
+                'args = sys.argv[1:]\n'
+                'with open(os.environ["SMOKE_CALLS"], "a") as log:\n'
+                '    log.write(json.dumps(args) + "\\n")\n'
+                'if args[0] == "run" and "--detach" in args:\n'
+                '    print("test-container")\n'
+                'elif args[0] == "port":\n'
+                '    print("127.0.0.1:18080")\n'
+            )
+            docker.chmod(0o755)
+            curl = binaries / "curl"
+            curl.write_text(
+                '#!/usr/bin/env python3\n'
+                'from pathlib import Path\n'
+                'import sys\n'
+                'Path(sys.argv[sys.argv.index("-o") + 1]).write_text("<!doctype html>")\n'
+            )
+            curl.chmod(0o755)
+            environment = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                               SMOKE_CALLS=str(calls), BASH_ENV="/dev/null")
+            result = subprocess.run(["bash", str(SCRIPT), "test-image"], env=environment,
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+            starts = [args for args in invocations if "--detach" in args]
+            self.assertEqual(len(starts), 3)
+            for args in starts:
+                self.assertEqual(args[args.index("test-image") + 1:], [
+                    "server", "--storage", "/data", "--config", "/config/yallmo.yaml",
+                    "--workspace", "/workspace",
+                ])
+                self.assertTrue(any("dst=/config" in arg for arg in args))
+                self.assertTrue(any("dst=/data" in arg for arg in args))
+            # All restarts must reuse the same persisted storage and configuration.
+            self.assertEqual(starts, [starts[0]] * 3)
+
     def test_alternate_uids_run_scala_cli_in_private_writable_workspaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

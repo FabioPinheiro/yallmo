@@ -5,17 +5,24 @@ with Buildx; the sandbox also needs Docker Sandboxes (`sbx`).
 
 ## Start Yallmo
 
+First create a private `./yallmo.yaml` with at least one `users.<username>.secretHash`,
+using the [authentication guide](../server/README-SERVER.md#web-authentication).
+Add agents/providers using the [provider configuration guide](../docs/CONFIG_AGENT_PROVIDER.md).
+Do not deploy the public account in `docker/tests/fixtures/server-config.yaml`.
+
 ```bash
 docker pull fmgp/yallmo:latest
+docker volume create yallmo-config
+# Seed the config volume once, as UID 1000, with owner-only permissions.
+docker run --rm -i --mount type=volume,src=yallmo-config,dst=/config \
+  fmgp/yallmo:latest bash -c 'umask 077; cat > /config/yallmo.yaml' < ./yallmo.yaml
 docker run -d --name yallmo -p 127.0.0.1:8080:8080 \
-  --mount type=volume,src=yallmo-data,dst=/data fmgp/yallmo:latest
+  --mount type=volume,src=yallmo-data,dst=/data \
+  --mount type=volume,src=yallmo-config,dst=/config \
+  fmgp/yallmo:latest server --storage /data --config /config/yallmo.yaml --workspace /workspace
 ```
 
-Open **http://127.0.0.1:8080**. Without a provider configuration, this is viewer-only.
-For chat, see the [provider configuration guide](../docs/CONFIG_AGENT_PROVIDER.md);
-mount a private, writable config and pass `server --storage /data --config /config/yallmo.yaml`.
-Ordinary Docker login stores OAuth tokens in that config; it is not host-only isolation.
-Bind mounts must be accessible to UID **1000**.
+Open **http://127.0.0.1:8080** and sign in with your configured account.
 
 ```bash
 docker logs --tail 50 -f yallmo       # Follow logs
@@ -23,10 +30,6 @@ docker stop yallmo                   # Stop
 docker start yallmo                  # Start again
 docker rm -f yallmo                  # Remove container; data volume survives
 ```
-
-**Keep port 8080 on loopback: Yallmo has no application authentication.** Never run
-two servers against the same storage. To update, pull again, remove the old container,
-and repeat the run command with the same volume.
 
 ## Build locally
 
@@ -39,14 +42,8 @@ bash docker/tests/smoke.sh yallmo:local
 To start your local build, use `yallmo:local` in the start command above.
 Add `--platform linux/amd64` or `--platform linux/arm64` to choose an architecture.
 The image includes the server, website, Node/npm, Python, Git, SSH client, sbt,
-Coursier, Scala CLI and its `scala` alias. Metals, Bloop and Pi are sandbox-kit-only;
+Coursier, Scala CLI and its `scala` alias (default to Scala **3.10.1**). Metals, Bloop and Pi are sandbox-kit-only;
 no SSH server is installed. The full Scala distribution/offline Maven repository is not bundled.
-Both `scala` and `scala-cli` default to Scala **3.10.1**, matching `build.sbt`;
-project directives and explicit `--scala` options still take precedence.
-Tool launchers keep Coursier and Scala CLI state private to each UID under
-`/var/cache/coursier/UID`, including Scala CLI's cache and config. Explicit
-`COURSIER_*`, `SCALA_CLI_HOME` and `SCALA_CLI_CONFIG` overrides are respected.
-With `docker run --user`, also use a working directory writable by that UID.
 Keep `docker/Dockerfile.dockerignore`: it excludes private runtime data from builds.
 
 ## Development sandbox (experimental)

@@ -94,9 +94,9 @@ volumes+=("$config_volume")
 config="$(cd "$(dirname "$0")/fixtures" && pwd)/server-config.yaml"
 docker run --rm -i --mount "type=volume,src=$config_volume,dst=/config" \
   "$image" bash -c 'umask 077; cat > /config/yallmo.yaml; test "$(stat -c %a /config/yallmo.yaml)" = 600' < "$config"
-check_server --mount "type=volume,src=$data_volume,dst=/data" "$image" server
-# Restart the same storage with configuration, then restart it again to exercise persisted ownership.
-for restart in 1 2; do
+# Configuration (including a web user) is mandatory, even for the first website check.
+# Start once, then restart twice with the same volumes to exercise persisted ownership.
+for restart in 1 2 3; do
   check_server --mount "type=volume,src=$data_volume,dst=/data" \
     --mount "type=volume,src=$config_volume,dst=/config" \
     "$image" server --storage /data --config /config/yallmo.yaml --workspace /workspace

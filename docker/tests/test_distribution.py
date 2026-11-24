@@ -14,13 +14,16 @@ LIB = Path(__file__).resolve().parents[2] / "target/docker/lib"
 
 @unittest.skipUnless(LIB.is_dir() and shutil.which("java"), "run sbt dockerStage first; Java required")
 class DistributionTests(unittest.TestCase):
-    def test_server_serves_packaged_frontend(self):
-        self.assert_server_starts(configured=False)
+    def test_server_rejects_missing_configuration(self):
+        with tempfile.TemporaryDirectory() as storage:
+            result = subprocess.run([
+                "java", "--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow",
+                "-cp", str(LIB / "*"), "fmgp.yallmo.server.MainServer", "--storage", storage,
+            ], text=True, capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--config is required", result.stdout + result.stderr)
 
-    def test_secret_free_chatgpt_configuration_starts_without_login(self):
-        self.assert_server_starts(configured=True)
-
-    def assert_server_starts(self, configured):
+    def test_configured_server_serves_packaged_frontend_without_provider_login(self):
         # Pick a loopback ephemeral port. There is a small bind race; the server's logs explain failures.
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -28,14 +31,13 @@ class DistributionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             log_path = Path(temp) / "server.log"
             options = ["--storage", temp, "--port", str(port)]
-            if configured:
-                workspace = Path(temp) / "workspace"
-                workspace.mkdir()
-                config = Path(temp) / "config.yaml"
-                example = (Path(__file__).parent / "fixtures/server-config.yaml").read_text()
-                config.write_text(example.replace("root: /workspace", "root: " + str(workspace)))
-                config.chmod(0o600)
-                options += ["--config", str(config), "--workspace", str(workspace)]
+            workspace = Path(temp) / "workspace"
+            workspace.mkdir()
+            config = Path(temp) / "config.yaml"
+            example = (Path(__file__).parent / "fixtures/server-config.yaml").read_text()
+            config.write_text(example.replace("root: /workspace", "root: " + str(workspace)))
+            config.chmod(0o600)
+            options += ["--config", str(config), "--workspace", str(workspace)]
             with log_path.open("w+") as log:
                 process = subprocess.Popen([
                     "java", "--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow",

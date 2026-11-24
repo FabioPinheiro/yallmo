@@ -15,11 +15,13 @@
 !filesystem/jvm/src/main/**
 !scalacode-api/shared/src/main/**
 !scalacode-api/jvm/src/main/**
+!scalacode-api/js/src/main/**
 !core/shared/src/main/**
 !core/jvm/src/main/**
 !protocol/shared/src/main/**
 !rpc/shared/src/main/**
 !rpc/jvm/src/main/**
+!rpc/js/src/main/**
 !client-harness/shared/src/main/**
 !repl/src/main/**
 !server/src/main/**

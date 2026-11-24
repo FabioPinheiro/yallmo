@@ -1,6 +1,10 @@
-# Secret-free starting point for NORMAL Docker, not proxy-managed Sandbox authentication.
-# Copy into the named /config volume, edit the model, then log in through the website's Providers panel.
-# Login writes actual OAuth credentials into /config/yallmo.yaml: protect this volume and its backups.
+# TEST ONLY: no provider credentials and no proxy-managed Sandbox authentication.
+# This public test account must never be used for a real deployment.
+# Generate a private users.<username>.secretHash as documented in server/README-SERVER.md.
+users:
+  smoke:
+    # Public test password: test-only-web-secret (not a provider credential).
+    secretHash: 'pbkdf2-sha256$600000$350d0134c3af0928fc095ad409e763dc$8abf90ca67af9d8cfacd36b73e52f07abd195f7cd780157af91ed26e97b59d11'
 agents:
   assistant:
     agentType: ChatGPTAgent

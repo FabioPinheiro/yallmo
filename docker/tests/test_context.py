@@ -26,12 +26,16 @@ class ContextTests(unittest.TestCase):
             "docker/image/install-sbt.py", "docker/image/install-coursier.py", "docker/image/entrypoint.sh",
             "docker/image/coursier-env.sh", "docker/image/coursier-tool.sh",
             "repl/src/main/scala/fmgp/yallmo/repl/debug/Example.scala",
+            "rpc/js/src/main/scala/fmgp/rpc/RpcWebSocketClientPlatform.scala",
+            "scalacode-api/js/src/main/scala/fmgp/yallmo/tool/scalamode/ScalaToolRuntimePlatform.scala",
+            "scalacode-api/js/src/main/scala/fmgp/yallmo/tool/scalamode/ScalamodePlatform.scala",
         ]
         # Every existing production source tree must stay available, not just one representative module.
         source_trees = [
             "model/shared", "model/jvm", "model/js", "filesystem/shared", "filesystem/jvm",
-            "scalacode-api/shared", "scalacode-api/jvm", "core/shared", "core/jvm", "protocol/shared",
-            "rpc/shared", "rpc/jvm", "client-harness/shared", "repl", "server", "web-harness",
+            "scalacode-api/shared", "scalacode-api/jvm", "scalacode-api/js",
+            "core/shared", "core/jvm", "protocol/shared",
+            "rpc/shared", "rpc/jvm", "rpc/js", "client-harness/shared", "repl", "server", "web-harness",
         ]
         allowed += [tree + "/src/main/scala/Required.scala" for tree in source_trees]
         denied = [
@@ -45,6 +49,8 @@ class ContextTests(unittest.TestCase):
             "docker/yallmo-sandbox/yallmo-workspace/logs/yallmo.log",
             "docker/yallmo-sandbox/yallmo-workspace/yallmo.yaml",
             "core/jvm/src/test/scala/PrivateTest.scala", "core/private/src/main/resources/private.json",
+            "rpc/js/src/test/scala/PrivateTest.scala", "rpc/js/src/main/resources/.env",
+            "scalacode-api/js/src/test/scala/PrivateTest.scala", "scalacode-api/js/src/main/resources/.env",
             "private-project/shared/src/main/resources/private.json", "model/js/src/main/resources/.npmrc",
             "docker/image/private.json", "docker/image/extra.py", "docker/publishing/push-image.sh",
             "docker/tests/test_context.py", "docker/tests/fixtures/server-config.yaml", "Dockerfile",

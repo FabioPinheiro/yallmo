@@ -8,6 +8,10 @@ args:
     # Match the workload's Ubuntu-based image for browser library compatibility.
     default: docker.io/fmgp/yallmo:latest
     buildArg: YALLMO_IMAGE
+  pi_version:
+    # npm version or tag; use an exact version to pin Pi.
+    default: latest
+    buildArg: PI_VERSION
 capabilities:
   - type: com.docker.sandbox/host-mount@1
     config:

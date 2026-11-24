@@ -199,6 +199,34 @@ class SandboxLauncherTests(unittest.TestCase):
 
 
 class SandboxToolchainTests(unittest.TestCase):
+    def test_pi_version_defaults_to_latest_and_is_consumed_by_the_install_layer(self):
+        dockerfile = (ROOT / "kit-pi/kit.dockerfile").read_text()
+        manifest = (ROOT / "kit-pi/kit.yaml").read_text()
+        self.assertRegex(manifest, r'(?m)^  pi_version:\n(?:    #[^\n]*\n)*'
+                                   r'    default: latest\n    buildArg: PI_VERSION$')
+        self.assertIn("ARG PI_VERSION=latest\nRUN ", dockerfile)
+        install_layer = dockerfile.split("\nRUN ", 2)[1]
+        self.assertIn('npm install --global --ignore-scripts '
+                      '"@earendil-works/pi-coding-agent@${PI_VERSION}"', install_layer)
+        self.assertIn("pi-subagents@latest pi-ssh-remote@latest", install_layer)
+        self.assertIn("@playwright/mcp@latest", install_layer)
+
+    def test_pi_install_passes_the_selected_version_as_one_package_argument(self):
+        dockerfile = (ROOT / "kit-pi/kit.dockerfile").read_text()
+        command = next(line.strip().removeprefix("&& ").removesuffix(" \\")
+                       for line in dockerfile.splitlines()
+                       if "npm install --global --ignore-scripts \"@earendil-works/pi-coding-agent@" in line)
+        # Stub npm to verify the actual Dockerfile command without network access.
+        for version in ("latest", "1.6.0", "1.6.0-rc.1"):
+            with self.subTest(version=version):
+                result = subprocess.run(["sh", "-c", 'npm() { printf "%s\\n" "$@"; }; ' + command],
+                                        env=dict(os.environ, PI_VERSION=version),
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(),
+                                 ["install", "--global", "--ignore-scripts",
+                                  f"@earendil-works/pi-coding-agent@{version}"])
+
     def test_tools_and_build_checks_belong_to_their_respective_kits(self):
         base = (ROOT.parent / "Dockerfile").read_text()
         workload = (ROOT / "kit-yallmo/kit.dockerfile").read_text()
@@ -206,7 +234,7 @@ class SandboxToolchainTests(unittest.TestCase):
         self.assertNotIn("@earendil-works/pi-coding-agent", base + workload)
         self.assertNotRegex(base + pi, r"cs install[^\n]*(?:metals|bloop)")
         self.assertIn("cs install --dir /usr/share/coursier/bin --jvm system metals bloop", workload)
-        self.assertIn("@earendil-works/pi-coding-agent@latest", pi)
+        self.assertIn("@earendil-works/pi-coding-agent@${PI_VERSION}", pi)
         self.assertIn("pi-subagents@latest pi-ssh-remote@latest", pi)
         self.assertIn("FROM scratch", pi)
         self.assertNotIn("ENTRYPOINT", pi)

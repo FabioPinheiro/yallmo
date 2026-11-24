@@ -5,13 +5,15 @@ USER root
 # Provision Node/npm even when the published workload image predates them.
 COPY --from=sandbox-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=sandbox-node /usr/local/lib/node_modules /usr/local/lib/node_modules
+# Use latest by default, or supply an exact Pi version for a pinned install.
+ARG PI_VERSION=latest
 RUN export HOME=/root XDG_CACHE_HOME=/root/.cache \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version \
     && npm --version \
     && npm install --global --ignore-scripts npm@latest \
-    && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@latest \
+    && npm install --global --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && npm install --prefix /opt/pi-extensions --omit=dev --legacy-peer-deps \
        --ignore-scripts --no-audit --no-fund pi-subagents@latest pi-ssh-remote@latest \
     && npm install --prefix /opt/playwright --omit=dev --ignore-scripts --no-audit --no-fund @playwright/mcp@latest \

@@ -14,6 +14,7 @@ kits:
   - source: ./kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
+      pi_version: 1.6.0
   - source: ./kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest

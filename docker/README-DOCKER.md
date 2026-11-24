@@ -292,13 +292,56 @@ move `server.sh`, `yallmo.yaml`, `storage/`, and any `logs/` or `debug/` into
 or leave a second copy of storage in use. Keep `hello.py` and coding projects in
 `workspace/`.
 
-Recreate the sandbox to apply workspace/mount changes (this removes sandbox-local files;
-back up anything needed first). From the repository root:
+### Update Pi and recreate the environment
+
+The Pi kit accepts an optional `pi_version` argument, defaulting to `latest`.
+It maps to Docker's `PI_VERSION` build argument and installs
+`@earendil-works/pi-coding-agent@${PI_VERSION}`. To pin Pi, set an exact version
+under **only the Pi kit's arguments** in `docker/yallmo-sandbox/sbxenv.yaml`
+**on the host** (the running sandbox mounts this file read-only):
+
+```yaml
+  - source: ./kit-pi
+    args:
+      image: docker.io/fmgp/yallmo:latest
+      pi_version: "1.6.0"
+```
+
+Changing `pi_version` invalidates the npm install layer and downstream layers,
+while earlier layers remain eligible for reuse. With an unchanged value (including
+`latest`), Docker can reuse the cached layer even if npm publishes a newer Pi
+release. `pullPolicy: always` refreshes image pulls, not cached npm installs.
+Pi extensions, npm, and Playwright/MCP still use `@latest`, so pinning Pi alone
+does not fully lock the toolchain.
+
+An existing sandbox must also be recreated to use the new kit output. `sbx env run`
+reattaches an existing sandbox without re-provisioning. Back up sandbox-local files
+first, then run these commands **on the host**, from the repository root (removal
+ends sessions in the old sandbox):
 
 ```bash
 sbx env rm docker/yallmo-sandbox
+# Review the creation plan, then create the environment with the updated Pi kit.
 sbx env plan docker/yallmo-sandbox
 sbx env run docker/yallmo-sandbox
+```
+
+Do not substitute a standalone `sbx create --name yallmo-rebuild ...`: that creates
+a separate sandbox, not the environment named `yallmo-sandbox`, and does not apply
+this environment's workspace/profile mounts.
+
+For a broader cache reset, `sbx kit builder rm --force` removes the shared builder
+and its build cache, affecting other environments too. If it reports
+`sbx-kit-builder` not found, there is no builder there to remove; `--force` skips
+confirmation but does not create a missing builder. Changing `pi_version`
+avoids needing that global reset for version changes.
+
+After recreation, check the installed Pi version from a second host terminal.
+If an exact version was specified, it should match that version.
+`pi-cli` bypasses the profile-checking `pi` launcher:
+
+```bash
+sbx env exec docker/yallmo-sandbox -- /usr/local/bin/pi-cli --version
 ```
 
 The host-mounted `workspace/`, `yallmo-workspace/` and `pi/` directories remain on the host.

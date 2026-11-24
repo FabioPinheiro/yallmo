@@ -41,6 +41,7 @@ object App {
       client.completeProviderLogin,
       client.cancelProviderLogin
     )
+    val skills = new SkillsModel(client.skills, client.skill, client.skillAvailability, client.agentSkills)
     val chat = new ChatModel(client, notifications.publish)
     val titleUpdates = new EventBus[SessionSnapshot]
     val titles = new ConversationTitleModel(
@@ -82,6 +83,7 @@ object App {
       titles.disable()
       voice.disable()
       providers.disable()
+      skills.suspend(clear = true)
       scalamode.disable()
       branch.disable()
       intentionalClose = true
@@ -119,6 +121,7 @@ object App {
             chat.disable()
             titles.disable()
             providers.disable()
+            skills.suspend(clear = true)
             scalamode.disable()
             branch.disable()
             connection.set(s"Disconnected: ${error.getMessage}")
@@ -240,6 +243,7 @@ object App {
           chat.disable()
           titles.disable()
           providers.disable()
+          skills.suspend(clear = true)
           scalamode.disable()
           branch.disable()
           connection.set(s"Disconnected: ${error.getMessage}")
@@ -324,8 +328,10 @@ object App {
               case ViewRoute.Chat      => ChatView(chat, client, speech, voice, titles)
               case ViewRoute.Scalamode => ScalamodeView(scalamode, selectedAgent)
               case ViewRoute.Providers => ProvidersView(providers, refreshes)
-              case ViewRoute.Sdlc      => SdlcView(refreshes)
-              case ViewRoute.Messages  =>
+              case ViewRoute.Skills    =>
+                SkillsView(skills, chat.state.signal.map(_.agents.map(AgentId.value).toList), refreshes)
+              case ViewRoute.Sdlc     => SdlcView(refreshes)
+              case ViewRoute.Messages =>
                 listPage("All messages", "No messages.", () => client.messages(), refreshes)(messages =>
                   messageList(messages, client, speech)
                 )
@@ -358,7 +364,7 @@ object App {
                   div(
                     p(
                       cls := "muted",
-                      "Inspect a configured agent's effective callable functions after capability filtering and tool wiring. Inspection does not run inference or execute tools."
+                      "Use Inspect tools or Inspect skills to view a configured agent’s effective capabilities. Select an inspected skill name to read its details. Inspection does not run inference or execute tools."
                     ),
                     ul(
                       cls := "agent-tools-list",
@@ -366,7 +372,8 @@ object App {
                         AgentToolsView(
                           id,
                           chat.state.signal.map(_.agents.contains(AgentId(id))).distinct,
-                          client.tools
+                          client.tools,
+                          client.agentSkills
                         )
                       }
                     )

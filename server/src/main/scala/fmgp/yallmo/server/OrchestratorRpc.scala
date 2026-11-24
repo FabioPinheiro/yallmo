@@ -10,7 +10,7 @@ import fmgp.yallmo.orchestration.{
   SessionInfo,
   SessionSummary
 }
-import fmgp.yallmo.server.application.ServerExecutionService
+import fmgp.yallmo.server.application.{ServerExecutionService, SkillInspection}
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import fmgp.yallmo.server.protocol.YallmoProtocol.given
@@ -27,6 +27,7 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
   import OrchestratorRpc.*
 
   private val master = configured.application.master
+  private val skills = new SkillInspection(configured.application)
 
   private val instanceId = UUID.randomUUID().toString
   // Presence only: never inserted into the executable runtime registry or storage.
@@ -73,6 +74,10 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
     MessagesList.method,
     AgentsList.method,
     ToolsList.method,
+    SkillsList.method,
+    SkillsRead.method,
+    AgentsSkills.method,
+    SkillsAvailability.method,
     BlobsList.method,
     BlobsRead.method,
     EventsSubscribe.method,
@@ -256,6 +261,18 @@ private[server] final class OrchestratorRpc(configured: ServerExecutionService) 
               }
               result <- encode(ToolsList.from(selection.context.tools))
             } yield result
+          case SkillsList.method =>
+            decode[Empty](params) *> encode(skills.list)
+          case SkillsRead.method =>
+            decode[SkillsRead.Params](params).flatMap(skills.read).flatMap(encode(_))
+          case AgentsSkills.method =>
+            decode[AgentsSkills.Params](params)
+              .flatMap(request => skills.agentsSkills(request.agentId))
+              .flatMap(encode(_))
+          case SkillsAvailability.method =>
+            decode[SkillsAvailability.Params](params)
+              .flatMap(request => skills.availability(request.name))
+              .flatMap(encode(_))
           case BlobsList.method =>
             decode[Empty](params) *> domain(master.listBlobIds).flatMap(values => encode(values.sortBy(_.value)))
           case BlobsUpload.method =>

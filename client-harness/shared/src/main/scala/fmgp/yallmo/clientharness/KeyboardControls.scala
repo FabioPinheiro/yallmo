@@ -22,6 +22,7 @@ enum ControlAction(val id: String, val webLabel: String, val terminalLabel: Stri
   case Messages extends ControlAction("messages", "Go to All messages", "messages", Some("3"))
   case Graph extends ControlAction("graph", "Go to Conversation graph", "graph", Some("4"))
   case AgentRegistry extends ControlAction("agent-registry", "Go to Agents", "agent registry", Some("5"))
+  case Skills extends ControlAction("skills", "Go to Skills", "skills", None)
   case Blobs extends ControlAction("blobs", "Go to Blobs", "blobs", Some("6"))
   case Scalamode extends ControlAction("scalamode", "Go to Scalamode", "scalamode", Some("7"))
   case Sdlc extends ControlAction("sdlc", "Go to SDLC", "sdlc", Some("8"))

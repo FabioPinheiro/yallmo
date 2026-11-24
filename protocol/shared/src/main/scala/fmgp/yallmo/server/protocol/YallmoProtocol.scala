@@ -201,6 +201,46 @@ object YallmoProtocol {
     ) derives JsonCodec
   }
 
+  final case class SkillSummary(
+      name: String,
+      description: String,
+      disableModelInvocation: Boolean,
+      documentCount: Int,
+      author: Option[String],
+      version: Option[String]
+  ) derives JsonCodec
+
+  final case class SkillDiagnostic(resource: String, message: String) derives JsonCodec
+  final case class SkillAgentAvailability(agentId: AgentId, available: Boolean, error: Option[String]) derives JsonCodec
+
+  object SkillsList {
+    val method: String = "skills.list"
+    type Params = Empty
+    final case class Result(skills: Chunk[SkillSummary], diagnostics: Chunk[SkillDiagnostic]) derives JsonCodec
+  }
+
+  object SkillsRead {
+    val method: String = "skills.read"
+    @jsonNoExtraFields
+    final case class Params(name: String, section: Option[String] = None) derives JsonCodec
+    final case class Result(skill: SkillSummary, content: String, sections: Chunk[String], metadata: Json.Obj)
+        derives JsonCodec
+  }
+
+  object AgentsSkills {
+    val method: String = "agents.skills"
+    @jsonNoExtraFields
+    final case class Params(agentId: AgentId) derives JsonCodec
+    final case class Result(skills: Chunk[SkillSummary], modelDiscoveryAvailable: Boolean) derives JsonCodec
+  }
+
+  object SkillsAvailability {
+    val method: String = "skills.availability"
+    @jsonNoExtraFields
+    final case class Params(name: String) derives JsonCodec
+    final case class Result(agents: Chunk[SkillAgentAvailability]) derives JsonCodec
+  }
+
   object SessionsList {
     val method: String = "sessions.list"
     type Params = Empty

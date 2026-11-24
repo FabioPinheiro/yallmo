@@ -8,6 +8,7 @@ enum ViewRoute(val title: String) {
   case Messages extends ViewRoute("All messages")
   case Graph extends ViewRoute("Conversation graph")
   case Agents extends ViewRoute("Agents")
+  case Skills extends ViewRoute("Skills")
   case Blobs extends ViewRoute("Blobs")
   case Scalamode extends ViewRoute("Scalamode")
   case Sdlc extends ViewRoute("SDLC")
@@ -18,6 +19,7 @@ enum ViewRoute(val title: String) {
     case Messages  => ControlAction.Messages
     case Graph     => ControlAction.Graph
     case Agents    => ControlAction.AgentRegistry
+    case Skills    => ControlAction.Skills
     case Blobs     => ControlAction.Blobs
     case Scalamode => ControlAction.Scalamode
     case Sdlc      => ControlAction.Sdlc
@@ -29,6 +31,7 @@ enum ViewRoute(val title: String) {
     case Messages  => "#/messages"
     case Graph     => "#/graph"
     case Agents    => "#/agents"
+    case Skills    => "#/skills"
     case Blobs     => "#/blobs"
     case Scalamode => "#/scalamode"
     case Sdlc      => "#/sdlc"
@@ -43,6 +46,7 @@ object ViewRoute {
       ViewRoute.Messages,
       ViewRoute.Graph,
       ViewRoute.Agents,
+      ViewRoute.Skills,
       ViewRoute.Providers,
       ViewRoute.Blobs,
       ViewRoute.Scalamode,
@@ -50,14 +54,15 @@ object ViewRoute {
     )
 
   def parse(hash: String): ViewRoute = hash match {
-    case "#/chat"      => ViewRoute.Chat
-    case "#/messages"  => ViewRoute.Messages
-    case "#/graph"     => ViewRoute.Graph
-    case "#/agents"    => ViewRoute.Agents
-    case "#/blobs"     => ViewRoute.Blobs
-    case "#/scalamode" => ViewRoute.Scalamode
-    case "#/sdlc"      => ViewRoute.Sdlc
-    case "#/providers" => ViewRoute.Providers
-    case _             => ViewRoute.Chat
+    case "#/chat"                                                      => ViewRoute.Chat
+    case "#/messages"                                                  => ViewRoute.Messages
+    case "#/graph"                                                     => ViewRoute.Graph
+    case "#/agents"                                                    => ViewRoute.Agents
+    case value if value == "#/skills" || value.startsWith("#/skills/") => ViewRoute.Skills
+    case "#/blobs"                                                     => ViewRoute.Blobs
+    case "#/scalamode"                                                 => ViewRoute.Scalamode
+    case "#/sdlc"                                                      => ViewRoute.Sdlc
+    case "#/providers"                                                 => ViewRoute.Providers
+    case _                                                             => ViewRoute.Chat
   }
 }

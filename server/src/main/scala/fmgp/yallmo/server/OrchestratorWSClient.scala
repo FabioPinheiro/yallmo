@@ -83,6 +83,12 @@ final class OrchestratorWSClient private (
     request(SessionsGet.method, SessionsGet.Params(id))
   override def listMessages: IO[Error, Chunk[MessageSnapshot]] = request(MessagesList.method, Empty())
   override def listAgentIds: IO[Error, Chunk[AgentId]] = request(AgentsList.method, Empty())
+  def listSkills: IO[Error, SkillsList.Result] = request(SkillsList.method, Empty())
+  def readSkill(params: SkillsRead.Params): IO[Error, SkillsRead.Result] = request(SkillsRead.method, params)
+  def agentSkills(agentId: AgentId): IO[Error, AgentsSkills.Result] =
+    request(AgentsSkills.method, AgentsSkills.Params(agentId))
+  def skillAvailability(name: String): IO[Error, SkillsAvailability.Result] =
+    request(SkillsAvailability.method, SkillsAvailability.Params(name))
   override def listBlobIds: IO[Error, Chunk[BlobId]] = request(BlobsList.method, Empty())
   override def readBlob(id: BlobId, offset: Long, maxBytes: Int): IO[Error, BlobsRead.Result] =
     request(BlobsRead.method, BlobsRead.Params(id, offset, maxBytes))

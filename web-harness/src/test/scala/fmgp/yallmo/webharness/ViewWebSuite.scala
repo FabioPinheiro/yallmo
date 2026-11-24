@@ -31,7 +31,12 @@ final class ViewWebSuite extends FunSuite {
 
   test("navigation shortcuts come from typed catalog actions and preserve remaining bindings") {
     assertEquals(ViewRoute.tabs.flatMap(_.command.shortcut), List("1", "3", "4", "5", "p", "6", "7", "8"))
-    assertEquals(ViewRoute.tabs.slice(3, 6), List(ViewRoute.Agents, ViewRoute.Providers, ViewRoute.Blobs))
+    assertEquals(
+      ViewRoute.tabs.slice(3, 7),
+      List(ViewRoute.Agents, ViewRoute.Skills, ViewRoute.Providers, ViewRoute.Blobs)
+    )
+    assertEquals(ViewRoute.Skills.command.shortcut, None)
+    assertEquals(ViewRoute.parse("#/skills/scala-developer"), ViewRoute.Skills)
   }
 
   test("only function calls and outputs pretty-print valid JSON, without changing invalid JSON or text") {

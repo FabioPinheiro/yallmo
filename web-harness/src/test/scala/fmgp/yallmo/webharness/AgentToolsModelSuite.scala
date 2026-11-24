@@ -1,6 +1,6 @@
 package fmgp.yallmo.webharness
 
-import fmgp.yallmo.server.protocol.YallmoProtocol.ToolsList
+import fmgp.yallmo.server.protocol.YallmoProtocol.{AgentsSkills, SkillSummary, ToolsList}
 import fmgp.yallmo.tool.{FunctionKey, FunctionToolDefinition, ScalamodeApi, ScalamodeServiceApi, ToolKey}
 import munit.FunSuite
 import scala.collection.mutable
@@ -26,23 +26,49 @@ final class AgentToolsModelSuite extends FunSuite {
     })
   }
 
-  test("inspection is lazy, double clicks send once and successful schemas can be explicitly reloaded") {
+  test("inspection is lazy, double clicks send once and collapse discards schemas before the next inspection") {
     val h = new Harness
     assert(h.requests.isEmpty)
     assertEquals(h.model.state.now().tools, None)
-    h.model.reload()
-    h.model.reload()
+    assert(!h.model.expanded.now())
+    h.model.toggle()
+    h.model.toggle()
     assertEquals(h.requests.size, 1)
     assert(h.model.state.now().loading)
+    assert(h.model.expanded.now())
     h.requests.head.success(tools)
     tick().flatMap { _ =>
       assertEquals(h.model.state.now().tools, Some(tools))
       assert(!h.model.state.now().loading)
-      h.model.reload()
-      assertEquals(h.requests.size, 2)
+      h.model.toggle()
+      assert(!h.model.expanded.now())
       assertEquals(h.model.state.now().tools, None)
+      assertEquals(h.requests.size, 1)
+      h.model.toggle()
+      assert(h.model.expanded.now())
+      assert(h.model.state.now().loading)
+      assertEquals(h.requests.size, 2)
       h.requests.last.success(Chunk.empty)
       tick().map { _ => assertEquals(h.model.state.now().tools, Some(Chunk.empty)) }
+    }
+  }
+
+  test("collapsing discards empty tool results too, and reset invalidates the next inspection") {
+    val h = new Harness
+    h.model.toggle()
+    h.requests.head.success(Chunk.empty)
+    tick().map { _ =>
+      h.model.toggle()
+      assert(!h.model.expanded.now())
+      assertEquals(h.model.state.now().tools, None)
+      assertEquals(h.requests.size, 1)
+      h.model.toggle()
+      assert(h.model.expanded.now())
+      assert(h.model.state.now().loading)
+      assertEquals(h.requests.size, 2)
+      h.model.reset()
+      assert(!h.model.expanded.now())
+      assertEquals(h.model.state.now().tools, None)
     }
   }
 
@@ -61,7 +87,7 @@ final class AgentToolsModelSuite extends FunSuite {
       )
     )
     val definition = FunctionToolDefinition(FunctionKey.scalamode, "Evaluate Scala", scalamode = Some(api))
-    h.model.reload()
+    h.model.toggle()
     h.requests.head.success(Chunk(ToolsList.Tool(ToolKey.Scalamode, Chunk(definition))))
     tick().map { _ =>
       assertEquals(h.model.state.now().tools.get.head.functions.head.scalamode, Some(api))
@@ -71,13 +97,13 @@ final class AgentToolsModelSuite extends FunSuite {
 
   test("failures are visible, never implicitly retried and explicit retry can recover") {
     val h = new Harness
-    h.model.reload()
+    h.model.toggle()
     h.requests.head.failure(new RuntimeException("Unavailable"))
     tick().flatMap { _ =>
       assertEquals(h.model.state.now().error, Some("Unavailable"))
       assert(!h.model.state.now().loading)
       assertEquals(h.requests.size, 1)
-      h.model.reload()
+      h.model.toggle()
       assertEquals(h.model.state.now().error, None)
       h.requests.last.success(tools)
       tick().map { _ => assertEquals(h.model.state.now().tools, Some(tools)) }
@@ -86,9 +112,9 @@ final class AgentToolsModelSuite extends FunSuite {
 
   test("reset invalidates unmounted or reconnected reads without overwriting a newer request") {
     val h = new Harness
-    h.model.reload()
+    h.model.toggle()
     h.model.reset()
-    h.model.reload()
+    h.model.toggle()
     h.requests.head.success(tools)
     tick().flatMap { _ =>
       assert(h.model.state.now().loading)
@@ -100,10 +126,86 @@ final class AgentToolsModelSuite extends FunSuite {
 
   test("synchronous request failures follow the same visible error path") {
     val model = new AgentToolsModel(() => throw new RuntimeException("Disconnected"))
-    model.reload()
+    model.toggle()
     tick().map { _ =>
       assertEquals(model.state.now().error, Some("Disconnected"))
       assert(!model.state.now().loading)
+    }
+  }
+
+  private final class SkillsHarness {
+    val requests = mutable.ArrayBuffer.empty[Promise[AgentsSkills.Result]]
+    val model = new AgentSkillsModel(() => {
+      val request = Promise[AgentsSkills.Result]()
+      requests += request
+      request.future
+    })
+  }
+
+  test("skills remain uninspected until requested, and inspection is independent of tools") {
+    val h = new SkillsHarness
+    assert(h.requests.isEmpty)
+    assertEquals(h.model.state.now().value, None)
+    assert(!h.model.state.now().loading)
+    h.model.toggle()
+    h.model.toggle()
+    assertEquals(h.requests.size, 1)
+    assert(h.model.state.now().loading)
+    val result = AgentsSkills.Result(Chunk(SkillSummary("scala-developer", "Scala work", false, 1, None, None)), true)
+    h.requests.head.success(result)
+    tick().flatMap { _ =>
+      assertEquals(h.model.state.now().value, Some(result))
+      assert(!h.model.state.now().loading)
+      assert(h.model.expanded.now())
+      h.model.toggle()
+      assert(!h.model.expanded.now())
+      assertEquals(h.model.state.now().value, None)
+      assertEquals(h.requests.size, 1)
+      h.model.toggle()
+      assert(h.model.expanded.now())
+      assert(h.model.state.now().loading)
+      assertEquals(h.requests.size, 2)
+      val updated = AgentsSkills.Result(Chunk.empty, false)
+      h.requests.last.success(updated)
+      tick().map { _ => assertEquals(h.model.state.now().value, Some(updated)) }
+    }
+  }
+
+  test("collapsing discards empty skill results and the next inspection fetches again") {
+    val h = new SkillsHarness
+    h.model.toggle()
+    val result = AgentsSkills.Result(Chunk.empty, false)
+    h.requests.head.success(result)
+    tick().map { _ =>
+      h.model.toggle()
+      assert(!h.model.expanded.now())
+      assertEquals(h.model.state.now().value, None)
+      assertEquals(h.requests.size, 1)
+      h.model.toggle()
+      assert(h.model.expanded.now())
+      assert(h.model.state.now().loading)
+      assertEquals(h.requests.size, 2)
+      assertEquals(h.model.state.now().value, None)
+    }
+  }
+
+  test("skill inspection failures require explicit retry and reset invalidates late results") {
+    val h = new SkillsHarness
+    h.model.toggle()
+    h.requests.head.failure(new RuntimeException("Agent skill context unavailable"))
+    tick().flatMap { _ =>
+      assertEquals(h.model.state.now().error, Some("Agent skill context unavailable"))
+      assertEquals(h.requests.size, 1)
+      h.model.toggle()
+      h.model.reset()
+      h.requests.last.success(AgentsSkills.Result(Chunk.empty, false))
+      tick().map { _ =>
+        assertEquals(h.model.state.now().value, None)
+        assertEquals(h.model.state.now().error, None)
+        assert(!h.model.state.now().loading)
+        assert(!h.model.expanded.now())
+        assertEquals(h.requests.size, 2)
+      }
     }
   }
 

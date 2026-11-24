@@ -56,6 +56,96 @@ final class FileSkillServiceSuite extends FunSuite {
     }
   }
 
+  test("optional sidecar retains structured unknown fields and is cached independently of instructions and policy") {
+    withRoot { root =>
+      write(root, "guide", document("guide"))
+      val metadata = Files.writeString(
+        root.resolve("skills/guide/SKILL.metadata.yaml"),
+        """author: Ada
+          |version: '1.2'
+          |description: Not instructions
+          |disable-model-invocation: false
+          |custom:
+          |  notes: |
+          |    First line
+          |    Second line
+          |  values: [true, null, 42, 1.25, on]
+          |""".stripMargin
+      )
+      val service = run(FileSkillService.make(Some(root)))
+      val skill = run(service.readSkill("guide"))
+      assertEquals(service.diagnostics, Vector.empty)
+      assertEquals(skill.metadata.author, Some("Ada"))
+      assertEquals(skill.metadata.version, Some("1.2"))
+      assertEquals(skill.metadata.getString("custom", "notes"), Some("First line\nSecond line\n"))
+      assertEquals(
+        skill.metadata.get("custom", "values"),
+        Some(
+          zio.json.ast.Json.Arr(
+            zio.json.ast.Json.Bool(true),
+            zio.json.ast.Json.Null,
+            zio.json.ast.Json.Num(42),
+            zio.json.ast.Json.Num(BigDecimal("1.25")),
+            zio.json.ast.Json.Str("on")
+          )
+        )
+      )
+      assertEquals(
+        skill.copy(metadata = SkillMetadata.empty),
+        Skill("guide", "Practical grilling advice", "# Grill\nUse heat.\n", true)
+      )
+      Files.writeString(metadata, "author: Changed\n")
+      assertEquals(run(service.readSkill("guide")), skill)
+      Files.delete(metadata)
+      assertEquals(run(service.readSkill("guide")), skill)
+      assertEquals(run(FileSkillService.make(Some(root))).catalog.head.metadata, SkillMetadata.empty)
+    }
+  }
+
+  test("malformed bounded sidecars diagnose without dropping skills or changing invocation policy") {
+    withRoot { root =>
+      val invalid = Vector(
+        "",
+        "[]",
+        "author: [unterminated",
+        "author: Ada\nauthor: Bob",
+        "42: value",
+        "author: !!java.lang.String unsafe",
+        "custom: &a [*a]",
+        "custom: &a [one]\ncopy: *a",
+        "custom: {<<: {author: Ada}}",
+        "custom: !!float .inf",
+        "custom: !!bool maybe",
+        "custom: " + "[" * 25 + "a" + "]" * 25,
+        "author: " + "x" * FileSkillService.MaxSidecarBytes
+      )
+      invalid.zipWithIndex.foreach { (text, index) =>
+        write(root, s"bad-$index", document(s"bad-$index"))
+        Files.writeString(root.resolve(s"skills/bad-$index/SKILL.metadata.yaml"), text)
+      }
+      write(root, "bad-utf8", document("bad-utf8"))
+      Files.write(root.resolve("skills/bad-utf8/SKILL.metadata.yaml"), Array(0xc3.toByte, 0x28.toByte))
+      val service = run(FileSkillService.make(Some(root)))
+      assertEquals(service.catalog.size, invalid.size + 1)
+      assertEquals(service.diagnostics.size, invalid.size + 1)
+      assert(service.diagnostics.forall(_.reason.startsWith("Invalid SKILL.metadata.yaml")))
+      assert(service.catalog.forall(skill => skill.metadata == SkillMetadata.empty && skill.disableModelInvocation))
+      assert(service.catalog.forall(_.instructions == "# Grill\nUse heat.\n"))
+    }
+  }
+
+  test("sidecar symlinks retain the existing fail-closed section discovery policy") {
+    withRoot { root =>
+      write(root, "guide", document("guide"))
+      val outside = Files.writeString(root.resolve("outside.yaml"), "author: Private")
+      Files.createSymbolicLink(root.resolve("skills/guide/SKILL.metadata.yaml"), outside)
+      val service = run(FileSkillService.make(Some(root)))
+      assertEquals(service.catalog, Vector.empty)
+      assertEquals(service.diagnostics.size, 1)
+      assert(service.diagnostics.head.reason.startsWith("Cannot load sections:"))
+    }
+  }
+
   test("supporting Markdown sections are cached by path relative to SKILL.md") {
     withRoot { root =>
       write(root, "grilling", document("grilling"))

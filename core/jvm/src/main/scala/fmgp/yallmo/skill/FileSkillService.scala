@@ -15,15 +15,18 @@ import org.yaml.snakeyaml.resolver.Resolver
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 import zio.{IO, Ref, UIO, ZIO}
+import zio.json.ast.Json
 
 /** One-level discovery under <storage>/skills; never creates directories. Complete skills are cached until restart.
   * Rooted FileSystem validation rejects symlinks. As with FileSystem, this is not an OS sandbox against concurrent
-  * filesystem replacement or hard-link aliases.
+  * filesystem replacement or hard-link aliases. Malformed regular metadata sidecars are diagnostic-only, but a sidecar
+  * symlink retains the filesystem's fail-closed directory listing policy and rejects that skill.
   */
 object FileSkillService {
   val MaxEntries = 256
   val MaxFileBytes = 256 * 1024
   val MaxMetadataChars = 16 * 1024
+  val MaxSidecarBytes = 16 * 1024
 
   /** Missing storage/skills is normal. Other discovery failures produce an empty catalog with diagnostics. The entry
     * count check limits skill processing, not directory enumeration memory/work, and rejects the entire scan on
@@ -45,7 +48,8 @@ object FileSkillService {
               skill <- ZIO.fromEither(parseSkill(text)).mapError(reason => ResourceDiagnostic(directory, reason))
               sections <- readSections(fs, directory)
                 .mapError(error => ResourceDiagnostic(directory, s"Cannot load sections: ${error.getMessage}"))
-            } yield directory -> skill.copy(sections = sections)).either
+              metadata <- readMetadata(fs, directory)
+            } yield (directory, skill.copy(sections = sections, metadata = metadata._1), metadata._2)).either
           }
           result = build(candidates)
         } yield result).catchAll {
@@ -67,19 +71,25 @@ object FileSkillService {
   }
 
   private def build(
-      candidates: Vector[Either[ResourceDiagnostic, (String, Skill)]]
+      candidates: Vector[Either[ResourceDiagnostic, (String, Skill, Vector[ResourceDiagnostic])]]
   ): SkillService = {
     // Input is sorted by directory; the first valid declaration wins, independently of the declared skill name.
     val (entries, warnings) = candidates.foldLeft(
       (Map.empty[String, (String, Skill)], Vector.empty[ResourceDiagnostic])
     ) { case ((entries, warnings), candidate) =>
       candidate match {
-        case Left(warning)             => (entries, warnings :+ warning)
-        case Right((directory, value)) =>
+        case Left(warning)                          => (entries, warnings :+ warning)
+        case Right((directory, value, diagnostics)) =>
           entries.get(value.name) match {
             case Some((winner, _)) =>
-              (entries, warnings :+ ResourceDiagnostic(directory, s"Duplicate name '${value.name}'; using '$winner'"))
-            case None => (entries.updated(value.name, directory -> value), warnings)
+              (
+                entries,
+                warnings ++ diagnostics :+ ResourceDiagnostic(
+                  directory,
+                  s"Duplicate name '${value.name}'; using '$winner'"
+                )
+              )
+            case None => (entries.updated(value.name, directory -> value), warnings ++ diagnostics)
           }
       }
     }
@@ -147,6 +157,75 @@ object FileSkillService {
       else if value.matches("-?(0|[1-9][0-9]*)") then Tag.INT
       else if value.matches("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?") then Tag.FLOAT
       else Tag.STR
+  }
+
+  private def readMetadata(
+      fs: FsRead,
+      directory: String
+  ): UIO[(SkillMetadata, Vector[ResourceDiagnostic])] = {
+    val invalid = (
+      SkillMetadata.empty,
+      Vector(
+        ResourceDiagnostic(directory, "Invalid SKILL.metadata.yaml: require a bounded JSON-compatible YAML object")
+      )
+    )
+    fs.readBytes(s"$directory/SKILL.metadata.yaml").take(MaxSidecarBytes.toLong + 1L).runCollect.either.flatMap {
+      case Left(_: FsError.NotFound)                    => ZIO.succeed((SkillMetadata.empty, Vector.empty))
+      case Left(_)                                      => ZIO.succeed(invalid)
+      case Right(bytes) if bytes.size > MaxSidecarBytes => ZIO.succeed(invalid)
+      case Right(bytes)                                 =>
+        ZIO.succeed(Try {
+          val text = UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.toArray)).toString
+          SkillMetadata(yamlObject(text))
+        }.toOption.fold(invalid)(metadata => (metadata, Vector.empty)))
+    }
+  }
+
+  /** Compose nodes rather than constructing Java objects: reject aliases, non-JSON tags, merge keys and duplicate keys,
+    * and retain unknown fields as JSON without YAML-specific scalar coercions.
+    */
+  private def yamlObject(text: String): Json.Obj = {
+    def invalid(): Nothing = throw new IllegalArgumentException("Invalid metadata")
+    val options = new LoaderOptions()
+    options.setAllowDuplicateKeys(false)
+    options.setMaxAliasesForCollections(0)
+    options.setNestingDepthLimit(20)
+    options.setCodePointLimit(MaxMetadataChars)
+    val dumper = new DumperOptions()
+    val yaml = new Yaml(new SafeConstructor(options), new Representer(dumper), dumper, options, new MetadataResolver)
+    val node = yaml.compose(new StringReader(text))
+    val seen = Collections.newSetFromMap(new IdentityHashMap[Node, java.lang.Boolean]())
+    def convert(node: Node): Json = {
+      if node == null || !seen.add(node) then invalid()
+      node match {
+        case mapping: MappingNode if mapping.getTag == Tag.MAP =>
+          val fields = mapping.getValue.asScala.map { tuple =>
+            val key = convert(tuple.getKeyNode) match {
+              case Json.Str(value) if value != "<<" => value
+              case _                                => invalid()
+            }
+            key -> convert(tuple.getValueNode)
+          }.toVector
+          if fields.map(_._1).distinct.size != fields.size then invalid()
+          Json.Obj(zio.Chunk.fromIterable(fields))
+        case sequence: SequenceNode if sequence.getTag == Tag.SEQ =>
+          Json.Arr(zio.Chunk.fromIterable(sequence.getValue.asScala.map(convert)))
+        case scalar: ScalarNode =>
+          scalar.getTag match {
+            case Tag.STR                                                                    => Json.Str(scalar.getValue)
+            case Tag.NULL if Set("null", "Null", "NULL", "~", "").contains(scalar.getValue) => Json.Null
+            case Tag.BOOL if Set("true", "True", "TRUE", "false", "False", "FALSE").contains(scalar.getValue) =>
+              Json.Bool(scalar.getValue.equalsIgnoreCase("true"))
+            case Tag.INT | Tag.FLOAT => Json.Num(BigDecimal(scalar.getValue))
+            case _                   => invalid()
+          }
+        case _ => invalid()
+      }
+    }
+    convert(node) match {
+      case obj: Json.Obj => obj
+      case _             => invalid()
+    }
   }
 
   private def parseSkill(text: String): Either[String, Skill] = Try {

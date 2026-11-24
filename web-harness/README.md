@@ -31,9 +31,9 @@ browser Origin. It also proxies `/api/sdlc` over HTTP to `http://127.0.0.1:8080`
 `127.0.0.1:5173:5173`), or use a trusted network. Backend loopback binding alone does not protect the Vite proxy.
 
 Static assets and SDLC inspection use HTTP; other application requests and attachment bytes use JSON-RPC. No Scala.js/Vite sbt
-bridge is needed: Vite imports the output of the separately-running linker. Eight hash-linked navigation links provide chat,
+bridge is needed: Vite imports the output of the separately-running linker. Nine hash-linked navigation links provide chat,
 all messages, an interactive timestamp-based conversation DAG,
-registry agents with on-demand tool inspection, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
+registry agents with separate on-demand tool and skill inspection, the Skills explorer, stored blob IDs, the Scalamode playground, SDLC inspection and Providers. Sessions are available
 from the conversation sidebar, sorted by `meta.updatedAt` (falling back to `meta.createdAt`), newest first.
 Unknown dates come last; equal dates use session ID order. These audit dates track metadata changes, not message activity.
 Nonblank session titles appear in the sidebar, Chat heading, graph session markers, graph search results and session inspectors.
@@ -89,6 +89,27 @@ See [Conversation DAG inspector](../docs/CONVERSATION_GRAPH.md) for navigation, 
 best-effort branch persistence limitations. Persisted prompt/tool/reply artifacts can appear during a pending branch; automatic
 reads never retry a branch or clear its explicit recovery gate.
 
+## Skills inspection
+
+Agents offers separate **Inspect tools** and **Inspect skills** buttons. Neither inspection runs automatically.
+Available skills stay hidden until **Inspect skills** is clicked, then appear as linked names only. After inspection,
+**Collapse skills** hides and discards the result, returning the button to **Inspect skills**. Inspecting again makes a new
+read-only server request. Select a name to open
+`#/skills/<name>` with the catalog collapsed and the skill reader visible. Registered-only/presence agents have no
+inspectable configured context; they are not presented as agents with zero skills.
+
+The Skills page uses a compact, paginated catalog **above** the full-width detail reader, with no second sidebar.
+Search name/description, filter automatic discovery policy or effective agent access, then select a skill. Detail sections
+show instructions, supporting Markdown documents, application metadata and effective configured-agent availability.
+Documents have bookmarkable links, sanitized Markdown previews, source views and explicit copy actions. Catalog search
+and filters survive page navigation. Application metadata is descriptive only and is not sent to model contexts.
+
+Inspection is read-only: no inference, tool invocation, conversation-context injection or skill-file reread. Agent access
+uses the same lazy adapter/context resolution as tool inspection. The filesystem catalog is a startup snapshot; **Refresh**
+rereads that snapshot, not disk. Restart the server after skill-file changes. Discovery warnings remain visible even when
+the catalog is collapsed. Availability and document contents are loaded on demand; late replies are invalidated on
+selection changes, unmount and disconnect, with no implicit retries.
+
 ## Shared Markdown and code blocks
 
 SDLC descriptions/steps and all server message cards (Chat, All messages and Graph) share the
@@ -132,8 +153,10 @@ shows its description and supplied Scala interface declarations/method signature
 **Built-in Scala API (tool / ZIO)** reference is also available. Partial read/list bindings show only permitted methods. Pure bindings
 explicitly report no additional services; bindings without interface documentation say so rather than guessing.
 The full LLM tool description is shown inline inside its function, like other function descriptions. No RPC endpoints, tickets, dispatchers, artifact paths
-or private runtime implementations are included. **Reload tools** explicitly refreshes a result or retries a failure. Reconnect,
-page refresh and leaving the page discard inspection state; late replies cannot overwrite a new view.
+or private runtime implementations are included. After inspection, **Collapse tools** hides and discards the result,
+returning the button to **Inspect tools**. Inspecting again makes a new read-only server request; there is no Expand action.
+Failed requests can be retried explicitly using **Retry tools** / **Retry skills**. There is no source/configuration reload action.
+Reconnect, page refresh and leaving the page discard inspection state; late replies cannot overwrite a new view.
 
 ## Providers and ChatGPT login
 

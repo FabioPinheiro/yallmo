@@ -3,10 +3,13 @@ package fmgp.yallmo.server
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.{AgentTurnRequest, AgentTurnResponse}
 import fmgp.yallmo.orchestration.{SessionId, SessionSummary}
+import fmgp.yallmo.orchestration.config.{AgentConfig, Config, ProviderConfig, ProviderId}
+import java.nio.file.Files
+import scala.jdk.CollectionConverters.*
 import fmgp.yallmo.server.jsonrpc.JsonRpc
 import fmgp.yallmo.server.protocol.YallmoProtocol.*
 import munit.ZSuite
-import zio.*
+import zio.{Config as _, *}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -93,6 +96,10 @@ final class OrchestratorRpcSuite extends ZSuite {
             "messages.list",
             "agents.list",
             "tools.list",
+            "skills.list",
+            "skills.read",
+            "agents.skills",
+            "skills.availability",
             "blobs.list",
             "blobs.read",
             "events.subscribe",
@@ -109,7 +116,7 @@ final class OrchestratorRpcSuite extends ZSuite {
             "providers.login.cancel"
           )
         )
-        assertEquals(result.methods.size, 21)
+        assertEquals(result.methods.size, 25)
         assertEquals(result.notifications, List(EventsUpdate.method))
         assertEquals(error(changed).code, ErrorCode.Conflict)
         assertEquals(error(removed).code, ErrorCode.Conflict)
@@ -283,6 +290,127 @@ final class OrchestratorRpcSuite extends ZSuite {
     assertEquals(snapshot.revision, 42L)
     assertEquals(snapshot.head, None)
     assertEquals(snapshot.error, Some("Session history unavailable"))
+  }
+
+  testZ("skill endpoints expose cached documents and metadata without inference or skill filesystem rereads") {
+    val id = AgentId("configured")
+    val provider = ProviderId.unsafe("local")
+    val config = Config(
+      agents = Map(id -> AgentConfig("OAIAgent", Seq(provider), config = Json.Obj("model" -> Json.Str("model")))),
+      providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
+    )
+    ZIO.scoped(for {
+      root <- ZIO.acquireRelease(ZIO.attempt(Files.createTempDirectory("skill-rpc-").toRealPath())) { root =>
+        ZIO.attempt {
+          val paths = Files.walk(root)
+          try paths.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists(_))
+          finally paths.close()
+        }.orDie
+      }
+      _ <- ZIO.attempt {
+        val directory = Files.createDirectories(root.resolve("skills/guide/references"))
+        Files.writeString(root.resolve("skills/guide/SKILL.md"), "---\nname: guide\ndescription: A guide\n---\nMAIN")
+        Files.writeString(directory.resolve("heat.md"), "HEAT")
+        Files.writeString(root.resolve("skills/guide/SKILL.metadata.yaml"), "author: Ada\ncustom: [one, two]\n")
+      }
+      configured <- application.TestServerApplication.make(storageRoot = Some(root), config = config)
+      _ <- ZIO.attempt {
+        Files.delete(root.resolve("skills/guide/references/heat.md"))
+        Files.delete(root.resolve("skills/guide/SKILL.md"))
+        Files.delete(root.resolve("skills/guide/SKILL.metadata.yaml"))
+      }
+      rpc = new OrchestratorRpc(configured)
+      connection <- rpc.openAuthenticatedConnection(UserId("alice"))
+      _ <- init(rpc, connection, None)
+      listed <- call(rpc, connection, SkillsList.method)
+      main <- rpc
+        .handle(JsonRpc.Request(Json.Str("read"), SkillsRead.method, SkillsRead.Params("guide")).toJson, connection)
+        .map(_.get)
+      section <- rpc
+        .handle(
+          JsonRpc
+            .Request(Json.Str("section"), SkillsRead.method, SkillsRead.Params("guide", Some("references/heat.md")))
+            .toJson,
+          connection
+        )
+        .map(_.get)
+      agents <- rpc
+        .handle(JsonRpc.Request(Json.Str("agents"), AgentsSkills.method, AgentsSkills.Params(id)).toJson, connection)
+        .map(_.get)
+      availability <- rpc
+        .handle(
+          JsonRpc
+            .Request(Json.Str("availability"), SkillsAvailability.method, SkillsAvailability.Params("guide"))
+            .toJson,
+          connection
+        )
+        .map(_.get)
+      _ <- rpc.disconnect(connection)
+    } yield {
+      assertEquals(
+        success[SkillsList.Result](listed).skills,
+        Chunk(SkillSummary("guide", "A guide", false, 2, Some("Ada"), None))
+      )
+      assertEquals(success[SkillsRead.Result](main).content, "MAIN")
+      assertEquals(
+        success[SkillsRead.Result](main).metadata,
+        Json.Obj("author" -> Json.Str("Ada"), "custom" -> Json.Arr(Json.Str("one"), Json.Str("two")))
+      )
+      assertEquals(success[SkillsRead.Result](section).content, "HEAT")
+      assertEquals(success[AgentsSkills.Result](agents).skills, success[SkillsList.Result](listed).skills)
+      assert(success[AgentsSkills.Result](agents).modelDiscoveryAvailable)
+      assertEquals(
+        success[SkillsAvailability.Result](availability).agents,
+        Chunk(SkillAgentAvailability(id, true, None))
+      )
+      assert(!listed.contains(root.toString))
+    })
+  }
+
+  testZ("skill endpoints require initialization and share existing viewer read access") {
+    val methods = List(SkillsList.method, SkillsRead.method, AgentsSkills.method, SkillsAvailability.method)
+    ZIO.scoped(for {
+      configured <- backend
+      rpc = new OrchestratorRpc(configured)
+      connection <- rpc.openConnection
+      denied <- ZIO.foreach(methods)(call(rpc, connection, _))
+      initialized <- init(rpc, connection, None)
+      listed <- call(rpc, connection, SkillsList.method)
+      agent <- rpc
+        .handle(
+          JsonRpc.Request(Json.Str("agent"), AgentsSkills.method, AgentsSkills.Params(executable)).toJson,
+          connection
+        )
+        .map(_.get)
+      unknown <- rpc
+        .handle(JsonRpc.Request(Json.Str("read"), SkillsRead.method, SkillsRead.Params("missing")).toJson, connection)
+        .map(_.get)
+      unavailable <- rpc
+        .handle(
+          JsonRpc
+            .Request(Json.Str("availability"), SkillsAvailability.method, SkillsAvailability.Params("missing"))
+            .toJson,
+          connection
+        )
+        .map(_.get)
+      invalid <- rpc
+        .handle(
+          """{"jsonrpc":"2.0","id":"bad","method":"skills.read","params":{"name":"guide","path":"/private"}}""",
+          connection
+        )
+        .map(_.get)
+      _ <- rpc.disconnect(connection)
+      closed <- call(rpc, connection, SkillsList.method)
+    } yield {
+      assert(denied.forall(reply => error(reply).code == ErrorCode.Unauthorized))
+      assert(methods.forall(success[Initialize.Result](initialized).methods.contains))
+      assertEquals(success[SkillsList.Result](listed), SkillsList.Result(Chunk.empty, Chunk.empty))
+      assertEquals(error(agent).code, ErrorCode.NotFound)
+      assertEquals(error(unknown).code, ErrorCode.NotFound)
+      assertEquals(error(unavailable).code, ErrorCode.NotFound)
+      assertEquals(error(invalid), JsonRpc.Error.InvalidParams)
+      assertEquals(error(closed).code, ErrorCode.Unauthorized)
+    })
   }
 
   private def init(

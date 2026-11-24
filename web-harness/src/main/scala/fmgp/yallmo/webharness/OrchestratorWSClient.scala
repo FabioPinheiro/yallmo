@@ -158,6 +158,12 @@ final class OrchestratorWSClient private[webharness] (
   def agents(): Future[List[String]] =
     request[Empty, AgentsList.Result](AgentsList.method, Empty()).map(_.map(AgentId.value).toList)
   def tools(id: AgentId): Future[ToolsList.Result] = request(ToolsList.method, ToolsList.Params(id))
+  def skills(): Future[SkillsList.Result] = request(SkillsList.method, Empty())
+  def skill(name: String, section: Option[String] = None): Future[SkillsRead.Result] =
+    request(SkillsRead.method, SkillsRead.Params(name, section))
+  def agentSkills(id: AgentId): Future[AgentsSkills.Result] = request(AgentsSkills.method, AgentsSkills.Params(id))
+  def skillAvailability(name: String): Future[SkillsAvailability.Result] =
+    request(SkillsAvailability.method, SkillsAvailability.Params(name))
   def blobs(): Future[List[BlobId]] = request[Empty, BlobsList.Result](BlobsList.method, Empty()).map(_.toList)
 
   def close(): Unit = {

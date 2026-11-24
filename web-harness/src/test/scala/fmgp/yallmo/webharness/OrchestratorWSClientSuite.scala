@@ -37,6 +37,53 @@ final class OrchestratorWSClientSuite extends FunSuite {
     }
   }
 
+  test("skill inspection adapters use typed read-only requests and decode all inspection results") {
+    val h = new Harness()
+    val summary = SkillSummary("scala-developer", "Scala work", false, 1, None, None)
+    val catalog = SkillsList.Result(Chunk(summary), Chunk.empty)
+    val detail = SkillsRead.Result(
+      summary,
+      "Instructions",
+      Chunk("references/intro.md"),
+      Json.Obj("custom" -> Json.Str("retained"))
+    )
+    val effective = AgentsSkills.Result(Chunk(summary), true)
+    val availability = SkillsAvailability.Result(Chunk(SkillAgentAvailability(AgentId("agent1"), true, None)))
+    for {
+      _ <- h.initialize()
+      listing = h.client.skills()
+      listRequest <- h.awaitRequest(SkillsList.method)
+      _ = h.reply(listRequest, catalog.toJsonAST.fold(fail(_), identity))
+      listed <- listing
+      reading = h.client.skill(summary.name, Some("references/intro.md"))
+      readRequest <- h.awaitRequest(SkillsRead.method)
+      _ = assertEquals(
+        readRequest.params.toJson.fromJson[SkillsRead.Params],
+        Right(SkillsRead.Params(summary.name, Some("references/intro.md")))
+      )
+      _ = h.reply(readRequest, detail.toJsonAST.fold(fail(_), identity))
+      read <- reading
+      filtering = h.client.agentSkills(AgentId("agent1"))
+      agentRequest <- h.awaitRequest(AgentsSkills.method)
+      _ = h.reply(agentRequest, effective.toJsonAST.fold(fail(_), identity))
+      filtered <- filtering
+      checking = h.client.skillAvailability(summary.name)
+      availabilityRequest <- h.awaitRequest(SkillsAvailability.method)
+      _ = h.reply(availabilityRequest, availability.toJsonAST.fold(fail(_), identity))
+      checked <- checking
+    } yield {
+      assertEquals(listed, catalog)
+      assertEquals(read, detail)
+      assertEquals(filtered, effective)
+      assertEquals(checked, availability)
+      assertEquals(
+        h.sent.map(_.method).toList,
+        List(Initialize.method, SkillsList.method, SkillsRead.method, AgentsSkills.method, SkillsAvailability.method)
+      )
+      h.client.close()
+    }
+  }
+
   test("connection attempts have a deadline even before the socket opens") {
     val h = new Harness(timeout = 30)
     h.client.connect().failed.map { error =>

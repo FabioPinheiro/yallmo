@@ -20,7 +20,7 @@ Client and server share one current contract. There is no application protocol v
 backward-compatibility layer. JSON-RPC envelopes still require `"jsonrpc": "2.0"`.
 `OrchestratorWSClient.connect` initializes once before returning; `capabilities` reads that cached result without another request.
 
-Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `tools.list`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
+Viewer methods: `initialize`, `sessions.list`, `sessions.get`, `messages.list`, `agents.list`, `tools.list`, `skills.list`, `skills.read`, `agents.skills`, `skills.availability`, `blobs.list`, `blobs.read`, `events.subscribe`, `events.unsubscribe`.
 Operator additionally advertises `turn.submit`, `sessions.rename`, `branches.submit`, `agents.invoke`, `blobs.upload` and the read-only `diagnostics.request`, plus `providers.list`, `providers.login.start`, `providers.login.complete` and
 `providers.login.cancel`. The implemented notification is `events.update` (only after subscribing).
 The server requires a configured backend; standalone startup requires `--config`. There is no viewer-only server mode.
@@ -212,6 +212,10 @@ watch, or persistence-format migration. Direct external-process writes are outsi
 | `events.subscribe` | `{nonce: String, scope?: SubscriptionScope}` (nonce: unique printable ASCII, 1–128 characters) | `EventsSubscribe.Result` (below) |
 | `events.unsubscribe` | `{subscriptionId: String}` | `{}` (idempotent, connection-owned) |
 | `agents.list` | `{}` | `[AgentId]` |
+| `skills.list` | `{}` | `{skills: SkillSummary[], diagnostics: SkillDiagnostic[]}` |
+| `skills.read` | `{name: String, section?: String}` | `{skill: SkillSummary, content: String, sections: String[], metadata: object}` |
+| `agents.skills` | `{agentId: AgentId}` | `{skills: SkillSummary[], modelDiscoveryAvailable: Boolean}` |
+| `skills.availability` | `{name: String}` | `{agents: SkillAgentAvailability[]}` |
 | `agents.invoke` | `{agentId: AgentId, input: Message, actingAgentId: AgentId}`; no session controls | `Message` (recipient's response payload) |
 | `blobs.list` | `{}` | `[BlobId]` |
 | `blobs.read` | `{blobId: BlobId, offset: Long, maxBytes: Int = 65536}` | `{blobId: BlobId, offset: Long, dataBase64: String, totalBytes: Long, eof: Boolean}` |
@@ -572,7 +576,38 @@ dispatchers, artifact locations or runner metadata are serialized. It uses the s
 adapter/context and run resolution-time wiring, but never runs inference, invokes a function, creates a session or writes
 messages. Empty means no effective callable functions. Unknown/nonconfigured IDs (including human/presence and registered-only
 agents) return NotFound; context-resolution failures return Rejected with a sanitized message. The browser's Agents page loads
-schemas only on explicit **Inspect tools** / **Reload tools** actions.
+schemas only on explicit **Inspect tools** / **Retry tools** actions. After a successful read, **Collapse tools** hides and
+discards the local result without sending a request. The button returns to **Inspect tools**; another inspection makes a
+new read-only request against the server's effective context, not a reload of configuration or skill files.
+
+### Skills inspection
+
+The four skills inspection methods are available to initialized Viewers and Operators. They are read-only application
+inspection endpoints, **not** invocations of the model-facing `readSkill` tool. They do not run inference, execute tools,
+create sessions, write messages, inject instructions into conversation contexts or reread skill files.
+
+- `SkillSummary` contains `name`, `description`, `disableModelInvocation`, `documentCount` (including `SKILL.md`),
+  and optional string `author`/`version`. These are display fields, not permission grants. Catalog/agent descriptions
+  are abbreviated to 256 UTF-16 units and summary author/version to 64 units to keep loaded catalogs within the wire
+  bound even with JSON escaping. Diagnostic resource labels are also abbreviated to 64 units. Skill reads retain the
+  complete description and complete structured metadata.
+- `skills.list` returns the loaded startup catalog and discovery warnings (`SkillDiagnostic = {resource, message}`).
+  Filesystem changes require server restart; listing again does not rescan disk.
+- `skills.read` returns the main instruction body when `section` is absent, or the exact named supporting Markdown
+  document when present. `sections` lists the loaded relative document paths. No arbitrary filesystem paths are accepted.
+  `metadata` retains application-only structured sidecar data, including unknown fields; it is not part of model-facing
+  catalogs or tool results. Source YAML comments and arbitrary scripts/binary assets are not inspection content.
+- `agents.skills` resolves a configured agent using the same effective context as `tools.list`, including capability
+  filtering and resolution-time wiring. `modelDiscoveryAvailable` reports whether automatic discovery has an executable
+  skill reader. Available skills are not evidence that their bodies are already loaded in a conversation.
+  `disableModelInvocation` means automatic model discovery is off; it is not a general permission denial.
+- `skills.availability` reports each configured agent as `{agentId, available, error?}`. Individual context-resolution
+  failures are represented as sanitized inspection errors rather than silently treating the agent as denied.
+
+Like `tools.list`, agent-context inspection can lazily initialize a local adapter and its context. Unknown skills,
+sections and nonconfigured agent IDs are rejected; inspection cannot widen an agent’s runtime access. Skill metadata is
+optional. Invalid regular metadata sidecars produce diagnostics without dropping valid instructions; existing filesystem
+symlink rejection remains in force.
 
 Existing `SessionsFork`, `RunsGet`, `RunsCancel`, `CommandsGet`, `DiagnosticsMessage` and
 `TurnStarted`/`TurnProgress` codec definitions remain **disabled drafts**, including their reserved fields.

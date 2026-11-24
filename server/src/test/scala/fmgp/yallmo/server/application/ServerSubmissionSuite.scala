@@ -238,7 +238,7 @@ final class ServerSubmissionSuite extends FunSuite {
             Chunk(human, UserId.websiteAgent(UserId(AgentId.value(human).stripPrefix("user-"))))
           )
         )
-        assertEquals(info.get.methods.size, 20)
+        assertEquals(info.get.methods.size, 25)
         assertEquals(info.get.configuredAgentIds, Some(Chunk(first, second)))
         assertEquals(count, 1)
         assertEquals(stored.messages.map(_.agentId), Chunk(human, first))
@@ -562,7 +562,7 @@ final class ServerSubmissionSuite extends FunSuite {
         }
       } yield results.foreach { case (info, code) =>
         assertEquals(info.identity.role, Role.Viewer)
-        assertEquals(info.methods.size, 10)
+        assertEquals(info.methods.size, 14)
         assertEquals(code, ErrorCode.Forbidden)
       }
     })
@@ -602,9 +602,10 @@ final class ServerSubmissionSuite extends FunSuite {
       } yield {
         val info = decode[JsonRpc.Success[Initialize.Result]](response.get).result
         assertEquals(
-          info.methods.takeRight(10),
+          info.methods.takeRight(11),
           List(
             TurnSubmit.method,
+            SessionsRename.method,
             BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,
@@ -768,9 +769,10 @@ final class ServerSubmissionSuite extends FunSuite {
           )
         )
         assertEquals(
-          info.methods.takeRight(10),
+          info.methods.takeRight(11),
           List(
             TurnSubmit.method,
+            SessionsRename.method,
             BranchesSubmit.method,
             DiagnosticsRequest.method,
             BlobsUpload.method,

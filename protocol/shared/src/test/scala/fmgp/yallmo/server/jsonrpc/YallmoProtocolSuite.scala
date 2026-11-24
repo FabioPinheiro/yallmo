@@ -37,6 +37,38 @@ final class YallmoProtocolSuite extends FunSuite {
   private val head = MessageId.unsafe("sha256:" + "a" * 64)
   private val blobId = BlobId.from("00000000-0000-0000-0000-000000000001").fold(fail(_), identity)
 
+  test("skill inspection wire contract preserves metadata and uses strict named parameters") {
+    val summary = SkillSummary("guide", "A guide", true, 2, Some("Ada"), Some("1.2"))
+    assertWire(
+      summary,
+      """{"name":"guide","description":"A guide","disableModelInvocation":true,"documentCount":2,"author":"Ada","version":"1.2"}"""
+    )
+    assertEquals(SkillsList.method, "skills.list")
+    assertEquals(SkillsRead.method, "skills.read")
+    assertEquals(AgentsSkills.method, "agents.skills")
+    assertEquals(SkillsAvailability.method, "skills.availability")
+    assertEquals("""{"name":"guide"}""".fromJson[SkillsRead.Params], Right(SkillsRead.Params("guide")))
+    assertWire(
+      SkillsRead.Params("guide", Some("references/heat.md")),
+      """{"name":"guide","section":"references/heat.md"}"""
+    )
+    assertWire(AgentsSkills.Params(agentId), s"""{"agentId":${agentId.toJson}}""")
+    assertWire(SkillsAvailability.Params("guide"), """{"name":"guide"}""")
+    assert("""{"name":"guide","path":"secret"}""".fromJson[SkillsRead.Params].isLeft)
+    assert("""{"name":"guide","section":42}""".fromJson[SkillsRead.Params].isLeft)
+    assert(s"""{"agentId":${agentId.toJson},"extra":true}""".fromJson[AgentsSkills.Params].isLeft)
+    assert("""{"name":"guide","extra":true}""".fromJson[SkillsAvailability.Params].isLeft)
+    val metadata = Json.Obj("unknown" -> Json.Arr(Json.Str("text"), Json.Bool(true), Json.Null))
+    val read = SkillsRead.Result(summary, "INSTRUCTIONS", Chunk("references/heat.md"), metadata)
+    assertEquals(read.toJson.fromJson[SkillsRead.Result], Right(read))
+    val listed = SkillsList.Result(Chunk(summary), Chunk(SkillDiagnostic("bad", "Invalid metadata")))
+    assertEquals(listed.toJson.fromJson[SkillsList.Result], Right(listed))
+    val agents = AgentsSkills.Result(Chunk(summary), false)
+    assertEquals(agents.toJson.fromJson[AgentsSkills.Result], Right(agents))
+    val availability = SkillsAvailability.Result(Chunk(SkillAgentAvailability(agentId, false, Some("Unavailable"))))
+    assertEquals(availability.toJson.fromJson[SkillsAvailability.Result], Right(availability))
+  }
+
   test("manual Scalamode selector is optional, strict and outside persisted code-only input") {
     val message = Message(
       MessageData(

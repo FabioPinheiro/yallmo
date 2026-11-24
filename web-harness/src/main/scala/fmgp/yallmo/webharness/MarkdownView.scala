@@ -21,13 +21,22 @@ private[webharness] object MarkdownView {
 
   def apply(source: String): HtmlElement = component(source, fencedOnly = false)
 
+  /** Rewrites only caller-recognized links after sanitization, for catalog-local skill document navigation. */
+  def withLinks(source: String, resolve: String => Option[String]): HtmlElement =
+    component(source, fencedOnly = false, resolveLink = resolve)
+
   /** Render code fences but preserve all other tool/log output as literal, whitespace-preserving text. */
   def blocks(source: String): HtmlElement = component(source, fencedOnly = true)
 
   /** Render source directly: Markdown fences inside Scala strings/comments must remain part of the file. */
   def scalaCode(source: String): HtmlElement = component(source, fencedOnly = false, scalaCode = true)
 
-  private def component(source: String, fencedOnly: Boolean, scalaCode: Boolean = false): HtmlElement = {
+  private def component(
+      source: String,
+      fencedOnly: Boolean,
+      scalaCode: Boolean = false,
+      resolveLink: String => Option[String] = _ => None
+  ): HtmlElement = {
     var cancelEnhancement: js.Function0[Unit] = () => ()
     div(
       cls := "markdown-view",
@@ -40,6 +49,14 @@ private[webharness] object MarkdownView {
             if scalaCode then Browser.renderScala(source)
             else if fencedOnly then Browser.renderBlocks(source)
             else Browser.render(source)
+          val anchors = fragment.querySelectorAll("a[href]")
+          (0 until anchors.length).foreach { index =>
+            val anchor = anchors(index)
+            resolveLink(anchor.getAttribute("href")).foreach { href =>
+              anchor.setAttribute("href", href)
+              anchor.removeAttribute("target")
+            }
+          }
           val _ = host.appendChild(fragment)
           cancelEnhancement = Browser.enhance(host)
         } catch {

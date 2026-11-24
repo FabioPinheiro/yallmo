@@ -113,20 +113,20 @@ sbx login
 sbx secret set openai --oauth       # Once per host
 sbx secret set github --command 'gh auth token' # Once per host but requires 'gh auth login'
 # sbx secret set github --sandbox yallmo-github # create the token and inserted here
-sbx env plan docker/yallmo-sandbox
-sbx env run docker/yallmo-sandbox
+sbx env plan .
+sbx env run .
 ```
 
 Host mount sources in `sbxenv.yaml` resolve relative to that file, not your shell's
-working directory. `workspace: ../..` shares the repository root at its host absolute
+working directory. `workspace: .` shares the repository root at its host absolute
 path, for example `/Users/fabio/workspace/yallmo`. The kits also declare three fixed
 sandbox destinations:
 
-| Host directory (beside `sbxenv.yaml`) | Sandbox path | Purpose |
+| Host directory (relative to root `sbxenv.yaml`) | Sandbox path | Purpose |
 | --- | --- | --- |
-| `./workspace` | `/home/agent/workspace` | `hello.py` and your coding projects; Bash, Pi and Playwright start here |
-| `./yallmo-workspace` | `/home/agent/yallmo-workspace` | Yallmo's `server.sh`, `yallmo.yaml`, storage and logs |
-| `./pi` | `/home/agent/.pi` | Sandbox-specific Pi profile |
+| `./docker/yallmo-sandbox/workspace` | `/home/agent/workspace` | `hello.py` and your coding projects; Bash, Pi and Playwright start here |
+| `./docker/yallmo-sandbox/yallmo-workspace` | `/home/agent/yallmo-workspace` | Yallmo's `server.sh`, `yallmo.yaml`, storage and logs |
+| `./docker/yallmo-sandbox/pi` | `/home/agent/.pi` | Sandbox-specific Pi profile |
 
 Bash/Pi still start in `/home/agent/workspace`; use
 `cd /Users/fabio/workspace/yallmo` to work on the repository (adjust for your host path).
@@ -136,12 +136,21 @@ Bash/Pi still start in `/home/agent/workspace`; use
 credentials/data, and `docker/yallmo-sandbox/` (the kit and sandbox-specific Pi profile).
 Only enable this workspace for agents you trust with those files. Review changes to
 the environment file and kit before running host-side `sbx env` commands again.
-`writableEnvFiles` remains disabled; because this environment file is nested inside
-the checkout, do not rely on file-level read-only protection as a security boundary.
-For stronger isolation, keep the environment, kit and private data outside the checkout.
+`writableEnvFiles` remains disabled. Keep `sbxenv.yaml` at the workspace root so
+its parent is the workspace mount itself, not a subdirectory the sandbox can rename
+to bypass the file's read-only mount. This protects the environment file, not the
+writable kit sources or other repository contents. For stronger isolation, keep the
+environment, kits and private data outside the checkout.
 
-If you run from `docker/yallmo-sandbox` instead, use `sbx env plan .` and
-`sbx env run .`.
+If you run from `docker/yallmo-sandbox` instead, use `sbx env plan ../..` and
+`sbx env run ../..`.
+
+When upgrading from the nested environment file, use the root `sbxenv.yaml` and
+remove the obsolete `docker/yallmo-sandbox/sbxenv.yaml` **on the host**. A running
+sandbox may prevent removing its mounted file from inside the sandbox. Recreate
+the sandbox from the repository root (see below) to apply the new file location
+and its read-only protection. The sandbox name, kit directories and host data
+locations are unchanged; do not move `pi/`, `workspace/` or `yallmo-workspace/`.
 
 Uncomment the GitHub commands if needed; approve its credential request too.
 The GitHub token stays on the host; `gh` and HTTPS Git use the sandbox proxy.
@@ -217,8 +226,8 @@ sandbox, run `sbx stop yallmo-sandbox` on the host. To disable boot autostart, s
 From the repository root:
 
 ```bash
-sbx env exec docker/yallmo-sandbox -- yallmo-service status
-sbx env exec docker/yallmo-sandbox -- yallmo-service logs --follow
+sbx env exec . -- yallmo-service status
+sbx env exec . -- yallmo-service logs --follow
 ```
 
 `docker/yallmo-sandbox/pi/`, `workspace/` and `yallmo-workspace/` persist on the host
@@ -234,17 +243,17 @@ agent-owned `/home/agent/.zshrc` that sources the bundled config; `overwrite: fa
 preserves an existing `.zshrc` rather than replacing local edits.
 
 Select all three kits and Zsh with the following configuration. On the **host**,
-update the kit sources in `docker/yallmo-sandbox/sbxenv.yaml` (preserve its other fields):
+update the kit sources in `sbxenv.yaml` at the repository root (preserve its other fields):
 
 ```yaml
 kits:
-  - source: ./kit-yallmo
+  - source: ./docker/yallmo-sandbox/kit-yallmo
     args:
       image: docker.io/fmgp/yallmo:latest
-  - source: ./kit-pi
+  - source: ./docker/yallmo-sandbox/kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
-  - source: ./kit-zsh
+  - source: ./docker/yallmo-sandbox/kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest
 
@@ -277,8 +286,8 @@ SBX-managed GitHub credentials untouched.
 
 ### Upgrade an existing sandbox
 
-When upgrading from the old layout, change `./kit` to `./kit-yallmo`, add
-`./kit-pi`, and change `./zsh` to `./kit-zsh` in `sbxenv.yaml` **on the host**
+When upgrading from the old layout, use the three kit sources under
+`./docker/yallmo-sandbox/` shown above in the root `sbxenv.yaml` **on the host**
 before running `sbx env` again. SBX may mount that file read-only inside a running
 sandbox. All three kits should use the same image argument, as shown above.
 The renamed Zsh kit may receive a new history volume: back up any important
@@ -297,11 +306,11 @@ or leave a second copy of storage in use. Keep `hello.py` and coding projects in
 The Pi kit accepts an optional `pi_version` argument, defaulting to `latest`.
 It maps to Docker's `PI_VERSION` build argument and installs
 `@earendil-works/pi-coding-agent@${PI_VERSION}`. To pin Pi, set an exact version
-under **only the Pi kit's arguments** in `docker/yallmo-sandbox/sbxenv.yaml`
+under **only the Pi kit's arguments** in `sbxenv.yaml` at the repository root
 **on the host** (the running sandbox mounts this file read-only):
 
 ```yaml
-  - source: ./kit-pi
+  - source: ./docker/yallmo-sandbox/kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
       pi_version: "1.6.0"
@@ -320,10 +329,10 @@ first, then run these commands **on the host**, from the repository root (remova
 ends sessions in the old sandbox):
 
 ```bash
-sbx env rm docker/yallmo-sandbox
+sbx env rm .
 # Review the creation plan, then create the environment with the updated Pi kit.
-sbx env plan docker/yallmo-sandbox
-sbx env run docker/yallmo-sandbox
+sbx env plan .
+sbx env run .
 ```
 
 Do not substitute a standalone `sbx create --name yallmo-rebuild ...`: that creates
@@ -341,7 +350,7 @@ If an exact version was specified, it should match that version.
 `pi-cli` bypasses the profile-checking `pi` launcher:
 
 ```bash
-sbx env exec docker/yallmo-sandbox -- /usr/local/bin/pi-cli --version
+sbx env exec . -- /usr/local/bin/pi-cli --version
 ```
 
 The host-mounted `workspace/`, `yallmo-workspace/` and `pi/` directories remain on the host.

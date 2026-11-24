@@ -14,6 +14,7 @@ except ModuleNotFoundError:
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
+ENVIRONMENT = ROOT.parents[1] / "sbxenv.yaml"
 
 
 class SandboxSetupTests(unittest.TestCase):
@@ -254,7 +255,7 @@ class SandboxToolchainTests(unittest.TestCase):
 @unittest.skipUnless(yaml, "PyYAML required for sandbox declaration tests")
 class SandboxConfigurationTests(unittest.TestCase):
     def test_background_service_is_a_sandbox_boot_hook_with_explicit_runtime_environment(self):
-        environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
+        environment = yaml.safe_load(ENVIRONMENT.read_text())
         kit = yaml.safe_load((ROOT / "kit-yallmo/kit.yaml").read_text())
         self.assertIn(environment["env"]["YALLMO_AUTOSTART"], {"0", "1"})
         self.assertEqual(environment["env"]["YALLMO_WORKSPACE"], "/home/agent/yallmo-workspace")
@@ -273,14 +274,20 @@ class SandboxConfigurationTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", hook["env"])
 
     def test_kits_compose_with_separate_private_profile_and_workspace_mounts(self):
-        environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
+        environment = yaml.safe_load(ENVIRONMENT.read_text())
         self.assertEqual(environment["agent"], "kit-yallmo")
-        self.assertEqual(environment["workspace"], "../..")
+        self.assertEqual(environment["workspace"], ".")
+        self.assertEqual((ENVIRONMENT.parent / environment["workspace"]).resolve(),
+                         ROOT.parents[1].resolve())
         self.assertEqual(environment["mounts"], {
-            "/home/agent/workspace": "./workspace",
-            "/home/agent/yallmo-workspace": "./yallmo-workspace",
-            "/home/agent/.pi": "./pi",
+            "/home/agent/workspace": "./docker/yallmo-sandbox/workspace",
+            "/home/agent/yallmo-workspace": "./docker/yallmo-sandbox/yallmo-workspace",
+            "/home/agent/.pi": "./docker/yallmo-sandbox/pi",
         })
+        for source in environment["mounts"].values():
+            self.assertEqual((ENVIRONMENT.parent / source).resolve().parent, ROOT.resolve())
+        for kit in environment["kits"]:
+            self.assertTrue((ENVIRONMENT.parent / kit["source"] / "kit.yaml").is_file())
         declared = {}
         for name, kind in (("kit-yallmo", "workload"), ("kit-pi", "mixin"), ("kit-zsh", "mixin")):
             kit = yaml.safe_load((ROOT / name / "kit.yaml").read_text())
@@ -295,7 +302,9 @@ class SandboxConfigurationTests(unittest.TestCase):
         self.assertTrue(all(port["hostIP"] == "127.0.0.1" for port in environment["ports"]))
         self.assertIn({"sandbox": 8080, "host": 8080, "hostIP": "127.0.0.1"}, environment["ports"])
         self.assertEqual([kit["source"] for kit in environment["kits"]],
-                         ["./kit-yallmo", "./kit-pi", "./kit-zsh"])
+                         ["./docker/yallmo-sandbox/kit-yallmo",
+                          "./docker/yallmo-sandbox/kit-pi",
+                          "./docker/yallmo-sandbox/kit-zsh"])
 
 
 if __name__ == "__main__":

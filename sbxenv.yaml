@@ -1,31 +1,31 @@
-# The repository workspace also exposes this environment file, kit/ and local data.
-# Review host-side changes before applying this environment again.
+# Keep this file at the workspace root so SBX can protect it read-only without
+# a renameable parent directory inside the workspace. Review kit changes on the host.
 schemaVersion: "1"
 name: yallmo-sandbox
 agent: kit-yallmo
 
 # Resolve the checkout root relative to this file; sbx preserves its host path.
-workspace: ../..
+workspace: .
 
 kits:
-  - source: ./kit-yallmo
+  - source: ./docker/yallmo-sandbox/kit-yallmo
     args:
       image: docker.io/fmgp/yallmo:latest
-  - source: ./kit-pi
+  - source: ./docker/yallmo-sandbox/kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
       pi_version: 1.6.0
-  - source: ./kit-zsh
+  - source: ./docker/yallmo-sandbox/kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest
 
 # Kit-declared mounts; host sources resolve relative to this file.
 # These fixed paths remain separate from the repository's host-path workspace.
 mounts:
-  /home/agent/workspace: ./workspace
-  /home/agent/yallmo-workspace: ./yallmo-workspace
+  /home/agent/workspace: ./docker/yallmo-sandbox/workspace
+  /home/agent/yallmo-workspace: ./docker/yallmo-sandbox/yallmo-workspace
   # A sandbox-specific copy, NOT the host's live ~/.pi.
-  /home/agent/.pi: ./pi
+  /home/agent/.pi: ./docker/yallmo-sandbox/pi
 
 env:
   YALLMO_WORKSPACE: /home/agent/yallmo-workspace

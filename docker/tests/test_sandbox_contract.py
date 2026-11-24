@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[1] / "yallmo-sandbox"
+ENVIRONMENT = ROOT.parents[1] / "sbxenv.yaml"
 KIT = ROOT / "kit-yallmo"
 TEMPLATES = ROOT / "kit-pi/templates"
 WORKSPACE = ROOT / "yallmo-workspace"
@@ -99,7 +100,7 @@ class SandboxDeclarationTests(unittest.TestCase):
         self.assertTrue(credentials == {"accessToken": "${YALLMO_SBX_OPENAI_ACCESS_TOKEN}",
                                         "refreshToken": "${YALLMO_SBX_OPENAI_REFRESH_TOKEN}", "expiresAtMillis": 0},
                         "Server config must contain only placeholder references, never saved credentials")
-        environment = yaml.safe_load((ROOT / "sbxenv.yaml").read_text())
+        environment = yaml.safe_load(ENVIRONMENT.read_text())
         self.assertTrue(environment["env"]["YALLMO_SBX_OPENAI_ACCESS_TOKEN"] == SENTINEL)
         self.assertTrue(environment["env"]["YALLMO_SBX_OPENAI_REFRESH_TOKEN"] == "oai-ort01-proxy-managed")
         self.assertEqual(config["providers"]["docker-mr"]["endpoint"],

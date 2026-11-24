@@ -5,10 +5,17 @@ import fmgp.yallmo.tool.*
 import munit.ZSuite
 import zio.*
 import zio.json.*
+import zio.json.ast.Json
 
 final class ReadSkillToolSuite extends ZSuite {
   private val allowed =
-    Skill("allowed", "metadata", "MAIN <body>", sections = Map("z.md" -> "OTHER", "refs/a.md" -> "SECTION"))
+    Skill(
+      "allowed",
+      "metadata",
+      "MAIN <body>",
+      sections = Map("z.md" -> "OTHER", "refs/a.md" -> "SECTION"),
+      metadata = SkillMetadata(Json.Obj("author" -> Json.Str("PRIVATE AUTHOR")))
+    )
   private val denied = Skill("denied", "secret metadata", "SECRET", sections = Map("refs/a.md" -> "SECRET SECTION"))
   private val reader = ReadSkillTool(Seq(allowed))
   private def call(json: String) = ExternalFunctionCall(SkillsToolDefinition.ReadSkill, json)
@@ -26,6 +33,8 @@ final class ReadSkillToolSuite extends ZSuite {
         section.text.fromJson[ReadSkillTool.SectionResult],
         Right(ReadSkillTool.SectionResult("allowed", "refs/a.md", "SECTION"))
       )
+      assert(!main.text.contains("PRIVATE AUTHOR"))
+      assert(!section.text.contains("PRIVATE AUTHOR"))
       assert(!main.text.contains("SECTION"))
       assert(!section.text.contains("MAIN"))
       assert(!section.text.contains("OTHER"))

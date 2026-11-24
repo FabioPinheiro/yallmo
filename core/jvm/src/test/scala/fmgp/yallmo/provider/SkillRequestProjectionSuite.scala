@@ -3,14 +3,21 @@ package fmgp.yallmo.provider
 import fmgp.yallmo.model.*
 import fmgp.yallmo.model.llm.*
 import fmgp.yallmo.orchestration.config.AgentCapabilities
-import fmgp.yallmo.skill.Skill
+import fmgp.yallmo.skill.{Skill, SkillMetadata}
 import fmgp.yallmo.tool.*
 import munit.FunSuite
 import zio.Chunk
+import zio.json.ast.Json
 
 abstract class SkillRequestProjectionSuite extends FunSuite {
   protected def wire(request: AgentTurnRequest): ujson.Obj
-  private val visible = Skill("a&b", "VISIBLE META", "PRIVATE MAIN", sections = Map("secret.md" -> "PRIVATE SECTION"))
+  private val visible = Skill(
+    "a&b",
+    "VISIBLE META",
+    "PRIVATE MAIN",
+    sections = Map("secret.md" -> "PRIVATE SECTION"),
+    metadata = SkillMetadata(Json.Obj("author" -> Json.Str("PRIVATE AUTHOR")))
+  )
   private val denied = Skill("denied", "DENIED META", "DENIED MAIN")
   private val hidden = visible.copy(name = "hidden", description = "HIDDEN META", disableModelInvocation = true)
   private val continuation =

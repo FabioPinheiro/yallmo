@@ -3,6 +3,7 @@ package fmgp.yallmo.skill
 import fmgp.yallmo.orchestration.StaticContext
 import munit.FunSuite
 import zio.Chunk
+import zio.json.ast.Json
 
 final class SkilSuite extends FunSuite {
   test("renderCatalogEntry escapes XML metadata once and never serializes skill contents") {
@@ -10,7 +11,8 @@ final class SkilSuite extends FunSuite {
       "grill&<>\"'",
       "Use <heat> & \"care\"; it's &amp; safe",
       "PRIVATE BODY",
-      sections = Map("private/path.md" -> "PRIVATE SECTION")
+      sections = Map("private/path.md" -> "PRIVATE SECTION"),
+      metadata = SkillMetadata(Json.Obj("author" -> Json.Str("PRIVATE AUTHOR")))
     )
     assertEquals(
       skill.renderCatalogEntry,
@@ -56,7 +58,7 @@ final class SkilSuite extends FunSuite {
     assertEquals(context.skills.head, skill)
     assertEquals(
       skill.productElementNames.toVector,
-      Vector("name", "description", "instructions", "disableModelInvocation", "sections")
+      Vector("name", "description", "instructions", "disableModelInvocation", "sections", "metadata")
     )
     assertEquals(Skill("brief", "Be brief", "Use few words").sections, Map.empty[String, String])
     assert(!Skill("brief", "Be brief", "Use few words").disableModelInvocation)

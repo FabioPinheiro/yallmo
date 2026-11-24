@@ -3,7 +3,12 @@ package fmgp.yallmo.tool
 import fmgp.yallmo.model.llm.JsonSchema
 import zio.Chunk
 
-/** Stable callable identifiers and membership declared by this tool, independent of its runtime bindings. */
+/** Stable callable identifiers and membership declared by this tool, independent of its runtime bindings.
+  *
+  * TODO inspire the develop process in Matt Pocock's process
+  * @see
+  *   https://www.youtube.com/watch?v=mU8WKII1gpk&t=1518s
+  */
 object SdlcToolDefinition extends ToolDefinition {
   val SetTasks: FunctionKey = FunctionKey.unsafe("sdlc_set")
   val ReadTask: FunctionKey = FunctionKey.unsafe("sdlc_read_task")

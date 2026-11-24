@@ -8,16 +8,20 @@ package fmgp.yallmo.skill
   *   Whether automatic model invocation should be disabled; explicit invocation can still use the skill.
   * @param sections
   *   Supporting Markdown contents keyed by file path relative to SKILL.md, for section-by-section context loading.
+  * @param metadata
+  *   Application-only structured data from SKILL.metadata.yaml, empty when absent. Never included in model-facing
+  *   catalogs or readSkill results; it does not affect instructions, invocation policy or permissions.
   */
 final case class Skill(
     name: String,
     description: String,
     instructions: String,
     disableModelInvocation: Boolean = false,
-    sections: Map[String, String] = Map.empty
+    sections: Map[String, String] = Map.empty,
+    metadata: SkillMetadata = SkillMetadata.empty
 ) {
 
-  /** Metadata-only XML advertisement; instructions and supporting sections never enter the catalog prompt. */
+  /** Name/description-only XML advertisement; instructions, sections and application metadata are excluded. */
   def renderCatalogEntry: String =
     s"<skill>\n  <name>${Skill.escapeXml(name)}</name>\n  <description>${Skill.escapeXml(description)}</description>\n</skill>"
 }

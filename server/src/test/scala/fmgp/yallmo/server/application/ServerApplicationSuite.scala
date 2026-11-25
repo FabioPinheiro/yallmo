@@ -3,6 +3,7 @@ package fmgp.yallmo.server.application
 import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalamodeToolDefinition}
 
 import fmgp.yallmo.tool.*
+import fmgp.yallmo.tool.utpc.UTPCToolDefinition
 
 import fmgp.yallmo.model.*
 import fmgp.yallmo.orchestration.{SessionId, ExternalFunctionCall, ExternalFunctionResult}
@@ -36,6 +37,79 @@ final class ServerApplicationSuite extends FunSuite {
   private val config = Config(
     // Deliberately unresolvable: startup/listing must not select configured agents.
     agents = Map(first -> AgentConfig("Unsupported"), second -> AgentConfig("Unsupported"))
+  )
+
+  test("workspace startup binds the immutable UTPC catalog to the selected runner and validates explicit allowlists") {
+    run(ZIO.scoped {
+      for {
+        root <- temporaryRoot
+        file <- ZIO.attemptBlocking {
+          val directory = Files.createDirectories(root.resolve("utpc/manual"))
+          Files.writeString(
+            directory.resolve("weather.json"),
+            """{"utcp_version":"1.0.0","manual_version":"1","description":"Local weather manual","tools":[{"name":"weather","description":"Weather","inputs":{"type":"object"},"outputs":true,"tool_transport":{"transport_type":"http","name":"weather","url":"https://example.test/weather"}}]}"""
+          )
+        }
+        services <- probes()
+        configured = config.copy(
+          agents =
+            Map(
+              first -> AgentConfig(
+                "OAIAgent",
+                Seq(provider),
+                Json.Obj("model" -> Json.Str("test-model")),
+                capabilities = AgentCapabilities(
+                  tools = Some(Set(UTPCToolDefinition.name)),
+                  functions = Some(Set(UTPCToolDefinition.Execute))
+                )
+              ),
+              second -> AgentConfig(
+                "OAIAgent",
+                Seq(provider),
+                Json.Obj("model" -> Json.Str("test-model")),
+                capabilities = AgentCapabilities(tools = Some(Set.empty))
+              )
+            ),
+          providers = Map(provider -> ProviderConfig.OAI("http://127.0.0.1:1/v1"))
+        )
+        application <- ServerApplication
+          .workspace(configured, Chunk.empty, Some(root), root, services.tools)
+          .provideSomeLayer[Scope](Client.default)
+        _ <- ZIO.attemptBlocking(Files.delete(file))
+        selected <- application.resolve(first)
+        denied <- application.resolve(second)
+        output <- application.invoke(utpcMessage(first), selected)
+        blocked <- application.invoke(utpcMessage(second), denied)
+        missing <- ServerApplication
+          .workspace(configured, Chunk.empty, Some(root), root, services.tools)
+          .provideSomeLayer[Scope](Client.default)
+          .either
+      } yield {
+        val advertised = UTPCToolDefinition.Definition.copy(
+          description = UTPCToolDefinition.Definition.description + "\nAvailable manuals: \"weather\""
+        )
+        assertEquals(selected.context.functions, Chunk(advertised))
+        assertEquals(selected.functions.map(_.definition), selected.context.functions)
+        assertEquals(selected.tools.map(_.name), Chunk(UTPCToolDefinition.name))
+        assert(application.availability.availableFunctions.contains(UTPCToolDefinition.Execute))
+        assert(output.payload.contentStr.contains("weather"))
+        assert(output.payload.contentStr.contains("Local weather manual"))
+        assert(!output.payload.contentStr.contains("example.test"))
+        assert(denied.functions.isEmpty)
+        assert(blocked.payload.contentStr.contains("not allowed"))
+        assert(!blocked.payload.contentStr.contains("Local weather manual"))
+        assert(missing.swap.toOption.get.getMessage.contains("capabilities.tools contains unknown IDs: utpc"))
+      }
+    })
+  }
+
+  private def utpcMessage(author: AgentId): Message = Message(
+    MessageData(
+      author,
+      None,
+      java.time.Instant.EPOCH,
+      MessagePayload.ToolCall(FunctionCall(FunctionCallId.unsafe("utpc-list"), UTPCToolDefinition.Execute, "{}"))
+    )
   )
 
   test("startup requires config and accepts reordered/equal syntax") {

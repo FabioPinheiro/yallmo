@@ -88,7 +88,7 @@ Provider configuration and credentials remain trusted application data. Do not p
 - Use a fixed research-only system prompt: locate evidence, cite sources, state uncertainty, and do not take external actions beyond advertised read-only tools.
 - Use an explicitly configured cheaper/simple model through a child `Agent.turn(AgentTurnRequest)` call; it is not a single audio transcription request.
 - Give each request an independent child transcript. Return only the bounded `ResearchReport` to the parent; retain child events/transcript only under explicit debug/audit policy.
-- Inherit parent cancellation. Child timeout/cancellation must cancel its search/MCP work and clean up server processes.
+- Inherit parent cancellation. Child timeout/cancellation must cancel its search/MCP HTTP work and release invocation-owned streams/sessions; it does not undo completed remote effects.
 - Forbid recursive `research` calls and child-agent spawning.
 - Start with 4–6 child turns, 8–12 actions, a short wall-clock limit, and a report/output limit. All limits must be typed configuration, not prompt text.
 - Start with no Bash, filesystem writes, repository mutation, browser JavaScript evaluation, authenticated browser state, form fill/click, uploads, downloads, or dialogs.
@@ -109,7 +109,7 @@ Build a child `AgentRunner` using the simple configured model and only `webSearc
 
 ### 4. MCP/Playwright integration
 
-When MCP support is ready, add approved read-only MCP adapters to the **child** static context. Do not change the main agent's capability set.
+When MCP support is ready, add approved read-only MCP adapters to the **child** static context. Do not change the main agent's capability set. Follow the [MCP / UTCP roadmap](../../../../../../../../docs/tools/MCP_UTCP_IMPLEMENTATION_PLAN.md): connect only to independently hosted Streamable HTTP endpoints; no MCP stdio client or automatic server-process launch.
 
 ### 5. Optional page fetch
 

@@ -2,6 +2,7 @@ package fmgp.yallmo.server.application
 
 import fmgp.yallmo.model.{Agent, AgentId, AudioAgent, Message, MessageId, YallmoError}
 import fmgp.yallmo.tool.ToolDefinition
+import fmgp.yallmo.tool.utpc.{UTPCTool, UTPCHttpProviderImp}
 
 import fmgp.yallmo.provider.openai.OpenAiCodexAuth
 import fmgp.yallmo.tool.sdlc.SdlcService
@@ -240,7 +241,11 @@ object ServerApplication {
     for {
       environment <- services.build
       skills <- FileSkillService.make(storageRoot)
-      startup <- ApplicationTools.evaluate(workspace, storageRoot, sharedSdlc, skills).provideEnvironment(environment)
+      client <- ZIO.service[Client]
+      utpc <- UTPCTool.load(storageRoot, new UTPCHttpProviderImp(client))
+      startup <- ApplicationTools
+        .evaluate(workspace, storageRoot, sharedSdlc, skills, utpc)
+        .provideEnvironment(environment)
       tools = startup.functions.map { tool =>
         tool match {
           case reader: ReadSkillTool => reader

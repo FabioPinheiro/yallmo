@@ -5,6 +5,7 @@ import fmgp.yallmo.tool.scalamode.{ScalaCodeExecutor, ScalaCodeExecutors, ScalaT
 import fmgp.yallmo.skill.{ReadSkillTool, SkillService}
 import fmgp.yallmo.model.YallmoError
 import fmgp.yallmo.tool.*
+import fmgp.yallmo.tool.utpc.UTPCToolDefinition
 
 import fmgp.yallmo.fs.{FileSystem, FsRead, FsWrite}
 import fmgp.yallmo.orchestration.{AgentFunction, AgentTool, ExternalFunctionCall, ExternalFunctionResult}
@@ -63,7 +64,7 @@ object ApplicationTools {
       BashTool.definition,
       RepositoryChangesTool.definition,
       ScalaTool.definition
-    ) ++ SdlcTools.Definitions :+ SkillsToolDefinition.ReadSkillDefinition
+    ) ++ SdlcTools.Definitions ++ Chunk(SkillsToolDefinition.ReadSkillDefinition, UTPCToolDefinition.Definition)
 
   val ToolDefinitions: Chunk[ToolDefinition] = Chunk(
     FilesystemToolDefinition,
@@ -71,7 +72,8 @@ object ApplicationTools {
     RepositoryChangesToolDefinition,
     ScalamodeToolDefinition,
     SdlcToolDefinition,
-    SkillsToolDefinition
+    SkillsToolDefinition,
+    UTPCToolDefinition
   )
 
   val live: ULayer[Environment] =
@@ -82,7 +84,8 @@ object ApplicationTools {
       workspace: Path,
       storageRoot: Option[Path],
       sharedSdlc: Option[SdlcService] = None,
-      skills: SkillService = SkillService.empty
+      skills: SkillService = SkillService.empty,
+      utpc: Option[fmgp.yallmo.tool.utpc.UTPCTool] = None
   ): URIO[Environment, StartupTools] =
     for {
       filesystem <- FileSystem.open(workspace.toString).option
@@ -132,7 +135,8 @@ object ApplicationTools {
       )
       reader =
         if skills.catalog.exists(!_.disableModelInvocation) then Chunk(ReadSkillTool(skills.catalog)) else Chunk.empty
-      allAvailable = available ++ sdlc.fold(Chunk.empty[AgentFunction[Any]])(_.functions) ++ reader
+      allAvailable = available ++ sdlc.fold(Chunk.empty[AgentFunction[Any]])(_.functions) ++ reader ++ Chunk
+        .fromIterable(utpc)
       startupTools = StartupTools(
         allAvailable,
         ToolAvailability.from(allAvailable.map(_.definition), unavailable, ToolDefinitions),

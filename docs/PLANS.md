@@ -13,8 +13,8 @@ Current behavior belongs in the user and architecture guides, not historical tas
 | --- | --- |
 | [Scalamode backend parity](tools/SCALAMODE-BACKEND-PARITY-PLAN.md) | Implemented in working tree; independent code-level review accepted after transport-ordering fixes. Minimum-Node and opt-in production-route tests passed. Deployment/manual acceptance, complete selected-agent runtime matrix and broad-core SDLC failures remain open. |
 | [Debug by message ID](transcriber/DEBUG_BY_MESSAGE_ID_PLAN.md) | Future work. `/debug message <hash>` is not implemented; connected `/debug request` is a different delivered feature. |
-| [Research sub-agent and web search](../core/src/main/scala/fmgp/yallmo/tool/WEB_SEARCH_PLAN.md) | Proposed; the research child and search service/tool are not implemented. |
-| [Research-child MCP support](../core/src/main/scala/fmgp/yallmo/tool/mcp/MCP_TOOL_SUPPORT_PLAN.md) | Proposed; MCP transport/adapter and research-child integration are not implemented. |
+| [MCP / UTCP architecture and roadmap](tools/MCP_UTCP_IMPLEMENTATION_PLAN.md) | Reviewed proposal; MCP Streamable HTTP only (no stdio), restricted UTCP HTTP/JSON, optional MCP publication later. UTCP-backed MCP integration is an explicit implementation choice, not universal compatibility. No implementation yet. |
+| [Research sub-agent and web search](../core/shared/src/main/scala/fmgp/yallmo/tool/WEB_SEARCH_PLAN.md) | Proposed; the research child and search service/tool are not implemented. |
 | [Pi runner](../core/src/main/scala/fmgp/yallmo/provider/pi/PI_DEV_PROVIDER_PLAN.md) | TODO placeholder, not a completed delivery. |
 | [SSH remote workspace](tools/TOOL-SSH.md) | Proposed architecture; routed workspace/controller implementation remains open. |
 | [System One in the REPL](system_one/SYSTEM_ONE_IN_REPL.md) | Reviewed proposal; `/so run` and the modal request builder are not implemented. |

@@ -1,0 +1,64 @@
+users:
+  fabio:
+    # python3 -c 'import getpass, hashlib, secrets; p = getpass.getpass("Password: "); s = secrets.token_bytes(16); print("pbkdf2-sha256$600000$" + s.hex() + "$" + hashlib.pbkdf2_hmac("sha256", p.encode("utf-8"), s, 600000, dklen=32).hex())'
+    secretHash: 'pbkdf2-sha256$600000$c3d82731f9e71b88192a8f8b1ce108e2$10d0d99e95b6cc4f88d950c308b3d707e956010ff89ccb7b153d420950a7087c'
+agents:
+  Odin:
+    agentType: FolderStructureAgent
+    filesystem:
+      root: /Users/fabio/workspace/yallmo/server-storage/agent-workspace/odin # TODO The root path SHOULD be relative to this file!
+  # Coach:
+  #   agentType: CoachAgent
+  #   providerIds:
+  #   - sbx-openai
+  #   config:
+  #     systemPrompt: Help me make evidence-led career decisions. Be practical, candid
+  #       and concise.
+  #   capabilities:
+  #     tools:
+  #     - coach
+  #     functions:
+  #     - coach_list_applications
+  #     - coach_get_application
+  #     - coach_save_application
+  #     skills: []
+  #   filesystem:
+  #     root: /home/fmgp/workspace/yallmo/server-storage/agent-workspace/CoachAgent
+  Transcriber:
+    agentType: OAIAgent
+    providerIds:
+    - docker-mr
+    capabilities:
+      tools: []
+      skills: []
+    config:
+      model: ai/gemma4:E4B
+      systemPrompt: Transcribe the supplied audio exactly. Preserve the spoken language.
+        Do not translate, summarize, answer, or call tools. Return only the transcript.
+  Gemma:
+    agentType: OAIAgent
+    providerIds:
+    - docker-mr
+    config:
+      model: ai/gemma4:E4B
+      systemPrompt: You are Gemma, a concise assistant.
+  sol:
+    agentType: ChatGPTAgent
+    providerIds:
+    - sbx-openai
+    config:
+      model: gpt-6.1-sol
+      systemPrompt: You are Sol, a concise assistant.
+      thinkingLevel: high
+providers:
+  docker-mr:
+    providerType: OAI
+    endpoint: http://host.docker.internal:12434/v1/
+    # My host endpoint  http://localhost:12434/v1/
+    # My docker sandbox endpoint: http://model-runner.docker.internal/v1/
+  sbx-openai:
+    providerType: ChatGPT
+    credentials:
+      accessToken: ${YALLMO_SBX_OPENAI_ACCESS_TOKEN}
+      refreshToken: ${YALLMO_SBX_OPENAI_REFRESH_TOKEN}
+      expiresAtMillis: 0

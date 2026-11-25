@@ -1,0 +1,49 @@
+{
+  "utcp_version": "1.0.0",
+  "manual_version": "1.0.0",
+  "description": "Read the authenticated GitHub account's basic profile. Requires a host-configured GitHub token.",
+  "tools": [
+    {
+      "name": "github_authenticated_user",
+      "description": "Get the basic profile of the GitHub account associated with the server's configured token. Use this to check which GitHub account the token authenticates as, not GitHub service health. Takes no arguments. Authentication is configured by the host; never ask the LLM to supply a token.",
+      "inputs": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "GitHub account ID."
+          },
+          "login": {
+            "type": "string",
+            "description": "GitHub account username."
+          },
+          "name": {
+            "type": ["string", "null"],
+            "description": "Display name, if configured."
+          },
+          "html_url": {
+            "type": "string",
+            "description": "Public GitHub profile URL."
+          }
+        },
+        "required": ["id", "login"]
+      },
+      "tool_transport": {
+        "transport_type": "http",
+        "name": "github_api",
+        "url": "https://api.github.com/user",
+        "http_method": "GET",
+        "headers": {
+          "Accept": "application/vnd.github+json",
+          "Authorization": "Bearer ${GH_TOKEN}",
+          "User-Agent": "FabioPinheiro"
+        }
+      }
+    }
+  ]
+}

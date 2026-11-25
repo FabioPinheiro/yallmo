@@ -1,0 +1,18 @@
+# Application-only metadata; not sent to the LLM.
+author: Matt Pocock
+
+# Local version counter; increment when this skill or its metadata changes.
+revision: 1
+# UTC timestamp for the latest local skill or metadata update.
+updated_at: "2026-11-23T21:27:32Z"
+
+source:
+  repository: https://github.com/mattpocock/skills
+  path: skills/productivity/grilling/SKILL.md
+  url: https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md
+  pinned_url: https://github.com/mattpocock/skills/blob/7739eaed7f8f3915437a8def198a6d0d7206dbc7/skills/productivity/grilling/SKILL.md
+
+notes: |
+  Skill by Matt Pocock.
+  The local SKILL.md matches the pinned upstream version after normalizing
+  line endings and trailing whitespace.

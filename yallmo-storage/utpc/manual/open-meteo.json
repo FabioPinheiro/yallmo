@@ -1,0 +1,90 @@
+{
+  "utcp_version": "1.0.0",
+  "manual_version": "1.1.0",
+  "tools": [
+    {
+      "name": "current_weather",
+      "description": "Get selected current weather measurements for any location using latitude and longitude. Known location examples: Faro, Portugal (37.0187, -7.9272); Lisbon, Portugal (38.7223, -9.1393); London, United Kingdom (51.5074, -0.1278). These are examples, not a location allowlist. Choose one or more supported measurements using the current argument. Forecast days is fixed at 1. No API key is required.",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90,
+            "description": "Location latitude in decimal degrees. North is positive; south is negative."
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180,
+            "description": "Location longitude in decimal degrees. East is positive; west is negative."
+          },
+          "current": {
+            "type": "string",
+            "pattern": "^(rain|precipitation|temperature_2m|relative_humidity_2m|apparent_temperature|weather_code|wind_speed_10m|wind_direction_10m)(,(rain|precipitation|temperature_2m|relative_humidity_2m|apparent_temperature|weather_code|wind_speed_10m|wind_direction_10m))*$",
+            "description": "One or more comma-separated measurement names, without spaces: rain, precipitation, temperature_2m, relative_humidity_2m, apparent_temperature, weather_code, wind_speed_10m, wind_direction_10m. For example: temperature_2m,apparent_temperature,rain. Pass a string, not an array."
+          }
+        },
+        "required": ["latitude", "longitude", "current"],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "type": "object",
+            "description": "Contains the requested measurements and timing metadata. Unrequested measurements are absent; unavailable values may be null.",
+            "properties": {
+              "rain": {
+                "type": ["number", "null"],
+                "description": "Rain amount in millimetres."
+              },
+              "precipitation": {
+                "type": ["number", "null"],
+                "description": "Total precipitation amount in millimetres."
+              },
+              "temperature_2m": {
+                "type": ["number", "null"],
+                "description": "Air temperature at 2 metres, in Celsius."
+              },
+              "relative_humidity_2m": {
+                "type": ["number", "null"],
+                "description": "Relative humidity at 2 metres, in percent."
+              },
+              "apparent_temperature": {
+                "type": ["number", "null"],
+                "description": "Feels-like temperature in Celsius."
+              },
+              "weather_code": {
+                "type": ["integer", "null"],
+                "description": "WMO weather interpretation code."
+              },
+              "wind_speed_10m": {
+                "type": ["number", "null"],
+                "description": "Wind speed at 10 metres, in kilometres per hour."
+              },
+              "wind_direction_10m": {
+                "type": ["number", "null"],
+                "description": "Wind direction at 10 metres, in degrees."
+              }
+            }
+          },
+          "current_units": {
+            "type": "object",
+            "description": "Units reported by Open-Meteo for the requested measurements and timing metadata.",
+            "additionalProperties": {"type": "string"}
+          }
+        },
+        "required": ["current"]
+      },
+      "tags": ["weather", "location-based"],
+      "tool_transport": {
+        "transport_type": "http",
+        "name": "open_meteo_forecast",
+        "url": "https://api.open-meteo.com/v1/forecast?forecast_days=1",
+        "http_method": "GET"
+      }
+    }
+  ]
+}

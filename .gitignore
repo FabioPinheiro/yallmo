@@ -13,9 +13,6 @@ project/metals.sbt
 
 # Runtime files
 .env
-/yallmo.json
-/yallmo.yaml
-/yallmo.yml
 debug/
 # REPL diagnostic source is code, not generated runtime capture.
 !repl/src/main/scala/fmgp/yallmo/repl/debug/
@@ -25,8 +22,12 @@ debug/
 # lixo
 lixo/
 
-# Yallmo Storage
-yallmo-storage/
+# Yallmo runtime storage: version skills only.
+/yallmo-storage/*
+!/yallmo-storage/skills/
+!/yallmo-storage/utpc/
+# Yallmo config does not need to secrets /yallmo.json /yallmo.yaml /yallmo.yml
+
 
 # Frontend build dependencies and output
 web-harness/vite/node_modules/
@@ -34,4 +35,7 @@ web-harness/vite/dist/
 
 # Other
 .playwright-mcp
-.pi
+
+# Project Pi state: version skills only.
+/.pi/*
+!/.pi/skills/

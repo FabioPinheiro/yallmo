@@ -17,3 +17,6 @@ capabilities:
     config:
       path: /home/agent/.pi
       mode: "0700"
+  - type: com.docker.sandbox/host-mount@1
+    config:
+      path: /home/agent/.agents/skills

@@ -12,7 +12,7 @@ object SdlcMaintenanceMain extends ZIOAppDefault {
     for {
       args <- ZIOAppArgs.getArgs
       _ <- ZIO
-        .fail(new IllegalArgumentException("Usage: SdlcMaintenanceMain <existing-server-storage>"))
+        .fail(new IllegalArgumentException("Usage: SdlcMaintenanceMain <existing-yallmo-storage>"))
         .unless(args.size == 1)
       root <- ZIO.attemptBlocking(Path.of(args.head).toRealPath())
       _ <- ZIO

@@ -90,7 +90,8 @@ The environment composes three kits:
   mounts, shared network/host-credential policy and interactive shell launcher.
 - `kit-pi/` — mixin: Pi, extensions, Playwright/MCP, public configuration templates
   and `prepare.py`. Removing it leaves a working Yallmo development shell; also
-  remove the `/home/agent/.pi` mount from the environment when omitting this kit.
+  remove the `/home/agent/.pi` and `/home/agent/.agents/skills` mounts from the
+  environment when omitting this kit.
 - `kit-zsh/` — optional mixin: Zsh configuration and separate private persistent Bash/Zsh histories.
 
 The `pi/`, `workspace/` and `yallmo-workspace/` directories remain user-managed
@@ -119,7 +120,7 @@ sbx env run .
 
 Host mount sources in `sbxenv.yaml` resolve relative to that file, not your shell's
 working directory. `workspace: .` shares the repository root at its host absolute
-path, for example `/Users/fabio/workspace/yallmo`. The kits also declare three fixed
+path, for example `/Users/fabio/workspace/yallmo`. The kits also declare four fixed
 sandbox destinations:
 
 | Host directory (relative to root `sbxenv.yaml`) | Sandbox path | Purpose |
@@ -127,6 +128,14 @@ sandbox destinations:
 | `./docker/yallmo-sandbox/workspace` | `/home/agent/workspace` | `hello.py` and your coding projects; Bash, Pi and Playwright start here |
 | `./docker/yallmo-sandbox/yallmo-workspace` | `/home/agent/yallmo-workspace` | Yallmo's `server.sh`, `yallmo.yaml`, storage and logs |
 | `./docker/yallmo-sandbox/pi` | `/home/agent/.pi` | Sandbox-specific Pi profile |
+| `./yallmo-storage/skills` | `/home/agent/.agents/skills` | Shared Yallmo/Pi skills; automatically discovered by Pi |
+
+The Pi kit declares `/home/agent/.agents/skills`; `sbxenv.yaml` selects Yallmo's
+skills folder as its host source. Without that mapping, SBX supplies a persistent,
+managed host directory instead. No `skills` setting is needed in Pi's settings:
+`~/.agents/skills/` is a default discovery location, alongside its existing
+`~/.pi/agent/skills/`. Recreate the sandbox when adding or changing a mount; after
+that, skill edits only need Pi's `/reload`.
 
 Bash/Pi still start in `/home/agent/workspace`; use
 `cd /Users/fabio/workspace/yallmo` to work on the repository (adjust for your host path).
@@ -158,7 +167,7 @@ Without that binding, `gh` is installed but unauthenticated. Recreate an existin
 sandbox to apply the new credential capability.
 
 Approve the host-managed OAuth request, repository workspace and fixed coding,
-Yallmo and private Pi mounts.
+Yallmo, shared skills and private Pi mounts.
 `kit-pi/prepare.py` creates only missing `auth.json`, `settings.json`, `mcp.json` and
 `models.json` in ignored `docker/yallmo-sandbox/pi/agent/` from the local
 `kit-pi/templates/`. It never reads or imports a host `~/.pi/agent`, skills, sessions or
@@ -167,8 +176,10 @@ including any skills you add manually, are left alone. It also validates that
 `auth.json` contains only the public proxy placeholder and sets private permissions.
 Git ignores the profile except for `pi/agent/skills/`: edit skills there and use
 `git add docker/yallmo-sandbox/pi/agent/skills/` to version them after reviewing
-for private content. Ignoring the other files only excludes them from Git; it
-never prevents editing them through the bind mount.
+for private content. Shared skills in `yallmo-storage/skills/` and project skills
+in `.pi/skills/` are also trackable; other Yallmo storage and Pi state stay ignored.
+Review skills for private content before adding them to Git. Ignoring the other
+files only excludes them from Git; it never prevents editing them through the bind mount.
 
 This is one-time initialization, not synchronization: edit
 `docker/yallmo-sandbox/pi/agent/models.json` directly to change the running sandbox's

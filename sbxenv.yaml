@@ -6,6 +6,9 @@ agent: kit-yallmo
 
 # Resolve the checkout root relative to this file; sbx preserves its host path.
 workspace: .
+additionalWorkspaces:
+     - path: ./.vscode # If we use Visual Code from the host, there is no point in allowing SBX to edit this folder. 
+       readOnly: true
 
 kits:
   - source: ./docker/yallmo-sandbox/kit-yallmo
@@ -14,7 +17,7 @@ kits:
   - source: ./docker/yallmo-sandbox/kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
-      pi_version: 1.6.0
+      pi_version: 1.6.1
   - source: ./docker/yallmo-sandbox/kit-zsh
     args:
       image: docker.io/fmgp/yallmo:latest
@@ -22,6 +25,7 @@ kits:
 # Kit-declared mounts; host sources resolve relative to this file.
 # These fixed paths remain separate from the repository's host-path workspace.
 mounts:
+  /home/agent/.agents/skills: ./yallmo-storage/skills # Shared skills between yallmo and pi.dev
   /home/agent/workspace: ./docker/yallmo-sandbox/workspace
   /home/agent/yallmo-workspace: ./docker/yallmo-sandbox/yallmo-workspace
   # A sandbox-specific copy, NOT the host's live ~/.pi.
@@ -46,3 +50,4 @@ ports:
 sandboxOptions:
   skills: off
   pullPolicy: always
+  writableEnvFiles: false

@@ -200,6 +200,13 @@ class SandboxLauncherTests(unittest.TestCase):
 
 
 class SandboxToolchainTests(unittest.TestCase):
+    def test_shared_skills_use_default_discovery_without_a_settings_override(self):
+        settings = json.loads((ROOT / "kit-pi/templates/settings.json").read_text())
+        self.assertNotIn("skills", settings)
+        manifest = (ROOT / "kit-pi/kit.yaml").read_text()
+        self.assertIn("      path: /home/agent/.agents/skills\n", manifest)
+        self.assertNotIn("/home/agent/yallmo-skills", manifest)
+
     def test_pi_version_defaults_to_latest_and_is_consumed_by_the_install_layer(self):
         dockerfile = (ROOT / "kit-pi/kit.dockerfile").read_text()
         manifest = (ROOT / "kit-pi/kit.yaml").read_text()
@@ -283,9 +290,8 @@ class SandboxConfigurationTests(unittest.TestCase):
             "/home/agent/workspace": "./docker/yallmo-sandbox/workspace",
             "/home/agent/yallmo-workspace": "./docker/yallmo-sandbox/yallmo-workspace",
             "/home/agent/.pi": "./docker/yallmo-sandbox/pi",
+            "/home/agent/.agents/skills": "./yallmo-storage/skills",
         })
-        for source in environment["mounts"].values():
-            self.assertEqual((ENVIRONMENT.parent / source).resolve().parent, ROOT.resolve())
         for kit in environment["kits"]:
             self.assertTrue((ENVIRONMENT.parent / kit["source"] / "kit.yaml").is_file())
         declared = {}
@@ -305,6 +311,33 @@ class SandboxConfigurationTests(unittest.TestCase):
                          ["./docker/yallmo-sandbox/kit-yallmo",
                           "./docker/yallmo-sandbox/kit-pi",
                           "./docker/yallmo-sandbox/kit-zsh"])
+
+
+@unittest.skipUnless(shutil.which("git"), "Git required for skill ignore tests")
+class SandboxSkillIgnoreTests(unittest.TestCase):
+    def test_skills_are_trackable_but_runtime_and_profile_state_stay_ignored(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            for relative in (".gitignore", "docker/.gitignore", "docker/yallmo-sandbox/.gitignore"):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ENVIRONMENT.parent / relative, destination)
+            paths = {
+                "yallmo-storage/skills/example/SKILL.md": False,
+                ".pi/skills/example/SKILL.md": False,
+                "docker/yallmo-sandbox/pi/agent/skills/example/SKILL.md": False,
+                "yallmo-storage/sessions/example.jsonl": True,
+                "yallmo-storage/auth.json": True,
+                ".pi/settings.json": True,
+                "docker/yallmo-sandbox/pi/agent/auth.json": True,
+                "docker/yallmo-sandbox/pi/agent/settings.json": True,
+                "docker/yallmo-sandbox/pi/agent/sessions/example.jsonl": True,
+            }
+            for path, ignored in paths.items():
+                with self.subTest(path=path):
+                    result = subprocess.run(["git", "check-ignore", "--quiet", "--", path], cwd=root)
+                    self.assertEqual(result.returncode, 0 if ignored else 1)
 
 
 if __name__ == "__main__":

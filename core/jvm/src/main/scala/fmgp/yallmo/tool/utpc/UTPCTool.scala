@@ -195,9 +195,9 @@ object UTPCTool {
           case ("headers", Json.Obj(headers)) if inTransport =>
             headers.forall { case (name, v) =>
               v match {
-                case Json.Str(_) if Set("accept", "contenttype").contains(normalized(name)) => true
-                case Json.Str(text)                                                         => headerPlaceholder(text)
-                case _                                                                      => false
+                case Json.Str(_) if Set("accept", "contenttype", "useragent").contains(normalized(name)) => true
+                case Json.Str(text) => headerPlaceholder(text)
+                case _              => false
               }
             }
           case ("url" | "tokenurl", Json.Str(text)) =>

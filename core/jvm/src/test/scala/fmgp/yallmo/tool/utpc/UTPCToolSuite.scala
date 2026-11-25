@@ -176,6 +176,35 @@ final class UTPCToolSuite extends FunSuite {
     }
   }
 
+  test("GitHub's public User-Agent loads alongside weather without allowing literal bearer tokens") {
+    withRoot { root =>
+      def github(authorization: String): UTCPManual = manual.copy(tools = manual.tools.map { tool =>
+        tool.copy(toolTransport =
+          Json.Obj(
+            "transport_type" -> Json.Str("http"),
+            "name" -> Json.Str("github_api"),
+            "url" -> Json.Str("https://api.github.com/user"),
+            "headers" -> Json.Obj(
+              "Accept" -> Json.Str("application/vnd.github+json"),
+              "Authorization" -> Json.Str(authorization),
+              "User-Agent" -> Json.Str("FabioPinheiro")
+            )
+          )
+        )
+      })
+      val safe = github("Bearer ${GH_TOKEN}")
+      write(root, "github", safe)
+      write(root, "open-meteo", manual)
+      write(root, "unsafe-github", github("Bearer KNOWN_PRIVATE_SECRET"))
+      val fake = new Fake
+      val tool = run(UTPCTool.load(Some(root), fake)).get
+      assert(tool.definition.description.endsWith("Available manuals: \"github\"; \"open-meteo\""))
+      assertEquals(run(invoke(tool, "{}")).text.fromJson[Json.Arr].toOption.get.elements.size, 2)
+      assertEquals(run(invoke(tool, """{"manual":"github"}""")).text.fromJson[UTCPManual], Right(safe))
+      assertEquals(fake.calls.size, 0)
+    }
+  }
+
   test("schema properties named headers are not mistaken for static transport credentials") {
     withRoot { root =>
       val schema = """{"type":"object","properties":{"headers":{"type":"object"},"password":{"type":"string"}}}"""

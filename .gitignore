@@ -26,7 +26,7 @@ debug/
 lixo/
 
 # Yallmo Storage
-server-storage/
+yallmo-storage/
 
 # Frontend build dependencies and output
 web-harness/vite/node_modules/

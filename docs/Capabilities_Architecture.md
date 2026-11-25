@@ -162,7 +162,7 @@ Both use the ordinary runner action budget, timeout and matching trusted tool ca
 ### Native read roots and default Scalamode services
 
 Configured `readFile`/`listFiles` bind to agent `FsRead` when present, else workspace, for both managed submissions and
-direct invocations. Bash/Git keep workspace policy; SDLC uses the shared server-storage service. ChatGPT defaults
+direct invocations. Bash/Git keep workspace policy; SDLC uses the shared yallmo-storage service. ChatGPT defaults
 expose hello plus rooted filesystem reads/mutations when both native read/list functions and Scalamode survive
 filtering. Private roots override workspace for both reads and writes; read-only embedded roots remain read-only.
 **Supplying rooted `FsWrite` intentionally grants mutations in the read/list-qualified default service.** Trusted wiring

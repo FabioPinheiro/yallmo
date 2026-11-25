@@ -132,7 +132,7 @@ Each row below is one callable function. A function must be both available and p
 | `bash` | `bash` | Run a shell command and return bounded output/status. | `BashExecutor`, Bash on `PATH`, workspace working directory. |
 | `repositoryChanges` | `repositoryChanges` | Inspect Git status, staged diff or unstaged diff. | `GitClient`, Git on `PATH`, workspace that is a Git work tree. |
 | `scalamode` | `scalamode` | Evaluate restricted Scala code. | `ScalaCodeExecutor`, Scala CLI and provisioned compiler/runtime dependencies. ChatGPT defaults include hello plus rooted filesystem reads/mutations when both native read/list functions are permitted; the executor owns invocation-scoped local RPC. |
-| `sdlc` | `sdlc_list` | Search/page task and intent summaries. | Shared `SdlcService`, backed by server-storage `FsRead` / `FsWrite`. |
+| `sdlc` | `sdlc_list` | Search/page task and intent summaries. | Shared `SdlcService`, backed by yallmo-storage `FsRead` / `FsWrite`. |
 | `sdlc` | `sdlc_read_task` | Read task snapshots by ID. | Same shared `SdlcService`; task journal. |
 | `sdlc` | `sdlc_set` | Create/update task snapshots with revision checks. | Same shared `SdlcService`; task journal and reference validation. |
 | `sdlc` | `sdlc_read_intent` | Read intent snapshots by ID. | Same shared `SdlcService`; intent journal. |
@@ -146,7 +146,7 @@ Each row below is one callable function. A function must be both available and p
 - **Read functions:** paths are relative to the selected root; the filesystem rejects absolute paths, parent traversal and symlinks. Selecting a private root works independently of Scalamode service opt-in.
 - **Bash/Git:** the workspace is their working directory. An agent's read root does not relocate them or sandbox Bash.
 - **Scala:** the base executor is code-only. ChatGPT defaults expose hello and rooted filesystem reads/mutations for a complete native read/list grant, using executor-owned scoped local RPC. Custom bindings and partial grants are preserved. All bindings use the same `scalamode` name and code-only schema; explicit native exact-delegation wiring captures only filtered functions. See [Scala tool restrictions](tools/TOOL-SCALA-SCRIPT.md).
-- **SDLC:** all five functions share server-storage journals at `sdlc/tasks.jsonl` and `sdlc/intents.jsonl`. They need no Bash/Git/Scala dependency. See [SDLC tools](sdlc/README-SDLC.md).
+- **SDLC:** all five functions share yallmo-storage journals at `sdlc/tasks.jsonl` and `sdlc/intents.jsonl`. They need no Bash/Git/Scala dependency. See [SDLC tools](sdlc/README-SDLC.md).
 - **Coach:** only the selected Coach gets its notebook functions, backed by `applications.jsonl` under its agent root. Saving a draft does not send a message, submit an application or book an interview.
 
 ## Implementation references

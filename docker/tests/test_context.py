@@ -40,7 +40,7 @@ class ContextTests(unittest.TestCase):
         ]
         allowed += [tree + "/src/main/scala/Required.scala" for tree in source_trees]
         denied = [
-            ".env", "yallmo.yaml", "server-storage/data.json", "web-harness/vite/.npmrc",
+            ".env", "yallmo.yaml", "yallmo-storage/data.json", "web-harness/vite/.npmrc",
             "core/.pi/auth.json", "core/private.json", "core/jvm/src/main/resources/.env",
             "core/jvm/src/main/resources/.ssh/id_rsa", "core/jvm/src/main/resources/yallmo.yaml",
             "web-harness/vite/node_modules/secret.js", "project/metals.sbt", "docker/private.json",

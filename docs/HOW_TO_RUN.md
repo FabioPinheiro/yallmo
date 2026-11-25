@@ -5,8 +5,8 @@
 
 ```bash
 # Private configuration defines bob and its provider; server owns config, tools and filesystem.
-mkdir -p ./server-storage ./server-odin-workspace
-sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace ./server-odin-workspace'
+mkdir -p ./yallmo-storage ./server-odin-workspace
+sbt 'server/run --storage ./yallmo-storage --config ./yallmo.json --workspace ./server-odin-workspace'
 # Separate interactive terminal (--server is optional at ws://127.0.0.1:8080/rpc):
 sbt --server -no-server 'repl/run --user-name fabio --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```

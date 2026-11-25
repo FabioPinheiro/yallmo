@@ -4,8 +4,8 @@ The server owns credential-bearing configuration and loads its file via `--confi
 it neither reads configuration nor starts an embedded runtime. Start the server separately, then connect:
 
 ```sh
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./yallmo.json --workspace .'
 sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
 
@@ -30,8 +30,8 @@ restart. That guide also covers credential storage, HTTPS, cookie, Origin/CSRF a
 Direct trusted in-process RPC usage is unchanged.
 
 ```sh
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace .'
 sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob'
 ```
 
@@ -163,7 +163,7 @@ For per-operation restrictions, use `functions: [sdlc_list, sdlc_read_task, sdlc
 
 SDLC data is shared by all authorized agents at `<--storage>/sdlc/tasks.jsonl`
 and `<--storage>/sdlc/intents.jsonl`.
-With `--storage ./server-storage`, its root is **`./server-storage/sdlc`**.
+With `--storage ./yallmo-storage`, its root is **`./yallmo-storage/sdlc`**.
 Paths are relative to the server working directory, not the config file.
 Neither `--workspace` nor per-agent `filesystem.root` changes this location.
 The server storage directory must already exist; the `sdlc` subdirectory is

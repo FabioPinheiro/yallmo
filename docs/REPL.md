@@ -11,8 +11,8 @@ No embedded application, recorder or browser bridge starts as a fallback.
 ## Start the terminal client
 
 ```bash
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./yallmo.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./yallmo.json --workspace .'
 # Separate interactive terminal; --server is optional for the default loopback endpoint:
 sbt --server -no-server 'repl/run --user-name operator --agent bob'
 ```
@@ -31,8 +31,8 @@ audio/voice and `/debug print|export` retain their existing implementations but 
 
 ```bash
 # Server owns private configuration (including bob) and a separate existing storage root:
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace .'
 # Another interactive terminal:
 sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```

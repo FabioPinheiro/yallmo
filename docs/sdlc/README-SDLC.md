@@ -13,18 +13,18 @@ required for agents inheriting the available tool catalog. Explicit agent
 
 The captured filesystem is the **server storage directory** supplied through
 `--storage`, shared across all authorized agents and sessions. The SDLC directory
-is `<server-storage>/sdlc`, independent of `--workspace` and per-agent
+is `<yallmo-storage>/sdlc`, independent of `--workspace` and per-agent
 `filesystem.root`.
 
 For example, from the server's working directory:
 
 ```sh
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace .'
 ```
 
-The journals are `./server-storage/sdlc/tasks.jsonl` and
-`./server-storage/sdlc/intents.jsonl`. Relative storage paths are resolved from
+The journals are `./yallmo-storage/sdlc/tasks.jsonl` and
+`./yallmo-storage/sdlc/intents.jsonl`. Relative storage paths are resolved from
 the server process working directory, not the configuration file.
 
 If an agent has an explicit tool allowlist, add the tool keys to its existing
@@ -259,7 +259,7 @@ uses WebSocket for other pages; SDLC loads even when that connection is down.
 ## Storage and guarantees
 
 - Uses explicit `FsRead` and `FsWrite` capabilities, not raw filesystem handles.
-- Fixed server-storage-relative paths: `sdlc/tasks.jsonl` and `sdlc/intents.jsonl`; no agent-supplied paths.
+- Fixed yallmo-storage-relative paths: `sdlc/tasks.jsonl` and `sdlc/intents.jsonl`; no agent-supplied paths.
 - Creates directories lazily on the first nonempty mutation.
 - Each JSONL line is an array of complete **changed** snapshots of that journal's entity type from one Set operation. Replay applies batches in order; latest snapshot wins.
 - The service serializes reading, reference checks and synced appends across HTTP and all five tools. Replay cannot accept only half of a serialized batch.
@@ -291,7 +291,7 @@ stopped and check that the destination journal does not already contain data.
 Stop the server, then run:
 
 ```sh
-sbt 'server/runMain fmgp.yallmo.server.SdlcMaintenanceMain ./server-storage'
+sbt 'server/runMain fmgp.yallmo.server.SdlcMaintenanceMain ./yallmo-storage'
 ```
 
 The command acquires the existing server-root lease (it refuses to race a running

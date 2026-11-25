@@ -85,7 +85,7 @@ For the agent-tool flow and tool/dependency table, see [Agent tool wiring](SERVI
 | `bash`, `repositoryChanges` | Workspace working directory and process services; agent read roots do not redirect them |
 | `scalamode` | Code-only restricted executor. ChatGPT defaults bind hello plus rooted filesystem reads/mutations when both native read/list functions are permitted; private roots override workspace. The executor owns an invocation-scoped loopback listener. Custom bindings and partial grants are preserved. |
 | `readSkill` (`skills` group) | Immutable selected-agent authorized in-memory skills; no filesystem access. Resolver binds after policy/wiring; runner rechecks each call. |
-| SDLC tools | One shared server-storage `SdlcService`, never an agent/workspace planning store |
+| SDLC tools | One shared yallmo-storage `SdlcService`, never an agent/workspace planning store |
 | Coach private tools | Bound only to that Coach's notebook/filesystem; matching private keys replace shared keys for that selection |
 
 The same selected definitions and implementations travel together in `ResolvedAgent`. Availability is discovery, not

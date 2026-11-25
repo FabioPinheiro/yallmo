@@ -82,8 +82,8 @@ login, and its session expires under the same rules as a browser session.
 
 ```sh
 # Private config contains a configured agent bob and its provider. Use separate storage ownership.
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace .'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace .'
 # Another interactive terminal (no client-local config/provider/audio bootstrap):
 sbt --server -no-server 'repl/run --user-name alice --server ws://127.0.0.1:8080/rpc --agent bob --log-level warning'
 ```
@@ -161,13 +161,13 @@ Old per-operation `tools` entries must move to `functions`; both allowlists must
 permit a function for it to be available. See [capability migration](../docs/Capabilities_Architecture.md).
 Storage uses `FsRead`/`FsWrite` at
 `<--storage>/sdlc/tasks.jsonl` and `<--storage>/sdlc/intents.jsonl`. With
-`--storage ./server-storage`, both journals are in `./server-storage/sdlc`.
+`--storage ./yallmo-storage`, both journals are in `./yallmo-storage/sdlc`.
 
 The main creates one `SdlcService`, shared by all agent tools and HTTP routes.
 Replacement edits require the `expectedRevision` returned by a full read; stale
 batches are rejected. `sdlc_list` provides bounded summaries/search for discovery.
 For explicit history-preserving checkpoint maintenance, stop the server and run
-`server/runMain fmgp.yallmo.server.SdlcMaintenanceMain ./server-storage`.
+`server/runMain fmgp.yallmo.server.SdlcMaintenanceMain ./yallmo-storage`.
 Neither `--workspace` nor selecting another agent filesystem changes it.
 Startup itself creates no planning files.
 
@@ -265,7 +265,7 @@ Its command-line arguments are unchanged:
 The listener always binds to `0.0.0.0` for trusted Docker/multi-machine access; the bind address is not configurable:
 
 ```sh
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace . --port 8080'
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace . --port 8080'
 ```
 
 Publish/map port 8080 only onto the trusted network and connect to `ws://<docker-host>:8080/rpc` (or open
@@ -278,8 +278,8 @@ The storage root must already exist; opening storage can initialize missing stor
 Startup requires a configuration path:
 
 ```sh
-mkdir -p ./server-storage
-sbt 'server/run --storage ./server-storage --config ./private/server.json --workspace ./my-project'
+mkdir -p ./yallmo-storage
+sbt 'server/run --storage ./yallmo-storage --config ./private/server.json --workspace ./my-project'
 ```
 
 Server-owned `ConfigFile` loading reads the private configuration or initializes an empty catalog (private POSIX
@@ -311,7 +311,7 @@ connects over WebSocket and has no local tool probing or execution path. Tool im
 read-only file tools now use the shared `filesystem` capabilities.
 
 
-SDLC remains bound to the shared server-storage service, not to an agent root.
+SDLC remains bound to the shared yallmo-storage service, not to an agent root.
 Paths must be relative to the selected read root (`.` lists the root); empty/absolute paths, `..` and symlinks are rejected.
 A listing fails if any direct entry is a symlink. Direct module callers must also supply a root with no symlink
 ancestors; server workspace configuration is canonicalized before opening. Inaccessible workspaces omit shared read

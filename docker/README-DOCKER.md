@@ -324,7 +324,7 @@ under **only the Pi kit's arguments** in `sbxenv.yaml` at the repository root
   - source: ./docker/yallmo-sandbox/kit-pi
     args:
       image: docker.io/fmgp/yallmo:latest
-      pi_version: "1.6.0"
+      pi_version: "1.6.1"
 ```
 
 Changing `pi_version` invalidates the npm install layer and downstream layers,

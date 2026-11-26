@@ -58,7 +58,7 @@ Two project-specific integration hazards need explicit acceptance tests:
 
 ## 2. What current Pi contributes
 
-Reviewed the live [pi.dev](https://pi.dev/) page, installed Pi **1.6.0** MCP/codemode docs, and current upstream MCP documentation. Older descriptions of Pi as having “no MCP” are now historical: the website explicitly says MCP + Codemode are built in.
+Reviewed the live [pi.dev](https://pi.dev/) page, installed Pi **1.6.1** MCP/codemode docs, and current upstream MCP documentation. Older descriptions of Pi as having “no MCP” are now historical: the website explicitly says MCP + Codemode are built in.
 
 Useful design lessons:
 
@@ -274,7 +274,7 @@ Project evidence: [mental model](../MENTAL_MODEL.md), [service wiring](../SERVIC
 
 External sources reviewed:
 
-- [Pi website](https://pi.dev/); [upstream MCP guide](https://github.com/earendil-works/pi/blob/d4760131efe0740b9b7f7ad1f126734b96a011c0/packages/coding-agent/docs/mcp.md); installed Pi 1.6.0 `docs/mcp.md` and `docs/codemode.md`.
+- [Pi website](https://pi.dev/); [upstream MCP guide](https://github.com/earendil-works/pi/blob/d4760131efe0740b9b7f7ad1f126734b96a011c0/packages/coding-agent/docs/mcp.md); installed Pi 1.6.1 `docs/mcp.md` and `docs/codemode.md`.
 - MCP `2025-11-25` [transports](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/50145009cb63c9363962408fcdb0758adcadc87b/docs/specification/2025-11-25/basic/transports.mdx), [lifecycle](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/50145009cb63c9363962408fcdb0758adcadc87b/docs/specification/2025-11-25/basic/lifecycle.mdx), [tools](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/50145009cb63c9363962408fcdb0758adcadc87b/docs/specification/2025-11-25/server/tools.mdx), fetched from official repository sources because the rendered specification site returned 403.
 - UTCP Python [README/manual format](https://github.com/universal-tool-calling-protocol/python-utcp/blob/bb8e2f6f6f78f4f773ff383a4e065523b0b1297a/README.md), [HTTP plugin](https://github.com/universal-tool-calling-protocol/python-utcp/blob/bb8e2f6f6f78f4f773ff383a4e065523b0b1297a/plugins/communication_protocols/http/README.md) and manual model. Reference behavior/documentation is not a claim of an audited Scala-compatible SDK.
 - UTCP [MCP plugin guide](https://github.com/universal-tool-calling-protocol/python-utcp/blob/bb8e2f6f6f78f4f773ff383a4e065523b0b1297a/plugins/communication_protocols/mcp/README.md), [call-template model](https://github.com/universal-tool-calling-protocol/python-utcp/blob/bb8e2f6f6f78f4f773ff383a4e065523b0b1297a/plugins/communication_protocols/mcp/src/utcp_mcp/mcp_call_template.py), [implementation](https://github.com/universal-tool-calling-protocol/python-utcp/blob/bb8e2f6f6f78f4f773ff383a4e065523b0b1297a/plugins/communication_protocols/mcp/src/utcp_mcp/mcp_communication_protocol.py) and package metadata (`utcp-mcp` 1.2.0 at the reviewed revision). These establish the plugin integration path, not tested compatibility with all MCP servers or an approved Python bridge for Yallmo.

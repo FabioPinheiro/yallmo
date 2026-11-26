@@ -2,11 +2,21 @@
 
 **Yallmo** - *Yet Another Large Language Module Orchestrator* is an experimental Scala 3 and ZIO project for exploring the building blocks of LLM-agent applications.
 
+**The future of AI is local!**
+I have zero doubt about it! Primarily because of the importance and power of sovereignty.
+So I’m investing accordingly, both financially and by expanding my knowledge and developing my skills.
+
 ## What is Yallmo?
 
-Yallmo combines provider-neutral LLM models, structured agent turns, tool execution, local RAG, and a terminal REPL. Its central design is deliberately simple:
+Yallmo combines provider-neutral LLM models, structured agent turns, tool execution, and RAG. Its central design is heavily inspired by Pi.dev and deliberately kept simple.
 
-> A model may propose a response or a tool call; trusted application code decides what is available, validates arguments, executes approved work, and records the result.
+It tries to put you in a *strategic* command center in control of a *tactical* army of agents.
+Yeah, you can be very good at some technologies, but LLMs have more than 10,000 hours in everything that is even minimally known/popular.
+Moreover, they can RTFM for anything new. (Not to mention that an open model can also be trained to specialize in something new and specific.)
+
+Today, where we still need a human is in long-term strategic planning!
+
+> A model may propose a response or a tool call; trusted application code decides what is available, executes approved work, and records the result.
 
 This keeps the model useful as a planner without making it the authority for side effects.
 
@@ -16,6 +26,11 @@ The first version of Yallmo extracted the LLM and TTS logic from my ASAR applica
 
 Yallmo is now a personal laboratory for learning how to manage context and knowledge in AI-agent systems, and how to orchestrate agent loops.
 
+- Optimize for small context windows!
+- Keep the codebase clean and maintainable. AI will be the dog saying everything is fine when the house is burning down in the background.
+  - The goal is not to review all the code or even understand it exactly, but it should not be burning.
+  - Don't overtest, and have a plan to review and delete tests. No point in spending tokens to keep useless and duplicate tests.
+  - Keep a consistent language
 - Experimenting with Scala's new capture-checking feature, different technologies, and model types beyond LLMs—such as System One decision models.
 - Orchestrating across multiple providers, including local ones.
 - Defining code and architectural ownership between humans and agents.
@@ -51,6 +66,7 @@ I'm still exploring the trade-offs, but this experience has made me less certain
 `ServerApplication` owns composition/lifetime; `AgentCatalog` caches complete executable agent generations. File reads/listings
 use the selected agent read root when configured, otherwise workspace, independently of Scala RPC; Bash/Git stay workspace-bound.
 
+- [Project glossary](yallmo-storage/skills/yallmo-glossary/SKILL.md) — definitions of agents, profiles, tools, functions, skills, providers, and memory, including planned concepts and open decisions.
 - [Mental model](docs/MENTAL_MODEL.md) — responsibilities, execution flow and runtime ownership; start here for the architecture.
 - [Service wiring and component boundaries](docs/SERVICE_WIRING.md) — startup composition, agent selection, execution/persistence diagrams, tool authorization and resource ownership.
 - [Plans and delivery status](docs/PLANS.md) — active work, open acceptance checks.

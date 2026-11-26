@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yallmo · Architecture review</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict', flowchart: { htmlLabels: false, useMaxWidth: true }, themeVariables: { fontFamily: 'system-ui, sans-serif', fontSize: '13px', lineColor: '#64748b', primaryColor: '#ffffff' } });
+</script>
+<style>
+  :root { color-scheme: light; --ink:#0f172a; --muted:#64748b; --line:#d6d3d1; --accent:#047857; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#fafaf9; color:var(--ink); font-family:system-ui,sans-serif; line-height:1.6; }
+  main { max-width:1180px; margin:auto; padding:56px 28px 64px; }
+  h1,h2,h3,p { margin-top:0; }
+  h1,h2 { font-family:Georgia,serif; line-height:1.15; letter-spacing:-.025em; }
+  h1 { font-size:clamp(40px,6vw,66px); margin:14px 0 24px; }
+  h2 { font-size:32px; }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.12em; margin-bottom:10px; }
+  a { color:var(--accent); text-decoration:underline; text-underline-offset:3px; }
+  .eyebrow { font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:700; color:var(--muted); }
+  .meta { display:flex; gap:10px 24px; flex-wrap:wrap; color:var(--muted); font-size:13px; }
+  .legend { display:flex; flex-wrap:wrap; gap:12px 22px; margin:24px 0 16px; font-size:12px; color:#475569; }
+  .legend span { display:flex; align-items:center; gap:7px; }
+  .module-symbol { display:inline-block; width:18px; height:13px; border:1px solid #64748b; }
+  .seam-symbol { display:inline-block; width:22px; border-top:2px dashed #64748b; }
+  .leak-symbol { color:#b91c1c; font-size:19px; line-height:12px; }
+  .deep-symbol { display:inline-block; width:18px; height:13px; border:3px solid #0f172a; background:#0f172a; }
+  .scope { border-top:1px solid var(--line); padding-top:14px; font-size:12px; color:#57534e; }
+  nav { display:flex; gap:20px; flex-wrap:wrap; margin:24px 0 42px; font-size:14px; }
+  article { margin-bottom:48px; border:1px solid #e7e5e4; border-radius:14px; background:#fff; overflow:hidden; }
+  .card-head { padding:30px 30px 18px; }
+  .title-row { display:flex; gap:20px; justify-content:space-between; align-items:start; }
+  .number { color:#a8a29e; font-family:Georgia,serif; font-size:40px; line-height:1; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; }
+  .badge { font-size:11px; font-weight:700; border-radius:999px; padding:4px 11px; }
+  .strong { background:#d1fae5; color:#065f46; }
+  .speculative { background:#e2e8f0; color:#475569; }
+  .category { background:#f5f5f4; color:#57534e; border:1px solid #e7e5e4; }
+  .files { font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; overflow-wrap:anywhere; line-height:1.8; color:#475569; }
+  .files a { color:inherit; }
+  .figures { display:grid; grid-template-columns:1fr 1fr; gap:18px; padding:0 30px 24px; }
+  figure { margin:0; border:1px solid #e2e8f0; border-radius:10px; background:#fafaf9; overflow:hidden; }
+  figcaption { padding:11px 16px; border-bottom:1px solid #e2e8f0; font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+  .figure-body { min-height:316px; padding:16px; display:flex; flex-direction:column; justify-content:center; }
+  .figure-note { margin:0; padding:10px 16px; border-top:1px solid #e2e8f0; color:#64748b; font-size:11px; min-height:55px; }
+  .mermaid { margin:0; text-align:center; font-size:12px; white-space:pre-wrap; }
+  .mermaid svg { max-height:300px; }
+  .diagram-interface { background:#fff; border:1px solid #94a3b8; border-radius:7px; padding:12px; text-align:center; font-size:13px; }
+  .diagram-arrow { color:#64748b; text-align:center; line-height:27px; }
+  .deep { background:linear-gradient(135deg,#0f172a,#1e293b); color:white; border:3px solid #0f172a; border-radius:9px; padding:0; }
+  .deep-top { border-bottom:2px dashed #94a3b8; padding:11px 14px; font-size:13px; text-align:center; }
+  .deep-body { padding:16px; }
+  .deep-label { text-transform:uppercase; letter-spacing:.12em; color:#a7f3d0; font-size:10px; margin-bottom:11px; }
+  .deep-item { border:1px solid #475569; border-radius:5px; padding:9px; font-size:12px; margin:7px 0; color:#e2e8f0; }
+  .stages { display:flex; gap:7px; align-items:center; font-size:11px; color:#cbd5e1; }
+  .stages span { padding:8px; background:#334155; border-radius:4px; flex:1; text-align:center; }
+  .description { padding:0 30px 25px; display:grid; grid-template-columns:1fr 1fr; gap:14px 26px; }
+  .description p { font-size:14px; margin-bottom:0; }
+  .wins { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:8px 28px; list-style:none; margin:4px 0 0; padding:0; font-size:12px; color:#065f46; font-weight:600; }
+  .wins li:before { content:'↗ '; }
+  .evidence { border-top:1px solid #e7e5e4; padding:22px 30px; background:#fafaf9; }
+  .evidence-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .evidence p,.evidence li { font-size:12px; }
+  .evidence ul { padding-left:17px; margin:0; }
+  .evidence p { margin:0 0 10px; }
+  .constraint { margin-top:18px; border-left:3px solid #d97706; background:#fffbeb; color:#78350f; padding:12px 15px; font-size:12px; }
+  .next { margin-top:14px; color:#475569; font-size:12px; }
+  .cross-section { display:flex; flex-direction:column; gap:9px; }
+  .band { border:1px solid #cbd5e1; border-left:4px solid #94a3b8; padding:10px 12px; font-size:12px; background:white; }
+  .band.red { border-left-color:#b91c1c; }
+  .thin-seam { margin:1px 0; border-top:2px dashed #94a3b8; position:relative; }
+  .thin-seam span { display:block; width:max-content; margin:4px auto 0; color:#b91c1c; font-size:10px; }
+  .top { padding:32px; border-radius:12px; background:#ecfdf5; border:1px solid #a7f3d0; }
+  .top h2 { margin:10px 0 12px; }
+  .top p { max-width:790px; font-size:15px; }
+  footer { font-size:11px; color:#78716c; padding-top:24px; }
+  svg text { font-family:system-ui,sans-serif; }
+  @media(max-width:760px) { main { padding:30px 16px; } .figures,.description,.evidence-grid { grid-template-columns:1fr; } .card-head,.evidence { padding:23px 20px; } .figures,.description { padding-left:20px; padding-right:20px; } h2 { font-size:28px; } .figure-body { min-height:285px; } }
+  @media print { main { max-width:none; padding:10px; } article { break-inside:avoid; } nav { display:none; } a { color:inherit; } }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 antialiased">
+<main class="max-w-6xl mx-auto">
+<header>
+  <div class="eyebrow">Architecture field notes · 25 November 2026</div>
+  <h1>Yallmo, with more depth.</h1>
+  <div class="meta"><span>HEAD <code>642dfd0</code></span><span>70 commits used for scoping</span><span>2 candidates · read-only review</span></div>
+  <div class="legend" aria-label="Diagram legend">
+    <span><i class="module-symbol"></i> Module</span><span><i class="seam-symbol"></i> Seam</span><span><i class="leak-symbol">→</i> Leaked knowledge / caller ordering</span><span><i class="deep-symbol"></i> Deep module</span>
+  </div>
+  <div class="scope">Hotspots: agent execution, tool selection, Scalamode. Recent UTPC paths also inspected. Domain source: <code>yallmo-storage/skills/yallmo-glossary/SKILL.md</code>; no root <code>GLOSSARY.md</code> or <code>docs/adr/</code> found. Existing decision documents remain constraints. Dirty/staged work preserved; untracked mission draft excluded. No interface designs proposed.</div>
+</header>
+<nav aria-label="Candidates"><a href="#tool-selection">01 · Selected-tool validation</a><a href="#prompt-acceptance">02 · Prompt acceptance</a><a href="#top-recommendation">Top recommendation ↓</a></nav>
+<section id="candidates" aria-label="Deepening opportunities">
+<article id="tool-selection">
+  <div class="card-head">
+    <div class="title-row"><h2>Concentrate selected-tool validation</h2><span class="number">01</span></div>
+    <div class="badges"><span class="badge strong">Strong</span><span class="badge category">in-process</span><span class="badge category">Locality, not a permission redesign</span></div>
+    <div class="files"><strong>Files · implementation anchors</strong><br>
+      <a href="file:///Users/fabio/workspace/yallmo/server/src/main/scala/fmgp/yallmo/server/application/ServerApplication.scala">server/src/main/scala/fmgp/yallmo/server/application/ServerApplication.scala:173–206</a><br>
+      <a href="file:///Users/fabio/workspace/yallmo/core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala">core/jvm/src/main/scala/fmgp/yallmo/orchestration/AgentCatalog.scala:191–276</a><br>
+      <a href="file:///Users/fabio/workspace/yallmo/core/shared/src/main/scala/fmgp/yallmo/orchestration/ToolWiringResolver.scala">core/shared/src/main/scala/fmgp/yallmo/orchestration/ToolWiringResolver.scala:13–68</a>
+    </div>
+  </div>
+  <div class="figures">
+    <figure>
+      <figcaption>Before · two places know the catalog</figcaption>
+      <div class="figure-body"><pre class="mermaid">
+flowchart TB
+  S[Application startup] --> E[Eager ID validation]
+  C[Coach private declarations] --> E
+  E --> O[Open storage]
+  A[Agent selection] --> R[Selected-tool resolver]
+  C --> W[Trusted agent wiring]
+  W --> R
+  R --> V[Base plus final ID validation]
+  E -. separate catalog knowledge .-> V
+  classDef plain fill:#fff,stroke:#94a3b8,color:#0f172a;
+  class S,E,C,O,A,R,W,V plain;
+  linkStyle 7 stroke:#b91c1c,stroke-width:2px;
+      </pre></div>
+      <p class="figure-note">Startup recognizes Coach by name; selected resolution already understands base/final catalogs.</p>
+    </figure>
+    <figure>
+      <figcaption>After · two timings, one knowledge owner</figcaption>
+      <div class="figure-body">
+        <div class="diagram-interface">Application startup &amp; agent selection</div>
+        <div class="diagram-arrow">↓</div>
+        <div class="deep">
+          <div class="deep-top">Selected-tool validation seam</div>
+          <div class="deep-body">
+            <div class="deep-label">Deepen the existing module</div>
+            <div class="deep-item">Availability &amp; private declaration knowledge</div>
+            <div class="stages"><span>Eager validation<br>before storage</span>→<span>Lazy binding<br>per generation</span></div>
+            <div class="deep-item">Membership · policy IDs · paired definitions</div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-note">Shrink the caller interface; hide catalog coordination, not independent execution checks.</p>
+    </figure>
+  </div>
+  <div class="description">
+    <div><h3>Problem</h3><p>The selected-tool interface leaks availability knowledge into startup, where a Coach-specific supplement duplicates knowledge used by lazy resolution.</p></div>
+    <div><h3>Solution</h3><p>Deepen the existing selected-tool module so it owns declaration availability across both validation timings, without adding a catalog framework or changing trusted wiring semantics.</p></div>
+    <ul class="wins"><li>Locality: catalog knowledge stays together</li><li>Leverage: both callers share rules</li><li>Depth: less caller coordination</li><li>Tests exercise the configured interface</li></ul>
+  </div>
+  <div class="evidence">
+    <div class="evidence-grid">
+      <div><h3>Evidence &amp; deletion test</h3>
+        <ul><li><code>ServerApplication:180–187</code> explicitly appends Coach declarations before validating all configured agents.</li><li><code>ToolWiringResolver:49–58</code> validates final output IDs alongside base IDs, including later additions.</li><li>Deleting the resolver would redistribute real validation complexity; keep and deepen it. Delete duplicated caller knowledge, not its guarantees.</li><li>Shared tools, Coach-private functions and Folder's empty selection are real variation; they do not justify a new resolver adapter.</li></ul>
+      </div>
+      <div><h3>Interface is the test surface</h3>
+        <ul><li>Keep <code>ToolWiringSuite:123–177</code>: trusted additions and local IDs.</li><li>Keep <code>ServerApplicationSuite:479–519</code>: unavailable IDs fail before storage opens.</li><li>Keep <code>ServerSubmissionSuite:117–163</code>: selected private functions reach inspection.</li><li>Add paired configured-path checks: private explicit IDs succeed; unknown IDs fail before storage. Test invocation and managed execution with the same selected definitions.</li></ul>
+      </div>
+    </div>
+    <div class="constraint"><strong>Decision guardrail.</strong> <code>docs/SERVICE_TOOLS_WIRING.md</code>, <code>docs/Capabilities_Architecture.md</code> and <code>docs/AGENT_TOOL_WIRING_PLAN.md</code> explicitly retain eager validation. Preserve it, including unselected-agent failures. Preserve filter-before-wiring, trusted additions, the skill-reader exception, lazy generation caching and lower-level guards. Deferring all checks or imposing a general post-wiring filter would reopen those decisions and is <strong>not</strong> this recommendation.</div>
+    <div class="next"><strong>Evidence limit:</strong> the generic resolver accepts later local IDs, while startup only supplements Coach. A non-Coach configured-path failure is inferred from source, not a reproduced defect; do not invent a new agent kind merely to justify the refactor. <strong>First exploration:</strong> establish the smallest deletion of duplicated catalog knowledge that preserves today's two validation timings. No new adapter seam is needed.</div>
+  </div>
+</article>
+
+<article id="prompt-acceptance">
+  <div class="card-head">
+    <div class="title-row"><h2>Deepen prompt acceptance</h2><span class="number">02</span></div>
+    <div class="badges"><span class="badge speculative">Speculative</span><span class="badge category">local-substitutable</span><span class="badge category">Prove the interleaving first</span></div>
+    <div class="files"><strong>Files · implementation anchors</strong><br>
+      <a href="file:///Users/fabio/workspace/yallmo/server/src/main/scala/fmgp/yallmo/server/application/ServerExecutionService.scala">server/src/main/scala/fmgp/yallmo/server/application/ServerExecutionService.scala:79–150</a><br>
+      <a href="file:///Users/fabio/workspace/yallmo/core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala">core/jvm/src/main/scala/fmgp/yallmo/orchestration/OrchestratorLive.scala:36–60, 209–260, 514–548</a><br>
+      <a href="file:///Users/fabio/workspace/yallmo/core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala">core/shared/src/main/scala/fmgp/yallmo/orchestration/AgentRunner.scala:171–210, 238–256</a>
+    </div>
+  </div>
+  <div class="figures">
+    <figure>
+      <figcaption>Before · acceptance has caller ordering</figcaption>
+      <div class="figure-body cross-section">
+        <div class="band">Configured execution: admit session</div>
+        <div class="band red">Load session → check expected head</div>
+        <div class="band">Select continuation exclusions</div>
+        <div class="thin-seam"><span>Read/check/write coordination crosses the seam</span></div>
+        <div class="band red">Orchestration: append accepted prompt</div>
+        <div class="band">Managed history: fence generated work</div>
+      </div>
+      <p class="figure-note">The session gate excludes other submits, not every conceivable head mutation.</p>
+    </figure>
+    <figure>
+      <figcaption>After · if a real interleaving exists</figcaption>
+      <div class="figure-body">
+        <div class="diagram-interface">Configured execution module<br><small>Admission · lifetime · continuation policy</small></div>
+        <div class="diagram-arrow">↓</div>
+        <div class="deep">
+          <div class="deep-top">Prompt-acceptance seam</div>
+          <div class="deep-body">
+            <div class="deep-label">Existing persistence-owning module</div>
+            <div class="deep-item">Expected-head decision with prompt mutation</div>
+            <div class="deep-item">Acceptance certainty &amp; canonical history</div>
+            <div class="stages"><span>In-memory adapter</span><span>Filesystem adapter</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-note">Increase depth at acceptance; do not move configured policy into the runner.</p>
+    </figure>
+  </div>
+  <div class="description">
+    <div><h3>Problem</h3><p>Prompt acceptance's interface includes a caller-managed read/check/write order, with the expected-head decision outside the module that appends the prompt.</p></div>
+    <div><h3>Solution</h3><p>If a permitted concurrent mutation can interleave, deepen acceptance in the existing persistence-owning module while retaining configured admission, continuation policy and application lifetime where they are.</p></div>
+    <ul class="wins"><li>Locality: head checks meet mutation</li><li>Leverage: both storage adapters agree</li><li>Depth: fewer ordering facts escape</li><li>Tests cross the acceptance seam</li></ul>
+  </div>
+  <div class="evidence">
+    <div class="evidence-grid">
+      <div><h3>Evidence &amp; deletion test</h3>
+        <ul><li><code>ServerExecutionService:98–121</code> loads history, checks the head, updates continuation exclusions and then submits.</li><li><code>OrchestratorLive:46–51</code> separately validates the agent, adds membership and appends the prompt.</li><li>Deleting configured execution would scatter Busy admission, detached waits and sanitized outcomes; the module earns its keep.</li><li>The existing storage seam has two real adapters: in-memory and filesystem. No new admission adapter is justified.</li></ul>
+      </div>
+      <div><h3>Interface is the test surface</h3>
+        <ul><li>Existing <code>ServerSubmissionSuite:373–433</code> checks Busy, independent-session overlap and stale expected heads.</li><li><code>:452–529</code> checks lost waits; <code>:666–695</code> checks a closed application lifetime.</li><li>First establish a permitted competing head mutation and suspend deterministically between check and append.</li><li>Only if reachable, test the acceptance outcome through the same interface with both storage adapters; retain typed-failure versus unknown-outcome behavior.</li></ul>
+      </div>
+    </div>
+    <div class="constraint"><strong>Not a confirmed race.</strong> No competing remote mutation path was established in this review. The configured session gate may already exclude all relevant standalone callers. If so, stop: documenting the ordering contract is preferable to introducing a hypothetical seam.</div>
+    <div class="next"><strong>Decision guardrail:</strong> preserve <code>docs/SERVICE_WIRING.md</code>: orchestration owns persistence; the runner owns decisions and action checks; branches never publish sessions; invocation is not a loop; caller disconnect does not cancel admitted work. No global inference lock, replay registry or exactly-once guarantee. A deeper acceptance module would not turn tool execution into a transaction.</div>
+  </div>
+</article>
+</section>
+
+<section id="top-recommendation" class="top">
+  <div class="eyebrow" style="color:#047857">Top recommendation</div>
+  <h2>Concentrate selected-tool validation.</h2>
+  <p>It has concrete duplicated catalog knowledge, active callers and existing tests that can protect both validation timings; the prompt-acceptance candidate still needs reachability evidence.</p>
+  <a href="#tool-selection">Explore candidate 01 ↑</a>
+</section>
+<footer>
+  <strong>Review receipt.</strong> Parent source inspection plus one fresh-context scout; selected test bodies and test names inspected, no Scala tests run. No code, glossary or decision documents modified. Report is the only review deliverable. Scalamode's recent consolidation and UTPC's already-deep gateway were inspected but did not earn additional candidates. Profiles and memory remain planned; skills remain immutable runtime snapshots. Diagrams show responsibility placement, not proposed interfaces. Tailwind and Mermaid require CDN access; custom styling and the remaining visuals are embedded.
+</footer>
+</main>
+</body>
+</html>

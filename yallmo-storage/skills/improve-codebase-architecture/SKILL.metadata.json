@@ -1,0 +1,12 @@
+{
+  "author": "Matt Pocock",
+  "revision": 1,
+  "updated_at": "2026-11-25T23:10:09Z",
+  "source": {
+    "repository": "https://github.com/mattpocock/skills",
+    "path": "skills/engineering/improve-codebase-architecture/SKILL.md",
+    "url": "https://github.com/mattpocock/skills/blob/main/skills/engineering/improve-codebase-architecture/SKILL.md",
+    "pinned_url": "https://github.com/mattpocock/skills/blob/6f7f7831a625f040a8e06a0e7954826b87ce775a/skills/engineering/improve-codebase-architecture/SKILL.md"
+  },
+  "notes": "Skill by Matt Pocock. SKILL.md, HTML-REPORT.md, and agents/openai.yaml match the pinned upstream version byte-for-byte."
+}
